@@ -27,6 +27,7 @@ dev = ["pypdf>=5,<7", "pytest>=8.3,<9", "ruff>=0.9,<1"]
 
 [project.scripts]
 daily-intel = "daily_intelligence.cli:main"
+signaltrail-usage = "daily_intelligence.usage_cli:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}

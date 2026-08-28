@@ -1,7 +1,7 @@
 # Native Windows Setup
 
 **Status:** Operational reference
-**Last code verification:** 2026-08-02
+**Last code verification:** 2026-08-23
 **Documentation catalog:** [`docs/README.md`](../docs/README.md)
 
 ## Hermes Home
@@ -48,6 +48,23 @@ The CLI loads missing values from `%LOCALAPPDATA%\hermes\.env` automatically and
 variables already supplied by the process. Do not use `export $(grep ... | xargs)`: it mishandles
 quoted values and can expose secrets.
 
+Hermes usage hooks must run with UTF-8 mode when their stdin may contain Chinese or other
+non-ASCII metadata. Set this on the process that launches Hermes (and therefore its child hooks):
+
+```powershell
+$env:PYTHONUTF8 = "1"
+hermes hooks doctor
+```
+
+Without `PYTHONUTF8=1`, redirected Windows Python I/O may use a legacy code page and a healthy
+hook executable can fail before recording its observation. Configure the hook command with the
+absolute installed executable under `%LOCALAPPDATA%\hermes\hermes-agent\venv\Scripts\` so scheduled
+processes do not depend on an interactive `PATH`. `hermes hooks doctor` should report the approved
+pre-request, post-request, and request-error observers as unchanged and observer-only. The current
+Cron CLI still cannot inject a job-specific SignalTrail task environment; direct isolated processes
+can be measured per request, while scheduled evaluators require the documented partial/durable-log
+recovery boundary.
+
 ## Canonical data root
 
 The first normal command binds one runtime root in `%LOCALAPPDATA%\hermes\state\daily-intelligence-data-root.json`. A later command using another root fails before it reads or writes run artifacts. Inspect or deliberately migrate the binding with:
@@ -67,7 +84,7 @@ Every successful `finalize-edition` creates a local reading page, A4 PDF, and ar
 %LOCALAPPDATA%\hermes\daily-intelligence\reports\index.html
 ```
 
-This does not require Notion credentials. Windows uses installed Edge to print a self-contained HTML projection after eagerly loading every embedded image; the resulting PDF stores those images internally and does not depend on the authenticated browser profile, external network requests, or local media paths. If headless Edge is unavailable, ReportLab produces a simpler PDF and embeds the same validated local images directly. Set `output.pdf_engine: reportlab` in `configs/sources.yaml` to force that fallback, or remove `pdf` from `output.formats` to generate HTML only.
+This does not require Notion credentials. Windows uses installed Edge to print a self-contained HTML projection after eagerly loading every embedded image; PDF-bound images are resampled to the print boundary and transcoded before embedding, so the result does not depend on the authenticated browser profile, external network requests, or local media paths. If headless Edge is unavailable, ReportLab produces a simpler PDF and applies the same bounded image projection. Set `output.pdf_engine: reportlab` in `configs/sources.yaml` to force that fallback, or remove `pdf` from `output.formats` to generate HTML only. `output.pdf_max_bytes` defaults to 52,428,800 bytes; projection returns explicit timing/size fields and preserves an over-budget PDF with a warning for diagnosis.
 
 `open_after_finalize` defaults to false so 06:00/18:00 tasks do not open a window. Set it true only for interactive use. `copy_html_to_desktop` defaults to true in the bundled configuration, so every finalized edition also writes `daily-intelligence-YYYY-MM-DD-EDITION-rN.html` to the current user's Desktop. The desktop projection embeds validated cached images as data URIs so the HTML can be moved to another device as one file; archive and eventual PDF links remain absolute local links. Set an absolute `output.desktop_dir` to override the detected Desktop. A failed desktop write is reported as `desktop_html_error` without rolling back the local JSON/Markdown/HTML truth. HTML/PDF may be refreshed after independent evaluation; JSON/Markdown remain the immutable facts.
 

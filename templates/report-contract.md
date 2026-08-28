@@ -1,7 +1,7 @@
 # 结构化日报契约（schema 2.0）
 
 **状态：** 已验证机器相邻契约
-**最后对照 Schema/校验器：** 2026-08-05
+**最后对照 Schema/校验器：** 2026-08-23
 **产品契约目录：** [`docs/product-specs/index.md`](../docs/product-specs/index.md)
 
 输出 UTF-8 JSON。读取 packet 的 `output_language`：`zh-CN` 使用简体中文，`en` 使用英文；同一报告的标题、摘要、研判和评估建议不得混用输出语言。来源原题、URL、论文/项目名和技术术语可保留原文。Python 固定 schema/language/时间，生成报告、事件和分析 ID，并从索引补齐引用身份、access、来源排名、状态、计数和 `evaluation_status`。不要手工复制这些字段。
@@ -18,6 +18,12 @@
 七个 section 由 Python 按输出语言补齐并排序。渲染器按 brief 来源形成三级标题。所有正式来源的 `report_target` 与 `report_max` 都是 15；成功来源有至少 15 个真实候选时必须交付当前索引顺序的前 15 条，候选不足时使用实际可用条目，不得设置固定分数淘汰线。默认 `collection.item_order: source` 使当前索引与报告采用来源原 Top1–15；`published_at` 使当前索引按有效发布时间从新到旧排列，缺失发布时间和时间并列时保持稳定输入顺序，再采用其前 15 条。两种模式都保留原始 `source_rank` 作为来源 Top 标签。普通 `briefs[]` 必须保持当前 index/`brief_plan` 选择顺序，不得按内部 `importance` 二次重排；`importance` 仍可用于精选事件与研判选择。
 
 Brief 子 Agent 逐项完成 packet 的 `author_item_ids`；Python 验证各批次、原样合并同语言的 `reusable_briefs` 并执行覆盖校验。`target_count` 是本来源最低覆盖数，`default_item_ids` 是本版唯一、确定且有序的普通 brief 边界。Python 不会用模板生成译题或 TL;DR；semantic cache 只可复用内容指纹、输出语言一致且独立评估已批准、并且仍位于对应 `brief_plan.default_item_ids` 内的旧 brief，不得用 Top15 之外的历史条目补位，草稿中越界的 item 也必须丢弃。
+
+每个 brief 与 analysis packet 都携带接收器实际执行的 `output_schema`。它是根级和嵌套字段、
+类型、枚举、长度及 `additionalProperties` 边界的权威契约；本文解释语义，但不能放宽该
+Schema。模型不得增加 Schema 未声明的字段。接收器先用同一 Schema 返回不复制生成正文的
+路径/规则错误，再执行语言、摘要质量、证据边界和完整报告校验；一次修复后仍失败必须开始
+新的运行尝试，不能继续追加修复。
 
 `prepare-analysis` 在判定批次缺失前，会重新校验已经写入授权 `draft_result_path`、但因短回执或提交命令丢失而没有不可变 receipt 的草稿；只有完整通过原 packet 校验的草稿才可恢复并记入 `recovered_batches`。只有运行时限已到且 run 明确记录缺失批次时，才允许采用 Python 计算的降级覆盖目标，而且只能降低该缺失 batch 所负责来源的目标；其他已完成 batch 的来源继续保持原计划目标（候选不少于 15 时为 15）。索引中已有候选但写作或校验未完成时，即使同 section 还有其他来源，说明也必须列出受影响来源及其“已验证摘要/计划”计数，不得写成“未采集到内容”或让来源无提示消失。
 
@@ -90,18 +96,16 @@ Brief 子 Agent 逐项完成 packet 的 `author_item_ids`；Python 验证各批�
 ```json
 {
   "item_id": "hacker_news-abc123",
-  "title": "Original source headline",
   "title_zh": "原文标题的中文翻译",
   "tldr": "忠于已读取正文或公开摘要的中文摘要。",
   "importance": 78,
-  "status": "NEW",
-  "evidence_note": "未读取正文，仅依据公开摘要；未补写摘要外事实。"
+  "status": "NEW"
 }
 ```
 
-`title` 最终由 Python 覆盖为索引中的原题。`zh-CN` 报告在原题非中文时填写自然、完整的 `title_zh`；`en` 报告在原题非英文时填写自然、完整的 `title_en`。原题已经符合输出语言时不写译题字段，非当前语言的另一个译题字段也必须省略。不要添加 `[英]`、`[EN]`、`[中]`、`[ZH]`、来源名或截断原文。TL;DR 不得是“来源 X 报道”“详见原文链接”“正文/摘要未获取”、错误语言前缀、标题重复或其他占位文案。若索引已有 `full_text/partial`，读取 `content_path` 后总结；否则根据公开 `description`/摘要翻译并压缩；只有标题时，仅把标题明确表达的事实忠实改写成目标语言短句，不得添加标题外事实。访问状态只保存在 `source_ref.access` 或内部 `evidence_note`，不进入 TL;DR。
+Agent 不输出 `title`；Python 从索引注入权威原题，避免模型逐条复制确定性文本。`zh-CN` 报告仅在 packet 的 `translation_required` 为 true 时填写自然、完整的 `title_zh`；`en` 报告同理填写 `title_en`。原题已经符合输出语言时不写译题字段，非当前语言的另一个译题字段也必须省略。不要添加 `[英]`、`[EN]`、`[中]`、`[ZH]`、来源名或截断原文。TL;DR 不得是“来源 X 报道”“详见原文链接”“正文/摘要未获取”、错误语言前缀、标题重复或其他占位文案。若索引已有 `full_text/partial`，读取 `content_path` 后总结；否则根据公开 `description`/摘要翻译并压缩；只有标题时，仅把标题明确表达的事实忠实改写成目标语言短句，不得添加标题外事实。访问状态只保存在 `source_ref.access` 或内部 `evidence_note`，不进入 TL;DR。
 
-`featured_event_id`、`source_ref`、`primary_source`、来源排名和可选 `image` 由 Python 补齐。Agent 草稿不得填写图片 URL 或本地路径；Python 只使用同一索引 item 已观察到的公开配图，安全下载后再进入图文流。`items[]` 是证据与连续性层，通常 6—10 条、硬上限 12 条；普通 brief 不需要逐条研判。精选事件草稿只引用索引 item ID：
+`featured_event_id`、`source_ref`、`primary_source`、来源排名和可选 `image` 由 Python 补齐。Agent 草稿不得填写 `event_id`、`source_refs`、图片 URL 或本地路径；Python 只使用同一索引 item 已观察到的公开配图，安全下载后再进入图文流。`items[]` 是证据与连续性层，通常 6—10 条、硬上限 12 条；普通 brief 不需要逐条研判。精选事件草稿只引用索引 item ID：
 
 ```json
 {
@@ -119,7 +123,7 @@ Brief 子 Agent 逐项完成 packet 的 `author_item_ids`；Python 验证各批�
 }
 ```
 
-在 analysis payload 中必须填写 `section_id`；Python 归位后移除。Python 会把缺少有效当日/昨日发布时间的 `NEW` 改为 `WATCH`，并按 access 限制置信度。日报每条新闻显示发布时间；索引没有发布时间时显示采集时间，且采集时间不得替代发布时间参与状态或新鲜度判断。正文未读时只能复述已观察到的标题/公开摘要。旧闻如果近期从未展示可以作为 brief 入选，但时效性评估不把它计作当日新闻。
+在 analysis payload 中必须填写 `section_id`；Python 归位后移除。Python 会把缺少有效当日/昨日发布时间的 `NEW` 改为 `WATCH`，并按 access 限制置信度。日报每条新闻显示发布时间；索引没有发布时间时显示采集时间，且采集时间不得替代发布时间参与状态或新鲜度判断。正文未读时只能复述已观察到的标题/公开摘要。旧闻如果近期从未展示可以作为 brief 入选，但时效性评估不把它计作当日新闻。紧凑研判包有至少 6 个带有效当日/昨日发布时间的候选时，精选事件中至少 2 个必须来自这些新鲜候选；候选不足时使用实际可用数，不得把采集时间、验证失败或正文访问状态伪装成新鲜发布时间。
 
 schema 2.0 中每个精选事件的 `source_item_ids` 必须恰好包含一篇来源文章。另一媒体的交叉证据应写成独立精选事件，研判通过 `evidence_item_ids` 同时引用两者。这样能避免把主题相近但事实无关的文章合并成一个事件。不要把只存在于 `briefs[]` 的 item ID 用于研判；研判引用的每个 `evidence_item_ids` 都必须至少出现在一个精选事件的 `source_item_ids` 中。
 
@@ -130,7 +134,7 @@ schema 2.0 中每个精选事件的 `source_item_ids` 必须恰好包含一篇�
 输出采用“前台叙事、后台论证”：
 
 - `claim` 是具体、可证伪的文章标题；
-- `narrative` 是读者层主文，通常 4—7 个自然段，不设“事实基础”“历史脉络”“辩证分析”等内部小标题；
+- `narrative` 是读者层主文，必须为 4—7 个自然段，不设“事实基础”“历史脉络”“辩证分析”等内部小标题；Python 只可在不增删事实的前提下按已有句子边界确定性重排段落，句子不足时必须拒绝，不能调用模型补写；
 - 其余字段是支撑层论证底稿，必须完整但保持简洁，发布时默认放入可展开的“论证与证据”；
 - 先完成支撑字段，再把事实、因果、矛盾、条件、最强反证和后续信号重写成一条自然推进的故事，不能按字段顺序拼接；
 - 每篇主文只回答一个中心问题。多事件必须共享可说明的机制；共享日期或领域标签不算机制，互不相关的事件应拆开或从该视角舍弃；

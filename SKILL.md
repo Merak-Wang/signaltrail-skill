@@ -9,7 +9,7 @@ metadata:
   hermes:
     tags: [research, news, briefing, intelligence, rss, html, pdf, notion]
     category: research
-    requires_toolsets: [terminal]
+    requires_toolsets: [terminal, delegation]
     related_skills: []
     config:
       - key: daily_intelligence.data_dir
@@ -72,9 +72,27 @@ Only an intentional migration may run:
 daily-intel --data-dir DATA_DIR data-root adopt
 ```
 
-Read `references/editorial-policy.md`, `references/narrative-analysis.md`, and
-`templates/report-contract.md` before authoring. Read `references/runbook.md` for
-recovery, and `references/notion-setup.md` only when Notion is requested.
+Normal authoring packets are self-contained. Do not preload the editorial,
+narrative, and report-contract references during an ordinary run. Read the
+specific reference only when its routing condition below applies.
+
+## Usage audit: mandatory startup gate
+
+Every morning/evening invocation—including manual, scheduled, restart, and recovery
+runs—must start a unique foreground task before its first provider request. The outer
+launcher runs `signaltrail-usage start`, injects the ledger/task/adapter/phase
+`SIGNALTRAIL_USAGE_*` variables into the long-lived host, and correlates all workers.
+
+At skill entry, verify that the task is open and belongs to `DATA_DIR`. A missing,
+mismatched, or finalized task blocks `run-edition`, delegation, repair, and evaluation.
+If already inside an unmetered model session, stop before report work and require a
+metered relaunch; a child shell cannot cover the first call or modify its parent host.
+
+Foreground and delegated workers share the task; packets provide `usage_correlation`.
+Hermes uses all three API hooks; Codex/OpenClaw import durable parent/child logs. Never
+persist prompts, outputs, tool data, raw host IDs/receipts, or secrets. After workers
+and imports finish, run `summary` then `finalize`, including on failure/cancellation.
+Unknown stays unknown, never `0`. Read `references/llm-usage.md` for setup or gaps.
 
 ## Workflow
 
@@ -127,9 +145,15 @@ Author every `brief_authoring_batches` packet at its assigned `draft_result_path
 Process packets in their listed order in waves of at most three concurrent Hermes
 workers; wait for one wave to finish before dispatching the next. This keeps each
 packet bounded while respecting Hermes' default `max_concurrent_children: 3`.
-Use only packet evidence; do not browse, search, or read another batch. Run its
+Each packet contains its full contract. Follow its `output_schema` exactly for fields, types, enums, and extra-property boundaries.
+Use only packet evidence; do not browse, search, read another batch, or preload the long
+editorial/narrative/report references. Run its
 `submission_command`; if it reports validation errors, make at most one
 validation-only repair and run the same command once more.
+Do not repeat the indexed `title` in brief output; Python injects it. Emit the
+packet's translated-title field only when that candidate says
+`translation_required: true`.
+Rejection creates an immutable field/rule/budget receipt; one repair is the hard maximum.
 
 Record bounded metrics, inspect status, then prepare analysis:
 
@@ -154,11 +178,14 @@ never describe an authoring or validation failure as not collected.
 
 ### 4. Analyze and assemble
 
-Write only the assigned compact analysis packet. Select 6–10 events and complete
+The compact analysis packet is self-contained. Follow its `output_schema`, omit
+`python_owned_output_fields`, select the packet-stated event count, and complete
 geopolitics, AI/technology, markets, and one cross-perspective synthesis in
 `output_language`. Preserve original titles; add the specified translated-title
 field only when needed. Keep claims tied to visible evidence and make TL;DR text
 reader-facing rather than operational.
+Python owns the three stable analysis IDs. Invalid shape/evidence permits at most one
+budget-authorized repair; the model must not invent identities.
 
 ```text
 daily-intel --data-dir DATA_DIR assemble-authoring --run RUN.json --analysis ANALYSIS.json
@@ -184,7 +211,8 @@ daily-intel --data-dir DATA_DIR complete-edition-tail --run RUN.json
 ```
 
 The tail creates PDF, retries requested Notion delivery, and schedules independent
-evaluation. A tail failure is `partial`; it must not withdraw the local report.
+evaluation from one immutable hash-bound dossier after preflight/reconciliation, with at
+most two total attempts. PDF time/bytes/budget are explicit. Tail failure is `partial`.
 
 ## Optional Monitor
 
@@ -209,6 +237,16 @@ The monitor uses local collection, caching, clustering, and state handling.
   authoring failure is not reported as a collection failure.
 - Desktop HTML and both PDF paths embed validated images.
 - Tail work and independent evaluation remain separately retryable.
+- Cache reuses stable text only; run-relative fields and miss metrics are recomputed.
+- `llm_budget.latest` authorizes each phase using nonzero downstream reserves.
+- No budget check says `coverage: unmetered` or `reason: no_usage_task_bound`.
+- The foreground usage task and linked evaluator child have been summarized and finalized;
+  any unobservable field remains explicitly unknown.
 
-For the state machine and rationale, read `references/runbook.md` and
-`references/system-design.md`.
+Read `references/editorial-policy.md` only for source, evidence, access-status,
+coverage, continuity, or editorial disputes. Read
+`references/narrative-analysis.md` only to repair analysis coherence or style.
+Read `templates/report-contract.md` only for schema/validation repair. Read
+`references/runbook.md` for failure recovery, `references/system-design.md` for
+architecture changes, and `references/notion-setup.md` only when Notion is
+requested.

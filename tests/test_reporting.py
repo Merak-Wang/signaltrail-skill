@@ -640,8 +640,19 @@ def _v20_report() -> dict:
     report["schema_version"] = "2.0"
     report["analysis_protocol_version"] = "2.0"
     for analysis in report["analyses"]:
+        analysis["analysis_id"] = f"ANALYSIS-{analysis['domain'].upper()}"
         analysis.update(
             {
+                "narrative": (
+                    "第一段说明当前中心判断与适用边界：公开材料显示相关约束已经变化，"
+                    "但这些信号仍不足以证明结果已经发生，因此本段只建立需要持续跟踪的方向。\n\n"
+                    "第二段列出支持判断的已确认事实，并区分标题、公开摘要与正文证据。"
+                    "各项事实均绑定报告中的精选事件，不把无法访问的细节补写成确定结论。\n\n"
+                    "第三段解释事实如何通过制度约束、工程成本和主体激励向后传导。"
+                    "只有这些中间环节出现可观察变化时，方向判断才可能进一步影响部署与市场结果。\n\n"
+                    "第四段给出最强反证以及下一步可观察信号：若执行数据、成本曲线或正式文本"
+                    "与当前方向相反，就应降低置信度并在下一版明确修正，而不是维持原有叙事。"
+                ),
                 "time_horizon": "未来数周到一个季度",
                 "causal_chain": [
                     "已确认的事实改变相关主体的约束条件。",
@@ -952,6 +963,36 @@ def test_v15_compiler_owns_ids_refs_scores_status_and_legacy_evaluation():
     )
     brief = next(brief for section in report["sections"] for brief in section["briefs"])
     assert brief["source_rank_label"] == "来源Top1"
+
+
+def test_compiler_prefers_authorized_source_item_ids_over_conflicting_draft_refs():
+    report = _v15_report()
+    index = _v15_index(report)
+    index["date"] = report["date"]
+    index["edition"] = report["edition"]
+    event = _first_report_item(report)
+    authorized_item_id = event["source_refs"][0]["item_id"]
+    other_item = json.loads(json.dumps(index["items"][0]))
+    other_item.update(
+        {
+            "item_id": "different-index-item",
+            "title": "A different indexed article",
+            "url": "https://news.example/articles/different",
+        }
+    )
+    index["items"].append(other_item)
+    event["source_item_ids"] = [authorized_item_id]
+    event["source_refs"] = [{"item_id": other_item["item_id"]}]
+    event["event_id"] = "FORGED-HISTORICAL-EVENT"
+
+    compile_report_data(report, index)
+
+    compiled = _first_report_item(report)
+    assert [ref["item_id"] for ref in compiled["source_refs"]] == [
+        authorized_item_id
+    ]
+    assert compiled["event_id"].startswith("EVT-")
+    assert compiled["event_id"] != "FORGED-HISTORICAL-EVENT"
 
 
 def test_v15_compiler_normalizes_mapping_sections_and_legacy_aliases():
@@ -1333,6 +1374,20 @@ def test_v15_rejects_metadata_access_disclaimer_as_tldr():
     brief["tldr"] = (
         "仅取得来源标题或公开元数据，正文尚未读取；请通过原文链接查看完整内容。"
     )
+
+    compile_report_data(report, index)
+    errors, _warnings = validate_report_data(report, index)
+
+    assert any("boilerplate" in error and brief["item_id"] in error for error in errors)
+
+
+def test_v15_rejects_authoring_packet_limitations_as_tldr():
+    report = _v15_report()
+    index = _v15_index(report)
+    index["date"] = report["date"]
+    index["edition"] = report["edition"]
+    brief = next(brief for section in report["sections"] for brief in section["briefs"])
+    brief["tldr"] = "数据包未提供项目说明或简介，因此当前只记录项目名称。"
 
     compile_report_data(report, index)
     errors, _warnings = validate_report_data(report, index)

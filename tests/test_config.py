@@ -39,6 +39,7 @@ def test_local_html_and_pdf_are_default_reading_outputs():
     assert config.output.language == "zh-CN"
     assert config.output.formats == ["html", "pdf"]
     assert config.output.pdf_engine == "edge"
+    assert config.output.pdf_max_bytes == 50 * 1024 * 1024
     assert config.output.open_after_finalize is False
     assert config.output.copy_html_to_desktop is True
     assert config.output.desktop_dir is None
@@ -128,6 +129,15 @@ def test_pdf_output_requires_html_and_known_engine(tmp_path):
         encoding="utf-8",
     )
     with pytest.raises(ValueError, match="pdf_engine"):
+        load_config(config_path)
+
+    config_path.write_text(
+        "timezone: Asia/Shanghai\n"
+        "output:\n  formats: [html, pdf]\n  pdf_max_bytes: 0\n"
+        "sources: []\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="pdf_max_bytes"):
         load_config(config_path)
 
 

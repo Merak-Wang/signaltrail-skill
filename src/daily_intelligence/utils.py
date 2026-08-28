@@ -7,6 +7,7 @@ import re
 from datetime import datetime
 from pathlib import Path
 from threading import Lock
+from time import sleep
 from typing import Any
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from uuid import uuid4
@@ -16,6 +17,9 @@ from zoneinfo import ZoneInfo
 TRACKING_QUERY_PREFIXES = ("utm_", "guce_", "guccounter", "ref", "source")
 _ATOMIC_WRITE_LOCKS: WeakValueDictionary[str, Lock] = WeakValueDictionary()
 _ATOMIC_WRITE_LOCKS_GUARD = Lock()
+_ATOMIC_REPLACE_ATTEMPTS = 8
+_ATOMIC_REPLACE_BASE_DELAY_SECONDS = 0.01
+_ATOMIC_REPLACE_MAX_DELAY_SECONDS = 0.2
 
 
 def environment_value(name: str) -> str | None:
@@ -149,6 +153,38 @@ def _atomic_write_lock(path: Path) -> Lock:
         return _ATOMIC_WRITE_LOCKS.setdefault(key, Lock())
 
 
+def _is_retryable_windows_replace_error(error: OSError) -> bool:
+    """处理：只识别 Windows 原子替换期间可能短暂消失的共享或访问冲突。
+    输入：
+    - ``error``：同目录临时文件替换目标时由操作系统返回的异常；不含文件内容。
+    输出：仅当 Windows 错误码表示访问拒绝、共享冲突或锁冲突时返回真，供有界重试判断。
+    """
+    return os.name == "nt" and getattr(error, "winerror", None) in {5, 32, 33}
+
+
+def _replace_atomic_with_retry(temporary: Path, path: Path) -> None:
+    """处理：在 Windows 短暂文件占用下有界重试同目录原子替换。
+    输入：
+    - ``temporary``：已完整落盘且与目标同目录的唯一临时文件。
+    - ``path``：要被原子替换的目标文件；调用方已持有该目标的进程内写锁。
+    输出：替换成功时无返回值；非瞬态错误或重试耗尽时原样抛错，供上游识别持久化失败。
+    """
+    delay = _ATOMIC_REPLACE_BASE_DELAY_SECONDS
+    for attempt in range(_ATOMIC_REPLACE_ATTEMPTS):
+        try:
+            temporary.replace(path)
+            return
+        except OSError as error:
+            if (
+                not _is_retryable_windows_replace_error(error)
+                or attempt + 1 >= _ATOMIC_REPLACE_ATTEMPTS
+            ):
+                raise
+            # 杀毒扫描或索引器可能短暂占用目标；保持同一临时文件，避免降低原子性。
+            sleep(delay)
+            delay = min(delay * 2, _ATOMIC_REPLACE_MAX_DELAY_SECONDS)
+
+
 def write_bytes_atomic(path: Path, content: bytes) -> Path:
     """处理：使用独立临时文件原子替换目标，避免并发写者共享临时名称。
     输入：
@@ -163,7 +199,7 @@ def write_bytes_atomic(path: Path, content: bytes) -> Path:
         try:
             # 先完整写入同目录的唯一临时文件，再原子替换，读者不会看到半份内容。
             temporary.write_bytes(content)
-            temporary.replace(path)
+            _replace_atomic_with_retry(temporary, path)
         finally:
             # 替换成功时临时文件已经消失；失败时也必须清理残留。
             temporary.unlink(missing_ok=True)

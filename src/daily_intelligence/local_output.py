@@ -5,8 +5,11 @@ import base64
 import html
 import json
 import os
+import re
 import webbrowser
+from io import BytesIO
 from pathlib import Path
+from time import perf_counter
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -266,6 +269,8 @@ _EMBEDDABLE_IMAGE_TYPES = {
     "image/webp",
 }
 _MAX_EMBEDDED_IMAGE_BYTES = 8 * 1024 * 1024
+_PDF_IMAGE_MAX_SIZE = (1600, 1000)
+_PDF_IMAGE_JPEG_QUALITY = 82
 
 
 def _validated_local_image_path(
@@ -332,11 +337,14 @@ def _image_src(
 def _embedded_image_sources(
     report: dict[str, Any],
     data_dir: Path,
+    *,
+    optimize_for_pdf: bool = False,
 ) -> dict[str, str]:
     """处理：校验本地报告图片并构造可离线使用的数据 URI。
     输入：
     - ``report``：当前报告结构；包含栏目、简报或事件、来源引用及质量元数据。
     - ``data_dir``：当前运行的唯一数据根；所有状态和版本化产物都必须位于其中。
+    - ``optimize_for_pdf``：是否按打印分辨率重采样并压缩图片，避免把原图字节重复嵌入 PDF。
     输出：“校验本地报告图片并构造可离线使用的数据 URI”形成的结构化字典；
       键值表达该处理定义的业务记录或查找关系。
     """
@@ -360,9 +368,47 @@ def _embedded_image_sources(
                 payload = candidate.read_bytes()
             except OSError:
                 continue
+            if optimize_for_pdf:
+                optimized = _optimized_pdf_image_bytes(candidate)
+                if optimized is None:
+                    continue
+                payload, content_type = optimized
             encoded = base64.b64encode(payload).decode("ascii")
             embedded[local_path] = f"data:{content_type};base64,{encoded}"
     return embedded
+
+
+def _optimized_pdf_image_bytes(path: Path) -> tuple[bytes, str] | None:
+    """处理：把已校验本地图片缩放为适合 A4 打印的有界 JPEG 字节。
+    输入：
+    - ``path``：已经过媒体根、类型和文件大小校验的本地图片路径。
+    输出：JPEG 字节和内容类型；解码失败时返回 None，调用方跳过该可选投影图片。
+    """
+    try:
+        from PIL import Image, ImageOps, UnidentifiedImageError
+
+        with Image.open(path) as source:
+            image = ImageOps.exif_transpose(source)
+            image.thumbnail(_PDF_IMAGE_MAX_SIZE, Image.Resampling.LANCZOS)
+            if image.mode in {"RGBA", "LA"} or (
+                image.mode == "P" and "transparency" in image.info
+            ):
+                rgba = image.convert("RGBA")
+                flattened = Image.new("RGB", rgba.size, "white")
+                flattened.paste(rgba, mask=rgba.getchannel("A"))
+                image = flattened
+            else:
+                image = image.convert("RGB")
+            buffer = BytesIO()
+            image.save(
+                buffer,
+                format="JPEG",
+                quality=_PDF_IMAGE_JPEG_QUALITY,
+                optimize=True,
+            )
+            return buffer.getvalue(), "image/jpeg"
+    except (OSError, ValueError, UnidentifiedImageError):
+        return None
 
 
 def _external_link(label: object, url: object, *, css_class: str = "") -> str:
@@ -1123,6 +1169,23 @@ def _reportlab_pdf(
         textColor=colors.HexColor("#667383"),
     )
 
+    def pdf_markup(value: object) -> str:
+        """处理：分别用内置 Latin 字体和 CJK 字体标记 PDF 可见文本。
+        输入：
+        - ``value``：报告中的读者可见纯文本；外部内容仍逐段执行 HTML 转义。
+        输出：只含转义文本与受控 font 标签的 ReportLab Paragraph 标记。
+        """
+        chunks = re.split(r"([\x00-\x7f]+)", str(value or ""))
+        return "".join(
+            (
+                f'<font name="Helvetica">{html.escape(chunk, quote=True)}</font>'
+                if chunk.isascii()
+                else html.escape(chunk, quote=True)
+            )
+            for chunk in chunks
+            if chunk
+        )
+
     def paragraph(value: object, style: ParagraphStyle = base) -> Paragraph:
         """处理：清理输入文本并按指定样式创建可加入 PDF 排版流的正文段落。
         输入：
@@ -1131,7 +1194,7 @@ def _reportlab_pdf(
         输出：封装“清理输入文本并按指定样式创建可加入 PDF 排版流的正文段落”业务结果的 ``Paragrap
           h`` 对象；调用方据此继续相邻阶段或识别无结果状态。
         """
-        return Paragraph(_escape(value).replace("\n", "<br/>"), style)
+        return Paragraph(pdf_markup(value).replace("\n", "<br/>"), style)
 
     def bullet(value: object) -> Paragraph:
         """处理：为清理后的文本添加项目符号并创建可加入 PDF 排版流的列表段落。
@@ -1140,7 +1203,7 @@ def _reportlab_pdf(
         输出：封装“为清理后的文本添加项目符号并创建可加入 PDF 排版流的列表段落”业务结果的 ``Para
           graph`` 对象；调用方据此继续相邻阶段或识别无结果状态。
         """
-        return Paragraph(f"• {_escape(value)}", base)
+        return Paragraph(f"• {pdf_markup(value)}", base)
 
     def footer(canvas: Any, document: Any) -> None:
         """处理：在 ReportLab 当前页面底部绘制稳定页码，不改变正文排版流。
@@ -1190,7 +1253,10 @@ def _reportlab_pdf(
                     source_rank = f" [{item.get('source_rank_label')}]" if item.get("source_rank_label") else ""
                     label = f"{rank}. {item.get('title')}{source_rank}"
                     link = _safe_url(ref.get("url"))
-                    linked_title = Paragraph(f'<link href="{link}">{_escape(label)}</link>', base)
+                    linked_title = Paragraph(
+                        f'<link href="{link}">{pdf_markup(label)}</link>',
+                        base,
+                    )
                     blocks: list[Any] = [linked_title]
                     if localized_title := translated_title(item, language):
                         blocks.append(paragraph(localized_title, h3))
@@ -1202,8 +1268,12 @@ def _reportlab_pdf(
                         image_path = _validated_local_image_path(image, data_dir)
                         if image_path is not None:
                             try:
+                                optimized = _optimized_pdf_image_bytes(image_path)
+                                if optimized is None:
+                                    raise ValueError("unsupported PDF image")
+                                image_payload, _content_type = optimized
                                 image_width, image_height = ImageReader(
-                                    str(image_path)
+                                    BytesIO(image_payload)
                                 ).getSize()
                                 scale = min(
                                     (80 * mm) / image_width,
@@ -1212,7 +1282,7 @@ def _reportlab_pdf(
                                 )
                                 blocks.append(
                                     PlatypusImage(
-                                        str(image_path),
+                                        BytesIO(image_payload),
                                         width=image_width * scale,
                                         height=image_height * scale,
                                     )
@@ -1665,6 +1735,7 @@ def write_local_outputs(
     *,
     evaluation: dict[str, Any] | None = None,
     open_after_finalize: bool | None = None,
+    regenerate_pdf: bool = True,
 ) -> dict[str, Any]:
     """处理：从已验证报告生成 HTML、PDF、桌面副本和归档索引。
     输入：
@@ -1673,6 +1744,7 @@ def write_local_outputs(
     - ``config``：已校验的应用配置；提供时区、来源策略、并发限制、预算和输出选项。
     - ``evaluation``：独立质量评估对象；包含评分、问题和改进建议。
     - ``open_after_finalize``：完成本地输出后是否用默认浏览器打开 HTML。
+    - ``regenerate_pdf``：是否重绘已存在 PDF；评估刷新可复用同一报告内容的 PDF。
     输出：“从已验证报告生成 HTML、PDF、桌面副本和归档索引”形成的结构化字典；
       典型键包括 pdf_engine、pdf_path。
     """
@@ -1683,10 +1755,17 @@ def write_local_outputs(
     pdf_path = report_dir / f"{stem}.pdf"
     warnings: list[str] = []
     result: dict[str, Any] = {}
-    embedded_image_sources = (
+    pdf_requires_render = (
+        "pdf" in config.formats and (regenerate_pdf or not pdf_path.is_file())
+    )
+    desktop_embedded_image_sources = (
         _embedded_image_sources(report, data_dir)
-        if "pdf" in config.formats
-        or ("html" in config.formats and config.copy_html_to_desktop)
+        if "html" in config.formats and config.copy_html_to_desktop
+        else None
+    )
+    pdf_embedded_image_sources = (
+        _embedded_image_sources(report, data_dir, optimize_for_pdf=True)
+        if pdf_requires_render and config.pdf_engine in {"edge", "auto"}
         else None
     )
     if "html" in config.formats:
@@ -1709,7 +1788,7 @@ def write_local_outputs(
                         data_dir,
                         config,
                         evaluation=evaluation,
-                        embedded_image_sources=embedded_image_sources,
+                        embedded_image_sources=desktop_embedded_image_sources,
                     )
                 )
             except Exception as exc:
@@ -1720,7 +1799,8 @@ def write_local_outputs(
                 )
                 warnings.append(warning)
                 result["desktop_html_error"] = warning
-    if "pdf" in config.formats:
+    if pdf_requires_render:
+        projection_started = perf_counter()
         try:
             engine, warning = render_pdf_from_html(
                 html_path,
@@ -1733,15 +1813,46 @@ def write_local_outputs(
                     report,
                     evaluation,
                     include_pdf_link=False,
-                    embedded_image_sources=embedded_image_sources,
+                    embedded_image_sources=pdf_embedded_image_sources,
                 ),
             )
-            result.update({"pdf_path": str(pdf_path), "pdf_engine": engine})
+            pdf_bytes = pdf_path.stat().st_size
+            budget_status = (
+                "within_budget" if pdf_bytes <= config.pdf_max_bytes else "exceeded"
+            )
+            result.update(
+                {
+                    "pdf_path": str(pdf_path),
+                    "pdf_engine": engine,
+                    "pdf_projection_seconds": round(
+                        perf_counter() - projection_started,
+                        3,
+                    ),
+                    "pdf_bytes": pdf_bytes,
+                    "pdf_size_budget_bytes": config.pdf_max_bytes,
+                    "pdf_size_budget_status": budget_status,
+                }
+            )
+            if budget_status == "exceeded":
+                warnings.append(
+                    "PDF size budget exceeded: "
+                    f"{pdf_bytes} bytes > {config.pdf_max_bytes} bytes"
+                )
             if warning:
                 warnings.append(warning)
         except Exception as exc:  # 本地权威记录已持久化，PDF 失败只产生可重试警告。
             warnings.append(f"PDF output failed: {type(exc).__name__}: {exc}")
             result["pdf_error"] = warnings[-1]
+    elif "pdf" in config.formats and pdf_path.is_file():
+        pdf_bytes = pdf_path.stat().st_size
+        result["pdf_path"] = str(pdf_path)
+        result["pdf_reused"] = True
+        result["pdf_projection_seconds"] = 0.0
+        result["pdf_bytes"] = pdf_bytes
+        result["pdf_size_budget_bytes"] = config.pdf_max_bytes
+        result["pdf_size_budget_status"] = (
+            "within_budget" if pdf_bytes <= config.pdf_max_bytes else "exceeded"
+        )
     index_path = render_archive_index(data_dir)
     result["local_index_path"] = str(index_path)
     result["warnings"] = warnings

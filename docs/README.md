@@ -1,8 +1,9 @@
 # Engineering Records
 
+**Purpose:** Catalog the canonical engineering records and their authority, status, and translations.
 **Status:** Verified
 **Owner:** Repository maintainers
-**Last verified:** 2026-08-02
+**Last verified:** 2026-08-23
 
 This directory is SignalTrail's engineering system of record. `AGENTS.md` points here;
 it does not duplicate the content. English records are canonical, with matching Chinese
@@ -22,6 +23,7 @@ translations under [`zh-CN/`](zh-CN/README.md).
 | [Operations runbook](../references/runbook.md) | How are runs operated and recovered? | Verified detail |
 | [Editorial policy](../references/editorial-policy.md) | What evidence and selection rules apply? | Verified detail |
 | [System design detail](../references/system-design.md) | What are the detailed data and state contracts? | Verified detail |
+| [LLM usage operations](../references/llm-usage.md) | How are host calls metered without storing prompts, responses, or secrets? | Verified detail |
 
 ## Record Status
 

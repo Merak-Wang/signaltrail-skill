@@ -24,6 +24,7 @@ output:
   - html
   - pdf
   pdf_engine: edge
+  pdf_max_bytes: 52428800
   open_after_finalize: false
   copy_html_to_desktop: true
   desktop_dir:

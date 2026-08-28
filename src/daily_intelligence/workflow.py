@@ -26,6 +26,10 @@ from .collector import collect_sources
 from .config import AppConfig, MediaConfig, OutputConfig, project_root
 from .content import extract_content
 from .context import build_context
+from .evaluation import build_evaluation_dossier
+from .llm_budget import append_budget_receipt, evaluate_llm_budget
+from .llm_usage import UsageLedger
+from .llm_usage.models import safe_label
 from .local_output import write_local_outputs
 from .localization import localized
 from .media import prefetch_index_images
@@ -62,6 +66,78 @@ TERMINAL_STATUSES = {
     RunStatus.COMPLETED_PARTIAL,
     RunStatus.FAILED,
 }
+MAX_EVALUATION_ATTEMPTS = 2
+EVALUATION_STALL_SECONDS = 2 * 60 * 60
+
+
+def _active_usage_binding(data_dir: Path) -> dict[str, Any] | None:
+    """处理：把宿主在首个模型调用前创建的 usage task 绑定到日报运行。
+    输入：
+    - ``data_dir``：当前日报的唯一数据根；用于校验宿主 ledger 不会串接另一份运行数据。
+    - 环境变量：宿主提供的 SIGNALTRAIL_USAGE_LEDGER/TASK/ADAPTER/PHASE 计量血缘。
+    输出：仅含安全任务 ID、适配器、阶段和本地事件目录的绑定；未启用计量时返回 None。
+    """
+
+    task_id = str(os.getenv("SIGNALTRAIL_USAGE_TASK") or "").strip()
+    ledger_root = str(os.getenv("SIGNALTRAIL_USAGE_LEDGER") or "").strip()
+    if not task_id and not ledger_root:
+        return None
+    if not task_id or not ledger_root:
+        raise RuntimeError(
+            "SIGNALTRAIL_USAGE_TASK and SIGNALTRAIL_USAGE_LEDGER must be set together"
+        )
+    ledger = UsageLedger(ledger_root)
+    task = ledger.resolve_task(task_id)
+    if task.data_dir != data_dir.resolve():
+        raise RuntimeError(
+            "Active LLM usage task belongs to a different SignalTrail data root"
+        )
+    if ledger.summarize_task(task).get("timing", {}).get("completed_at") is not None:
+        raise RuntimeError("Active LLM usage task is already finalized")
+    adapter = safe_label(os.getenv("SIGNALTRAIL_USAGE_ADAPTER") or "host")
+    phase = safe_label(os.getenv("SIGNALTRAIL_USAGE_PHASE") or "daily-report")
+    if adapter is None or phase is None:
+        raise RuntimeError("Active LLM usage adapter and phase must be bounded labels")
+    return {
+        "task_id": task.task_id,
+        "adapter": adapter,
+        "phase": phase,
+        "event_dir": str((task.path / "events").resolve()),
+    }
+
+
+def _attach_usage_binding(
+    run: dict[str, Any],
+    binding: dict[str, Any] | None,
+) -> bool:
+    """处理：幂等追加一次宿主 usage task 与运行尝试的关联。
+    输入：
+    - ``run``：当前可变运行清单；保存任务关联但不复制任何宿主正文或原始回执。
+    - ``binding``：由 _active_usage_binding 校验的安全绑定；未启用计量时为 None。
+    输出：实际新增绑定时为 True，未启用或已有相同绑定时为 False。
+    """
+
+    if binding is None:
+        return False
+    llm_usage = run.setdefault(
+        "llm_usage",
+        {
+            "schema_version": "1.0",
+            "authority": "immutable_usage_events",
+            "tasks": [],
+        },
+    )
+    tasks = llm_usage.setdefault("tasks", [])
+    bound = {**binding, "run_attempt": int(run.get("attempt", 1))}
+    for existing in tasks:
+        if isinstance(existing, dict) and existing.get("task_id") == binding["task_id"]:
+            if existing != bound:
+                raise RuntimeError(
+                    f"Conflicting LLM usage binding for task {binding['task_id']}"
+                )
+            return False
+    tasks.append(bound)
+    return True
 
 
 def _completion_status(run: dict[str, Any]) -> RunStatus:
@@ -74,6 +150,36 @@ def _completion_status(run: dict[str, Any]) -> RunStatus:
     if run.get("pending_sources") or run.get("budget_exhausted"):
         return RunStatus.COMPLETED_PARTIAL
     return RunStatus.COMPLETED
+
+
+def _require_llm_budget(
+    run: dict[str, Any],
+    run_path: Path,
+    data_dir: Path,
+    phase: str,
+) -> dict[str, Any]:
+    """处理：在一次模型阶段分发前持久化并执行 token 预算门禁。
+    输入：
+    - ``run``：当前运行清单；提供预算和 usage task 绑定并接收检查轨迹。
+    - ``run_path``：当前 run JSON 路径；阻断时先持久化可恢复状态。
+    - ``data_dir``：当前运行唯一数据根；限定账本读取和清单写入。
+    - ``phase``：即将开始的 brief_wave 或 analysis 阶段短标签。
+    输出：允许时返回安全门禁回执；拒绝时先写回状态再抛出 RuntimeError。
+    """
+
+    receipt = evaluate_llm_budget(run, data_dir, phase)
+    append_budget_receipt(run, receipt)
+    if not receipt["allowed"]:
+        run["updated_at"] = now_iso(str(run.get("timezone", "Asia/Shanghai")))
+        run["next_action"] = (
+            f"LLM phase {phase} is blocked by max_agent_tokens; preserve completed "
+            "artifacts and resume only with a new authorized budget or run attempt."
+        )
+        write_json(run_path, run)
+        raise RuntimeError(
+            f"LLM token budget blocks phase {phase}: {receipt['reason']}"
+        )
+    return receipt
 
 
 def _pending_evaluation(
@@ -101,6 +207,147 @@ def _pending_evaluation(
     return evaluation
 
 
+def evaluation_preflight(
+    report_path: Path,
+    data_dir: Path,
+    report_id: str,
+    content_hash: str,
+) -> dict[str, Any]:
+    """处理：在启动独立 Agent 前确认当前运行是否已完成同一报告评估。
+    输入：
+    - ``report_path``：当前不可变报告路径；用于定位其 date/edition run。
+    - ``data_dir``：当前运行唯一数据根；限定 run 查找范围。
+    - ``report_id``：待调度报告的稳定 revision ID。
+    - ``content_hash``：待调度报告的语义内容哈希。
+    输出：completed 命中时返回 already_completed；否则返回 evaluation_required。
+    """
+
+    report = read_json(report_path) if report_path.is_file() else None
+    if not isinstance(report, dict):
+        return {"status": "evaluation_required", "reason": "report_unavailable"}
+    run_path = (
+        data_dir
+        / "runs"
+        / str(report.get("date") or "")
+        / f"{report.get('edition')}.json"
+    )
+    run = read_json(run_path) if run_path.is_file() else None
+    if not isinstance(run, dict):
+        return {"status": "evaluation_required", "reason": "run_unavailable"}
+    evaluation = run.get("evaluation")
+    artifacts = run.get("artifacts", {})
+    evaluation_report_id = (
+        evaluation.get("report_id")
+        if isinstance(evaluation, dict)
+        else None
+    ) or artifacts.get("report_id")
+    if (
+        isinstance(evaluation, dict)
+        and evaluation.get("status") == "completed"
+        and evaluation_report_id == report_id
+        and evaluation.get("content_hash") == content_hash
+        and artifacts.get("report_id") == report_id
+        and artifacts.get("content_hash") == content_hash
+    ):
+        return {
+            "status": "already_completed",
+            "evaluation_id": evaluation.get("evaluation_id"),
+            "evaluation_path": evaluation.get("evaluation_path"),
+        }
+    return {"status": "evaluation_required", "reason": "no_matching_completion"}
+
+
+def reconcile_evaluation_scheduler(
+    scheduler: dict[str, Any],
+    *,
+    checked_at: str | None = None,
+) -> dict[str, Any]:
+    """处理：把持久化 Hermes job ID 与只读 cron 列表中的当前终态对账。
+    输入：
+    - ``scheduler``：run 中的调度回执；提供 job ID、attempt 和 scheduled_at。
+    - ``checked_at``：测试或恢复流程可注入的带时区检查时间；缺失时使用当前时区。
+    输出：scheduled/completed/failed/stale/unknown/reconciliation_failed 安全回执。
+    """
+
+    job_id = str(scheduler.get("job_id") or "")
+    timestamp = checked_at or now_iso("Asia/Shanghai")
+    if not job_id:
+        return {
+            **scheduler,
+            "status": "unknown",
+            "checked_at": timestamp,
+            "reason": "missing_job_id",
+        }
+    try:
+        completed = subprocess.run(
+            ["hermes", "cron", "list", "--all"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+    except (FileNotFoundError, subprocess.SubprocessError):
+        return {
+            **scheduler,
+            "status": "reconciliation_failed",
+            "checked_at": timestamp,
+            "reason": "hermes_cron_unavailable",
+        }
+    if completed.returncode:
+        return {
+            **scheduler,
+            "status": "reconciliation_failed",
+            "checked_at": timestamp,
+            "reason": "hermes_cron_list_failed",
+        }
+    pattern = re.compile(
+        rf"(?ms)^\s*{re.escape(job_id)}\s+\[(?P<status>[^\]]+)\]\s*$"
+        rf"(?P<body>.*?)(?=^\s{{2}}[A-Za-z0-9_-]+\s+\[|\Z)"
+    )
+    match = pattern.search(completed.stdout)
+    if match is None:
+        return {
+            **scheduler,
+            "status": "unknown",
+            "checked_at": timestamp,
+            "reason": "job_not_listed",
+        }
+    host_status = str(match.group("status")).strip().casefold()
+    body = match.group("body")
+    last_result = None
+    if re.search(r"(?m)^\s*Last run:.*\s+error(?::|\s|$)", body, re.I):
+        last_result = "error"
+    elif re.search(r"(?m)^\s*Last run:.*\s+ok\s*$", body, re.I):
+        last_result = "ok"
+    status = "scheduled"
+    reason = "host_job_pending"
+    if host_status == "completed":
+        status = "failed" if last_result == "error" else "completed"
+        reason = "host_job_error" if last_result == "error" else "host_job_completed"
+    elif host_status in {"paused", "disabled", "failed", "error"}:
+        status = "failed"
+        reason = f"host_job_{host_status}"
+    scheduled_at = scheduler.get("scheduled_at")
+    if status == "scheduled" and scheduled_at:
+        try:
+            elapsed = datetime.fromisoformat(timestamp) - datetime.fromisoformat(
+                str(scheduled_at)
+            )
+        except ValueError:
+            elapsed = timedelta(0)
+        if elapsed.total_seconds() > EVALUATION_STALL_SECONDS:
+            status = "stale"
+            reason = "host_job_stalled"
+    return {
+        **scheduler,
+        "status": status,
+        "host_status": host_status,
+        "last_result": last_result,
+        "checked_at": timestamp,
+        "reason": reason,
+    }
+
+
 def schedule_independent_evaluation(
     report_path: Path,
     index_path: Path,
@@ -108,6 +355,9 @@ def schedule_independent_evaluation(
     report_id: str,
     content_hash: str,
     publish_notion: bool = False,
+    *,
+    attempt: int = 1,
+    usage_task_id: str | None = None,
 ) -> dict[str, Any]:
     """处理：在本地交付后创建有界独立评估任务，远程发布保持可选。
     输入：
@@ -117,14 +367,34 @@ def schedule_independent_evaluation(
     - ``report_id``：报告或报告系列的稳定 ID；用于推导跨修订关联键。
     - ``content_hash``：权威报告 JSON 的内容哈希；用于评估调度幂等键。
     - ``publish_notion``：独立评估完成后是否允许追加到已发布 Notion 页面。
+    - ``attempt``：当前报告的有界评估尝试序号；初次为 1，最多允许一次恢复重试。
+    - ``usage_task_id``：调度前创建的 evaluator usage task；用于后续 hook 关联。
     输出：“在本地交付后创建有界独立评估任务，远程发布保持可选”形成的结构化字典；
       典型键包括 attempts、detail、error、interval、job_id、status。
     """
+    preflight = evaluation_preflight(
+        report_path,
+        data_dir,
+        report_id,
+        content_hash,
+    )
+    if preflight["status"] == "already_completed":
+        return {
+            **preflight,
+            "attempt": attempt,
+            "checked_at": now_iso("Asia/Shanghai"),
+        }
+    if not 1 <= attempt <= MAX_EVALUATION_ATTEMPTS:
+        return {
+            "status": "attempts_exhausted",
+            "attempt": attempt,
+            "max_attempts": MAX_EVALUATION_ATTEMPTS,
+        }
     draft_path = data_dir / "evaluations" / "drafts" / f"{report_id}.json"
     notion_flag = " --publish" if publish_notion else ""
     repository_root = project_root()
     source_root = repository_root / "src"
-    contract_path = repository_root / "templates" / "report-contract.md"
+    dossier_path = build_evaluation_dossier(report_path, index_path, data_dir)
     encoded_source_root = base64.urlsafe_b64encode(
         str(source_root).encode("utf-8")
     ).decode("ascii")
@@ -146,8 +416,8 @@ def schedule_independent_evaluation(
         language,
         (
             "你是发布后独立评估 Agent，不参与日报生成，也不得修改主报告。"
-            f"只读不可变报告 {report_path}、索引 {index_path} 和仓库权威契约 "
-            f"{contract_path}；按九个固定维度各给 1—5 分，总分必须等于"
+            f"只读不可变评估数据包 {dossier_path}；它已绑定报告与索引哈希并包含当前验证"
+            "结果、来源覆盖、排序、语义文本和证据。按九个固定维度各给 1—5 分，总分必须等于"
             "九项之和，简洁指出主要缺陷、证据不足和改进建议。"
             "importance_ordering 维度必须检查精选事件按 importance 排序，并检查普通 "
             "brief 严格保持 index/brief_plan 顺序；不得要求普通 brief 按 importance "
@@ -157,14 +427,14 @@ def schedule_independent_evaluation(
             f"{cli_prefix} --data-dir "
             f"\"{data_dir}\" finalize-evaluation --report \"{report_path}\" "
             f"--evaluation \"{draft_path}\" {notion_flag}。若该 report_id 已有 "
-            "completed 评估则直接退出；不得要求用户点击。该任务最多由调度器尝试"
-            "三次，以容忍临时模型/API 连接失败。"
+            "completed 评估则直接退出；不得要求用户点击。本次调度只执行一次；"
+            "临时失败由幂等 tail 恢复流程在确认仍未完成后重新调度。"
         ),
         (
             "You are an independent post-publication evaluator. You did not author the "
-            "report and must not modify it. Read only the immutable report "
-            f"{report_path}, index {index_path}, and the canonical contract "
-            f"{contract_path}. "
+            "report and must not modify it. Read only the immutable evaluation dossier "
+            f"{dossier_path}; it binds the report/index hashes and contains current validation, "
+            "coverage, ordering, semantic text, and evidence. "
             "Score each of the nine fixed dimensions from 1 to 5; total_score must equal "
             "their sum. Write concise findings, main defects, evidence gaps, and "
             "improvements. For importance_ordering, verify featured events are ordered by "
@@ -175,8 +445,8 @@ def schedule_independent_evaluation(
             f"{cli_prefix} --data-dir \"{data_dir}\" finalize-evaluation --report "
             f"\"{report_path}\" --evaluation \"{draft_path}\" {notion_flag}. Exit if a "
             "completed evaluation already exists for this report_id. Do not ask the user "
-            "to click anything. The scheduler may attempt this job up to three times to "
-            "tolerate temporary model or API failures."
+            "to click anything. This schedule runs once; after a transient failure, the "
+            "idempotent tail recovery may reschedule only if evaluation is still incomplete."
         ),
     )
     command = [
@@ -186,9 +456,9 @@ def schedule_independent_evaluation(
         "2m",
         prompt,
         "--repeat",
-        "3",
+        "1",
         "--skill",
-        "daily-intelligence",
+        "signaltrail",
         "--name",
         f"SignalTrail Evaluation {report_id}",
         "--deliver",
@@ -205,19 +475,206 @@ def schedule_independent_evaluation(
             check=False,
         )
     except (FileNotFoundError, subprocess.SubprocessError) as exc:
-        return {"status": "schedule_failed", "error": f"{type(exc).__name__}: {exc}"}
+        return {
+            "status": "schedule_failed",
+            "error": type(exc).__name__,
+            "attempt": attempt,
+        }
     if completed.returncode:
-        detail = (completed.stderr or completed.stdout).strip()
-        return {"status": "schedule_failed", "error": detail or "hermes cron create failed"}
+        return {
+            "status": "schedule_failed",
+            "error": "hermes_cron_create_failed",
+            "attempt": attempt,
+        }
     detail = completed.stdout.strip()
     match = re.search(r"Created job:\s*([A-Za-z0-9_-]+)", detail)
     return {
         "status": "scheduled",
-        "detail": detail,
-        "attempts": 3,
+        "scheduled_at": now_iso("Asia/Shanghai"),
+        "attempt": attempt,
+        "attempts": 1,
+        "max_attempts": MAX_EVALUATION_ATTEMPTS,
         "interval": "2m",
+        "dossier_path": str(dossier_path),
+        "dossier_bytes": dossier_path.stat().st_size,
+        **({"usage_task_id": usage_task_id} if usage_task_id else {}),
         **({"job_id": match.group(1)} if match else {}),
     }
+
+
+def _schedule_evaluation_attempt(
+    run: dict[str, Any],
+    run_path: Path,
+    data_dir: Path,
+    *,
+    publish_notion: bool,
+) -> dict[str, Any]:
+    """处理：预检、对账、预算校验并创建至多两次的 evaluator 调度尝试。
+    输入：
+    - ``run``：当前运行清单；提供报告、评估、预算和 usage task 状态。
+    - ``run_path``：当前 run JSON 路径；调度前持久化 scheduling 检查点。
+    - ``data_dir``：当前运行唯一数据根；限定报告、索引、账本和 dossier 路径。
+    - ``publish_notion``：评估完成后是否允许同步已请求的 Notion 投影。
+    输出：更新后的 evaluation 状态；不确定的旧 job 不会被当作失败而重复调度。
+    """
+
+    artifacts = run["artifacts"]
+    report_path = Path(str(artifacts["json_path"]))
+    report_id = str(artifacts["report_id"])
+    content_hash = str(artifacts["content_hash"])
+    evaluation = run.get("evaluation")
+    if not isinstance(evaluation, dict):
+        evaluation = _pending_evaluation(
+            artifacts,
+            "Independent evaluation is pending and will run asynchronously.",
+        )
+    preflight = evaluation_preflight(
+        report_path,
+        data_dir,
+        report_id,
+        content_hash,
+    )
+    if preflight["status"] == "already_completed":
+        return evaluation
+
+    scheduler = evaluation.get("scheduler")
+    previous_attempt = 0
+    if isinstance(scheduler, dict):
+        previous_attempt = int(scheduler.get("attempt") or 0)
+        if scheduler.get("status") == "scheduling":
+            scheduled_at = scheduler.get("scheduled_at")
+            try:
+                current_time = datetime.now(
+                    ZoneInfo(str(run.get("timezone", "Asia/Shanghai")))
+                )
+                elapsed = current_time - datetime.fromisoformat(str(scheduled_at))
+            except (TypeError, ValueError):
+                elapsed = timedelta(0)
+            if elapsed.total_seconds() <= EVALUATION_STALL_SECONDS:
+                return evaluation
+            scheduler = {
+                **scheduler,
+                "status": "stale",
+                "reason": "scheduling_checkpoint_stalled",
+            }
+            evaluation["scheduler"] = scheduler
+        if scheduler.get("status") in {"scheduled", "running"}:
+            reconciled = reconcile_evaluation_scheduler(scheduler)
+            evaluation["scheduler"] = reconciled
+            if reconciled["status"] in {
+                "scheduled",
+                "unknown",
+                "reconciliation_failed",
+            }:
+                return evaluation
+            scheduler = reconciled
+        if scheduler.get("status") == "completed":
+            scheduler = {
+                **scheduler,
+                "status": "failed",
+                "reason": "host_completed_without_matching_evaluation",
+            }
+            evaluation["scheduler"] = scheduler
+        if scheduler.get("status") not in {
+            "schedule_failed",
+            "failed",
+            "stale",
+            "deferred_until_tail",
+            "budget_blocked",
+        }:
+            return evaluation
+
+    attempt = 1 if previous_attempt == 0 else previous_attempt + 1
+    if attempt > MAX_EVALUATION_ATTEMPTS:
+        evaluation["scheduler"] = {
+            **(scheduler if isinstance(scheduler, dict) else {}),
+            "status": "attempts_exhausted",
+            "attempt": previous_attempt,
+            "max_attempts": MAX_EVALUATION_ATTEMPTS,
+            "checked_at": now_iso(str(run.get("timezone", "Asia/Shanghai"))),
+        }
+        return evaluation
+
+    budget = evaluate_llm_budget(run, data_dir, "evaluation")
+    append_budget_receipt(run, budget)
+    if not budget["allowed"]:
+        evaluation["scheduler"] = {
+            "status": "budget_blocked",
+            "attempt": attempt,
+            "max_attempts": MAX_EVALUATION_ATTEMPTS,
+            "budget": budget,
+        }
+        return evaluation
+
+    parent_task_id = next(
+        (
+            str(row["task_id"])
+            for row in run.get("llm_usage", {}).get("tasks", [])
+            if isinstance(row, dict)
+            and row.get("task_id")
+            and row.get("phase") not in {"evaluation", "independent-evaluation"}
+        ),
+        None,
+    )
+    digest = re.sub(r"[^0-9a-f]", "", content_hash.casefold())[:16] or "unknown"
+    usage_task_id = f"task-signaltrail-eval-{digest}-{attempt}"
+    ledger = UsageLedger(data_dir)
+    usage_task = ledger.start_task(
+        "independent-evaluator",
+        task_id=usage_task_id,
+        source_tag="evaluation",
+        parent_task_id=parent_task_id,
+    )
+    binding = {
+        "task_id": usage_task.task_id,
+        "adapter": "hermes",
+        "phase": "independent-evaluation",
+        "event_dir": str((usage_task.path / "events").resolve()),
+        "run_attempt": int(run.get("attempt", 1)),
+        "evaluation_attempt": attempt,
+        "report_id": report_id,
+        "content_hash": content_hash,
+    }
+    tasks = run.setdefault(
+        "llm_usage",
+        {
+            "schema_version": "1.0",
+            "authority": "immutable_usage_events",
+            "tasks": [],
+        },
+    ).setdefault("tasks", [])
+    if not any(
+        isinstance(row, dict) and row.get("task_id") == usage_task.task_id
+        for row in tasks
+    ):
+        tasks.append(binding)
+    # 在启动外部调度命令前先持久化 usage 绑定，进程中断后仍能恢复同一 evaluator 尝试。
+    evaluation["scheduler"] = {
+        "status": "scheduling",
+        "attempt": attempt,
+        "max_attempts": MAX_EVALUATION_ATTEMPTS,
+        "usage_task_id": usage_task.task_id,
+        "scheduled_at": now_iso(str(run.get("timezone", "Asia/Shanghai"))),
+    }
+    run["evaluation"] = evaluation
+    write_json(run_path, run)
+    result = schedule_independent_evaluation(
+        report_path,
+        Path(str(artifacts["index_path"])),
+        data_dir,
+        report_id,
+        content_hash,
+        publish_notion=publish_notion,
+        attempt=attempt,
+        usage_task_id=usage_task.task_id,
+    )
+    result.setdefault("attempt", attempt)
+    result.setdefault("max_attempts", MAX_EVALUATION_ATTEMPTS)
+    result.setdefault("usage_task_id", usage_task.task_id)
+    if result.get("status") == "schedule_failed":
+        ledger.finalize_task(usage_task, status="schedule_failed")
+    evaluation["scheduler"] = result
+    return evaluation
 
 
 def edition_window(date_value: str, edition: str, timezone: str) -> dict[str, str]:
@@ -532,6 +989,7 @@ def begin_authoring(run_path: Path, data_dir: Path) -> Path:
             data_dir,
             "Authoring context",
         )
+        _require_llm_budget(run, run_path, data_dir, "brief_wave")
         session_path = begin_authoring_session(run, context_path, data_dir)
         run["artifacts"]["authoring"] = {
             "session_path": str(session_path),
@@ -701,6 +1159,7 @@ def prepare_authoring_analysis(
         lock_path,
         _lock_payload(edition, now_iso(str(run.get("timezone", "Asia/Shanghai")))),
     ):
+        _require_llm_budget(run, run_path, data_dir, "analysis")
         prepared = prepare_analysis_packet(
             run,
             data_dir,
@@ -811,6 +1270,7 @@ def prepare_edition(
     date = today_str(config.timezone)
     run_path = data_dir / "runs" / date / f"{edition}.json"
     lock_path = data_dir / "locks" / f"{date}-{edition}.lock"
+    usage_binding = _active_usage_binding(data_dir)
     with exclusive_lock(
         lock_path,
         _lock_payload(edition, now_iso(config.timezone)),
@@ -825,6 +1285,9 @@ def prepare_edition(
                     f"{config.output.language!r} revision"
                 )
             if existing.get("status") not in {status.value for status in TERMINAL_STATUSES}:
+                if _attach_usage_binding(existing, usage_binding):
+                    existing["updated_at"] = now_iso(config.timezone)
+                    write_json(run_path, existing)
                 return run_path
             if existing.get("status") in {
                 RunStatus.COMPLETED,
@@ -865,6 +1328,16 @@ def prepare_edition(
             "pending_sources": [],
             "error": None,
         }
+        if isinstance(existing, dict) and isinstance(existing.get("llm_usage"), dict):
+            previous_tasks = existing["llm_usage"].get("tasks", [])
+            run["llm_usage"] = {
+                "schema_version": "1.0",
+                "authority": "immutable_usage_events",
+                "tasks": [
+                    dict(row) for row in previous_tasks if isinstance(row, dict)
+                ],
+            }
+        _attach_usage_binding(run, usage_binding)
         write_json(run_path, run)
         try:
             feedback_path = None
@@ -1265,18 +1738,14 @@ def finalize_edition(
             }:
                 return run_path
             evaluation = run.get("evaluation", {})
-            scheduler = evaluation.get("scheduler", {}) if isinstance(evaluation, dict) else {}
             if (
                 isinstance(evaluation, dict)
                 and evaluation.get("status") != "completed"
-                and scheduler.get("status") != "scheduled"
             ):
-                evaluation["scheduler"] = schedule_independent_evaluation(
-                    Path(run["artifacts"]["json_path"]),
-                    Path(run["artifacts"]["index_path"]),
+                evaluation = _schedule_evaluation_attempt(
+                    run,
+                    run_path,
                     data_dir,
-                    str(run["artifacts"]["report_id"]),
-                    str(run["artifacts"]["content_hash"]),
                     publish_notion=bool(run.get("publication")),
                 )
                 _update_run(
@@ -1286,7 +1755,8 @@ def finalize_edition(
                     evaluation=evaluation,
                     next_action=(
                         "Independent evaluation is pending and will run asynchronously."
-                        if evaluation["scheduler"]["status"] == "scheduled"
+                        if evaluation["scheduler"]["status"]
+                        in {"scheduled", "unknown", "reconciliation_failed"}
                         else "Automatic evaluator scheduling failed; retry finalize-edition."
                     ),
                 )
@@ -1477,12 +1947,11 @@ def finalize_edition(
             error=None,
             next_action="Independent evaluation is pending and will run asynchronously.",
         )
-        evaluation_state["scheduler"] = schedule_independent_evaluation(
-            Path(run["artifacts"]["json_path"]),
-            Path(run["artifacts"]["index_path"]),
+        run["evaluation"] = evaluation_state
+        evaluation_state = _schedule_evaluation_attempt(
+            run,
+            run_path,
             data_dir,
-            str(run["artifacts"]["report_id"]),
-            str(run["artifacts"]["content_hash"]),
             publish_notion=bool(publication),
         )
         if evaluation_state["scheduler"]["status"] != "scheduled":
@@ -1624,24 +2093,21 @@ def complete_edition_tail(
                 artifacts,
                 "Independent evaluation is pending and will run asynchronously.",
             )
-        scheduler = evaluation.get("scheduler")
-        if (
-            evaluation.get("status") != "completed"
-            and (
-                not isinstance(scheduler, dict)
-                or scheduler.get("status") not in {"scheduled", "completed"}
-            )
-        ):
-            # 调度状态本身也是检查点，避免尾部重试重复创建评估任务。
-            evaluation["scheduler"] = schedule_independent_evaluation(
-                report_path,
-                Path(artifacts["index_path"]),
+        if evaluation.get("status") != "completed":
+            run["evaluation"] = evaluation
+            evaluation = _schedule_evaluation_attempt(
+                run,
+                run_path,
                 data_dir,
-                str(artifacts["report_id"]),
-                str(artifacts["content_hash"]),
                 publish_notion=bool(publication),
             )
-            if evaluation["scheduler"].get("status") != "scheduled":
+            if evaluation["scheduler"].get("status") in {
+                "schedule_failed",
+                "failed",
+                "stale",
+                "attempts_exhausted",
+                "budget_blocked",
+            }:
                 errors.append(
                     "Independent evaluator scheduling failed: "
                     + str(evaluation["scheduler"].get("error") or "unknown error")

@@ -32,6 +32,7 @@ from daily_intelligence.content import (
     synchronize_nested_items,
 )
 from daily_intelligence.context import _continuity_entry, build_context
+from daily_intelligence.llm_usage import UsageLedger
 from daily_intelligence.local_output import render_report_html
 from daily_intelligence.models import ArticleItem, SourceResult
 from daily_intelligence.notion import (
@@ -44,21 +45,84 @@ from daily_intelligence.notion import (
 )
 from daily_intelligence.reporting import report_content_hash, validate_report_data
 from daily_intelligence.reports import save_evaluation, save_report
-from daily_intelligence.storage import next_revision, write_immutable_json
+from daily_intelligence.state import update_continuity_state
+from daily_intelligence.storage import exclusive_lock, next_revision, write_immutable_json
 from daily_intelligence.utils import read_json, write_json
 from daily_intelligence.workflow import (
     RunStatus,
+    _active_usage_binding,
+    _attach_usage_binding,
     adopt_index_for_run,
     complete_edition_tail,
     enrich_edition,
+    evaluation_preflight,
     finalize_edition,
     prepare_edition,
+    reconcile_evaluation_scheduler,
     schedule_independent_evaluation,
 )
 
 
 def _sample_report(root: Path) -> dict:
     return json.loads((root / "examples" / "sample_report.json").read_text(encoding="utf-8"))
+
+
+def test_active_usage_binding_links_only_the_matching_data_root(
+    monkeypatch,
+    tmp_path: Path,
+):
+    data_dir = tmp_path / "data"
+    task = UsageLedger(data_dir).start_task(
+        "hermes",
+        task_id="task-test-run-binding",
+    )
+    monkeypatch.setenv("SIGNALTRAIL_USAGE_LEDGER", str(data_dir))
+    monkeypatch.setenv("SIGNALTRAIL_USAGE_TASK", task.task_id)
+    monkeypatch.setenv("SIGNALTRAIL_USAGE_ADAPTER", "hermes")
+    monkeypatch.setenv("SIGNALTRAIL_USAGE_PHASE", "daily-report")
+
+    binding = _active_usage_binding(data_dir)
+
+    assert binding == {
+        "task_id": task.task_id,
+        "adapter": "hermes",
+        "phase": "daily-report",
+        "event_dir": str((task.path / "events").resolve()),
+    }
+    with pytest.raises(RuntimeError, match="different SignalTrail data root"):
+        _active_usage_binding(tmp_path / "other-data")
+    UsageLedger(data_dir).finalize_task(task)
+    with pytest.raises(RuntimeError, match="already finalized"):
+        _active_usage_binding(data_dir)
+
+
+def test_usage_bindings_preserve_attempt_history():
+    old_binding = {
+        "task_id": "task-attempt-1",
+        "adapter": "hermes",
+        "phase": "daily-report",
+        "event_dir": "C:/safe/usage/attempt-1/events",
+        "run_attempt": 1,
+    }
+    run = {
+        "attempt": 2,
+        "llm_usage": {
+            "schema_version": "1.0",
+            "authority": "immutable_usage_events",
+            "tasks": [old_binding],
+        },
+    }
+
+    assert _attach_usage_binding(
+        run,
+        {
+            "task_id": "task-attempt-2",
+            "adapter": "hermes",
+            "phase": "daily-report",
+            "event_dir": "C:/safe/usage/attempt-2/events",
+        },
+    )
+    assert [row["run_attempt"] for row in run["llm_usage"]["tasks"]] == [1, 2]
 
 
 def test_installers_sync_into_platform_hermes_skill_roots_and_exclude_repo_state():
@@ -199,6 +263,67 @@ def test_save_report_writes_markdown_and_continuity_state(tmp_path: Path):
     theses = read_json(tmp_path / "data" / "state" / "theses.json")
     assert events["items"] == []
     assert theses["items"][0]["status"] == "active"
+
+
+def test_continuity_migrates_legacy_analysis_identity_without_losing_history(
+    tmp_path: Path,
+):
+    root = Path(__file__).resolve().parents[1]
+    report = _sample_report(root)
+    data_dir = tmp_path / "data"
+    state_dir = data_dir / "state"
+    generated_at = "2026-07-11T06:00:00+08:00"
+    write_json(
+        state_dir / "theses.json",
+        {
+            "schema_version": "1.0",
+            "updated_at": generated_at,
+            "items": [
+                {
+                    "analysis_id": "TH-AI-001",
+                    "domain": "ai_technology",
+                    "claim": "旧论点",
+                    "confidence": 0.5,
+                    "status": "active",
+                    "history": [{"report_id": "legacy-report"}],
+                }
+            ],
+        },
+    )
+    write_json(
+        state_dir / "watchlist.json",
+        {
+            "schema_version": "1.0",
+            "updated_at": generated_at,
+            "items": [
+                {
+                    "watch_id": "WATCH-LEGACY",
+                    "analysis_id": "TH-AI-001",
+                    "signal": "旧观察信号",
+                    "status": "active",
+                }
+            ],
+        },
+    )
+
+    update_continuity_state(report, data_dir)
+
+    theses = {
+        row["analysis_id"]: row
+        for row in read_json(state_dir / "theses.json")["items"]
+    }
+    assert theses["TH-AI-001"]["status"] == "superseded"
+    assert theses["TH-AI-001"]["superseded_by"] == "ANALYSIS-AI_TECHNOLOGY"
+    assert theses["TH-AI-001"]["history"] == [{"report_id": "legacy-report"}]
+    assert theses["ANALYSIS-AI_TECHNOLOGY"]["status"] == "active"
+    active = [row for row in theses.values() if row["status"] == "active"]
+    assert [row["analysis_id"] for row in active] == ["ANALYSIS-AI_TECHNOLOGY"]
+    watchlist = {
+        row["watch_id"]: row
+        for row in read_json(state_dir / "watchlist.json")["items"]
+    }
+    assert watchlist["WATCH-LEGACY"]["status"] == "closed"
+    assert watchlist["WATCH-LEGACY"]["closure_reason"] == "analysis_superseded"
 
 
 def test_save_report_validates_before_network_media(monkeypatch, tmp_path: Path):
@@ -769,7 +894,10 @@ def test_v15_report_publishes_before_evaluation_and_state_waits(tmp_path: Path):
         tmp_path / "data" / "runs" / report["date"] / "morning.json",
         {
             "status": "completed",
-            "artifacts": {"report_id": saved_report["report_id"]},
+            "artifacts": {
+                "report_id": saved_report["report_id"],
+                "content_hash": report_content_hash(saved_report),
+            },
             "evaluation": {"status": "pending"},
         },
     )
@@ -784,6 +912,10 @@ def test_v15_report_publishes_before_evaluation_and_state_waits(tmp_path: Path):
     assert Path(evaluated["evaluation_path"]).exists()
     assert (tmp_path / "data" / "state" / "theses.json").exists()
     assert read_json(run_path)["evaluation"]["status"] == "completed"
+    assert (
+        read_json(run_path)["evaluation"]["report_id"]
+        == saved_report["report_id"]
+    )
     refreshed_html = Path(artifacts["html_path"]).read_text(encoding="utf-8")
     assert '<strong>36</strong><span>/ 45</span>' in refreshed_html
     assert evaluated["local_outputs"]["html_path"] == artifacts["html_path"]
@@ -791,6 +923,107 @@ def test_v15_report_publishes_before_evaluation_and_state_waits(tmp_path: Path):
         evaluation_to_blocks(read_json(Path(evaluated["evaluation_path"]))),
         ensure_ascii=False,
     )
+
+    replayed = save_evaluation(
+        evaluation_input,
+        Path(artifacts["json_path"]),
+        tmp_path / "data",
+        output_config=OutputConfig(formats=["html"]),
+    )
+    assert replayed["status"] == "already_completed"
+    assert replayed["evaluation_path"] == evaluated["evaluation_path"]
+    assert len(list((tmp_path / "data" / "evaluations" / report["date"]).glob("*.json"))) == 1
+
+    changed_evaluation = json.loads(json.dumps(evaluation))
+    changed_evaluation["dimensions"][0]["score"] = 3
+    changed_evaluation["total_score"] = 35
+    for revision in range(2, 11):
+        payload = changed_evaluation if revision % 2 == 0 else evaluation
+        write_json(evaluation_input, payload)
+        result = save_evaluation(
+            evaluation_input,
+            Path(artifacts["json_path"]),
+            tmp_path / "data",
+            output_config=OutputConfig(formats=["html"]),
+        )
+        assert result["evaluation_id"].endswith(f"-r{revision}")
+
+    # r10 and earlier even revisions have the same semantics. Replay must select the
+    # numerically latest current decision, not lexicographic r8, and create no r11.
+    write_json(evaluation_input, changed_evaluation)
+    replayed_r10 = save_evaluation(
+        evaluation_input,
+        Path(artifacts["json_path"]),
+        tmp_path / "data",
+        output_config=OutputConfig(formats=["html"]),
+    )
+    assert replayed_r10["status"] == "already_completed"
+    assert replayed_r10["evaluation_id"].endswith("-r10")
+    latest = read_json(tmp_path / "data" / "evaluations" / "latest-morning.json")
+    assert latest["evaluation_id"].endswith("-r10")
+    assert read_json(run_path)["evaluation"]["evaluation_id"].endswith("-r10")
+    assert len(list((tmp_path / "data" / "evaluations" / report["date"]).glob("*.json"))) == 10
+
+    interrupted_run = read_json(run_path)
+    interrupted_run["evaluation"] = {
+        "status": "pending",
+        "report_id": saved_report["report_id"],
+        "content_hash": report_content_hash(saved_report),
+    }
+    write_json(run_path, interrupted_run)
+    recovered_r10 = save_evaluation(
+        evaluation_input,
+        Path(artifacts["json_path"]),
+        tmp_path / "data",
+        output_config=OutputConfig(formats=["html"]),
+    )
+    assert recovered_r10["evaluation_id"].endswith("-r10")
+    assert read_json(run_path)["evaluation"]["status"] == "completed"
+    assert len(list((tmp_path / "data" / "evaluations" / report["date"]).glob("*.json"))) == 10
+
+    lock_path = tmp_path / "data" / "locks" / f"{report['date']}-morning.lock"
+    with (
+        exclusive_lock(lock_path, {"test": "concurrent evaluator"}),
+        pytest.raises(RuntimeError, match="Another run holds"),
+    ):
+        save_evaluation(
+            evaluation_input,
+            Path(artifacts["json_path"]),
+            tmp_path / "data",
+            output_config=OutputConfig(formats=["html"]),
+        )
+
+    latest_before_stale = read_json(
+        tmp_path / "data" / "evaluations" / "latest-morning.json"
+    )
+    theses_before_stale = (
+        tmp_path / "data" / "state" / "theses.json"
+    ).read_bytes()
+    html_before_stale = Path(artifacts["html_path"]).read_bytes()
+    current_run = read_json(run_path)
+    current_run["artifacts"]["report_id"] = "daily-current-newer-report"
+    current_run["artifacts"]["content_hash"] = "sha256:current-newer-report"
+    current_run["evaluation"] = {"status": "pending"}
+    write_json(run_path, current_run)
+    write_json(evaluation_input, evaluation)
+
+    stale = save_evaluation(
+        evaluation_input,
+        Path(artifacts["json_path"]),
+        tmp_path / "data",
+        output_config=OutputConfig(formats=["html"]),
+    )
+
+    assert stale["status"] == "stale_report"
+    assert stale["evaluation_id"].endswith("-r11")
+    assert Path(stale["evaluation_path"]).is_file()
+    assert (
+        read_json(tmp_path / "data" / "evaluations" / "latest-morning.json")
+        == latest_before_stale
+    )
+    assert (tmp_path / "data" / "state" / "theses.json").read_bytes() == theses_before_stale
+    assert Path(artifacts["html_path"]).read_bytes() == html_before_stale
+    assert read_json(run_path) == current_run
 
 
 def test_republish_name_is_explicit_and_legacy_force_alias_remains():
@@ -1440,6 +1673,13 @@ def test_post_publication_evaluation_uses_bounded_retries(monkeypatch, tmp_path:
         lambda command, **kwargs: calls.append((command, kwargs)) or Completed(),
     )
     monkeypatch.setattr("daily_intelligence.workflow.project_root", lambda: tmp_path)
+    dossier_path = tmp_path / "data" / "evaluations" / "dossiers" / "report.json"
+    dossier_path.parent.mkdir(parents=True)
+    dossier_path.write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(
+        "daily_intelligence.workflow.build_evaluation_dossier",
+        lambda *_args: dossier_path,
+    )
 
     result = schedule_independent_evaluation(
         tmp_path / "report.json",
@@ -1452,21 +1692,23 @@ def test_post_publication_evaluation_uses_bounded_retries(monkeypatch, tmp_path:
     command = calls[0][0]
     assert result["status"] == "scheduled"
     assert command[:4] == ["hermes", "cron", "create", "2m"]
-    assert command[command.index("--repeat") + 1] == "3"
+    assert command[command.index("--repeat") + 1] == "1"
+    assert command[command.index("--skill") + 1] == "signaltrail"
     assert "不得要求用户点击" in command[4]
     assert "runpy.run_module('daily_intelligence.cli', run_name='__main__')" in command[4]
     encoded_source = base64.urlsafe_b64encode(
         str(tmp_path / "src").encode("utf-8")
     ).decode("ascii")
     assert encoded_source in command[4]
-    assert str(tmp_path / "templates" / "report-contract.md") in command[4]
+    assert str(dossier_path) in command[4]
+    assert str(tmp_path / "templates" / "report-contract.md") not in command[4]
     assert "不得要求普通 brief 按 importance 二次重排" in command[4]
     assert "$env:PYTHONPATH" not in command[4]
     assert "PYTHONPATH=" not in command[4]
     assert "daily-intel --data-dir" not in command[4]
     assert "--publish" not in command[4]
     assert result["job_id"] == "eval-1"
-    assert result["attempts"] == 3
+    assert result["attempts"] == 1
 
     schedule_independent_evaluation(
         tmp_path / "report.json",
@@ -1477,6 +1719,68 @@ def test_post_publication_evaluation_uses_bounded_retries(monkeypatch, tmp_path:
         publish_notion=True,
     )
     assert "--publish" in calls[1][0][4]
+
+
+def test_evaluation_preflight_matches_report_and_content_hash(tmp_path: Path):
+    data_dir = tmp_path / "data"
+    report_id = "daily-2026-07-15-morning-r1"
+    content_hash = "abc123"
+    report_path = write_json(
+        data_dir / "reports" / "2026-07-15" / "morning-r1.json",
+        {"date": "2026-07-15", "edition": "morning"},
+    )
+    write_json(
+        data_dir / "runs" / "2026-07-15" / "morning.json",
+        {
+            "artifacts": {"report_id": report_id, "content_hash": content_hash},
+            "evaluation": {
+                "status": "completed",
+                "content_hash": content_hash,
+                "evaluation_id": "eval-1",
+                "evaluation_path": "evaluation.json",
+            },
+        },
+    )
+
+    assert evaluation_preflight(
+        report_path,
+        data_dir,
+        report_id,
+        content_hash,
+    )["status"] == "already_completed"
+    assert evaluation_preflight(
+        report_path,
+        data_dir,
+        report_id,
+        "different",
+    ) == {"status": "evaluation_required", "reason": "no_matching_completion"}
+
+
+def test_scheduler_reconciliation_is_read_only_and_sanitized(monkeypatch):
+    class Completed:
+        returncode = 0
+        stdout = (
+            "  eval-1 [completed]\n"
+            "    Last run: 2026-08-23T18:00:00+08:00 ok\n"
+            "    Prompt: private evaluator instructions\n"
+        )
+        stderr = ""
+
+    calls = []
+    monkeypatch.setattr(
+        "daily_intelligence.workflow.subprocess.run",
+        lambda command, **kwargs: calls.append((command, kwargs)) or Completed(),
+    )
+
+    receipt = reconcile_evaluation_scheduler(
+        {"status": "scheduled", "job_id": "eval-1", "attempt": 1},
+        checked_at="2026-08-23T18:01:00+08:00",
+    )
+
+    assert calls[0][0] == ["hermes", "cron", "list", "--all"]
+    assert receipt["status"] == "completed"
+    assert receipt["last_result"] == "ok"
+    assert "private evaluator instructions" not in str(receipt)
 
 
 def test_finalize_publish_records_automatic_evaluator_schedule(monkeypatch, tmp_path: Path):
@@ -1518,10 +1822,13 @@ def test_finalize_publish_records_automatic_evaluator_schedule(monkeypatch, tmp_
 
     run = read_json(run_path)
     assert run["status"] == RunStatus.COMPLETED
-    assert run["evaluation"]["scheduler"] == {
-        "status": "scheduled",
-        "detail": "job-1",
-    }
+    assert run["evaluation"]["scheduler"]["status"] == "scheduled"
+    assert run["evaluation"]["scheduler"]["detail"] == "job-1"
+    assert run["evaluation"]["scheduler"]["attempt"] == 1
+    assert run["evaluation"]["scheduler"]["max_attempts"] == 2
+    assert run["evaluation"]["scheduler"]["usage_task_id"].startswith(
+        "task-signaltrail-eval-"
+    )
 
 
 def test_finalize_retries_missing_evaluator_schedule_after_completed_publish(

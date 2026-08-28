@@ -14,15 +14,29 @@ IGNORED_PARTS = {
     ".playwright-cli",
     ".pytest_cache",
     ".ruff_cache",
+    ".nox",
+    ".tox",
+    ".venv",
     "build",
     "dist",
     "output",
     "tmp",
+    "venv",
 }
 LINK_PATTERN = re.compile(r"(?<!!)\[[^\]]*\]\(([^)]+)\)")
 ENTRY_DOCUMENTS = (ROOT / "AGENTS.md", ROOT / "ARCHITECTURE.md")
 MAX_VERIFICATION_AGE_DAYS = 180
 VERIFIED_PATTERN = re.compile(r"\*\*Last verified:\*\* (\d{4}-\d{2}-\d{2})")
+
+
+def _is_ignored(path: Path) -> bool:
+    """处理：判断仓库路径是否位于生成目录、缓存或本地虚拟环境中。
+    输入：
+    - ``path``：文档发现阶段枚举出的仓库内路径；消费其相对路径目录名。
+    输出：命中忽略目录时为 True，使第三方 Markdown 不进入记录或链接校验。
+    """
+
+    return bool(set(path.relative_to(ROOT).parts) & IGNORED_PARTS)
 
 
 def canonical_records() -> list[Path]:
@@ -36,7 +50,7 @@ def canonical_records() -> list[Path]:
     records.extend(
         path
         for path in (ROOT / "docs").rglob("*.md")
-        if "zh-CN" not in path.parts
+        if "zh-CN" not in path.parts and not _is_ignored(path)
     )
     return sorted(records)
 
@@ -61,7 +75,7 @@ def markdown_files() -> list[Path]:
     return sorted(
         path
         for path in ROOT.rglob("*.md")
-        if not (set(path.relative_to(ROOT).parts) & IGNORED_PARTS)
+        if not _is_ignored(path)
     )
 
 

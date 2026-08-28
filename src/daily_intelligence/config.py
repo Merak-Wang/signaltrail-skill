@@ -162,6 +162,7 @@ class OutputConfig:
     - ``language``：规范语言标识；用于本地化选择或语言一致性判断。
     - ``formats``：需要生成的本地投影格式列表，目前支持 html 和 pdf。
     - ``pdf_engine``：PDF 渲染引擎选择；决定使用 Edge、ReportLab 或自动回退。
+    - ``pdf_max_bytes``：单份 PDF 投影的软字节预算；超出时保留文件并记录显式警告。
     - ``open_after_finalize``：完成本地输出后是否用默认浏览器打开 HTML。
     - ``copy_html_to_desktop``：是否额外生成可独立打开的桌面 HTML 副本。
     - ``desktop_dir``：桌面副本目标目录；为空时按当前操作系统推断。
@@ -170,6 +171,7 @@ class OutputConfig:
     language: str = "zh-CN"
     formats: list[str] = field(default_factory=lambda: ["html", "pdf"])
     pdf_engine: str = "edge"
+    pdf_max_bytes: int = 50 * 1024 * 1024
     open_after_finalize: bool = False
     copy_html_to_desktop: bool = False
     desktop_dir: str | None = None
@@ -262,6 +264,8 @@ def validate_output_config(output: OutputConfig) -> OutputConfig:
         raise ValueError("PDF output requires HTML because PDF is rendered from the local HTML")
     if output.pdf_engine not in {"edge", "reportlab", "auto"}:
         raise ValueError("output.pdf_engine must be one of: edge, reportlab, auto")
+    if not 0 < output.pdf_max_bytes <= 500 * 1024 * 1024:
+        raise ValueError("output.pdf_max_bytes must be between 1 and 524288000")
     if output.desktop_dir and not Path(output.desktop_dir).expanduser().is_absolute():
         raise ValueError("output.desktop_dir must be an absolute path")
     return output

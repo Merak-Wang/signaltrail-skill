@@ -1,4 +1,6 @@
 import base64
+import shutil
+import subprocess
 from io import BytesIO
 from pathlib import Path
 
@@ -112,6 +114,9 @@ def test_html_projection_is_atomically_delivered_to_configured_desktop(
     assert ".analysis-card{break-inside:auto}" in html
     reader = PdfReader(outputs["pdf_path"])
     assert sum(len(page.images) for page in reader.pages) >= 1
+    assert outputs["pdf_projection_seconds"] >= 0
+    assert outputs["pdf_bytes"] == Path(outputs["pdf_path"]).stat().st_size
+    assert outputs["pdf_size_budget_status"] == "within_budget"
 
 
 def test_edge_pdf_receives_embedded_images_instead_of_relative_media(
@@ -168,3 +173,128 @@ def test_desktop_delivery_failure_is_explicit_without_losing_local_html(
     assert Path(outputs["html_path"]).exists()
     assert "PermissionError: denied" in outputs["desktop_html_error"]
     assert outputs["desktop_html_error"] in outputs["warnings"]
+
+
+def test_evaluation_refresh_reuses_existing_pdf_and_renders_only_when_missing(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    data_dir = tmp_path / "data"
+    config = OutputConfig(
+        formats=["html", "pdf"],
+        pdf_engine="reportlab",
+        copy_html_to_desktop=False,
+    )
+    calls = 0
+
+    def fake_pdf(*_args, **_kwargs):
+        nonlocal calls
+        calls += 1
+        output_path = _args[1]
+        output_path.write_bytes(f"pdf-{calls}".encode())
+        return "fake", None
+
+    monkeypatch.setattr(
+        "daily_intelligence.local_output.render_pdf_from_html",
+        fake_pdf,
+    )
+    initial = write_local_outputs(_report(), data_dir, config)
+    pdf_path = Path(initial["pdf_path"])
+    initial_bytes = pdf_path.read_bytes()
+    initial_mtime = pdf_path.stat().st_mtime_ns
+
+    refreshed = write_local_outputs(
+        _report(),
+        data_dir,
+        config,
+        evaluation={
+            "total_score": 33,
+            "dimensions": [],
+            "main_defects": [],
+            "improvements": [],
+            "continuity_decision": "accept",
+        },
+        regenerate_pdf=False,
+    )
+
+    assert calls == 1
+    assert refreshed["pdf_reused"] is True
+    assert pdf_path.read_bytes() == initial_bytes
+    assert pdf_path.stat().st_mtime_ns == initial_mtime
+    assert "<strong>33</strong><span>/ 45</span>" in Path(
+        refreshed["html_path"]
+    ).read_text(encoding="utf-8")
+
+    pdf_path.unlink()
+    regenerated = write_local_outputs(
+        _report(),
+        data_dir,
+        config,
+        regenerate_pdf=False,
+    )
+    assert calls == 2
+    assert "pdf_reused" not in regenerated
+    assert Path(regenerated["pdf_path"]).read_bytes() == b"pdf-2"
+
+
+def test_pdf_size_budget_is_explicit_and_non_destructive(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    def fake_pdf(*args, **_kwargs):
+        args[1].write_bytes(b"0123456789")
+        return "fake", None
+
+    monkeypatch.setattr(
+        "daily_intelligence.local_output.render_pdf_from_html",
+        fake_pdf,
+    )
+    outputs = write_local_outputs(
+        _report(),
+        tmp_path / "data",
+        OutputConfig(
+            formats=["html", "pdf"],
+            pdf_engine="reportlab",
+            pdf_max_bytes=5,
+        ),
+    )
+
+    assert Path(outputs["pdf_path"]).read_bytes() == b"0123456789"
+    assert outputs["pdf_size_budget_status"] == "exceeded"
+    assert outputs["pdf_size_budget_bytes"] == 5
+    assert "PDF size budget exceeded" in outputs["warnings"][0]
+
+
+@pytest.mark.skipif(shutil.which("pdftoppm") is None, reason="Poppler is unavailable")
+def test_reportlab_pdf_page_rasterization_is_visually_nonblank(tmp_path: Path):
+    outputs = write_local_outputs(
+        _report(),
+        tmp_path / "data",
+        OutputConfig(
+            formats=["html", "pdf"],
+            pdf_engine="reportlab",
+            copy_html_to_desktop=False,
+        ),
+    )
+    prefix = tmp_path / "rendered-page"
+    subprocess.run(
+        [
+            str(shutil.which("pdftoppm")),
+            "-png",
+            "-f",
+            "1",
+            "-singlefile",
+            outputs["pdf_path"],
+            str(prefix),
+        ],
+        check=True,
+        capture_output=True,
+        timeout=30,
+    )
+    image = Image.open(prefix.with_suffix(".png")).convert("L")
+
+    assert image.width >= 1000
+    assert image.height >= 1000
+    low, high = image.getextrema()
+    assert low < 245
+    assert high == 255

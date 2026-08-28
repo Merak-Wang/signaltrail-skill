@@ -1,4 +1,5 @@
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 
 import pytest
 
@@ -31,6 +32,30 @@ def test_concurrent_json_writes_never_share_a_temporary_file(tmp_path):
         list(executor.map(lambda payload: write_json(path, payload), payloads))
 
     assert read_json(path) in payloads
+    assert not list(tmp_path.glob("*.tmp"))
+
+
+def test_atomic_writer_retries_a_transient_windows_replace_error(monkeypatch, tmp_path):
+    path = tmp_path / "state.json"
+    replace = Path.replace
+    attempts = []
+
+    def transient_replace(source, target):
+        attempts.append((source, target))
+        if len(attempts) < 3:
+            raise PermissionError("transient replace conflict")
+        return replace(source, target)
+
+    monkeypatch.setattr(Path, "replace", transient_replace)
+    monkeypatch.setattr(
+        "daily_intelligence.utils._is_retryable_windows_replace_error",
+        lambda _error: True,
+    )
+    monkeypatch.setattr("daily_intelligence.utils.sleep", lambda _delay: None)
+
+    assert write_json(path, {"status": "complete"}) == path
+    assert read_json(path) == {"status": "complete"}
+    assert len(attempts) == 3
     assert not list(tmp_path.glob("*.tmp"))
 
 

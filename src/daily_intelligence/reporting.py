@@ -23,7 +23,8 @@ from .localization import (
     translated_title,
     translated_title_field,
 )
-from .semantics import reusable_semantic_brief, semantic_fingerprint
+from .semantics import reusable_semantic_brief, semantic_fingerprint, tldr_quality_issue
+from .state import stable_analysis_id
 from .taxonomy import (
     SECTION_ID_ALIASES_V15,
     SECTION_ORDER_V13,
@@ -79,22 +80,6 @@ _LANGUAGE_MARKER_PATTERN = re.compile(r"^\s*\[(?:英|英文|EN|中|中文|ZH)\]\
 _TRANSLATION_PREFIX_PATTERN = re.compile(
     r"^\s*(?:\[[^\]\r\n]{1,40}\]|【[^】\r\n]{1,40}】)\s*[:：-]?\s*"
 )
-_TLDR_BOILERPLATE_PATTERNS = (
-    re.compile(r"^\s*来源[：:]"),
-    re.compile(r"^\s*来源.{0,80}(?:报道|消息)[。.!]?\s*$", re.I),
-    re.compile(r"^\s*(?:详见|请见)(?:原文)?(?:链接|报道)"),
-    re.compile(r"来源原文标题|原文标题[：:]"),
-    re.compile(r"暂未获取中文摘要|待补写|需由生成\s*Agent", re.I),
-    re.compile(r"(?:尚未|暂未|未)获取(?:到)?(?:正文|中文摘要)"),
-    re.compile(r"仅取得(?:来源)?标题或公开元数据"),
-    re.compile(r"正文尚未读取.{0,80}(?:原文链接|完整内容)"),
-    re.compile(r"仅依据标题(?:和|与)?(?:来源信息|元数据)?.*记录"),
-    re.compile(r"关于.{0,100}(?:详细报道|相关报道)"),
-    re.compile(r"^\s*source\s*:", re.I),
-    re.compile(r"^\s*(?:see|read)\s+(?:the\s+)?(?:original|source|link)", re.I),
-    re.compile(r"^\s*(?:summary|article body)\s+(?:is\s+)?(?:unavailable|not fetched)", re.I),
-    re.compile(r"^\s*based only on (?:the )?(?:title|metadata)", re.I),
-)
 _UNREAD_BODY_MARKERS = (
     "未读取正文",
     "正文尚未读取",
@@ -126,7 +111,7 @@ def split_narrative_paragraphs(value: object) -> list[str]:
 
 
 _REPORT_REVISION_PATTERN = re.compile(r"^(.+)-r\d+$")
-EVALUATION_DIMENSIONS = {
+EVALUATION_DIMENSION_ORDER = (
     "coverage",
     "importance_ordering",
     "factual_reliability",
@@ -136,7 +121,8 @@ EVALUATION_DIMENSIONS = {
     "readability",
     "timeliness",
     "compliance_boundaries",
-}
+)
+EVALUATION_DIMENSIONS = set(EVALUATION_DIMENSION_ORDER)
 REQUIRED_PERSPECTIVES = {
     "geopolitics",
     "ai_research_engineering",
@@ -353,40 +339,6 @@ def _normalize_brief_title(
         brief[translation_field] = drafted_translation
     else:
         brief.pop(translation_field, None)
-
-
-def _tldr_quality_issue(
-    value: object,
-    title: str,
-    output_language: object = "zh-CN",
-) -> str | None:
-    """处理：识别空泛、免责声明式或语言不合格的 TL;DR。
-    输入：
-    - ``value``：待解析或规范化的单个输入值；非法值按函数契约返回空值或报错。
-    - ``title``：来源提供的标题文本；会清理空白，并用于过滤、身份或展示。
-    - ``output_language``：目标报告语言；决定标题译文字段、校验规则和界面文本。
-    输出：封装“识别空泛、免责声明式或语言不合格的 TL;DR”业务结果的 ``str | None`` 对象；
-      调用方据此继续相邻阶段或识别无结果状态。
-    """
-    if not isinstance(value, str) or not value.strip():
-        return "TL;DR is empty"
-    text = value.strip()
-    for pattern in _TLDR_BOILERPLATE_PATTERNS:
-        if pattern.search(text):
-            return (
-                "TL;DR is boilerplate instead of a "
-                f"{localized(output_language, 'Chinese', 'English')} summary of observed content"
-            )
-    if not text_matches_output_language(text, output_language, minimum_units=4):
-        return (
-            "TL;DR must contain a substantive "
-            f"{localized(output_language, 'Chinese', 'English')} sentence"
-        )
-    normalized_text = re.sub(r"[\s\W_]+", "", text)
-    normalized_title = re.sub(r"[\s\W_]+", "", title)
-    if normalized_title and normalized_text == normalized_title:
-        return "TL;DR merely repeats the headline"
-    return None
 
 
 def _schema_errors(report: object) -> list[str]:
@@ -905,7 +857,10 @@ def compile_report_data(
                 if not indexed or str(indexed.get("source_id") or "") != source_id:
                     continue
                 cached = reusable_semantic_brief(
-                    indexed, semantic_cache, output_language
+                    indexed,
+                    semantic_cache,
+                    output_language,
+                    reference_date=report.get("date"),
                 )
                 if not cached:
                     continue
@@ -1120,11 +1075,11 @@ def compile_report_data(
         for event in section["items"]:
             refs = event.get("source_refs", [])
             source_item_ids = event.get("source_item_ids", [])
-            requested_ids = [
+            requested_ids = [str(item_id) for item_id in source_item_ids] or [
                 str(ref.get("item_id"))
                 for ref in refs
                 if isinstance(ref, dict) and ref.get("item_id")
-            ] or [str(item_id) for item_id in source_item_ids]
+            ]
             compiled_refs = [
                 ref for item_id in requested_ids if (ref := authoritative_ref(item_id)) is not None
             ]
@@ -1140,7 +1095,7 @@ def compile_report_data(
                     or primary_source_id,
                     "url": primary_source.get("source_url") or primary_item.get("url"),
                 }
-            if not event.get("event_id") and compiled_refs:
+            if compiled_refs and (source_item_ids or not event.get("event_id")):
                 digest = hashlib.sha256(compiled_refs[0]["item_id"].encode()).hexdigest()[:8]
                 event["event_id"] = f"EVT-{str(report['date']).replace('-', '')}-{digest.upper()}"
             event_id = str(event.get("event_id", ""))
@@ -1286,10 +1241,10 @@ def compile_report_data(
 
     for position, analysis in enumerate(report.get("analyses", []), start=1):
         domain = str(analysis.get("domain", ""))
-        analysis.setdefault(
-            "analysis_id",
-            f"ANALYSIS-{str(report['date']).replace('-', '')}-{domain or position}",
-        )
+        if domain in ANALYSIS_DOMAIN_REQUIREMENTS:
+            analysis["analysis_id"] = stable_analysis_id(domain)
+        else:
+            analysis.setdefault("analysis_id", f"ANALYSIS-UNSUPPORTED-{position}")
         requirements = ANALYSIS_DOMAIN_REQUIREMENTS.get(domain, {})
         analysis["perspectives"] = list(
             dict.fromkeys(
@@ -1662,10 +1617,11 @@ def validate_report_data(
                 errors.append(f"{brief_prefix}: duplicate item_id {item_id}")
             brief_item_ids.add(item_id)
             require_output_language(brief.get("tldr"), f"{brief_prefix}.tldr")
-            if issue := _tldr_quality_issue(
+            if issue := tldr_quality_issue(
                 brief.get("tldr"),
                 str(brief.get("title", "")),
                 output_language,
+                [brief.get("title_zh"), brief.get("title_en")],
             ):
                 errors.append(f"{brief_prefix}.tldr: {issue}; item_id={item_id}")
             primary = brief.get("primary_source", {})
@@ -1769,10 +1725,11 @@ def validate_report_data(
                 require_output_language(item.get(field), f"{item_prefix}.{field}")
             if _LANGUAGE_MARKER_PATTERN.match(str(item.get("title", ""))):
                 errors.append(f"{item_prefix}.title: remove the [英]/[EN] marker")
-            if issue := _tldr_quality_issue(
+            if issue := tldr_quality_issue(
                 item.get("tldr"),
                 str(item.get("title", "")),
                 output_language,
+                [item.get("title_zh"), item.get("title_en")],
             ):
                 errors.append(f"{item_prefix}.tldr: {issue}")
             if source_group_contract:
@@ -2064,6 +2021,14 @@ def validate_report_data(
                     errors.append(
                         f"{analysis_prefix}.{field}: required by schema_version {schema_version}"
                     )
+            narrative_paragraphs = split_narrative_paragraphs(
+                analysis.get("narrative")
+            )
+            if analysis_v2_contract and not 4 <= len(narrative_paragraphs) <= 7:
+                errors.append(
+                    f"{analysis_prefix}.narrative: analysis protocol 2.0 requires "
+                    f"4-7 natural paragraphs, got {len(narrative_paragraphs)}"
+                )
             perspectives.update(analysis.get("perspectives", []))
             if not analysis.get("perspectives"):
                 errors.append(
@@ -2137,6 +2102,14 @@ def validate_report_data(
             if not analysis.get("evidence_event_ids"):
                 errors.append(
                     f"{analysis_prefix}.evidence_event_ids: judgement must cite report events"
+                )
+        domain = str(analysis.get("domain") or "")
+        if analysis_v2_contract and domain in ANALYSIS_DOMAIN_REQUIREMENTS:
+            expected_analysis_id = stable_analysis_id(domain)
+            if analysis.get("analysis_id") != expected_analysis_id:
+                errors.append(
+                    f"{analysis_prefix}.analysis_id: must equal stable domain identity "
+                    f"{expected_analysis_id!r}"
                 )
         if analysis["analysis_id"] in analysis_ids:
             errors.append(

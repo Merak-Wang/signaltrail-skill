@@ -28,7 +28,7 @@ def test_skill_metadata_matches_hermes_and_agent_skill_contract():
     assert metadata["license"] == "MIT"
     assert metadata["platforms"] == ["windows", "macos", "linux"]
     assert hermes["category"] == "research"
-    assert hermes["requires_toolsets"] == ["terminal"]
+    assert hermes["requires_toolsets"] == ["terminal", "delegation"]
     assert "version" not in hermes
     assert "author" not in hermes
     assert "platforms" not in hermes
@@ -58,14 +58,28 @@ def test_community_package_contains_runtime_and_excludes_repository_state(tmp_pa
     assert result["name"] == "signaltrail"
     assert (output / "SKILL.md").is_file()
     assert (output / "src" / "daily_intelligence" / "cli.py").is_file()
+    assert (output / "src" / "daily_intelligence" / "usage_cli.py").is_file()
+    assert (output / "src" / "daily_intelligence" / "llm_usage" / "__init__.py").is_file()
     assert (output / "configs" / "sources.yaml").is_file()
     assert (output / "schemas" / "report.schema.json").is_file()
+    assert (output / "schemas" / "llm-usage.schema.json").is_file()
+    assert (output / "references" / "llm-usage.md").is_file()
     assert (output / "scripts" / "install.ps1").is_file()
     assert not (output / ".git").exists()
     assert not (output / "tests").exists()
     assert not (output / "examples").exists()
     assert not (output / "wiki").exists()
     assert not (output / "data").exists()
+
+
+def test_windows_installer_excludes_nested_skill_snapshots():
+    text = (ROOT / "scripts" / "install.ps1").read_text(encoding="utf-8")
+    excluded_dirs = text.split("$excludedDirs = @(", 1)[1].split(")", 1)[0]
+    legacy_entries = text.split("$legacyRuntimeEntries = @(", 1)[1].split(")", 1)[0]
+
+    assert '"skills"' in excluded_dirs
+    assert '"skills"' in legacy_entries
+    assert "/XD $excludedDirs" in text
 
 
 def test_community_package_rejects_secret_like_content(tmp_path):
