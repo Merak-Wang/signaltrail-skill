@@ -18,8 +18,9 @@ decision `accept` with an empty exclusion list.
 This accepts Hermes for morning-report generation on the requested route. It does not accept the
 one-hour service target or close the broader optimization plan: the run took 3,974 seconds against
 a 3,600-second deadline, background delegation left three provider calls open, and recovery ran
-the four brief packets sequentially. The active root plan keeps those latency, lifecycle,
-batch-size, and model-comparison claims separate.
+the four brief packets sequentially. The
+[technical-debt tracker](tech-debt-tracker.md) keeps those latency, lifecycle, batch-size, and
+model-comparison claims separate.
 
 ## Acceptance Matrix
 
@@ -135,7 +136,9 @@ The initial delegated brief calls were not allowed to block the edition indefini
 active worker process or useful result remained, the same immutable packets were replayed one at
 a time under the existing run attempt and receipt rules. No report revision was overwritten.
 
-Remaining work is tracked in the active root plan and technical-debt tracker:
+Remaining work is tracked in the [technical-debt tracker](tech-debt-tracker.md). The separate
+[active narrative plan](active-evidence-driven-professional-narrative.md) governs downstream
+narrative and media work rather than changing this acceptance result:
 
 - scheduled evaluator per-request routing (TD-020);
 - host-supported delegated-child tool narrowing (TD-030);

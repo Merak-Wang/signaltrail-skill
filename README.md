@@ -9,7 +9,7 @@
 再协助 Hermes 生成中文或英文成品简报。报告保留证据链、来源健康状态与跨期连续性，
 把分散信号整理成可复核、可汇报、可持续跟踪的判断路径，适合日常研究、产品汇报和团队晨会。
 
-[报告展厅](#报告展厅) · [快速开始](#快速开始) ·
+[展示效果](#一份报告里有什么) · [报告展厅](#报告展厅) · [快速开始](#快速开始) ·
 [工程文档](docs/zh-CN/README.md) ·
 [Hermes Skill](SKILL.md)
 
@@ -17,6 +17,26 @@
 [![License](https://img.shields.io/github/license/Merak-Wang/signaltrail-skill?style=flat-square)](LICENSE)
 
 ![迹简情报台报告预览](https://raw.githubusercontent.com/Merak-Wang/signaltrail-skill/main/assets/readme/morning-report-preview.png)
+
+## 一份报告里有什么
+
+当前 schema 2.0 把完整采集视图、精选证据、研判和质量边界放进同一份可搜索报告：
+
+- 来源索引保留每条 brief 的原题、链接、时间、访问状态和来源顺序；编辑层再从中选择
+  6—10 个证据事件，不把“完整采集”误装成只有几条的摘要。
+- 地缘政治、AI/技术和市场三个视角分别给出 4—7 段读者叙事，并可展开论证与证据；
+  跨视角综合明确共同结论、关键分歧、传导链和后续观察信号。
+- 独立评估绑定不可变报告内容 Hash，按九个维度展示得分、证据缺口和可接受边界；搜索、
+  折叠目录、桌面单文件和响应式移动阅读使用同一版本内容。
+
+| 跨视角综合 | 独立质量评估 |
+| --- | --- |
+| ![跨视角综合展示](https://raw.githubusercontent.com/Merak-Wang/signaltrail-skill/main/assets/readme/analysis-synthesis-preview.png) | ![独立质量评估展示](https://raw.githubusercontent.com/Merak-Wang/signaltrail-skill/main/assets/readme/quality-evaluation-preview.png) |
+
+<p align="center">
+  <img src="https://raw.githubusercontent.com/Merak-Wang/signaltrail-skill/main/assets/readme/mobile-report-preview.png" width="390" alt="迹简情报台移动端报告展示">
+</p>
+<p align="center"><sub>同一份报告在 390 px 视口下保持可搜索、可导航和可阅读。</sub></p>
 
 ## 产品交付
 
@@ -31,6 +51,10 @@
   分歧与下一步观察指标。
 - **零模型 Token 的本地监控层**：信息流刷新、缓存、去重、聚类和来源健康检查由
   Python 在本机完成；模型只在正式报告的筛选、目标语言写作与研判阶段参与。
+- **有界生成与失败回执**：brief 和研判必须通过结构约束；无效提交只允许一次受预算
+  门禁控制的修复，并保存不含草稿正文的 Hash 绑定拒绝回执。
+- **可审计的模型用量**：按运行和阶段保存只含白名单计数的不可变事件；缺失覆盖保持
+  `unknown` 或 `unmetered`，不会用估算值伪装成精确 Token 基线。
 - **默认本地所有权**：版本化文件、可移动的桌面单文件 HTML，以及按需启用的
   Notion 交付。
 
@@ -41,21 +65,31 @@
 
 满载时最多需要撰写 480 条普通 brief。系统只把计划内 Top15 缺口拆成最多 12 个
 有界 packet，并按 Hermes 默认三并发分波执行，避免把约 160 条内容塞进单个模型输出。
-默认完整运行预算因此为 60 分钟；需要固定在 06:00/18:00 交付时，应相应提前启动。
+默认完整运行的 60 分钟是阻止继续派发新阶段的硬预算，不是已经承诺的交付 SLA。
+需要固定在 06:00/18:00 交付时，应预留供应商延迟、访问验证和重试余量并相应提前启动。
 
 ## 报告展厅
 
-以下存档展示产品在实际信息规模下的阅读体验：把数百条更新压缩为十个可复核的重点
-事件，同时保留来源链接与多领域研判。
+当前展厅先保留数百条可搜索 brief 的完整采集视图，再从同一证据面选择少量事件用于
+研判；“完整覆盖”和“编辑精选”是两个不同层次。
 
-| 版本 | 当次覆盖 | 编辑结果 | 决策主题 |
+| 当前 schema 2.0 展示 | 完整采集视图 | 精选与研判 | 独立评估 |
+| --- | ---: | ---: | --- |
+| [2026-08-25 晨报 r1](https://github.com/Merak-Wang/signaltrail-skill/blob/main/examples/reports/2026-08-25-morning-r1.html) | 30/32 个正式来源有输出 · 424 条 brief | 8 个证据事件 · 3 个领域研判 · 1 个跨视角综合 | 37/45 |
+
+这份报告是一次历史运行快照。其独立评估接受了当前质量边界，同时披露多数条目只有
+metadata 级证据、部分 WATCH 已过期或缺少发布时间；完整运行用时 3974 秒，也超过
+3600 秒硬预算，所以它不是 SLA 达标样本。HTML 不包含凭据或本地运行路径，但 136 张配图
+使用公共来源 URL，完整浏览需要联网，外部图片也可能失效或被来源站更新。
+
+保留的历史兼容版本仍使用 schema 1.5 和早期 **Daily Intelligence** 抬头：
+
+| 历史版本 | 当次覆盖 | 编辑结果 | 决策主题 |
 | --- | ---: | ---: | --- |
 | [2026-07-24 晨报 r3](https://github.com/Merak-Wang/signaltrail-skill/blob/main/examples/reports/2026-07-24-morning-r3.html) | 24 个来源 · 197 条更新 | 10 个重点事件 | 能源、关税与 AI 资本效率 |
 | [2026-07-25 晨报 r1](https://github.com/Merak-Wang/signaltrail-skill/blob/main/examples/reports/2026-07-25-morning-r1.html) | 29 个来源 · 235 条更新 | 10 个重点事件 | 能源通道、科技监管与智能体工程 |
 
-这两份是保留的 schema 1.5 历史版本，因此仍使用早期 **Daily Intelligence** 抬头。
-当前 schema 2.0 已增加必需的跨视角综合，并统一使用 **迹简情报台 · SignalTrail** 品牌。GitHub
-可能直接显示 HTML 源码；下载文件后用浏览器打开即可查看完整报告。
+GitHub 可能直接显示 HTML 源码；下载文件后用浏览器打开即可查看完整报告。
 
 测试样例与报告展厅说明见
 [examples/README.md](https://github.com/Merak-Wang/signaltrail-skill/blob/main/examples/README.md)。
@@ -168,6 +202,11 @@ flowchart LR
 完成时，即使同栏目其他来源正常，报告也会列出缺失来源和“已验证/计划”计数，不会
 误写成“未采集”或让该来源无提示消失。
 
+每次派发 brief、研判、修复或评估前，预算门禁都会从不可变用量事件重建已观测下界，
+再加上版本化的下游预留；超过上限时停止开启新阶段，但保留已经完成的索引、草稿和
+报告产物。语义缓存也只能复用内容指纹、语言和独立评估状态仍匹配、且仍位于本轮来源
+计划内的译题与摘要，不能拿 Top15 之外的旧条目补齐覆盖。
+
 ## 本地情报台
 
 刷新并检查信息流：
@@ -205,9 +244,11 @@ daily-intel serve --open --refresh-minutes 30
 | `reports/YYYY-MM-DD/EDITION-rN.json` | 版本化结构记录，不覆盖已有修订 |
 | `reports/YYYY-MM-DD/EDITION-rN.md` | 便于审阅、比较与归档 |
 | `reports/YYYY-MM-DD/EDITION-rN.html` | 完整本地阅读版本 |
-| `reports/YYYY-MM-DD/EDITION-rN.pdf` | 打印与分享版本，校验后的图片写入文件 |
+| `reports/YYYY-MM-DD/EDITION-rN.pdf` | 打印与分享版本；图片按打印边界重采样，并记录耗时、字节数与默认 50 MiB 软预算 |
 | `reports/index.html` | 按日期与修订浏览本地历史 |
 | `Desktop/daily-intelligence-…html` | 图片内嵌、可独立移动的单文件副本 |
+| `evaluations/dossiers/REPORT_ID.json` | 与报告及索引 Hash 绑定的独立评估只读输入 |
+| `usage/YYYY-MM-DD/TASK_ID/events/*.json` | 不含 prompt/正文的不可变模型用量审计事件 |
 | Notion | 可选的元数据页面与便携 HTML 附件 |
 
 默认报告历史位于 Windows 的
@@ -249,6 +290,7 @@ hermes skills publish ABSOLUTE_PATH/dist/signaltrail --to github --repo OWNER/RE
 - 日常运行与恢复：[references/runbook.md](references/runbook.md)
 - 编辑与证据规则：[references/editorial-policy.md](references/editorial-policy.md)
 - 详细架构与状态模型：[references/system-design.md](references/system-design.md)
+- 模型用量审计与宿主接入：[references/llm-usage.md](references/llm-usage.md)
 - Windows 安装：[references/windows-setup.md](references/windows-setup.md)
 - Notion 配置：[references/notion-setup.md](references/notion-setup.md)
 - 当前质量评分：[docs/zh-CN/quality-score.md](docs/zh-CN/quality-score.md)

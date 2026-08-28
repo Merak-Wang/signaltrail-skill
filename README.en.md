@@ -11,7 +11,7 @@ with visible evidence, explicit source health, and continuity across editions. I
 turns scattered signals into a reviewable decision trail that teams can brief,
 archive, and revisit.
 
-[Report gallery](#report-gallery) · [Quick start](#quick-start) ·
+[Inside a report](#inside-a-report) · [Report gallery](#report-gallery) · [Quick start](#quick-start) ·
 [Engineering records](docs/README.md) ·
 [Hermes skill](SKILL.md)
 
@@ -19,6 +19,31 @@ archive, and revisit.
 [![License](https://img.shields.io/github/license/Merak-Wang/signaltrail-skill?style=flat-square)](LICENSE)
 
 ![SignalTrail report preview](https://raw.githubusercontent.com/Merak-Wang/signaltrail-skill/main/assets/readme/morning-report-preview.png)
+
+## Inside a report
+
+Schema 2.0 puts the full collection view, selected evidence, analysis, and quality
+boundaries into one searchable report:
+
+- The source index preserves every brief's original title, URL, time, access state,
+  and source order. The editorial layer then selects 6–10 evidence events without
+  pretending that the full collection contains only a handful of items.
+- Geopolitics, AI/technology, and markets each receive a four-to-seven-paragraph
+  reader narrative with expandable argument and evidence. Cross-perspective synthesis
+  states shared conclusions, key disagreements, transmission chains, and watch signals.
+- Independent evaluation is bound to the immutable report content hash and exposes
+  nine dimension scores, evidence gaps, and acceptance boundaries. Search, the
+  collapsible table of contents, portable desktop HTML, and responsive mobile reading
+  all use the same report revision.
+
+| Cross-perspective synthesis | Independent quality evaluation |
+| --- | --- |
+| ![Cross-perspective synthesis](https://raw.githubusercontent.com/Merak-Wang/signaltrail-skill/main/assets/readme/analysis-synthesis-preview.png) | ![Independent quality evaluation](https://raw.githubusercontent.com/Merak-Wang/signaltrail-skill/main/assets/readme/quality-evaluation-preview.png) |
+
+<p align="center">
+  <img src="https://raw.githubusercontent.com/Merak-Wang/signaltrail-skill/main/assets/readme/mobile-report-preview.png" width="390" alt="SignalTrail mobile report view">
+</p>
+<p align="center"><sub>The same report remains searchable, navigable, and readable in a 390 px viewport.</sub></p>
 
 ## What the product delivers
 
@@ -35,6 +60,12 @@ SignalTrail turns a large daily reading queue into a consistent decision artifac
 - **A zero-model-token local monitor** for feed refresh, caching, deduplication,
   clustering, and source-health review. Model work begins only for report selection,
   target-language writing, and analysis.
+- **Bounded generation with rejection receipts**. Briefs and analysis must satisfy
+  structured constraints; an invalid submission gets at most one budget-gated repair,
+  with a hash-bound receipt that excludes the draft body.
+- **Auditable model usage** stored as immutable, allowlisted counts by run and phase.
+  Missing coverage remains `unknown` or `unmetered` instead of being presented as an
+  exact token baseline.
 - **Local ownership by default** with versioned files, a portable desktop HTML copy,
   and optional Notion delivery.
 
@@ -48,24 +79,38 @@ the editorial or model budget.
 A full run can require up to 480 ordinary briefs. SignalTrail limits authoring to
 the planned Top-15 gaps, splits them into at most 12 bounded packets, and processes
 those packets in waves of three under Hermes' default concurrency. The default full
-run budget is therefore 60 minutes; start earlier when delivery must land exactly at
-06:00 or 18:00.
+run's 60-minute limit is a hard guard that stops new stages, not a committed delivery
+SLA. When delivery must land exactly at 06:00 or 18:00, start earlier and leave margin
+for provider latency, access verification, and bounded retries.
 
 ## Report gallery
 
-The archived editions below show the reading experience at operating scale: hundreds
-of collected updates compressed into ten reviewable events with source links and
-multi-domain analysis.
+The current gallery first preserves hundreds of searchable briefs as a full collection
+view, then selects a small evidence set for analysis. “Complete coverage” and
+“editorial selection” are deliberately separate layers.
 
-| Edition | Coverage processed | Editorial result | Decision themes |
+| Current schema 2.0 edition | Full collection view | Selection and analysis | Independent evaluation |
+| --- | ---: | ---: | --- |
+| [2026-08-25 morning r1](https://github.com/Merak-Wang/signaltrail-skill/blob/main/examples/reports/2026-08-25-morning-r1.html) | 30/32 formal sources produced output · 424 briefs | 8 evidence events · 3 domain analyses · 1 cross-perspective synthesis | 37/45 |
+
+This is a historical run snapshot. Its independent evaluation accepted the current
+quality boundary while disclosing that most items had metadata-level evidence and
+that some WATCH items were stale or lacked publication times. The full run took
+3,974 seconds, above the 3,600-second hard budget, so it is not an SLA-compliant
+benchmark. The HTML contains no credentials or local runtime paths, but its 136 images
+use public-source URLs; full viewing requires a network connection, and those external
+images may disappear or change.
+
+The preserved compatibility editions below use schema 1.5 and the earlier
+**Daily Intelligence** masthead:
+
+| Historical edition | Coverage processed | Editorial result | Decision themes |
 | --- | ---: | ---: | --- |
 | [2026-07-24 morning r3](https://github.com/Merak-Wang/signaltrail-skill/blob/main/examples/reports/2026-07-24-morning-r3.html) | 24 sources · 197 updates | 10 priority events | Energy, tariffs, and AI capital efficiency |
 | [2026-07-25 morning r1](https://github.com/Merak-Wang/signaltrail-skill/blob/main/examples/reports/2026-07-25-morning-r1.html) | 29 sources · 235 updates | 10 priority events | Energy corridors, technology regulation, and agent engineering |
 
-These are preserved schema 1.5 editions and retain the earlier **Daily Intelligence**
-masthead. Current schema 2.0 reports add a required cross-perspective synthesis and
-use the **SignalTrail** brand. GitHub may display the HTML source; download the file
-and open it locally for the full report experience.
+GitHub may display the HTML source; download the file and open it locally for the full
+report experience.
 
 Fixture data and gallery notes are documented in
 [examples/README.en.md](https://github.com/Merak-Wang/signaltrail-skill/blob/main/examples/README.en.md).
@@ -186,6 +231,14 @@ authoring or validation did not finish, the report names every affected source a
 its validated/planned count even when sibling sources in that section succeeded; it
 must not describe those candidates as uncollected or let the source vanish silently.
 
+Before dispatching a brief, analysis, repair, or evaluation stage, the budget gate
+rebuilds the observed lower bound from immutable usage events and adds versioned
+downstream reserves. Crossing the limit stops new stages while preserving completed
+indexes, drafts, and report artifacts. Semantic cache reuse is also limited to titles
+and summaries whose content fingerprint, language, and independent-evaluation state
+still match and whose item remains inside the current source plan; an old item outside
+the Top 15 cannot be used to fill a coverage gap.
+
 ## Local intelligence desk
 
 Refresh and inspect the monitor:
@@ -226,9 +279,11 @@ ranking even when it contains papers published in earlier years.
 | `reports/YYYY-MM-DD/EDITION-rN.json` | Versioned structured record; existing revisions are never overwritten |
 | `reports/YYYY-MM-DD/EDITION-rN.md` | Reviewable and diff-friendly archive |
 | `reports/YYYY-MM-DD/EDITION-rN.html` | Full local reading edition |
-| `reports/YYYY-MM-DD/EDITION-rN.pdf` | Print/share edition with validated images embedded |
+| `reports/YYYY-MM-DD/EDITION-rN.pdf` | Print/share edition; images are resampled to print bounds, with duration, byte size, and the default 50 MiB soft budget recorded |
 | `reports/index.html` | Local archive by date and revision |
 | `Desktop/daily-intelligence-…html` | Portable single-file reading copy with images embedded |
+| `evaluations/dossiers/REPORT_ID.json` | Read-only independent-evaluation input bound to report and index hashes |
+| `usage/YYYY-MM-DD/TASK_ID/events/*.json` | Immutable model-usage audit events with no prompt or generated body |
 | Notion | Optional metadata page plus portable HTML attachment |
 
 By default, report history lives under
@@ -276,6 +331,8 @@ the community pull request.
   [references/editorial-policy.md](references/editorial-policy.md)
 - Detailed architecture and state model:
   [references/system-design.md](references/system-design.md)
+- Model-usage audit and host integration:
+  [references/llm-usage.md](references/llm-usage.md)
 - Windows setup: [references/windows-setup.md](references/windows-setup.md)
 - Notion setup: [references/notion-setup.md](references/notion-setup.md)
 - Current quality score: [docs/quality-score.md](docs/quality-score.md)

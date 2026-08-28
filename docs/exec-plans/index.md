@@ -4,7 +4,7 @@
 **Owner:** Repository maintainers
 **Last verified:** 2026-08-28
 
-The root-level [Token optimization and professional-narrative plan](../../plan.md) is active. Its
+The [evidence-driven professional-narrative plan](active-evidence-driven-professional-narrative.md) is active. Its
 Token-cost analysis and reduction objective is accepted under the project's model-token-only
 savings definition. The active phase designs and will implement an evidence-driven professional
 narrative that combines news explanation with dialectical analysis, independently verifies every
@@ -20,7 +20,7 @@ implementation finished.
 
 ## Active Plans
 
-- [Auditable Token optimization and evidence-driven professional narrative](../../plan.md)
+- [Auditable Token optimization and evidence-driven professional narrative](active-evidence-driven-professional-narrative.md)
   — Preserves the accepted controlled Token-savings evidence and drives the Draft narrative,
   independent-verification, verified-media-gate, story-stream, and video phases. Currency is
   optional telemetry rather than a cost-acceptance metric.

@@ -8,7 +8,7 @@
 
 本文设计的能力尚未实现。当前运行事实源仍是[仓库架构](../../../ARCHITECTURE.md)、
 [报告契约](../../../templates/report-contract.md)及其测试。活动实施顺序由
-[根计划](../../../plan.md)维护；读者可见行为和分阶段门禁见
+[活动执行计划](../exec-plans/active-evidence-driven-professional-narrative.md)维护；读者可见行为和分阶段门禁见
 [产品规格](../product-specs/evidence-driven-professional-narrative-report.md)。英文权威版本见
 [对应设计记录](../../design-docs/evidence-driven-professional-narrative-report.md)。
 

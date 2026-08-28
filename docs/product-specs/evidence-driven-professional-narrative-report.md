@@ -10,7 +10,7 @@ story-stream, and video outputs.
 This specification defines a proposed capability. It does not claim that the current runtime can
 generate or verify a professional narrative, story stream, TTS track, or video. The cross-module
 design is in [the architecture record](../design-docs/evidence-driven-professional-narrative-report.md);
-the delivery sequence is in [the active root plan](../../plan.md).
+the delivery sequence is in [the active execution plan](../exec-plans/active-evidence-driven-professional-narrative.md).
 
 ## Product outcome
 

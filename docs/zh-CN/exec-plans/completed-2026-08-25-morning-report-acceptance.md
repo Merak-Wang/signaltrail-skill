@@ -16,8 +16,8 @@ Hermes 通过指定的 `opencode-go / deepseek-v4-flash-vision-exp` 路由生成
 
 据此接受 Hermes 使用指定路由生成早报。但本次不接受一小时服务目标，也不关闭更广泛的优化
 计划：运行耗时 3,974 秒，超过 3,600 秒截止时间；后台委派留下三个未闭合 Provider 调用，
-恢复时顺序执行了四个 Brief Packet。根级活动计划继续把耗时、生命周期、批次大小与模型对比
-结论分开管理。
+恢复时顺序执行了四个 Brief Packet。[技术债追踪器](tech-debt-tracker.md)继续把耗时、
+生命周期、批次大小与模型对比结论分开管理。
 
 ## 验收矩阵
 
@@ -121,7 +121,9 @@ Hermes Cron 没有把 evaluator 逐叶事件路由进子账本。因此将精确
 初始委派 Brief 调用没有被允许无限期阻塞本版。确认已无活动 Worker 进程或可用结果后，在相同
 运行尝试和回执规则下逐个重放相同的不可变 Packet，没有覆盖任何报告 Revision。
 
-剩余事项记录在根级活动计划与技术债追踪器中：
+剩余事项记录在[技术债追踪器](tech-debt-tracker.md)中。独立的
+[进行中叙事计划](active-evidence-driven-professional-narrative.md)管理下游叙事与媒体工作，
+不改变本次验收结论：
 
 - 调度 evaluator 逐请求路由（TD-020）；
 - 宿主支持的委派子任务 Toolset 缩窄（TD-030）；

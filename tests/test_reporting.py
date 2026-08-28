@@ -797,6 +797,7 @@ def test_v20_html_has_collapsible_scroll_tracking_toc():
     assert 'id="report-toc"' in html
     assert 'id="toc-toggle"' in html
     assert 'aria-controls="report-toc"' in html
+    assert 'aria-label="目录"' in html
     assert 'href="#summary"' in html
     assert 'href="#information.international"' in html
     assert 'href="#technology.open_source"' in html
@@ -805,6 +806,7 @@ def test_v20_html_has_collapsible_scroll_tracking_toc():
     assert 'href="#feedback"' in html
     assert "updateActiveToc" in html
     assert "aria-current" in html
+    assert "right:8px;top:auto;bottom:12px" in html
     assert "@media print" in html and ".report-toc" in html
 
 

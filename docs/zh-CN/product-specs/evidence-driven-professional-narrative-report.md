@@ -8,7 +8,7 @@
 
 本规格定义一项拟议能力。它不声称当前运行时已经能够生成或验证专业叙事、图文流、
 TTS 音轨或视频。跨模块设计见[架构记录](../design-docs/evidence-driven-professional-narrative-report.md)；
-交付顺序见[根级活动计划](../../../plan.md)。
+交付顺序见[活动执行计划](../exec-plans/active-evidence-driven-professional-narrative.md)。
 
 ## 产品结果
 

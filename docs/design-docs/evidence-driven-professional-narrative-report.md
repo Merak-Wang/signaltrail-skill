@@ -10,7 +10,7 @@ reports.
 This record designs a capability that is not implemented yet. Current runtime authority remains
 with [the repository architecture](../../ARCHITECTURE.md), the
 [report contract](../../templates/report-contract.md), and their tests. The active implementation
-sequence is maintained in [the root plan](../../plan.md); the reader-facing behavior and staged
+sequence is maintained in [the active execution plan](../exec-plans/active-evidence-driven-professional-narrative.md); the reader-facing behavior and staged
 gates are defined in the
 [product specification](../product-specs/evidence-driven-professional-narrative-report.md).
 

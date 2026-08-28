@@ -26,9 +26,10 @@ The repository implementation is complete for the plan's deterministic and testa
 - deferred PDF delivery, same-revision reuse, print-bound image resampling, explicit render/size
   receipts, a 50 MiB soft budget, and Poppler page-raster regression coverage.
 
-The active root [measurement plan](../../plan.md) remains authoritative for the two instrumented
-2026-08-23 runs and for external acceptance. This implementation record does not claim the
-combined run was a latency/quality success.
+The measured evidence below remains authoritative for the two instrumented 2026-08-23 runs.
+The separate [active narrative plan](active-evidence-driven-professional-narrative.md) carries
+only the remaining narrative and media delivery gates. This implementation record does not claim
+the combined run was a latency/quality success.
 
 ## Qualified External Acceptance
 

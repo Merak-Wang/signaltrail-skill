@@ -4,7 +4,7 @@
 **负责人：** 仓库维护者
 **最后验证：** 2026-08-28
 
-根级[Token 优化与专业叙事计划](../../../plan.md)正在实施。按本项目“只以模型 Token 衡量
+[Token 优化与专业叙事计划](active-evidence-driven-professional-narrative.md)正在实施。按本项目“只以模型 Token 衡量
 省钱”的定义，Token 成本分析与缩减目标已经验收。当前阶段设计并将实现证据驱动的专业
 叙事：融合新闻讲解与辩证研判、独立逐 beat 验证，并在 story-stream 或视频之前设置显式
 已验证闸门。已知后续工作也记录在[技术债追踪器](tech-debt-tracker.md)。
@@ -18,7 +18,7 @@
 
 ## 进行中的计划
 
-- [可审计 Token 优化与证据驱动专业叙事](../../../plan.md)
+- [可审计 Token 优化与证据驱动专业叙事](active-evidence-driven-professional-narrative.md)
   — 保留已经接受的受控 Token 节省证据，并推进叙事、独立验证、已验证媒体闸门、
   story-stream 与视频各阶段；金额只是可选遥测，不是成本验收指标。
 
