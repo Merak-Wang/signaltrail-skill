@@ -54,17 +54,29 @@ def test_markdown_discovery_excludes_repository_virtual_environments(
     assert local_plan not in discovered
 
 
-def test_readmes_position_signaltrail_as_harness_agnostic_with_a_draft_video_roadmap():
+def test_readmes_describe_harness_usage_and_a_draft_video_roadmap():
     chinese = (ROOT / "README.md").read_text(encoding="utf-8")
     english = (ROOT / "README.en.md").read_text(encoding="utf-8")
+    example_chinese = (ROOT / "examples" / "README.md").read_text(encoding="utf-8")
+    example_english = (ROOT / "examples" / "README.en.md").read_text(encoding="utf-8")
 
-    assert "任意 harness" in chinese
+    assert "任何能够读取 `SKILL.md`" in chinese
     assert "新闻讲解视频" in chinese
     assert "Draft" in chinese
-    assert "any harness" in english
+    assert "Any harness that can read `SKILL.md`" in english
     assert "news-explainer video" in english
     assert "Draft" in english
     assert "Hermes agents" not in english
+    assert "核心 Python 包不依赖 Hermes" not in chinese
+    assert "no Hermes dependency" not in english
+    for legacy_report in (
+        "2026-07-24-morning-r3.html",
+        "2026-07-25-morning-r1.html",
+    ):
+        assert legacy_report not in chinese
+        assert legacy_report not in english
+        assert legacy_report not in example_chinese
+        assert legacy_report not in example_english
 
 
 def test_public_markdown_hygiene_patterns_cover_session_and_personal_paths():

@@ -1,15 +1,15 @@
 # 示例
 
-**状态：** 当前展示、历史兼容样例与合成测试 Fixture
-**最后验证：** 2026-08-28
+**状态：** 当前展示与合成测试 Fixture
+**最后验证：** 2026-08-31
 
 [简体中文](README.md) | [English](README.en.md)
 
-本目录从当前成品、历史兼容样例与合成测试数据三个角度展示产品。
+本目录提供当前成品和合成测试数据。
 
 ## 当前 schema 2.0 展示
 
-[2026-08-25 晨报 r1](reports/2026-08-25-morning-r1.html) 是一次完整采集的历史快照：
+[下载 2026-08-25 晨报 r1 HTML](https://github.com/Merak-Wang/signaltrail-skill/raw/refs/heads/main/examples/reports/2026-08-25-morning-r1.html)是当前完整运行示例：
 
 - 32 个配置来源中有 30 个产生输出，共保留 424 条 briefs；
 - 编辑层精选 8 个证据事件，并形成 3 份领域研判和 1 份跨视角综合；
@@ -20,23 +20,10 @@
 下载 HTML 后在本地浏览器打开，即可查看完整交互阅读体验。公网图片由外部来源托管，
 其可用性可能随时间变化。
 
-## 历史 schema 1.5 兼容样例
-
-以下 HTML 存档用于验证旧报告仍可阅读：
-
-| 版本 | 采集规模 | 编辑结果 |
-| --- | ---: | ---: |
-| [2026-07-24 晨报 r3](reports/2026-07-24-morning-r3.html) | 24 个来源 · 197 条更新 | 10 个重点事件 |
-| [2026-07-25 晨报 r1](reports/2026-07-25-morning-r1.html) | 29 个来源 · 235 条更新 | 10 个重点事件 |
-
-它们保留早期 **Daily Intelligence** 抬头，仅用于历史兼容展示。当前 schema 2.0
-报告使用 **迹简情报台 · SignalTrail** 品牌，并增加跨视角综合。
-
 ## 合成测试数据
 
-`sample_input.json` 是合成输入 Fixture；`sample_report.json` 是 schema 1.4 legacy test
-fixture。它们用于自动化测试、旧 Schema 校验和输出渲染，不代表当前报告契约。
-`sample_input.json` 也保留早期状态标签，不能作为当前访问失败语义的规范示例。
+`sample_input.json` 和 `sample_report.json` 用于自动化测试、兼容性校验和输出渲染，
+不代表当前报告契约。
 
 - 人物、机构、事件、日期与分析均为合成内容。
 - `news.example`、`wire.example` 是保留示例域名，不对应真实媒体。
