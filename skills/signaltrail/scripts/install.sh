@@ -34,7 +34,7 @@ ignored = {
     "blob-report", "build", "dist", "data", "daily-intelligence", "daily-intel-data",
     "browser-profile", "browser-profiles", "edge-profile", "htmlcov", "output",
     "playwright-report", "raw_html", "screenshots", "test-results", "tmp",
-    "daily_intelligence_skill.egg-info",
+    "daily_intelligence_skill.egg-info", "skills",
 }
 
 def ignore(_directory: str, names: list[str]) -> set[str]:

@@ -545,8 +545,8 @@ def _write_brief_authoring_packets(
                 "additional-property boundary. "
                 "Write one JSON object with a briefs array to draft_result_path, run the "
                 "submission_command, and if it reports validation errors, repair only those "
-                "errors at most once and run the same submission_command again. Then return a "
-                "short receipt instead of repeating the briefs."
+                "errors at most once and run the same submission_command again. The completion "
+                "response contains only the submission status and draft_result_path."
             ),
             "tool_policy": (
                 "Do not browse the web, call search, create scripts, validate the full report, "
@@ -791,14 +791,15 @@ def build_context(
         ),
         "brief_authoring_rule": (
             "After begin-authoring, dispatch brief_authoring_batches in ordered waves of at most "
-            "three Hermes delegate_task workers with background=true while the parent runs "
-            "prefetch-media. Wait for each wave before dispatching the next, and give each worker "
-            "only its packet_path. The packet is the "
-            "complete data boundary: workers must not browse, search, create scripts, validate "
-            "the full report, or inspect other batches. Each worker may write only the packet's "
-            "draft_result_path, run only its submission_command, and return a short receipt "
-            "without repeating briefs. Python validates and atomically accepts each batch, merges "
-            "reusable_briefs without rewriting them, and prepares the compact analysis packet. "
+            "three concurrent harness workers while the coordinator runs prefetch-media. A host "
+            "with a lower concurrency limit may process the packets serially. Wait for each wave "
+            "before dispatching the next, and give each worker only its packet_path. The packet "
+            "is the complete data boundary: workers must not browse, search, create scripts, "
+            "validate the full report, or inspect other batches. Each worker may write only "
+            "the packet's draft_result_path and run only its submission_command. The completion "
+            "response records submission status and the output path. Python validates and "
+            "atomically accepts each batch, merges reusable_briefs without rewriting them, and "
+            "prepares the compact analysis packet. "
             "default_item_ids are the immutable ordered selection boundary and may not be "
             "replaced by other candidates. Preserve the indexed headline, naturally translate "
             f"each headline not already in the target language into "
@@ -810,7 +811,7 @@ def build_context(
             "'source X reported', text in the wrong output language with a cosmetic prefix, "
             "or workflow placeholders. "
             "On invalid output, repair only the reported validation errors at most once; never "
-            "restart research. The main agent reads only the compact analysis packet, selects "
+            "restart research. The analysis author reads only the compact analysis packet, selects "
             "featured events, and authors analysis once; it does not reload or concatenate batch "
             "briefs. The compiler never creates missing briefs."
         ),

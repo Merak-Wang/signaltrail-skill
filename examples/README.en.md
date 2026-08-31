@@ -49,5 +49,4 @@ current access-failure semantics.
 
 - People, organizations, events, dates, and analysis are synthetic.
 - `news.example` and `wire.example` are reserved example domains, not publishers.
-- Fixtures are engineering inputs, not factual sources or editorial templates.
-- After changing `sample_report.json`, run the report, architecture, and skill tests.
+- Fixtures support engineering validation and carry no factual or editorial authority.

@@ -2,27 +2,55 @@
 
 ## Unreleased
 
+- Replaced the subjective repository scorecard with an evidence-based verification matrix, removed
+  local development-session traces from public records, and added checks for personal Windows
+  paths and Codex browser-session residue.
+- Added a Draft roadmap for evidence-driven explainer scripts, independent claim/beat verification,
+  deterministic story streams, licensed speech and subtitles, and reproducible news-explainer
+  video with content, technical, and media-rights gates.
+- Added the current schema 2.0 report gallery and responsive desktop/mobile previews, including
+  explicit evidence, coverage, quality, external-image, and runtime limitations.
+- Fixed documentation CI by moving the active narrative plan into the tracked execution-plan
+  catalog; ignored local `plan.md` notes no longer satisfy repository link checks.
+- Rebuilt the tracked `skills/signaltrail/` release snapshot from the package allowlist,
+  synchronizing the harness-neutral procedure, runtime, schemas, engineering records,
+  references, and public README.
+- Clarified the harness-neutral authoring contract: any host that can run `daily-intel`, consume
+  self-contained packets, and write their declared JSON outputs can drive the core pipeline;
+  Hermes remains the first-party install/hook/delegation/Cron integration, built-in usage
+  adapters remain limited to Hermes, Codex, and OpenClaw, and other hosts remain explicitly
+  unmetered or provide a custom Python `UsageAdapter`. Automatic independent-evaluator
+  scheduling is still Hermes-only.
+- Added semantic Chinese logic/input/output docstrings to all 439 maintained Python functions and classes. Inputs name their provenance and consumed fields; outputs explain their downstream meaning. Critical safety/state/concurrency/compatibility decisions are documented inline and protected by an AST-based regression gate.
+- Audited the repository for readability and determinism: centralized typed JSON-object reads and CLI JSON output, unified collision-safe atomic writers, made immutable JSON creation no-overwrite under concurrency, and injected the monitor clock in time-sensitive tests.
+- Replaced the deleted developer Wiki/reading guide with a concise `AGENTS.md`, a top-level architecture map, indexed English engineering records, matching Chinese translations under `docs/zh-CN/`, a verification matrix, a technical-debt tracker, and mechanical documentation checks.
 - Renamed the public Hermes skill and reader-facing report brand to **迹简情报台 · SignalTrail** (`signaltrail`) while retaining the `daily-intel` CLI, `daily_intelligence` package, report identifiers, legacy data root, and legacy `merak-brief`/`daily-intelligence` install-path discovery for backward compatibility.
 - Reorganized `SKILL.md` to the Hermes/Agent Skills metadata layout, added a tracked-file-only community package builder, and documented an auditable GitHub publication workflow.
 - Made Simplified Chinese the default repository README, added full English README and example documentation, and reframed the report gallery around product outcomes and operating scale.
-- Filtered known placeholder image URLs during feed, page, and article extraction; added pixel-level rejection for uniform rasters, same-story fallback candidates, and cache-version invalidation so blank image cards are omitted instead of published.
+- Filtered known placeholder image URLs during feed, page, and article extraction; added pixel-level rejection for uniform rasters, same-story fallback candidates, and cache-version invalidation so blank image cards are removed before publication.
 - Moved story images below their headlines, using an image-and-summary layout on desktop and a stacked layout on narrow screens; updated both historical HTML examples without changing their report content.
 - Added an explicit `zh-CN` / `en` output-language choice across run manifests, authoring packets, semantic caches, validation, Markdown, HTML, PDF, and Notion; cross-language semantic reuse is rejected.
 - Simplified `SKILL.md`, removed checked-in runtime brief batches and a superseded dated audit, and moved the README preview into the stable `assets/readme/` tree.
-- Updated the complete developer Wiki for the current zero-token monitor, deterministic clustering, schema 2.0 authoring sessions, foreground HTML/desktop delivery, background tail, media cache, recovery model, configuration, and test layout.
+- Updated the engineering records for the current zero-token monitor, deterministic clustering, schema 2.0 authoring sessions, foreground HTML/desktop delivery, background tail, media cache, recovery model, configuration, and test layout.
 - Added automatic, atomic HTML delivery to the user's Desktop after each finalized edition, with absolute local media/archive/PDF links, an explicit directory override, and non-silent delivery errors.
 - Shortened the edition critical path with pre-media semantic validation, real completion timestamps, non-duplicating stage history, resumable post-persistence projections, and per-stage save metrics.
-- Added timed authoring sessions: model workers submit one packet-assigned JSON result, Python validates and atomically merges batches, and the main model reads only an 18-candidate analysis packet instead of reloading the full brief corpus.
-- Added bounded Hermes delegation telemetry for per-batch duration, API calls, input/output tokens, model and exit reason, with optional queue/first-token/prefill/decode/cache fields when a backend exposes them.
+- Added timed authoring sessions: each brief author submits one packet-assigned JSON result,
+  Python validates and atomically merges batches, and the analysis author reads only an
+  18-candidate packet; the full brief corpus stays outside that stage.
+- Added bounded per-batch duration, API-call, input/output-token, model, and exit telemetry to the
+  Hermes delegation integration, with optional queue/first-token/prefill/decode/cache fields when
+  that host exposes them.
 - Made HTML the foreground deliverable; PDF, optional Notion publishing and independent evaluation now run as an idempotent background tail with separate readiness milestones.
 - Reserved the final 120 seconds for analysis and validation; incomplete brief batches can reduce coverage only after that deadline through run-owned targets, and schema 2.0 contexts reject legacy 1.5 publication.
 - Added a persistent image URL cache with success TTLs, negative-cache retry windows, content-file verification, shared HTTP connection pooling, process-local DNS reuse, and bounded global/per-domain download concurrency.
 - Changed full-text enrichment to bounded HTTP-first extraction with inert HTML parsing and existing-content reuse; Microsoft Edge now launches only for network failures or JavaScript shells that can benefit from browser rendering.
-- Reused a valid fresh zero-token monitor snapshot before editions instead of always refreshing all 83 sources, while retaining network refresh when the snapshot is stale or missing.
-- Generated bounded-scope brief authoring packets for each balanced batch and limited model workers to packet data, one assigned draft write plus one submission command, no browsing/search/scripts, and at most one validation-only repair.
+- Reused a valid fresh zero-token monitor snapshot before editions; stale or missing snapshots still trigger a network refresh across the configured sources.
+- Generated bounded-scope brief authoring packets for each balanced batch and limited every brief
+  author to packet data, one assigned draft write plus one submission command, no
+  browsing/search/scripts, and at most one validation-only repair.
 - Added a responsive, collapsible report table of contents with nested section links, current-position highlighting, remembered open state, mobile dismissal, and print exclusion while preserving the existing newspaper layout.
 - Added a zero-model-token local monitor with bounded RSS/Atom parsing, conditional-request caches, declared-feed discovery, static-HTML fallback, explicit source health, and reusable snapshots for formal editions.
-- Expanded discovery from 32 core sources to 83 configured sources without changing core report quotas, the 12-article full-text ceiling, or the Agent token budget.
+- Expanded discovery from 32 core sources to 83 configured sources without changing core report quotas, the 12-article full-text ceiling, or the model token budget.
 - Added deterministic cross-source story clustering, stable story identities, lifecycle phases, and an importance score based on source tier, corroboration, recency, severity, and novelty.
 - Added a localhost intelligence desk with vertical image-and-text news cards plus news-stream, story-cluster, source-health, and manual-verification views.
 - Upgraded new reports to schema 2.0: three lenses now share one selected-event dossier and record causal chains, assumptions, evidence gaps, change from prior, decision relevance, and a required cross-perspective synthesis.
@@ -31,7 +59,7 @@
 - Added a bounded public-news image pipeline: capture card/Open Graph images, validate and store raster files locally by content hash, render vertical image-and-text stories, and upload local copies to resumable Notion image blocks with external fallback.
 - Added fail-closed public-DNS confirmation for proxy fake-IP environments, continued past failed image candidates until the success budget is filled, allowed same-edition report revisions to retain their original event identities, and added idempotent in-place Notion image backfill for previously published text-only reports.
 - Raised the default successful-image limit from 40 to 1000 while retaining the 8 MiB per-image, 80 MiB per-edition, raster-format, and pixel-count safety limits.
-- Reworked the README as a concise capability overview and rewrote the Wiki as developer documentation tied to current modules, states, commands, and tests.
+- Reworked the README as a concise capability overview and tied engineering records to current modules, states, commands, and tests.
 - Expanded repository ignores for runtime artifacts, browser data, coverage output, editor state, and local build audits; removed the machine-specific build report from the public tree.
 - Replaced real-looking media URLs in synthetic fixtures with reserved `.example` domains and documented the fixture boundary.
 - Removed the unused `DAILY_INTEL_TIMEZONE` entry from `.env.example`; timezone remains configured through `sources.yaml` or `--timezone`.
@@ -53,7 +81,7 @@
 
 - Locked every Hermes run to one canonical data root and rejected cross-root run, index, content, report, and evaluation artifacts with an explicit adoption command for migrations.
 - Preserved successful enrichment IDs through finalization and added evidence binding checks for source mentions plus an explicit basis requirement for numeric scenarios.
-- Added post-evaluation semantic brief reuse keyed by a content fingerprint; changed or poorly evaluated material is re-authored rather than silently reused.
+- Added post-evaluation semantic brief reuse keyed by a content fingerprint; changed or poorly evaluated material now triggers re-authoring.
 - Added bounded, no-script HTTP index prefetch with global/per-domain limits and sequential Edge fallback for login, challenge, JavaScript, and specialized adapters; rate-limited sources are not hammered again.
 - Made the Edge verification frontend automatic for interactive runs and added `--unattended` for Cron/Gateway use. Publication still returns before the isolated evaluator runs.
 - Added real phase durations and collection counts to run manifests, split verification out of the CLI, removed browser debug artifacts, and added cross-platform GitHub CI.
@@ -67,12 +95,12 @@
 ## 0.9.7 - 2026-07-16
 
 - Rejected the legacy metadata disclaimer “仅取得来源标题或公开元数据，正文尚未读取；请通过原文链接查看完整内容” and close variants when used as TL;DR text.
-- Kept access boundaries in structured `source_ref.access` or internal evidence notes instead of rendering them as reader-facing summaries.
+- Kept access boundaries in structured `source_ref.access` or internal evidence notes and out of reader-facing summaries.
 
 ## 0.9.6 - 2026-07-16
 
-- Required one batch-mode Hermes `delegate_task` call so all three brief batches use model-authored translation and summarization instead of runtime scripts or string templates.
-- Made an empty/missing `brief_plan` a context-refresh condition rather than a fallback to manually inferred source targets.
+- Required one batch-mode Hermes `delegate_task` call so all three brief batches use model-authored translation and summarization; runtime scripts and string templates remain excluded.
+- Made an empty or missing `brief_plan` trigger context refresh; manually inferred source targets are no longer accepted.
 - Rejected `【外文】`/source prefixes, “see original link”, “source X reported”, and English abstracts disguised with a short Chinese prefix.
 - Defined the TL;DR evidence hierarchy as fetched `content_path`, public description/abstract, then a strictly title-bounded Chinese restatement.
 - Required one canonical runtime data directory per task to prevent manual and scheduled reports from splitting continuity state.
@@ -116,7 +144,7 @@
 - Split judgement into independent geopolitical, AI research/development, and stock-analysis sections.
 - Hid numeric importance and content-access labels from reader-facing Markdown and Notion while retaining them in the local JSON truth.
 - Reworked Edge verification into one failed-link queue that captures structured items from user-opened authenticated tabs and prepares a report revision.
-- Automatically scheduled a hash-bound one-shot independent evaluation after successful publication instead of waiting in the generation path.
+- Automatically scheduled a hash-bound one-shot independent evaluation after successful publication, removing evaluator latency from the generation path.
 - Increased default source coverage, retained the 15-item hard cap, and kept full-text enrichment limited to at most 12 analysis-critical items with bounded concurrency.
 
 ## 0.8.1 - 2026-07-14

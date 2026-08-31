@@ -7,8 +7,29 @@ from typing import Any
 from .storage import next_revision, write_immutable_json
 from .utils import read_json, write_json
 
+_STABLE_ANALYSIS_DOMAINS = {"geopolitics", "ai_technology", "markets"}
+
+
+def stable_analysis_id(domain: object) -> str:
+    """处理：为三个固定分析域生成跨日期、版本和评估修订稳定的论点身份。
+    输入：
+    - ``domain``：报告编译器已验证的 geopolitics、ai_technology 或 markets 域名。
+    输出：ANALYSIS-{DOMAIN} 形式的稳定 ID；未知域明确失败而不回退到日期 ID。
+    """
+
+    normalized = str(domain or "").strip().casefold()
+    if normalized not in _STABLE_ANALYSIS_DOMAINS:
+        raise ValueError(f"Unsupported stable analysis domain: {normalized!r}")
+    return f"ANALYSIS-{normalized.upper()}"
+
 
 def _items(path: Path) -> list[dict[str, Any]]:
+    """处理：展开报告全部栏目中的事件或简报条目。
+    输入：
+    - ``path``：当前函数要读取、校验或写入的本地文件路径。
+    输出：“展开报告全部栏目中的事件或简报条目”得到的有序结构化记录；
+      每项承载处理说明所定义的身份、证据或状态字段，可直接交给下一阶段。
+    """
     if not path.exists():
         return []
     raw = read_json(path)
@@ -20,6 +41,12 @@ def _items(path: Path) -> list[dict[str, Any]]:
 
 
 def _watch_id(analysis_id: str, signal: str) -> str:
+    """处理：根据观察类型和稳定键生成连续性状态 ID。
+    输入：
+    - ``analysis_id``：外部分析任务的稳定 ID；与 signal 一起生成可观察任务键。
+    - ``signal``：需要监测的分析信号名称。
+    输出：可跨修订关联的稳定字符串标识，供索引、状态或发布记录使用。
+    """
     digest = hashlib.sha256(f"{analysis_id}|{signal}".encode()).hexdigest()[:12]
     return f"WATCH-{digest}"
 
@@ -28,6 +55,14 @@ def update_continuity_state(
     report: dict[str, Any],
     data_dir: Path,
 ) -> dict[str, str]:
+    """处理：从已评估报告更新论点、观察列表和预测状态。
+    输入：
+    - ``report``：当前报告结构；包含栏目、简报或事件、来源引用及质量元数据。
+    - ``data_dir``：当前运行的唯一数据根；所有状态和版本化产物都必须位于其中。
+    输出：“从已评估报告更新论点、观察列表和预测状态”形成的结构化字典；
+      典型键包括 analysis_id、category、claim、confidence、counter_evidence、domain、event_id、e
+      vents、evidence_event_ids、first_seen_at、generated_at、history。
+    """
     state_dir = data_dir / "state"
     generated_at = report["generated_at"]
     report_id = report["report_id"]
@@ -38,8 +73,31 @@ def update_continuity_state(
 
     theses_path = state_dir / "theses.json"
     theses = {item["analysis_id"]: item for item in _items(theses_path) if item.get("analysis_id")}
+    current_domains = {
+        str(analysis.get("domain") or "")
+        for analysis in ([] if skip_analyses else report["analyses"])
+    }
+    stable_ids = {
+        domain: stable_analysis_id(domain)
+        for domain in current_domains
+        if domain in _STABLE_ANALYSIS_DOMAINS
+    }
+    superseded_analysis_ids: set[str] = set()
+    for legacy_id, legacy in theses.items():
+        domain = str(legacy.get("domain") or "")
+        successor = stable_ids.get(domain)
+        if (
+            successor
+            and legacy_id != successor
+            and legacy.get("status", "active") == "active"
+        ):
+            legacy["status"] = "superseded"
+            legacy["superseded_by"] = successor
+            legacy["updated_at"] = generated_at
+            legacy["last_report_id"] = report_id
+            superseded_analysis_ids.add(legacy_id)
     for analysis in [] if skip_analyses else report["analyses"]:
-        analysis_id = analysis["analysis_id"]
+        analysis_id = stable_analysis_id(analysis["domain"])
         previous = theses.get(analysis_id, {})
         history = list(previous.get("history", []))
         if not any(item.get("report_id") == report_id for item in history):
@@ -76,13 +134,14 @@ def update_continuity_state(
     for analysis in [] if skip_analyses else report["analyses"]:
         if analysis["state_change"] in {"closed", "invalidated"}:
             continue
+        analysis_id = stable_analysis_id(analysis["domain"])
         for signal in analysis["watch_signals"]:
-            watch_id = _watch_id(analysis["analysis_id"], signal)
+            watch_id = _watch_id(analysis_id, signal)
             active_watch_ids.add(watch_id)
             previous = watchlist.get(watch_id, {})
             watchlist[watch_id] = {
                 "watch_id": watch_id,
-                "analysis_id": analysis["analysis_id"],
+                "analysis_id": analysis_id,
                 "signal": signal,
                 "status": "active",
                 "first_seen_at": previous.get("first_seen_at", generated_at),
@@ -90,13 +149,19 @@ def update_continuity_state(
                 "last_report_id": report_id,
             }
     current_analysis_ids = {
-        analysis["analysis_id"] for analysis in ([] if skip_analyses else report["analyses"])
+        stable_analysis_id(analysis["domain"])
+        for analysis in ([] if skip_analyses else report["analyses"])
     }
     for watch_id, item in watchlist.items():
-        if item.get("analysis_id") in current_analysis_ids and watch_id not in active_watch_ids:
+        if (
+            item.get("analysis_id") in current_analysis_ids
+            or item.get("analysis_id") in superseded_analysis_ids
+        ) and watch_id not in active_watch_ids:
             item["status"] = "closed"
             item["updated_at"] = generated_at
             item["last_report_id"] = report_id
+            if item.get("analysis_id") in superseded_analysis_ids:
+                item["closure_reason"] = "analysis_superseded"
 
     events_path = state_dir / "events.json"
     events = {item["event_id"]: item for item in _items(events_path) if item.get("event_id")}
@@ -125,12 +190,12 @@ def update_continuity_state(
 
     payloads = {
         "theses": {
-            "schema_version": "1.0",
+            "schema_version": "1.1",
             "updated_at": generated_at,
             "items": sorted(theses.values(), key=lambda item: item["analysis_id"]),
         },
         "watchlist": {
-            "schema_version": "1.0",
+            "schema_version": "1.1",
             "updated_at": generated_at,
             "items": sorted(watchlist.values(), key=lambda item: item["watch_id"]),
         },

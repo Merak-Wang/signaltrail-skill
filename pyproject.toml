@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "daily-intelligence-skill"
 version = "2.0.0"
-description = "SignalTrail: local-first monitoring, story clustering, and source-traceable morning/evening reporting for Hermes."
+description = "SignalTrail: harness-agnostic local monitoring, story clustering, and source-traceable morning/evening reporting."
 readme = "README.md"
 requires-python = ">=3.11"
 license = {text = "MIT"}

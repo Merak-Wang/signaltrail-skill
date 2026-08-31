@@ -18,6 +18,8 @@ import yaml
 SKILL_NAME = "signaltrail"
 PACKAGE_FILES = {
     Path(".env.example"),
+    Path("AGENTS.md"),
+    Path("ARCHITECTURE.md"),
     Path("CHANGELOG.md"),
     Path("LICENSE"),
     Path("README.md"),
@@ -32,6 +34,7 @@ PACKAGE_FILES = {
 PACKAGE_DIRECTORIES = (
     Path("assets/monitor"),
     Path("configs"),
+    Path("docs"),
     Path("references"),
     Path("schemas"),
     Path("src/daily_intelligence"),
@@ -68,6 +71,21 @@ SECRET_PATTERNS = (
     re.compile(r"\bsk-[A-Za-z0-9_-]{20,}\b"),
     re.compile(r"\bsecret_[A-Za-z0-9]{20,}\b"),
 )
+TEXT_SUFFIXES = {
+    ".css",
+    ".example",
+    ".html",
+    ".js",
+    ".json",
+    ".md",
+    ".ps1",
+    ".py",
+    ".sh",
+    ".toml",
+    ".yaml",
+    ".yml",
+}
+TEXT_FILENAMES = {"LICENSE"}
 
 
 class PackageError(RuntimeError):
@@ -217,6 +235,22 @@ def inspect_package_file(relative_path: Path, absolute_path: Path) -> None:
             )
 
 
+def copy_package_file(relative_path: Path, source: Path, destination: Path) -> None:
+    """处理：复制白名单文件，并将已知文本格式统一为 LF 换行。
+    输入：
+    - ``relative_path``：仓库相对路径；用于识别文本格式。
+    - ``source``：已经过安全检查的规范源文件。
+    - ``destination``：发布暂存目录中的目标文件。
+    输出：不返回新数据；目标文件内容与源文件一致，文本换行在各平台保持稳定。
+    """
+    if relative_path.suffix.casefold() in TEXT_SUFFIXES or relative_path.name in TEXT_FILENAMES:
+        content = source.read_bytes().replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+        destination.write_bytes(content)
+        shutil.copystat(source, destination)
+        return
+    shutil.copy2(source, destination)
+
+
 def validate_output_target(source_root: Path, output_dir: Path) -> None:
     """处理：拒绝仓库外或危险位置的技能包输出目录。
     输入：
@@ -309,7 +343,7 @@ def build_package(
             inspect_package_file(relative_path, source_path)
             destination = staging / relative_path
             destination.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(source_path, destination)
+            copy_package_file(relative_path, source_path, destination)
         metadata = validate_skill_directory(staging)
         replace_directory_atomically(staging, output_dir)
 

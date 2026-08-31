@@ -25,7 +25,7 @@ from .semantics import (
     update_semantic_cache_from_report,
 )
 from .state import update_continuity_state
-from .storage import next_revision, write_immutable_json, write_text_atomic
+from .storage import exclusive_lock, next_revision, write_immutable_json, write_text_atomic
 from .taxonomy import SECTION_GROUPS_V13
 from .utils import read_json, write_json
 
@@ -150,6 +150,13 @@ EVALUATION_LABELS_EN = {
 
 
 def ordered_sections(report: dict[str, Any], module: str) -> list[dict[str, Any]]:
+    """处理：按报告契约顺序返回现有栏目。
+    输入：
+    - ``report``：当前报告结构；包含栏目、简报或事件、来源引用及质量元数据。
+    - ``module``：报告顶层领域 ID，例如 information 或 technology。
+    输出：“按报告契约顺序返回现有栏目”得到的有序结构化记录；
+      每项承载处理说明所定义的身份、证据或状态字段，可直接交给下一阶段。
+    """
     sections = [section for section in report["sections"] if section.get("module") == module]
     if report.get("schema_version") not in {"1.3", "1.4", "1.5", "2.0"}:
         return sections
@@ -161,6 +168,14 @@ def group_items_by_source(
     section: dict[str, Any],
     language: object = "zh-CN",
 ) -> list[tuple[dict[str, str], list[dict]]]:
+    """处理：按来源 ID 组织报告条目，供 Markdown 分区渲染。
+    输入：
+    - ``section``：报告中的栏目对象；包含栏目 ID、标题、简报或事件列表。
+    - ``language``：规范语言标识；用于本地化选择或语言一致性判断。
+    输出：按“按来源 ID 组织报告条目，
+      供 Markdown 分区渲染”规则得到的 ``tuple[dict[str, str`` 列表；
+      列表顺序表达配置优先级、业务排名或稳定扫描顺序。
+    """
     groups: dict[str, tuple[dict[str, str], list[dict]]] = {}
     values = section.get("briefs") if "briefs" in section else section.get("items", [])
     for item in values or []:
@@ -172,19 +187,18 @@ def group_items_by_source(
         key = str(source["id"])
         groups.setdefault(key, (source, []))[1].append(item)
     ordered = list(groups.values())
-    for _source, items in ordered:
-        items.sort(
-            key=lambda value: (
-                value["importance"],
-                -int(value.get("source_rank", 1_000_000)),
-            ),
-            reverse=True,
-        )
-    ordered.sort(key=lambda group: group[1][0]["importance"], reverse=True)
+    # 编译器已经按 context/index 的确定性选择顺序排列；Markdown 与 Notion 只投影，
+    # 不得再用 importance 改写来源 Top 或 published_at 顺序。
     return ordered
 
 
 def _image_markdown_url(image: dict[str, Any], media_path_prefix: str | None) -> str:
+    """处理：把本地图片路径或安全公网地址转换为 Markdown URL。
+    输入：
+    - ``image``：报告或索引中的图片元数据；包含 URL、本地路径、哈希、尺寸和说明。
+    - ``media_path_prefix``：HTML 或 Markdown 相对引用本地媒体文件时添加的路径前缀。
+    输出：经过选择、规范化或安全处理的 URL 字符串，供后续访问或渲染使用。
+    """
     local_path = str(image.get("local_path") or "").replace("\\", "/")
     local_parts = [part for part in local_path.split("/") if part]
     if (
@@ -203,6 +217,15 @@ def _brief_markdown(
     media_path_prefix: str | None = None,
     language: object = "zh-CN",
 ) -> list[str]:
+    """处理：把单条简报渲染为含来源和图片的 Markdown。
+    输入：
+    - ``item``：单个规范条目对象；通常包含 item_id、来源、标题、URL、时间和元数据。
+    - ``rank``：简报或来源在当前栏目中的一基排序号。
+    - ``media_path_prefix``：HTML 或 Markdown 相对引用本地媒体文件时添加的路径前缀。
+    - ``language``：规范语言标识；用于本地化选择或语言一致性判断。
+    输出：“把单条简报渲染为含来源和图片的 Markdown”得到的字符串列表；
+      顺序保持确定并可供下一步骤逐项处理。
+    """
     colon = "：" if is_chinese_output(language) else ":"
     ref = item["source_ref"]
     status_labels = STATUS_LABELS if is_chinese_output(language) else STATUS_LABELS_EN
@@ -246,6 +269,14 @@ def _event_markdown(
     title: str,
     language: object = "zh-CN",
 ) -> list[str]:
+    """处理：把单个事件渲染为兼容旧 schema 的 Markdown。
+    输入：
+    - ``item``：单个规范条目对象；通常包含 item_id、来源、标题、URL、时间和元数据。
+    - ``title``：来源提供的标题文本；会清理空白，并用于过滤、身份或展示。
+    - ``language``：规范语言标识；用于本地化选择或语言一致性判断。
+    输出：“把单个事件渲染为兼容旧 schema 的 Markdown”得到的字符串列表；
+      顺序保持确定并可供下一步骤逐项处理。
+    """
     colon = "：" if is_chinese_output(language) else ":"
     separator = "，" if is_chinese_output(language) else ", "
     access_labels = ACCESS_LABELS if is_chinese_output(language) else ACCESS_LABELS_EN
@@ -308,6 +339,13 @@ def render_report_markdown(
     report: dict[str, Any],
     media_path_prefix: str | None = None,
 ) -> str:
+    """处理：把已验证报告栏目、来源引用和本地图片投影为可追踪的 Markdown。
+    输入：
+    - ``report``：当前报告结构；包含栏目、简报或事件、来源引用及质量元数据。
+    - ``media_path_prefix``：HTML 或 Markdown 相对引用本地媒体文件时添加的路径前缀。
+    输出：“把已验证报告栏目、来源引用和本地图片投影为可追踪的 Markdown”得到的规范字符串，
+      供调用方存储、比较或展示。
+    """
     language = report.get("language") or "zh-CN"
     chinese = is_chinese_output(language)
     colon = "：" if chinese else ":"
@@ -366,7 +404,7 @@ def render_report_markdown(
         lines.extend(["", f"## {group_labels[module]}", ""])
         for section in ordered_sections(report, module):
             lines.extend([f"### {section['title']}", ""])
-            if not section.get("items") and not section.get("briefs"):
+            if section.get("coverage_note"):
                 lines.extend([section["coverage_note"], ""])
             if report.get("schema_version") in BRIEF_REPORT_SCHEMAS:
                 for source, items in group_items_by_source(section, language):
@@ -767,7 +805,22 @@ def save_report(
     output_config: OutputConfig | None = None,
     media_config: MediaConfig | None = None,
     coverage_targets: dict[str, int] | None = None,
+    brief_plan_item_ids: dict[str, list[str]] | None = None,
 ) -> dict[str, Any]:
+    """处理：编译模型报告草稿、绑定权威索引、执行校验并创建不可变报告修订。
+    输入：
+    - ``input_path``：待编译的模型报告草稿 JSON 路径；其日期、版本和条目必须与索引一致。
+    - ``index_path``：草稿所引用的不可变来源索引路径；用于恢复权威身份并验证证据。
+    - ``data_dir``：当前运行的唯一数据根；所有状态和版本化产物都必须位于其中。
+    - ``output_config``：本地 HTML、PDF、桌面交付和打开行为配置。
+    - ``media_config``：图片下载、格式、安全、缓存和报告预算配置。
+    - ``coverage_targets``：按来源 ID 指定的最小报告覆盖数；由运行情境拥有。
+    - ``brief_plan_item_ids``：当前 context 按来源固定的有序 default_item_ids；限制缓存与草稿边界。
+    输出：“编译模型报告草稿、绑定权威索引、执行校验并创建不可变报告修订”形成的结构化字典；
+      典型键包括 compile_and_validation_seconds、content_hash、evaluation_status、json_path、loc
+      al_output_error、local_output_seconds、markdown_path、media_seconds、persistence_seconds、
+      report_id、save_metrics、semantic_cache_path。
+    """
     save_started = time.perf_counter()
     raw = read_json(input_path)
     index = read_json(index_path)
@@ -793,7 +846,13 @@ def save_report(
     report["report_id"] = f"daily-{date}-{edition}-r{revision}"
 
     compile_started = time.perf_counter()
-    compile_warnings = compile_report_data(report, index, load_semantic_cache(data_dir))
+    # 先把模型草稿编译进确定性外壳，再统一规范化和校验。
+    compile_warnings = compile_report_data(
+        report,
+        index,
+        load_semantic_cache(data_dir),
+        brief_plan_item_ids=brief_plan_item_ids,
+    )
     normalize_report_data(report, index)
     evaluation = report.get("quality_evaluation")
     if isinstance(evaluation, dict):
@@ -808,7 +867,7 @@ def save_report(
                 item for item in existing_payload["items"] if isinstance(item, dict)
             ]
 
-    # Reject semantic and source-identity errors before network-bound media work.
+    # 在触发网络图片处理前拒绝语义和来源身份错误，避免无效草稿产生外部副作用。
     errors, pre_media_validation_warnings = validate_report_data(
         report,
         index,
@@ -851,6 +910,7 @@ def save_report(
     persistence_started = time.perf_counter()
     json_path = report_dir / f"{edition}-r{revision}.json"
     markdown_path = report_dir / f"{edition}-r{revision}.md"
+    # JSON 是权威记录，Markdown/HTML/PDF 都是可由它重新生成的投影。
     write_immutable_json(json_path, report)
     write_text_atomic(
         markdown_path,
@@ -879,6 +939,7 @@ def save_report(
     semantic_cache_path = None
     state_paths: dict[str, Any] = {}
     try:
+        # 报告已经安全持久化；派生语义/连续性状态失败只降级为警告，不回滚记录。
         semantic_cache_path = update_semantic_cache_from_report(report, index, data_dir)
         state_paths = (
             update_continuity_state(report, data_dir)
@@ -921,28 +982,266 @@ def save_report(
     }
 
 
+def _evaluation_semantic_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """处理：移除独立评估的分配身份和落盘时间以识别语义重放。
+    输入：
+    - ``payload``：评估草稿或不可变评估修订；内容已由本地 JSON 解析器读取。
+    输出：不含 evaluation_id/evaluated_at 的新字典；不同评分或结论仍保持可区分。
+    """
+
+    comparable = dict(payload)
+    comparable.pop("evaluation_id", None)
+    comparable.pop("evaluated_at", None)
+    return comparable
+
+
+def _matching_evaluation_revision(
+    evaluation_dir: Path,
+    edition: str,
+    candidate: dict[str, Any],
+) -> tuple[Path, dict[str, Any]] | None:
+    """处理：在既有不可变修订中定位与草稿语义完全相同的评估。
+    输入：
+    - ``evaluation_dir``：当前日期的本地评估目录；只读取匹配 edition 的 JSON 修订。
+    - ``edition``：morning/evening 版本名；限制扫描文件名前缀。
+    - ``candidate``：待提交评估草稿；分配身份和时间不参与比较。
+    输出：修订号最大的相同修订及内容；无精确语义匹配时返回 None。
+    """
+
+    expected = _evaluation_semantic_payload(candidate)
+    matches: list[tuple[Path, dict[str, Any]]] = []
+    for path in evaluation_dir.glob(f"{edition}-r*.json"):
+        existing = read_json(path)
+        if (
+            isinstance(existing, dict)
+            and _evaluation_semantic_payload(existing) == expected
+        ):
+            matches.append((path, existing))
+    return max(
+        matches,
+        default=None,
+        key=lambda row: int(row[0].stem.rsplit("-r", 1)[1]),
+    )
+
+
+def _latest_evaluation_revision_for_report(
+    evaluation_dir: Path,
+    edition: str,
+    report: dict[str, Any],
+) -> Path | None:
+    """处理：按数字修订号定位同一报告身份的最新不可变评估。
+    输入：
+    - ``evaluation_dir``：当前日期评估目录；只读取 edition 修订 JSON。
+    - ``edition``：morning/evening 版本名；用于限制扫描范围。
+    - ``report``：被评报告；提供 report_id 和确定性内容哈希。
+    输出：同一报告身份的最大数字修订路径；无既有修订时返回 None。
+    """
+
+    report_id = report.get("report_id")
+    content_hash = report_content_hash(report)
+    paths: list[Path] = []
+    for path in evaluation_dir.glob(f"{edition}-r*.json"):
+        existing = read_json(path)
+        if (
+            isinstance(existing, dict)
+            and existing.get("evaluated_report_id") == report_id
+            and existing.get("evaluated_content_hash") == content_hash
+        ):
+            paths.append(path)
+    return max(
+        paths,
+        default=None,
+        key=lambda path: int(path.stem.rsplit("-r", 1)[1]),
+    )
+
+
+def _run_is_current_report(run_path: Path, report: dict[str, Any]) -> bool:
+    """处理：确认 edition 运行清单仍绑定正在评估的报告身份。
+    输入：
+    - ``run_path``：日期/版本运行清单；在共享 edition 锁内读取。
+    - ``report``：被评报告；其 ID 与内容哈希必须同时匹配当前 artifacts。
+    输出：仅当当前 run 的 report_id/content_hash 均匹配时为 True。
+    """
+
+    if not run_path.is_file():
+        return False
+    run = read_json(run_path)
+    if not isinstance(run, dict):
+        return False
+    artifacts = run.get("artifacts")
+    return bool(
+        isinstance(artifacts, dict)
+        and artifacts.get("report_id") == report.get("report_id")
+        and artifacts.get("content_hash") == report_content_hash(report)
+    )
+
+
+def _completed_evaluation_replay(
+    run_path: Path,
+    report: dict[str, Any],
+    evaluation_path: Path,
+    evaluation: dict[str, Any],
+) -> dict[str, Any] | None:
+    """处理：识别已完成运行对相同评估草稿的无副作用重放。
+    输入：
+    - ``run_path``：当前报告运行清单路径；用于确认派生状态已经提交。
+    - ``report``：不可变报告；提供 report ID 与内容哈希。
+    - ``evaluation_path``：已存在的相同不可变评估路径。
+    - ``evaluation``：上述路径中的已验证评估内容。
+    输出：已完成时返回原评估及现有本地投影位置，否则返回 None 继续恢复派生状态。
+    """
+
+    if not run_path.is_file():
+        return None
+    run = read_json(run_path)
+    if not isinstance(run, dict):
+        return None
+    state = run.get("evaluation")
+    artifacts = run.get("artifacts", {})
+    content_hash = report_content_hash(report)
+    if (
+        not isinstance(state, dict)
+        or state.get("status") != "completed"
+        or state.get("evaluation_id") != evaluation.get("evaluation_id")
+        or state.get("content_hash") != content_hash
+        or not isinstance(artifacts, dict)
+        or artifacts.get("report_id") != report.get("report_id")
+    ):
+        return None
+    local_keys = {
+        "html_path",
+        "pdf_path",
+        "desktop_html_path",
+        "desktop_pdf_path",
+        "local_index_path",
+    }
+    local_outputs = (
+        {key: value for key, value in artifacts.items() if key in local_keys}
+        if isinstance(artifacts, dict)
+        else {}
+    )
+    return {
+        "status": "already_completed",
+        "evaluation_id": evaluation["evaluation_id"],
+        "evaluation_path": str(evaluation_path),
+        "content_hash": content_hash,
+        "state_paths": {},
+        "local_outputs": local_outputs,
+    }
+
+
 def save_evaluation(
     input_path: Path,
     report_path: Path,
     data_dir: Path,
     output_config: OutputConfig | None = None,
 ) -> dict[str, Any]:
+    """处理：校验独立评估与报告身份和内容哈希一致后，创建不可变评估修订。
+    输入：
+    - ``input_path``：上游阶段生成的输入文件路径；读取前会执行存在性或数据根校验。
+    - ``report_path``：版本化报告 JSON 路径；本地报告是 HTML、PDF 和 Notion 的事实源。
+    - ``data_dir``：当前运行的唯一数据根；所有状态和版本化产物都必须位于其中。
+    - ``output_config``：本地 HTML、PDF、桌面交付和打开行为配置。
+    输出：“校验独立评估与报告身份和内容哈希一致后，创建不可变评估修订”形成的结构化字典；
+      典型键包括 content_hash、evaluation_id、evaluation_path、local_outputs、semantic_cache_pat
+      h、state_paths、status。
+    """
     raw = read_json(input_path)
     report = read_json(report_path)
     if not isinstance(raw, dict) or not isinstance(report, dict):
         raise ValueError("Evaluation and report must both be JSON objects")
-    evaluation = dict(raw)
+    date = str(report["date"])
+    edition = str(report["edition"])
+    # 与 prepare/restart/finalize 共用 edition 锁，避免旧 evaluator 与新 attempt
+    # 交错推进 run、continuity、semantic cache 或本地投影。
+    lock_path = data_dir / "locks" / f"{date}-{edition}.lock"
+    with exclusive_lock(
+        lock_path,
+        {
+            "date": date,
+            "edition": edition,
+            "locked_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+        },
+    ):
+        return _save_evaluation_locked(
+            dict(raw),
+            report,
+            data_dir,
+            output_config,
+        )
+
+
+def _save_evaluation_locked(
+    candidate: dict[str, Any],
+    report: dict[str, Any],
+    data_dir: Path,
+    output_config: OutputConfig | None,
+) -> dict[str, Any]:
+    """处理：在日期版本排他锁内提交评估修订并推进全部派生状态。
+    输入：
+    - ``candidate``：已读取的独立评估草稿；只在锁内分配不可变修订身份。
+    - ``report``：对应的本地权威报告；提供日期、版本和内容哈希。
+    - ``data_dir``：当前运行的唯一数据根；锁、修订和派生状态均位于其中。
+    - ``output_config``：本地 HTML、PDF、桌面交付和打开行为配置。
+    输出：新建或无副作用重放的评估结果；mutable 指针与运行状态在同一锁内推进。
+    """
+
     date = str(report["date"])
     edition = str(report["edition"])
     evaluation_dir = data_dir / "evaluations" / date
-    revision = next_revision(evaluation_dir, edition)
-    evaluation["evaluation_id"] = f"evaluation-{report['report_id']}-r{revision}"
-    evaluation.setdefault("evaluated_at", datetime.now().astimezone().isoformat(timespec="seconds"))
-    errors = validate_evaluation_data(evaluation, report)
-    if errors:
-        raise ValueError("Evaluation validation failed: " + "; ".join(errors))
-    output = evaluation_dir / f"{edition}-r{revision}.json"
-    write_immutable_json(output, evaluation)
+    run_path = data_dir / "runs" / date / f"{edition}.json"
+    current_report = _run_is_current_report(run_path, report)
+    matching = _matching_evaluation_revision(evaluation_dir, edition, candidate)
+    if matching is not None:
+        output, evaluation = matching
+        errors = validate_evaluation_data(evaluation, report)
+        if errors:
+            raise ValueError("Evaluation validation failed: " + "; ".join(errors))
+        if replay := _completed_evaluation_replay(
+            run_path,
+            report,
+            output,
+            evaluation,
+        ):
+            return replay
+    latest_for_report = _latest_evaluation_revision_for_report(
+        evaluation_dir,
+        edition,
+        report,
+    )
+    recover_existing = bool(
+        matching is not None
+        and current_report
+        and latest_for_report is not None
+        and matching[0] == latest_for_report
+    )
+    if recover_existing:
+        output, evaluation = matching
+    else:
+        # 命中非当前历史语义时仍创建新修订，避免 A→B→A 回放把状态退回 r1。
+        evaluation = candidate
+        revision = next_revision(evaluation_dir, edition)
+        evaluation["evaluation_id"] = f"evaluation-{report['report_id']}-r{revision}"
+        evaluation.setdefault(
+            "evaluated_at",
+            datetime.now().astimezone().isoformat(timespec="seconds"),
+        )
+        errors = validate_evaluation_data(evaluation, report)
+        if errors:
+            raise ValueError("Evaluation validation failed: " + "; ".join(errors))
+        output = evaluation_dir / f"{edition}-r{revision}.json"
+        write_immutable_json(output, evaluation)
+
+    if not current_report:
+        return {
+            "status": "stale_report",
+            "evaluation_id": evaluation["evaluation_id"],
+            "evaluation_path": str(output),
+            "content_hash": report_content_hash(report),
+            "state_paths": {},
+            "local_outputs": {},
+        }
+
     write_json(data_dir / "evaluations" / f"latest-{edition}.json", evaluation)
     semantic_cache_path = finalize_semantic_cache_evaluation(evaluation, data_dir)
     assessed_report = dict(report)
@@ -954,8 +1253,8 @@ def save_evaluation(
         output_config or OutputConfig(),
         evaluation=evaluation,
         open_after_finalize=False,
+        regenerate_pdf=False,
     )
-    run_path = data_dir / "runs" / date / f"{edition}.json"
     if run_path.exists():
         run = read_json(run_path)
         if isinstance(run, dict) and run.get("artifacts", {}).get("report_id") == report.get(
@@ -963,6 +1262,7 @@ def save_evaluation(
         ):
             run["evaluation"] = {
                 "status": "completed",
+                "report_id": report["report_id"],
                 "evaluation_id": evaluation["evaluation_id"],
                 "evaluation_path": str(output),
                 "content_hash": report_content_hash(report),

@@ -25,8 +25,18 @@ IGNORED_PARTS = {
 }
 LINK_PATTERN = re.compile(r"(?<!!)\[[^\]]*\]\(([^)]+)\)")
 ENTRY_DOCUMENTS = (ROOT / "AGENTS.md", ROOT / "ARCHITECTURE.md")
+IGNORED_RELATIVE_FILES = {Path("plan.md")}
 MAX_VERIFICATION_AGE_DAYS = 180
 VERIFIED_PATTERN = re.compile(r"\*\*Last verified:\*\* (\d{4}-\d{2}-\d{2})")
+PROHIBITED_MARKDOWN_PATTERNS = {
+    "personal Windows user path": re.compile(
+        r"(?i)\b[A-Z]:[/\\]Users[/\\][^/\\\s<`]+"
+    ),
+    "personal workspace path": re.compile(r"(?i)\b[A-Z]:[/\\]ai_project[/\\]"),
+    "Codex browser-session residue": re.compile(
+        r"(?i)Codex (?:in-app browser|应用内浏览器)"
+    ),
+}
 
 
 def _is_ignored(path: Path) -> bool:
@@ -75,7 +85,7 @@ def markdown_files() -> list[Path]:
     return sorted(
         path
         for path in ROOT.rglob("*.md")
-        if not _is_ignored(path)
+        if path.relative_to(ROOT) not in IGNORED_RELATIVE_FILES and not _is_ignored(path)
     )
 
 
@@ -138,6 +148,11 @@ def validate_docs() -> list[str]:
 
     for document in markdown_files():
         text = document.read_text(encoding="utf-8")
+        for label, pattern in PROHIBITED_MARKDOWN_PATTERNS.items():
+            if pattern.search(text):
+                errors.append(
+                    f"Prohibited {label} in {document.relative_to(ROOT)}"
+                )
         for raw_target in LINK_PATTERN.findall(text):
             target = _local_target(document, raw_target)
             if target is not None and not target.exists():

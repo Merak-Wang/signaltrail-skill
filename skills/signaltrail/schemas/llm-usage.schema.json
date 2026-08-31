@@ -1,0 +1,461 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://signaltrail.local/schemas/llm-usage.schema.json",
+  "title": "SignalTrail immutable LLM usage event",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "event_id",
+    "event_type",
+    "task_id",
+    "recorded_at",
+    "dedupe_hash",
+    "payload_hash",
+    "data"
+  ],
+  "properties": {
+    "schema_version": {"const": "1.0"},
+    "event_id": {"$ref": "#/$defs/hash"},
+    "event_type": {
+      "enum": [
+        "task.started",
+        "call.started",
+        "call.finished",
+        "usage.observed",
+        "task.finalized"
+      ]
+    },
+    "task_id": {"$ref": "#/$defs/id"},
+    "recorded_at": {"type": "string", "format": "date-time", "maxLength": 64},
+    "dedupe_hash": {"$ref": "#/$defs/hash"},
+    "payload_hash": {"$ref": "#/$defs/hash"},
+    "data": {"type": "object"}
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"event_type": {"const": "task.started"}}},
+      "then": {"properties": {"data": {"$ref": "#/$defs/taskStarted"}}}
+    },
+    {
+      "if": {"properties": {"event_type": {"const": "call.started"}}},
+      "then": {"properties": {"data": {"$ref": "#/$defs/callStarted"}}}
+    },
+    {
+      "if": {"properties": {"event_type": {"const": "call.finished"}}},
+      "then": {"properties": {"data": {"$ref": "#/$defs/callFinished"}}}
+    },
+    {
+      "if": {"properties": {"event_type": {"const": "usage.observed"}}},
+      "then": {"properties": {"data": {"$ref": "#/$defs/usageObserved"}}}
+    },
+    {
+      "if": {"properties": {"event_type": {"const": "task.finalized"}}},
+      "then": {"properties": {"data": {"$ref": "#/$defs/taskFinalized"}}}
+    }
+  ],
+  "$defs": {
+    "label": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/@+\\-]{0,159}$"
+    },
+    "id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._\\-]{0,127}$"
+    },
+    "hash": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "measurement": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["value", "quality", "source"],
+      "properties": {
+        "value": {"type": ["integer", "number", "null"], "minimum": 0},
+        "quality": {"enum": ["exact", "estimated", "unobservable"]},
+        "source": {"$ref": "#/$defs/label"},
+        "method": {"$ref": "#/$defs/label"},
+        "reason": {"type": "string", "minLength": 1, "maxLength": 160},
+        "lower_bound": {"type": ["integer", "number"], "minimum": 0},
+        "upper_bound": {"type": ["integer", "number"], "minimum": 0}
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"quality": {"const": "unobservable"}}},
+          "then": {
+            "required": ["reason"],
+            "properties": {"value": {"type": "null"}}
+          },
+          "else": {"properties": {"value": {"type": ["integer", "number"]}}}
+        }
+      ]
+    },
+    "tokens": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "input",
+        "cached_input",
+        "cache_write_input",
+        "output",
+        "reasoning_output",
+        "tool_call_output",
+        "reported_total",
+        "relationships"
+      ],
+      "properties": {
+        "input": {"$ref": "#/$defs/measurement"},
+        "cached_input": {"$ref": "#/$defs/measurement"},
+        "cache_write_input": {"$ref": "#/$defs/measurement"},
+        "output": {"$ref": "#/$defs/measurement"},
+        "reasoning_output": {"$ref": "#/$defs/measurement"},
+        "tool_call_output": {"$ref": "#/$defs/measurement"},
+        "reported_total": {"$ref": "#/$defs/measurement"},
+        "relationships": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "cached_input",
+            "cache_write_input",
+            "reasoning_output",
+            "tool_call_output"
+          ],
+          "properties": {
+            "cached_input": {
+              "enum": ["subset_of_input", "additional_to_input", "unknown"]
+            },
+            "cache_write_input": {
+              "enum": ["subset_of_input", "additional_to_input", "unknown"]
+            },
+            "reasoning_output": {"const": "subset_of_output"},
+            "tool_call_output": {"const": "subset_of_output"}
+          }
+        }
+      }
+    },
+    "cost": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["amount", "currency", "quality", "source"],
+      "properties": {
+        "amount": {"type": ["string", "null"], "pattern": "^[0-9]+(?:\\.[0-9]+)?$"},
+        "currency": {"type": ["string", "null"], "pattern": "^[A-Z]{3}$"},
+        "quality": {"enum": ["exact", "estimated", "unobservable"]},
+        "source": {"$ref": "#/$defs/label"},
+        "method": {"$ref": "#/$defs/label"},
+        "reason": {"type": "string", "minLength": 1, "maxLength": 160}
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"quality": {"const": "unobservable"}}},
+          "then": {
+            "required": ["reason"],
+            "properties": {
+              "amount": {"type": "null"},
+              "currency": {"type": "null"}
+            }
+          },
+          "else": {
+            "properties": {
+              "amount": {"type": "string"},
+              "currency": {"type": "string", "pattern": "^[A-Z]{3}$"}
+            }
+          }
+        }
+      ]
+    },
+    "observation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "adapter",
+        "adapter_version",
+        "source_kind",
+        "correlation_id_hash",
+        "granularity",
+        "covered_call_count",
+        "tokens",
+        "tool_call_count",
+        "cost",
+        "latency"
+      ],
+      "properties": {
+        "adapter": {"$ref": "#/$defs/label"},
+        "adapter_version": {"$ref": "#/$defs/label"},
+        "source_kind": {"$ref": "#/$defs/label"},
+        "correlation_id_hash": {"$ref": "#/$defs/hash"},
+        "granularity": {"enum": ["call", "aggregate"]},
+        "covered_call_count": {"$ref": "#/$defs/measurement"},
+        "tokens": {"$ref": "#/$defs/tokens"},
+        "tool_call_count": {"$ref": "#/$defs/measurement"},
+        "cost": {"$ref": "#/$defs/cost"},
+        "session_id_hash": {"$ref": "#/$defs/hash"},
+        "turn_id_hash": {"$ref": "#/$defs/hash"},
+        "parent_session_id_hash": {"$ref": "#/$defs/hash"},
+        "host_task_id_hash": {"$ref": "#/$defs/hash"},
+        "provider": {"$ref": "#/$defs/label"},
+        "requested_model": {"$ref": "#/$defs/label"},
+        "served_model": {"$ref": "#/$defs/label"},
+        "phase": {"$ref": "#/$defs/label"},
+        "status": {"$ref": "#/$defs/label"},
+        "finish_reason": {"$ref": "#/$defs/label"},
+        "started_at": {"type": "string", "format": "date-time", "maxLength": 64},
+        "completed_at": {"type": "string", "format": "date-time", "maxLength": 64},
+        "latency": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "wall_ms": {"$ref": "#/$defs/measurement"},
+            "queue_ms": {"$ref": "#/$defs/measurement"},
+            "first_token_ms": {"$ref": "#/$defs/measurement"},
+            "prefill_ms": {"$ref": "#/$defs/measurement"},
+            "decode_ms": {"$ref": "#/$defs/measurement"}
+          }
+        },
+        "batch_id": {"$ref": "#/$defs/label"},
+        "task_index": {"type": "integer", "minimum": 0},
+        "agent_role": {"$ref": "#/$defs/label"},
+        "run_attempt": {"type": "integer", "minimum": 0},
+        "repair_attempt": {"type": "integer", "minimum": 0},
+        "evaluation_attempt": {"type": "integer", "minimum": 0}
+      }
+    },
+    "aggregateMeasurement": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["value", "quality", "known_value", "unobservable_observations"],
+      "properties": {
+        "value": {"type": ["integer", "number", "null"], "minimum": 0},
+        "quality": {"enum": ["exact", "estimated", "unobservable"]},
+        "reason": {"type": "string", "minLength": 1},
+        "known_value": {"type": ["integer", "number", "null"], "minimum": 0},
+        "unobservable_observations": {"type": "integer", "minimum": 0}
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"quality": {"const": "unobservable"}}},
+          "then": {"properties": {"value": {"type": "null"}}},
+          "else": {"properties": {"value": {"type": ["integer", "number"]}}}
+        }
+      ]
+    },
+    "taskStarted": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["agent", "started_at"],
+      "properties": {
+        "agent": {"$ref": "#/$defs/label"},
+        "started_at": {"type": "string", "format": "date-time"},
+        "source_tag": {"$ref": "#/$defs/label"},
+        "parent_task_id": {"$ref": "#/$defs/id"}
+      }
+    },
+    "callStarted": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["call_id", "phase", "started_at"],
+      "properties": {
+        "call_id": {"$ref": "#/$defs/id"},
+        "phase": {"$ref": "#/$defs/label"},
+        "started_at": {"type": "string", "format": "date-time"},
+        "adapter": {"$ref": "#/$defs/label"},
+        "batch_id": {"$ref": "#/$defs/label"},
+        "agent_role": {"$ref": "#/$defs/label"},
+        "run_attempt": {"type": "integer", "minimum": 0},
+        "repair_attempt": {"type": "integer", "minimum": 0},
+        "evaluation_attempt": {"type": "integer", "minimum": 0},
+        "parent_session_id_hash": {"$ref": "#/$defs/hash"}
+      }
+    },
+    "callFinished": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["call_id", "phase", "status", "completed_at"],
+      "properties": {
+        "call_id": {"$ref": "#/$defs/id"},
+        "phase": {"$ref": "#/$defs/label"},
+        "status": {"$ref": "#/$defs/label"},
+        "completed_at": {"type": "string", "format": "date-time"}
+      }
+    },
+    "usageObserved": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["observation"],
+      "properties": {
+        "call_id": {"$ref": "#/$defs/id"},
+        "observation": {"$ref": "#/$defs/observation"}
+      }
+    },
+    "taskFinalized": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "completed_at", "summary"],
+      "properties": {
+        "status": {"$ref": "#/$defs/label"},
+        "completed_at": {"type": "string", "format": "date-time"},
+        "summary": {"$ref": "#/$defs/summary"}
+      }
+    },
+    "summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "task_id",
+        "observation_count",
+        "raw_observation_count",
+        "deduplicated_observation_count",
+        "conflicts",
+        "covered_call_count",
+        "tool_call_count",
+        "tokens",
+        "latency_ms",
+        "costs",
+        "observations"
+      ],
+      "properties": {
+        "schema_version": {"const": "1.0"},
+        "task_id": {"$ref": "#/$defs/id"},
+        "timing": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["started_at", "completed_at", "wall_ms"],
+          "properties": {
+            "started_at": {"type": ["string", "null"], "format": "date-time"},
+            "completed_at": {"type": ["string", "null"], "format": "date-time"},
+            "wall_ms": {"$ref": "#/$defs/aggregateMeasurement"}
+          }
+        },
+        "call_lifecycle": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "attempted_call_count",
+            "finished_call_count",
+            "failed_call_count",
+            "unclosed_call_count",
+            "orphan_finished_call_count"
+          ],
+          "properties": {
+            "attempted_call_count": {"type": "integer", "minimum": 0},
+            "finished_call_count": {"type": "integer", "minimum": 0},
+            "failed_call_count": {"type": "integer", "minimum": 0},
+            "unclosed_call_count": {"type": "integer", "minimum": 0},
+            "orphan_finished_call_count": {"type": "integer", "minimum": 0}
+          }
+        },
+        "usage_coverage": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "usage_covered_call_count",
+            "calls_with_observation_count",
+            "calls_with_accounted_tokens_count",
+            "calls_without_observation_count",
+            "calls_without_accounted_tokens_count",
+            "orphan_usage_call_count",
+            "unlinked_observation_count"
+          ],
+          "properties": {
+            "usage_covered_call_count": {"$ref": "#/$defs/aggregateMeasurement"},
+            "calls_with_observation_count": {"type": "integer", "minimum": 0},
+            "calls_with_accounted_tokens_count": {"type": "integer", "minimum": 0},
+            "calls_without_observation_count": {"type": "integer", "minimum": 0},
+            "calls_without_accounted_tokens_count": {"type": "integer", "minimum": 0},
+            "orphan_usage_call_count": {"type": "integer", "minimum": 0},
+            "unlinked_observation_count": {"type": "integer", "minimum": 0}
+          }
+        },
+        "lineage_coverage": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["observation_count", "fields", "by_phase"],
+          "properties": {
+            "observation_count": {"type": "integer", "minimum": 0},
+            "fields": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "phase",
+                "agent_role",
+                "batch_id",
+                "run_attempt",
+                "repair_attempt",
+                "evaluation_attempt",
+                "session_id_hash",
+                "parent_session_id_hash"
+              ],
+              "properties": {
+                "phase": {"$ref": "#/$defs/lineageFieldCoverage"},
+                "agent_role": {"$ref": "#/$defs/lineageFieldCoverage"},
+                "batch_id": {"$ref": "#/$defs/lineageFieldCoverage"},
+                "run_attempt": {"$ref": "#/$defs/lineageFieldCoverage"},
+                "repair_attempt": {"$ref": "#/$defs/lineageFieldCoverage"},
+                "evaluation_attempt": {"$ref": "#/$defs/lineageFieldCoverage"},
+                "session_id_hash": {"$ref": "#/$defs/lineageFieldCoverage"},
+                "parent_session_id_hash": {"$ref": "#/$defs/lineageFieldCoverage"}
+              }
+            },
+            "by_phase": {
+              "type": "object",
+              "propertyNames": {"$ref": "#/$defs/label"},
+              "additionalProperties": {"type": "integer", "minimum": 0}
+            }
+          }
+        },
+        "observation_count": {"type": "integer", "minimum": 0},
+        "raw_observation_count": {"type": "integer", "minimum": 0},
+        "deduplicated_observation_count": {"type": "integer", "minimum": 0},
+        "conflicts": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["correlation_id_hash", "fields"],
+            "properties": {
+              "correlation_id_hash": {"$ref": "#/$defs/hash"},
+              "fields": {
+                "type": "array",
+                "items": {"enum": ["input", "cached_input", "cache_write_input", "output", "reasoning_output", "tool_call_output", "reported_total"]}
+              }
+            }
+          }
+        },
+        "covered_call_count": {"$ref": "#/$defs/aggregateMeasurement"},
+        "tool_call_count": {"$ref": "#/$defs/aggregateMeasurement"},
+        "tokens": {
+          "type": "object",
+          "additionalProperties": {"$ref": "#/$defs/aggregateMeasurement"},
+          "required": ["input", "cached_input", "cache_write_input", "output", "reasoning_output", "tool_call_output", "reported_total", "accounted_total"]
+        },
+        "latency_ms": {
+          "type": "object",
+          "additionalProperties": {"$ref": "#/$defs/aggregateMeasurement"}
+        },
+        "costs": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["currency", "amount", "quality", "unobservable_observations"],
+            "properties": {
+              "currency": {"type": ["string", "null"], "pattern": "^[A-Z]{3}$"},
+              "amount": {"type": ["string", "null"]},
+              "quality": {"enum": ["exact", "estimated", "unobservable"]},
+              "unobservable_observations": {"type": "integer", "minimum": 0}
+            }
+          }
+        },
+        "observations": {"type": "array", "items": {"$ref": "#/$defs/observation"}}
+      }
+    },
+    "lineageFieldCoverage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["present", "missing"],
+      "properties": {
+        "present": {"type": "integer", "minimum": 0},
+        "missing": {"type": "integer", "minimum": 0}
+      }
+    }
+  }
+}

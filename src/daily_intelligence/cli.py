@@ -103,7 +103,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     data_root = sub.add_parser(
         "data-root",
-        help="Show or deliberately adopt the one canonical Hermes data root",
+        help="Show or deliberately adopt the one canonical SignalTrail data root",
     )
     data_root.add_argument("action", choices=["status", "adopt"])
 
@@ -304,7 +304,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     metrics = sub.add_parser(
         "record-authoring-metrics",
-        help="Validate and retain bounded Hermes batch duration/API/token metrics",
+        help="Validate and retain bounded harness-worker duration/API/token metrics",
     )
     metrics.add_argument("--run", type=Path, required=True)
     metrics.add_argument("--metrics", type=Path, required=True)

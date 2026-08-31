@@ -2339,8 +2339,11 @@ def test_context_keeps_index_top_order_even_when_a_lower_item_is_enriched(tmp_pa
     assert "bbc-19" not in context["brief_plan"][0]["default_item_ids"]
     assert context["brief_plan"][0]["target_count"] == 15
     assert "title_zh" in context["brief_authoring_rule"]
-    assert "delegate_task" in context["brief_authoring_rule"]
+    assert "three concurrent harness workers" in context["brief_authoring_rule"]
+    assert "may process the packets serially" in context["brief_authoring_rule"]
     assert "packet is the complete data boundary" in context["brief_authoring_rule"]
+    assert "main agent" not in context["brief_authoring_rule"].lower()
+    assert "short receipt" not in context["brief_authoring_rule"].lower()
     batch = context["brief_authoring_batches"][0]
     packet = read_json(Path(batch["packet_path"]))
     assert batch["author_item_count"] == len(packet["author_item_ids"])

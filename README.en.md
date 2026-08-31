@@ -4,18 +4,25 @@
 
 > Signals distilled. Sources intact.
 
-SignalTrail is a local-first [Hermes Agent](https://hermes-agent.nousresearch.com/)
-skill for repeatable editorial reporting. It collects approved public sources,
-clusters duplicate coverage, and helps Hermes produce a Chinese or English briefing
-with visible evidence, explicit source health, and continuity across editions. It
-turns scattered signals into a reviewable decision trail that teams can brief,
-archive, and revisit.
+SignalTrail is a local-first editorial-reporting skill and CLI for agent harnesses.
+Any harness that can read `SKILL.md`, run local commands, consume self-contained
+authoring packets, and return structured JSON can drive the core pipeline. SignalTrail
+collects approved public sources, clusters duplicate coverage, and uses the selected
+harness to produce a Chinese or English briefing with visible evidence, explicit
+source health, and continuity across editions.
+
+The repository provides Hermes conveniences for installation, request hooks,
+delegation, and independent-evaluation scheduling, plus built-in model-usage adapters
+for Codex and OpenClaw. Other harnesses can orchestrate the common CLI/packet protocol
+and add their own hook or `UsageAdapter`; usage remains explicitly `unmetered` until
+exact metering is connected.
 
 [Inside a report](#inside-a-report) · [Report gallery](#report-gallery) · [Quick start](#quick-start) ·
 [Engineering records](docs/README.md) ·
-[Hermes skill](SKILL.md)
+[Skill procedure](SKILL.md)
 
-[![Hermes Agent](https://img.shields.io/badge/Hermes-Agent-6C5CE7?style=flat-square)](https://hermes-agent.nousresearch.com/)
+[![Agent harness](https://img.shields.io/badge/Agent_Harness-Agnostic-214E6B?style=flat-square)](SKILL.md)
+[![Hermes integration](https://img.shields.io/badge/Hermes-Validated_Integration-6C5CE7?style=flat-square)](https://hermes-agent.nousresearch.com/)
 [![License](https://img.shields.io/github/license/Merak-Wang/signaltrail-skill?style=flat-square)](LICENSE)
 
 ![SignalTrail report preview](https://raw.githubusercontent.com/Merak-Wang/signaltrail-skill/main/assets/readme/morning-report-preview.png)
@@ -51,8 +58,11 @@ SignalTrail turns a large daily reading queue into a consistent decision artifac
 
 - **Reader-ready morning and evening reports** in HTML and PDF, with Markdown and
   JSON retained as durable local records.
-- **Traceable coverage** that preserves the original title, source, link, publication
-  time, and any access limitation instead of presenting an opaque summary.
+- **A harness-independent core**. Python owns collection, state, validation, and
+  projection; self-contained packets ask the host only for bounded semantic writing
+  and can run concurrently or serially when the host has a lower worker limit.
+- **Traceable coverage** that keeps the original title, source, link, publication
+  time, and any access limitation visible beside the summary.
 - **A seven-section editorial view** spanning international, domestic, military,
   markets, technology, research papers, and open-source projects.
 - **Three analytical lenses plus synthesis** for geopolitics, AI/technology, and
@@ -64,8 +74,8 @@ SignalTrail turns a large daily reading queue into a consistent decision artifac
   structured constraints; an invalid submission gets at most one budget-gated repair,
   with a hash-bound receipt that excludes the draft body.
 - **Auditable model usage** stored as immutable, allowlisted counts by run and phase.
-  Missing coverage remains `unknown` or `unmetered` instead of being presented as an
-  exact token baseline.
+  Missing coverage remains `unknown` or `unmetered`; an exact token baseline requires
+  exact observations.
 - **Local ownership by default** with versioned files, a portable desktop HTML copy,
   and optional Notion delivery.
 
@@ -78,9 +88,10 @@ the editorial or model budget.
 
 A full run can require up to 480 ordinary briefs. SignalTrail limits authoring to
 the planned Top-15 gaps, splits them into at most 12 bounded packets, and processes
-those packets in waves of three under Hermes' default concurrency. The default full
-run's 60-minute limit is a hard guard that stops new stages, not a committed delivery
-SLA. When delivery must land exactly at 06:00 or 18:00, start earlier and leave margin
+them in host-sized waves with at most three workers by default. Harnesses with lower
+concurrency can process packets serially; Hermes' three-child default matches this cap. A
+60-minute hard budget stops dispatching new stages after the limit. The current release makes no
+delivery-SLA commitment. When delivery must land exactly at 06:00 or 18:00, start earlier and leave margin
 for provider latency, access verification, and bounded retries.
 
 ## Report gallery
@@ -96,8 +107,8 @@ view, then selects a small evidence set for analysis. “Complete coverage” an
 This is a historical run snapshot. Its independent evaluation accepted the current
 quality boundary while disclosing that most items had metadata-level evidence and
 that some WATCH items were stale or lacked publication times. The full run took
-3,974 seconds, above the 3,600-second hard budget, so it is not an SLA-compliant
-benchmark. The HTML contains no credentials or local runtime paths, but its 136 images
+3,974 seconds, above the 3,600-second hard budget, so this edition serves as a product
+showcase only. The HTML contains no credentials or local runtime paths, but its 136 images
 use public-source URLs; full viewing requires a network connection, and those external
 images may disappear or change.
 
@@ -115,16 +126,43 @@ report experience.
 Fixture data and gallery notes are documented in
 [examples/README.en.md](https://github.com/Merak-Wang/signaltrail-skill/blob/main/examples/README.en.md).
 
+## Roadmap
+
+The next stage focuses on verifiable news explanation. Every item below is Draft or
+planned work and remains unavailable in the current release:
+
+- **Evidence-driven scripts** will turn a completed report and index into a bounded
+  narrative packet that connects selected news, context, counterevidence, and
+  multi-perspective analysis in chapter form.
+- **Independent beat verification** will bind every claim or beat to current report
+  evidence and a content hash. Failed verification, stale evidence, or a revision
+  mismatch will keep the script out of reader and media stages.
+- **A deterministic story stream** will arrange verified beats, citations, licensed
+  images, and explicit fallback media into a reproducible explanatory sequence.
+- **Speech, subtitles, and news-explainer video** will follow the story-stream gate,
+  with licensed TTS, measured subtitle timing, reproducible rendering, technical QA,
+  content-consistency checks, and media-rights review.
+- **Multi-harness execution and acceptance** will keep the common packet protocol while
+  requiring three consecutive morning/evening editions to pass frozen token, evidence,
+  quality, and freshness thresholds before release.
+
+These projections consume a verified immutable report and cannot alter or revoke the
+delivered JSON, Markdown, HTML, or PDF. The detailed boundaries live in the
+[draft architecture](docs/design-docs/evidence-driven-professional-narrative-report.md),
+[product specification](docs/product-specs/evidence-driven-professional-narrative-report.md),
+and [active execution plan](docs/exec-plans/active-evidence-driven-professional-narrative.md).
+
 ## Product fit
 
-SignalTrail is designed for individual researchers and small teams that already use
-Hermes and want a repeatable report they can inspect, archive, and modify locally.
+SignalTrail is designed for individual researchers and small teams that use an agent
+harness—or directly orchestrate the local CLI—and want a repeatable report they can
+inspect, archive, and modify locally.
 It is especially useful when “why this item is here” and “what failed to load” matter
 as much as the summary.
 
-It is not an enterprise intelligence platform. It does not include paid research,
-social-firehose coverage, mobile clients, SSO, RBAC, or an SLA. It also does not
-bypass login, CAPTCHA, paywalls, rate limits, or other access controls.
+The current scope excludes paid research, social-firehose coverage, mobile clients,
+SSO, RBAC, and delivery SLAs. SignalTrail also respects login, CAPTCHA, paywall, rate-limit,
+and other access controls.
 
 | Need | SignalTrail approach |
 | --- | --- |
@@ -140,12 +178,37 @@ bypass login, CAPTCHA, paywalls, rate limits, or other access controls.
 ### Requirements
 
 - Git and Python 3.11 or newer
+- An agent harness that can read `SKILL.md`, run local commands, and let workers return
+  structured JSON; hosts without child-task concurrency can process packets serially
+- Microsoft Edge on Windows or Playwright Chromium on macOS and Linux
 - A configured [Hermes Agent](https://hermes-agent.nousresearch.com/) and Hermes
-  Gateway
-- Microsoft Edge on Windows; the installer provisions Playwright Chromium on macOS
-  and Linux
+  Gateway only when using the Hermes quick-install path
 
-### Install from GitHub
+### Connect any harness
+
+The core Python package has no Hermes dependency. Clone the repository, install the
+CLI, and let the selected harness load the root `SKILL.md`:
+
+```text
+git clone https://github.com/Merak-Wang/signaltrail-skill.git
+cd signaltrail-skill
+python -m pip install -e .
+daily-intel --help
+```
+
+Across harnesses, `--data-dir` or `DAILY_INTEL_DATA_DIR` binds one canonical data
+root. When the CLI starts outside the repository, `DAILY_INTEL_SKILL_DIR` can point to
+the directory containing `SKILL.md`, `configs/`, and `schemas/`. The host uses its own
+delegation mechanism for `brief_authoring_batches` and the analysis packet. Hermes,
+Codex, and OpenClaw have built-in usage adapters; another host can extend
+`UsageAdapter` or retain explicit `unmetered` coverage. Automatic independent
+evaluation currently uses Hermes Cron. Other hosts can schedule the same hash-bound
+dossier; without a scheduler, the corresponding tail remains partial.
+
+### Hermes quick install
+
+These scripts install the Python package and synchronize the skill to Hermes at
+`skills/research/signaltrail`.
 
 Windows:
 
@@ -170,8 +233,7 @@ script completes:
 python -m playwright install-deps chromium
 ```
 
-The installer synchronizes the skill to `skills/research/signaltrail` and installs
-the backward-compatible `daily-intel` command:
+The backward-compatible `daily-intel` command remains available after installation:
 
 ```text
 daily-intel --help
@@ -183,7 +245,10 @@ legacy `skills/research/merak-brief` and `skills/research/daily-intelligence`
 locations. After confirming the new `/signaltrail` skill works, remove the old
 skill directories if Hermes shows legacy brand entries.
 
-### Ask Hermes for the first report
+### Ask the selected harness for the first report
+
+These prompts work in any harness that has loaded the skill and can be sent directly
+to Hermes:
 
 ```text
 Use SignalTrail to create today's Chinese morning report as local HTML and PDF.
@@ -286,39 +351,25 @@ ranking even when it contains papers published in earlier years.
 | `usage/YYYY-MM-DD/TASK_ID/events/*.json` | Immutable model-usage audit events with no prompt or generated body |
 | Notion | Optional metadata page plus portable HTML attachment |
 
-By default, report history lives under
-`%LOCALAPPDATA%\hermes\daily-intelligence\reports` on Windows or
-`~/.hermes/daily-intelligence/reports` on macOS and Linux. When `HERMES_HOME` is set,
-the same `daily-intelligence/reports` path is created beneath it.
+Across harnesses, `--data-dir` or `DAILY_INTEL_DATA_DIR` selects the canonical local
+data root, with report history under its `reports/` directory. For compatibility with
+existing deployments, the Hermes quick-install path continues to use
+`%LOCALAPPDATA%\hermes\daily-intelligence` on Windows or
+`~/.hermes/daily-intelligence` on macOS and Linux. A configured `HERMES_HOME` retains
+the `daily-intelligence/` child directory.
 
 Notion is optional. Without Notion credentials, every local artifact remains
 available. If desktop delivery, PDF rendering, or Notion delivery fails, the
 versioned local record remains intact and the failed projection can be retried.
 
-## Hermes community package
+## Agent Skill and Hermes community package
 
-`SKILL.md` follows the Hermes/Agent Skills layout: public metadata is at the
-frontmatter root, Hermes discovery/configuration lives under `metadata.hermes`, and
-procedural detail is progressively disclosed through `references/`, `templates/`,
-and deterministic scripts.
-
-Build the publication directory from an allowlist of Git-tracked files:
-
-```text
-python scripts/build_hermes_skill.py
-```
-
-The command validates metadata, directory naming, required runtime files, forbidden
-runtime paths, file sizes, and common secret patterns, then writes
-`dist/signaltrail`. Publish that directory—not the repository root:
-
-```text
-hermes skills publish ABSOLUTE_PATH/dist/signaltrail --to github --repo OWNER/REPOSITORY
-```
-
-The absolute path avoids ambiguity with the Hermes local skill root. Review
-`git status`, the generated file list, and the Hermes security scan before opening
-the community pull request.
+Compatible Agent Skills harnesses can consume the public root metadata and procedure
+in `SKILL.md`. Hermes discovery and configuration live under `metadata.hermes`. The
+repository also includes an allowlisted builder that produces a separate
+`dist/signaltrail` directory for Hermes community distribution and checks metadata,
+runtime files, package size, and common secret patterns. Maintainer requirements and
+verification entry points are cataloged under Packaging in [AGENTS.md](AGENTS.md).
 
 ## Documentation
 
@@ -333,25 +384,19 @@ the community pull request.
   [references/system-design.md](references/system-design.md)
 - Model-usage audit and host integration:
   [references/llm-usage.md](references/llm-usage.md)
-- Windows setup: [references/windows-setup.md](references/windows-setup.md)
+- Hermes quick setup on Windows:
+  [references/windows-setup.md](references/windows-setup.md)
 - Notion setup: [references/notion-setup.md](references/notion-setup.md)
-- Current quality score: [docs/quality-score.md](docs/quality-score.md)
 - Release history: [CHANGELOG.md](CHANGELOG.md)
 
-## Development
+## Contributing
 
-```text
-python -m pip install -e ".[dev]"
-python -m ruff check .
-python -m pytest
-python -m compileall -q src tests scripts
-python scripts/check_code_comments.py
-python scripts/check_docs.py
-```
-
-Update tests for any source filter, status model, validation, or publishing change.
-Never commit runtime `data/`, browser profiles, cookies, account screenshots,
-authenticated HTML, or secrets.
+Engineering boundaries, documentation synchronization, and the full validation gate
+are maintained in [AGENTS.md](AGENTS.md) and the
+[engineering record catalog](docs/README.md). CI checks tests, static analysis,
+compilation, and documentation consistency. Runtime `data/`, browser profiles,
+cookies, account screenshots, authenticated HTML, and secrets remain outside version
+control.
 
 ## License
 

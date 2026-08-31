@@ -54,14 +54,19 @@ email, or summaries of text already supplied by the user.
 
 ## First Run
 
-Check `daily-intel --help`. If the command is unavailable, install from the skill
-directory:
+Check `daily-intel --help`. If the command is unavailable, install the Python package
+from the directory that contains this `SKILL.md`:
 
 ```text
-# Windows
-powershell -ExecutionPolicy Bypass -File "${HERMES_SKILL_DIR}\scripts\install.ps1"
+python -m pip install -e "ABSOLUTE_SKILL_DIR"
+```
 
-# macOS or Linux
+Hermes installations can use the bundled synchronization scripts:
+
+```text
+# Windows / PowerShell
+powershell -ExecutionPolicy Bypass -File "${HERMES_SKILL_DIR}\scripts\install.ps1"
+# macOS or Linux / POSIX shell
 bash "${HERMES_SKILL_DIR}/scripts/install.sh"
 ```
 
@@ -76,23 +81,21 @@ Normal authoring packets are self-contained. Do not preload the editorial,
 narrative, and report-contract references during an ordinary run. Read the
 specific reference only when its routing condition below applies.
 
-## Usage audit: mandatory startup gate
+## Usage audit and coverage
 
-Every morning/evening invocation—including manual, scheduled, restart, and recovery
-runs—must start a unique foreground task before its first provider request. The outer
-launcher runs `signaltrail-usage start`, injects the ledger/task/adapter/phase
-`SIGNALTRAIL_USAGE_*` variables into the long-lived host, and correlates all workers.
-
-At skill entry, verify that the task is open and belongs to `DATA_DIR`. A missing,
-mismatched, or finalized task blocks `run-edition`, delegation, repair, and evaluation.
-If already inside an unmetered model session, stop before report work and require a
-metered relaunch; a child shell cannot cover the first call or modify its parent host.
+Choose usage coverage before report work. A registered adapter starts one foreground task before
+the first provider request, injects its `SIGNALTRAIL_USAGE_*` variables into the long-lived host,
+and correlates all workers. The task must be open, belong to `DATA_DIR`, and predate provider work.
+A harness without an audited adapter can run with explicit `unmetered` coverage and `null`
+observed/projected tokens; that run cannot satisfy an exact usage-budget acceptance gate.
 
 Foreground and delegated workers share the task; packets provide `usage_correlation`.
-Hermes uses all three API hooks; Codex/OpenClaw import durable parent/child logs. Never
-persist prompts, outputs, tool data, raw host IDs/receipts, or secrets. After workers
-and imports finish, run `summary` then `finalize`, including on failure/cancellation.
-Unknown stays unknown, never `0`. Read `references/llm-usage.md` for setup or gaps.
+Hermes uses all three API hooks; Codex and OpenClaw import durable parent/child logs.
+Other harnesses can register a `UsageAdapter` or feed an audited allowlisted receipt
+path. Prompts, outputs, tool data, raw host IDs/receipts, and secrets stay outside the
+ledger. After workers and imports finish, run `summary` then `finalize`, including on
+failure or cancellation. Unknown stays unknown, never `0`. Read
+`references/llm-usage.md` for setup or gaps.
 
 ## Workflow
 
@@ -142,9 +145,10 @@ daily-intel --data-dir DATA_DIR prefetch-media --run RUN.json
 ```
 
 Author every `brief_authoring_batches` packet at its assigned `draft_result_path`.
-Process packets in their listed order in waves of at most three concurrent Hermes
-workers; wait for one wave to finish before dispatching the next. This keeps each
-packet bounded while respecting Hermes' default `max_concurrent_children: 3`.
+Process packets in their listed order in waves of at most three concurrent harness
+workers; a host with a lower worker limit may process them serially. Wait for one wave
+to finish before dispatching the next. Hermes' default
+`max_concurrent_children: 3` matches this bound.
 Each packet contains its full contract. Follow its `output_schema` exactly for fields, types, enums, and extra-property boundaries.
 Use only packet evidence; do not browse, search, read another batch, or preload the long
 editorial/narrative/report references. Run its
@@ -182,8 +186,7 @@ The compact analysis packet is self-contained. Follow its `output_schema`, omit
 `python_owned_output_fields`, select the packet-stated event count, and complete
 geopolitics, AI/technology, markets, and one cross-perspective synthesis in
 `output_language`. Preserve original titles; add the specified translated-title
-field only when needed. Keep claims tied to visible evidence and make TL;DR text
-reader-facing rather than operational.
+field only when needed. Keep claims tied to visible evidence and write TL;DR text for readers.
 Python owns the three stable analysis IDs. Invalid shape/evidence permits at most one
 budget-authorized repair; the model must not invent identities.
 
@@ -239,14 +242,10 @@ The monitor uses local collection, caching, clustering, and state handling.
 - Tail work and independent evaluation remain separately retryable.
 - Cache reuses stable text only; run-relative fields and miss metrics are recomputed.
 - `llm_budget.latest` authorizes each phase using nonzero downstream reserves.
-- No budget check says `coverage: unmetered` or `reason: no_usage_task_bound`.
-- The foreground usage task and linked evaluator child have been summarized and finalized;
-  any unobservable field remains explicitly unknown.
+- Metered runs have no `unmetered` budget check; configured foreground/evaluator tasks are
+  finalized. Unmetered runs preserve `null` usage and cannot claim exact-budget acceptance.
 
-Read `references/editorial-policy.md` only for source, evidence, access-status,
-coverage, continuity, or editorial disputes. Read
-`references/narrative-analysis.md` only to repair analysis coherence or style.
-Read `templates/report-contract.md` only for schema/validation repair. Read
-`references/runbook.md` for failure recovery, `references/system-design.md` for
-architecture changes, and `references/notion-setup.md` only when Notion is
-requested.
+Use `references/editorial-policy.md` for source/evidence disputes,
+`references/narrative-analysis.md` for analysis repair, and `templates/report-contract.md` for
+schema repair. Recovery, architecture changes, and requested Notion delivery route to
+`references/runbook.md`, `references/system-design.md`, and `references/notion-setup.md`.

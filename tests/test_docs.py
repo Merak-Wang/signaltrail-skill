@@ -33,19 +33,60 @@ def test_markdown_discovery_excludes_repository_virtual_environments(
     docs_dir.mkdir()
     tracked = docs_dir / "tracked.md"
     tracked.write_text("[missing](missing.md)", encoding="utf-8")
+    nested_plan = docs_dir / "plan.md"
+    nested_plan.write_text("tracked documentation plan", encoding="utf-8")
     virtualenv_markdown = tmp_path / ".venv" / "site-packages" / "dependency.md"
     virtualenv_markdown.parent.mkdir(parents=True)
     virtualenv_markdown.write_text("[third-party missing](missing.yml)", encoding="utf-8")
     conventional_venv = tmp_path / "venv" / "dependency.md"
     conventional_venv.parent.mkdir()
     conventional_venv.write_text("third party", encoding="utf-8")
+    local_plan = tmp_path / "plan.md"
+    local_plan.write_text("local development notes", encoding="utf-8")
     monkeypatch.setattr(DOCS, "ROOT", tmp_path)
 
     discovered = DOCS.markdown_files()
 
     assert tracked in discovered
+    assert nested_plan in discovered
     assert virtualenv_markdown not in discovered
     assert conventional_venv not in discovered
+    assert local_plan not in discovered
+
+
+def test_readmes_position_signaltrail_as_harness_agnostic_with_a_draft_video_roadmap():
+    chinese = (ROOT / "README.md").read_text(encoding="utf-8")
+    english = (ROOT / "README.en.md").read_text(encoding="utf-8")
+
+    assert "任意 harness" in chinese
+    assert "新闻讲解视频" in chinese
+    assert "Draft" in chinese
+    assert "any harness" in english
+    assert "news-explainer video" in english
+    assert "Draft" in english
+    assert "Hermes agents" not in english
+
+
+def test_public_markdown_hygiene_patterns_cover_session_and_personal_paths():
+    prohibited = [
+        "C:/Users/example/AppData/Local/report.json",
+        r"E:\ai_project\signaltrail\tmp",
+        "Codex in-app browser rejected the page",
+        "Codex 应用内浏览器拒绝了页面",
+    ]
+    allowed = [
+        "%LOCALAPPDATA%\\hermes\\daily-intelligence",
+        "Codex and OpenClaw have built-in usage adapters.",
+    ]
+
+    assert all(
+        any(pattern.search(sample) for pattern in DOCS.PROHIBITED_MARKDOWN_PATTERNS.values())
+        for sample in prohibited
+    )
+    assert all(
+        not any(pattern.search(sample) for pattern in DOCS.PROHIBITED_MARKDOWN_PATTERNS.values())
+        for sample in allowed
+    )
 
 
 def test_readme_showcase_assets_match_the_current_schema_v20_gallery():

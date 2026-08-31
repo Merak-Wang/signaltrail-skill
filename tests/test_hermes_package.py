@@ -48,6 +48,10 @@ def test_community_package_contains_runtime_and_excludes_repository_state(tmp_pa
         origin = ROOT / directory
         if origin.exists():
             shutil.copytree(origin, source / directory)
+    readme = source / "README.md"
+    readme.write_bytes(
+        readme.read_bytes().replace(b"\r\n", b"\n").replace(b"\n", b"\r\n")
+    )
     subprocess.run(["git", "init", "-q", str(source)], check=True)
     subprocess.run(["git", "-C", str(source), "add", "-A"], check=True)
 
@@ -64,7 +68,12 @@ def test_community_package_contains_runtime_and_excludes_repository_state(tmp_pa
     assert (output / "schemas" / "report.schema.json").is_file()
     assert (output / "schemas" / "llm-usage.schema.json").is_file()
     assert (output / "references" / "llm-usage.md").is_file()
+    assert (output / "AGENTS.md").is_file()
+    assert (output / "ARCHITECTURE.md").is_file()
+    assert (output / "docs" / "README.md").is_file()
+    assert (output / "docs" / "zh-CN" / "README.md").is_file()
     assert (output / "scripts" / "install.ps1").is_file()
+    assert b"\r\n" not in (output / "README.md").read_bytes()
     assert not (output / ".git").exists()
     assert not (output / "tests").exists()
     assert not (output / "examples").exists()

@@ -807,6 +807,7 @@ def test_v20_html_has_collapsible_scroll_tracking_toc():
     assert "updateActiveToc" in html
     assert "aria-current" in html
     assert "right:8px;top:auto;bottom:12px" in html
+    assert "运行 SignalTrail 的智能体宿主" in html
     assert "@media print" in html and ".report-toc" in html
 
 

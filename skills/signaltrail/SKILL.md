@@ -9,7 +9,7 @@ metadata:
   hermes:
     tags: [research, news, briefing, intelligence, rss, html, pdf, notion]
     category: research
-    requires_toolsets: [terminal]
+    requires_toolsets: [terminal, delegation]
     related_skills: []
     config:
       - key: daily_intelligence.data_dir
@@ -54,14 +54,19 @@ email, or summaries of text already supplied by the user.
 
 ## First Run
 
-Check `daily-intel --help`. If the command is unavailable, install from the skill
-directory:
+Check `daily-intel --help`. If the command is unavailable, install the Python package
+from the directory that contains this `SKILL.md`:
 
 ```text
-# Windows
-powershell -ExecutionPolicy Bypass -File "${HERMES_SKILL_DIR}\scripts\install.ps1"
+python -m pip install -e "ABSOLUTE_SKILL_DIR"
+```
 
-# macOS or Linux
+Hermes installations can use the bundled synchronization scripts:
+
+```text
+# Windows / PowerShell
+powershell -ExecutionPolicy Bypass -File "${HERMES_SKILL_DIR}\scripts\install.ps1"
+# macOS or Linux / POSIX shell
 bash "${HERMES_SKILL_DIR}/scripts/install.sh"
 ```
 
@@ -72,9 +77,25 @@ Only an intentional migration may run:
 daily-intel --data-dir DATA_DIR data-root adopt
 ```
 
-Read `references/editorial-policy.md`, `references/narrative-analysis.md`, and
-`templates/report-contract.md` before authoring. Read `references/runbook.md` for
-recovery, and `references/notion-setup.md` only when Notion is requested.
+Normal authoring packets are self-contained. Do not preload the editorial,
+narrative, and report-contract references during an ordinary run. Read the
+specific reference only when its routing condition below applies.
+
+## Usage audit and coverage
+
+Choose usage coverage before report work. A registered adapter starts one foreground task before
+the first provider request, injects its `SIGNALTRAIL_USAGE_*` variables into the long-lived host,
+and correlates all workers. The task must be open, belong to `DATA_DIR`, and predate provider work.
+A harness without an audited adapter can run with explicit `unmetered` coverage and `null`
+observed/projected tokens; that run cannot satisfy an exact usage-budget acceptance gate.
+
+Foreground and delegated workers share the task; packets provide `usage_correlation`.
+Hermes uses all three API hooks; Codex and OpenClaw import durable parent/child logs.
+Other harnesses can register a `UsageAdapter` or feed an audited allowlisted receipt
+path. Prompts, outputs, tool data, raw host IDs/receipts, and secrets stay outside the
+ledger. After workers and imports finish, run `summary` then `finalize`, including on
+failure or cancellation. Unknown stays unknown, never `0`. Read
+`references/llm-usage.md` for setup or gaps.
 
 ## Workflow
 
@@ -87,6 +108,15 @@ daily-intel --data-dir DATA_DIR --timezone Asia/Shanghai run-edition --edition e
 
 Read the returned run manifest and `artifacts.context_path`. Keep each access failure
 explicit; never convert it to `no_items`.
+
+All formal sources use `report_target: 15` and `report_max: 15`. Collection defaults
+to each page, ranking, or feed's original Top order, so `source` selects Top1–15.
+Use `collection.item_order: published_at` in `configs/sources.yaml` only when the
+user chooses the current index's newest-publication order; valid publication times
+sort newest first, while missing and tied times remain stable. A source-level
+`item_order` may override the global value. Preserve `source_rank` in either mode and
+do not reorder ordinary briefs by `importance`. Hugging Face Papers intentionally
+uses its Trending Top list, which can include older publications.
 
 Only when the user is ready for an interactive browser window:
 
@@ -115,8 +145,19 @@ daily-intel --data-dir DATA_DIR prefetch-media --run RUN.json
 ```
 
 Author every `brief_authoring_batches` packet at its assigned `draft_result_path`.
-Use only packet evidence; do not browse, search, or read another batch. Run its
-`submission_command` once and make at most one validation-only repair.
+Process packets in their listed order in waves of at most three concurrent harness
+workers; a host with a lower worker limit may process them serially. Wait for one wave
+to finish before dispatching the next. Hermes' default
+`max_concurrent_children: 3` matches this bound.
+Each packet contains its full contract. Follow its `output_schema` exactly for fields, types, enums, and extra-property boundaries.
+Use only packet evidence; do not browse, search, read another batch, or preload the long
+editorial/narrative/report references. Run its
+`submission_command`; if it reports validation errors, make at most one
+validation-only repair and run the same command once more.
+Do not repeat the indexed `title` in brief output; Python injects it. Emit the
+packet's translated-title field only when that candidate says
+`translation_required: true`.
+Rejection creates an immutable field/rule/budget receipt; one repair is the hard maximum.
 
 Record bounded metrics, inspect status, then prepare analysis:
 
@@ -126,16 +167,28 @@ daily-intel --data-dir DATA_DIR authoring-status --run RUN.json
 daily-intel --data-dir DATA_DIR prepare-analysis --run RUN.json
 ```
 
+`prepare-analysis` revalidates an assigned draft when its immutable receipt is
+missing and accepts it only if the original packet contract passes unchanged. Check
+`recovered_batches` before treating a batch as missing. Semantic-cache reuse and
+accepted drafts must stay inside each source's ordered `brief_plan.default_item_ids`;
+they may never substitute an older item outside the current Top1–15.
+
 Use `--allow-degraded` only when the manifest says `deadline_exceeded: true` and a
-batch is still missing.
+batch is still missing. Lower coverage only for sources assigned to that missing
+batch; completed batches keep their planned target (15 when at least fifteen
+candidates exist). If candidates exist in the index, show the affected source and
+its validated/planned count even when other sources in that section succeeded;
+never describe an authoring or validation failure as not collected.
 
 ### 4. Analyze and assemble
 
-Write only the assigned compact analysis packet. Select 6–10 events and complete
+The compact analysis packet is self-contained. Follow its `output_schema`, omit
+`python_owned_output_fields`, select the packet-stated event count, and complete
 geopolitics, AI/technology, markets, and one cross-perspective synthesis in
 `output_language`. Preserve original titles; add the specified translated-title
-field only when needed. Keep claims tied to visible evidence and make TL;DR text
-reader-facing rather than operational.
+field only when needed. Keep claims tied to visible evidence and write TL;DR text for readers.
+Python owns the three stable analysis IDs. Invalid shape/evidence permits at most one
+budget-authorized repair; the model must not invent identities.
 
 ```text
 daily-intel --data-dir DATA_DIR assemble-authoring --run RUN.json --analysis ANALYSIS.json
@@ -161,7 +214,8 @@ daily-intel --data-dir DATA_DIR complete-edition-tail --run RUN.json
 ```
 
 The tail creates PDF, retries requested Notion delivery, and schedules independent
-evaluation. A tail failure is `partial`; it must not withdraw the local report.
+evaluation from one immutable hash-bound dossier after preflight/reconciliation, with at
+most two total attempts. PDF time/bytes/budget are explicit. Tail failure is `partial`.
 
 ## Optional Monitor
 
@@ -179,9 +233,19 @@ The monitor uses local collection, caching, clustering, and state handling.
 - Run status is `completed` or `completed_partial`; both HTML copies open.
 - Schema 2.0, source identity, time, status, citations, counts, and language validate.
 - Seven sections, three analysis lenses, and cross-perspective synthesis are present.
+- Formal sources with enough candidates contain their ordered Top1–15; ordinary
+  briefs preserve current index order and cache reuse stays within `brief_plan`.
 - Access failures, rate limits, and pending verification retain their real status.
+- `recovered_batches`, `missing_batches`, and degraded per-source targets agree; an
+  authoring failure is not reported as a collection failure.
 - Desktop HTML and both PDF paths embed validated images.
 - Tail work and independent evaluation remain separately retryable.
+- Cache reuses stable text only; run-relative fields and miss metrics are recomputed.
+- `llm_budget.latest` authorizes each phase using nonzero downstream reserves.
+- Metered runs have no `unmetered` budget check; configured foreground/evaluator tasks are
+  finalized. Unmetered runs preserve `null` usage and cannot claim exact-budget acceptance.
 
-For the state machine and rationale, read `references/runbook.md` and
-`references/system-design.md`.
+Use `references/editorial-policy.md` for source/evidence disputes,
+`references/narrative-analysis.md` for analysis repair, and `templates/report-contract.md` for
+schema repair. Recovery, architecture changes, and requested Notion delivery route to
+`references/runbook.md`, `references/system-design.md`, and `references/notion-setup.md`.
