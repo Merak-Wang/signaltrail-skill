@@ -2,7 +2,7 @@
 
 **Purpose:** Record the production generation, deterministic validation, independent evaluation,
 usage accounting, and rendered-output acceptance for the 2026-08-25 Chinese morning report.
-**Status:** Verified — report quality accepted; deadline and complete lifecycle acceptance withheld
+**Status:** Historical
 **Owner:** Repository maintainers
 **Last verified:** 2026-08-25
 
@@ -133,7 +133,7 @@ The initial delegated batch path stalled. Recovery replayed the same immutable p
 time under the existing run-attempt and receipt rules. No report revision was overwritten.
 
 Remaining work is tracked in the [technical-debt tracker](tech-debt-tracker.md). The separate
-[active narrative plan](active-evidence-driven-professional-narrative.md) governs downstream
+[active narrative plan](../roadmap.md) governs downstream
 narrative and media work and does not alter this acceptance result:
 
 - scheduled evaluator per-request routing (TD-020);

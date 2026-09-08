@@ -1,5 +1,7 @@
 # Native Windows Setup
 
+**权威语言：** 中文（单语运行参考）
+**负责人：** 仓库维护者
 **Status:** Operational reference
 **Last code verification:** 2026-08-23
 **Documentation catalog:** [`docs/README.md`](../docs/README.md)

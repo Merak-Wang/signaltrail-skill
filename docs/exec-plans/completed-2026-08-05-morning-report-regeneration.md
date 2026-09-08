@@ -3,7 +3,7 @@
 **Purpose:** Record the accepted report, artifact lineage, durable engineering decisions,
 remaining risks, and verification evidence from the 2026-08-05 morning-edition regeneration.
 
-**Status:** Verified
+**Status:** Historical
 **Owner:** Repository maintainers
 **Last verified:** 2026-08-05
 

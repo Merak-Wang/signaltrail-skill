@@ -26,6 +26,7 @@ dependencies = [
 dev = ["pypdf>=5,<7", "pytest>=8.3,<9", "ruff>=0.9,<1"]
 
 [project.scripts]
+signaltrail = "daily_intelligence.cli:main"
 daily-intel = "daily_intelligence.cli:main"
 signaltrail-usage = "daily_intelligence.usage_cli:main"
 signaltrail-hermes = "daily_intelligence.hermes_runner:main"

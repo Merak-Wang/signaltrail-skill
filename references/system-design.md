@@ -1,7 +1,9 @@
 # 系统设计
 
+**权威语言：** 中文（单语运行参考）
+**负责人：** 仓库维护者
 **状态：** 已验证详细设计
-**最后对照代码：** 2026-08-28
+**最后对照代码：** 2026-09-08
 **上级地图：** [`ARCHITECTURE.md`](../ARCHITECTURE.md)
 
 ## 边界
@@ -14,7 +16,7 @@ RSS/Atom 条件请求 + 静态 HTML -> 零 token 监控快照 -> 事件聚类/�
 -> Python schema 2.0 装配/校验 -> 不可变 JSON/Markdown -> 立即交付 HTML
 -> 后台：PDF | 可重试 Notion（可选远程投影）
 -> independent evaluator 只评分 -> 独立评估 artifact
--> 刷新 HTML/PDF 评估区 -> 可选追加 Notion -> 受评估约束的长期连续状态
+-> 刷新 HTML 评估区、复用同修订 PDF -> 可选追加 Notion -> 受评估约束的长期连续状态
 ```
 
 Python 拥有状态迁移、revision、访问等级映射、限额、验证和发布；brief authors 只产出 packet 约束的标题翻译与摘要，analysis author 只产出紧凑 analysis packet 约束的精选与研判；independent evaluator 只审查已经保存的不可变报告。事实身份校验在发布前完成，主报告不等待主观质量评分；后置评估只给修改和连续性建议，不修改报告。
@@ -94,7 +96,7 @@ authoring session 绑定 run attempt、context 绝对路径与 SHA-256，分发�
 
 核心流水线只要求宿主能够执行本地命令、读取自包含 packet、把一个结构化 JSON 写到指定路径，并把确定性提交命令的结果交回 authoring coordinator；它不依赖 Hermes 的会话或任务对象。`daily-intel` 的显式 `--config`、`--data-dir` 与 `--profile-dir` 可由任意 harness 使用。缺少并发 worker 时可以顺序执行 packet，安全、覆盖和最多一次修复不变量保持不变。
 
-用量 sidecar 当前只内置 `hermes`、`codex`、`openclaw` 三个 adapter。其他 harness 可以不绑定 usage task，使预算回执明确保持 `coverage=unmetered` 且 token 为 `null`，也可以通过 Python `UsageAdapter` 协议实现并注册白名单解析器；不得把未知宿主回执交给近似 adapter 或保存 raw receipt。自动 independent evaluator 调度与 job 对账当前只由 Hermes Cron 集成实现。其他宿主仍可只读同一 hash-bound dossier、在外部调度 independent evaluator 并调用 `finalize-evaluation`，但不能把手工或外部调度声称为内置自动调度。
+用量 sidecar 当前只内置 `hermes`、`codex`、`openclaw` 三个 adapter。其他 harness 可以不绑定 usage task，使预算回执明确保持 `coverage=unmetered` 且 token 为 `null`，也可以通过 Python `UsageAdapter` 协议实现并注册白名单解析器；不得把未知宿主回执交给近似 adapter 或保存 raw receipt。自动 independent evaluator 调度和任务对账支持 `signaltrail-hermes` 的本地计量进程，以及保留兼容的 Hermes Cron 路径；覆盖区别见 [用量说明](llm-usage.md)。其他宿主仍可只读同一 hash-bound dossier、在外部调度 independent evaluator 并调用 `finalize-evaluation`，但不能把手工或外部调度声称为内置自动调度。
 
 ## 兼容性
 

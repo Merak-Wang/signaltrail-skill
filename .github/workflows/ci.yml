@@ -30,4 +30,10 @@ jobs:
       - name: Tests
         run: python -m pytest
       - name: Compile package
-        run: python -m compileall -q src
+        run: python -m compileall -q src tests scripts
+      - name: Code documentation
+        run: python scripts/check_code_comments.py
+      - name: Documentation links and translations
+        run: python scripts/check_docs.py
+      - name: Whitespace
+        run: git diff --check

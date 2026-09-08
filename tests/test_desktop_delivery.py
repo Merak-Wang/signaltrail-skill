@@ -9,7 +9,8 @@ from PIL import Image
 from pypdf import PdfReader
 
 from daily_intelligence.config import OutputConfig, load_config, validate_output_config
-from daily_intelligence.local_output import write_local_outputs
+from daily_intelligence.local_output import render_report_html, write_local_outputs
+from tests.report_helpers import first_report_item, load_sample_report
 
 
 def _report() -> dict:
@@ -298,3 +299,20 @@ def test_reportlab_pdf_page_rasterization_is_visually_nonblank(tmp_path: Path):
     low, high = image.getextrema()
     assert low < 245
     assert high == 255
+
+
+def test_local_html_escapes_untrusted_report_text_and_urls():
+    root = Path(__file__).resolve().parents[1]
+    report = load_sample_report(root)
+    report["title"] = "日报 </title><script>alert(1)</script>"
+    item = first_report_item(report)
+    item["title"] = "标题 <img src=x onerror=alert(1)>"
+    item["source_refs"][0]["url"] = "javascript:alert(1)"
+
+    rendered = render_report_html(report)
+
+    assert "<script>alert(1)</script>" not in rendered
+    assert "&lt;script&gt;alert(1)&lt;/script&gt;" in rendered
+    assert "<img src=x onerror=alert(1)>" not in rendered
+    assert 'href="javascript:' not in rendered
+    assert "Content-Security-Policy" in rendered

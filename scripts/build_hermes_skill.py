@@ -24,6 +24,7 @@ PACKAGE_FILES = {
     Path("LICENSE"),
     Path("README.md"),
     Path("README.en.md"),
+    Path("RELEASE_NOTES.md"),
     Path("SECURITY.md"),
     Path("SKILL.md"),
     Path("pyproject.toml"),
@@ -33,6 +34,7 @@ PACKAGE_FILES = {
 }
 PACKAGE_DIRECTORIES = (
     Path("assets/monitor"),
+    Path("assets/readme"),
     Path("configs"),
     Path("docs"),
     Path("references"),

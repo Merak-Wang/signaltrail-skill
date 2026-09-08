@@ -1,6 +1,8 @@
 # Notion Schema Compatibility Migration
 
 **Status:** Historical compatibility note
+**Owner:** Repository maintainers
+**Language:** English (authoritative)
 **Last code verification:** 2026-08-02
 **Current setup:** [`references/notion-setup.md`](notion-setup.md)
 

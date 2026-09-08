@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+### 2026-09-08
+
+- Added `signaltrail` as the preferred CLI, preserving the `daily-intel` entry point and
+  existing Python, environment, and data identities.
+- Split CLI dispatch into typed handlers grouped by responsibility; reorganized the mixed
+  architecture/skill tests into subsystem tests and shared report fixtures.
+- Rewrote both READMEs, shortened agent and architecture instructions, and consolidated
+  documentation into usage, development, a single Draft roadmap, and retained history.
+- Replaced README wording assertions with document-checker behavior tests. Documentation checks
+  now cover images and exclude runtime/release snapshots; historical records no longer expire.
+- Extended Chinese comment checks to nested packages and allowed concise input descriptions.
+- Added the metered Hermes launcher, worker and auxiliary-call coverage, forced-summary session
+  headers, independent evaluator tasks, and host-counter reconciliation. Unknown coverage remains
+  explicit; end-to-end optimization acceptance is still qualified.
+- Versioned evaluation dossiers to preserve old inputs and clarify within-section event ordering.
+
+### Earlier changes
+
 - Replaced the subjective repository scorecard with an evidence-based verification matrix, removed
   local development-session traces from public records, and added checks for personal Windows
   paths and Codex browser-session residue.

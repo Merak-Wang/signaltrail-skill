@@ -63,6 +63,7 @@ def test_community_package_contains_runtime_and_excludes_repository_state(tmp_pa
     assert (output / "SKILL.md").is_file()
     assert (output / "src" / "daily_intelligence" / "cli.py").is_file()
     assert (output / "src" / "daily_intelligence" / "usage_cli.py").is_file()
+    assert (output / "src" / "daily_intelligence" / "commands" / "editions.py").is_file()
     assert (output / "src" / "daily_intelligence" / "llm_usage" / "__init__.py").is_file()
     assert (output / "configs" / "sources.yaml").is_file()
     assert (output / "schemas" / "report.schema.json").is_file()
@@ -72,6 +73,8 @@ def test_community_package_contains_runtime_and_excludes_repository_state(tmp_pa
     assert (output / "ARCHITECTURE.md").is_file()
     assert (output / "docs" / "README.md").is_file()
     assert (output / "docs" / "zh-CN" / "README.md").is_file()
+    assert (output / "assets" / "readme" / "morning-report-preview.png").is_file()
+    assert (output / "RELEASE_NOTES.md").is_file()
     assert (output / "scripts" / "install.ps1").is_file()
     assert b"\r\n" not in (output / "README.md").read_bytes()
     assert not (output / ".git").exists()
@@ -100,3 +103,29 @@ def test_community_package_rejects_secret_like_content(tmp_path):
 
     with pytest.raises(BUILD.PackageError, match="Potential secret"):
         BUILD.inspect_package_file(Path("references/credential.txt"), suspicious)
+
+
+def test_installers_sync_into_platform_hermes_skill_roots_and_exclude_repo_state():
+    root = Path(__file__).resolve().parents[1]
+    powershell = (root / "scripts" / "install.ps1").read_text(encoding="utf-8")
+    shell = (root / "scripts" / "install.sh").read_text(encoding="utf-8")
+
+    assert 'Join-Path $env:LOCALAPPDATA "hermes"' in powershell
+    assert '"skills"' in powershell
+    assert r'"research\signaltrail"' in powershell
+    assert '".git"' in powershell
+    assert '"build"' in powershell
+    assert '".code-review-graph"' in powershell
+    assert '"output"' in powershell
+    assert '"tmp"' in powershell
+    assert "if (-not $sameDirectory)" in powershell
+    assert "post-install artifact" in powershell
+    assert '${HOME}/.hermes' in shell
+    assert 'skills_root="${hermes_home}/skills"' in shell
+    assert 'target_dir="${skills_root}/research/signaltrail"' in shell
+    assert "if source != target:" in shell
+    assert "shutil.copytree(source, target, ignore=ignore)" in shell
+    assert '".code-review-graph"' in shell
+    assert '"output"' in shell
+    assert '"tmp"' in shell
+    assert "post-install artifact" in shell

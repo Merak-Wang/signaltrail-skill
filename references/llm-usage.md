@@ -1,5 +1,6 @@
 # LLM 用量审计与宿主接入
 
+**权威语言：** 中文（单语运行参考）
 **状态：** 已验证运行参考
 **Owner:** Repository maintainers
 **Last verified:** 2026-09-08

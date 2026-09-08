@@ -1,59 +1,32 @@
-# 迹简情报台 · SignalTrail v2.0.0
+# Release notes
 
-本次升级启用新的对外品牌 **迹简情报台 · SignalTrail**，同时保留 `daily-intel` CLI、
-`daily_intelligence` Python 包与既有数据根，确保现有运行历史连续。核心采集、packet
-authoring、Python 校验和本地交付不依赖特定 Agent harness；任何能运行本地命令、读取
-自包含 packet 并写回结构化 JSON 的 harness 都可驱动这些阶段。在不提高模型 Token
-预算的前提下，版本加入本地新闻监控、来源扩展、事件聚类和多视角分析 2.0。
-写作批次、图片预取和确定性装配缩短关键路径；日报先交付本地 JSON、Markdown、HTML，
-再在后台生成 PDF、可选同步 Notion 并安排独立评估。
+## Source update — 2026-09-08
 
-## 主要功能
+- `signaltrail` is now the preferred CLI name. `daily-intel`, Python imports, environment
+  variables, data directories, and stored report IDs remain compatible.
+- CLI handlers are separated by responsibility. Tests for workflow, context, verification,
+  storage, evaluation, and Notion now live beside tests of the same subsystem.
+- Documentation has one index, a shorter README, usage and development guides, and one Draft
+  roadmap. Historical records keep their original dates. English engineering records have
+  matching Chinese translations.
+- `signaltrail-hermes` starts usage tracking before the host and includes supported worker,
+  auxiliary, and independent-evaluation calls. Use this entry point for audited Hermes runs;
+  direct CLI/Cron entry points retain documented coverage limits. Missing observations remain
+  unknown. This update does not claim that end-to-end cost and latency targets have all passed.
+- The evaluator dossier now checks featured-event ordering within each section and uses a new
+  `-v2.json` path, preserving earlier immutable dossiers.
 
-- 监控 32 个核心来源与 51 个发现来源；发现来源不增加日报覆盖配额。
-- 优先使用 RSS/Atom 和条件请求缓存，必要时回退到静态 HTML 或显式人工验证。
-- 零模型 Token 地解析发布时间、图片和来源状态，并进行跨来源事件聚类。
-- 提供本机新闻流、事件聚类、来源健康和人工验证情报台。
-- 生成中文或英文的 schema 2.0 日报，包括资讯、技术和三类研判。
-- 三个视角使用同一事件档案，并给出共识、分歧、传导链、共同观察信号与修正条件。
-- 保留来源、证据状态、时间和历史连续性。
-- 对登录、限流、挑战和部分失败提供明确状态与恢复路径。
-- 使用不可变 Revision 保存 Index、报告和独立 Evaluation。
-- 提供响应式 HTML、本地日报索引、A4 PDF 和可续传的 Notion 发布。
-- brief authors 各自只写回一个受验证的 packet 结果，analysis author 只处理最多 18 个候选的紧凑研判包。
-- 分别记录 HTML、PDF、Notion 里程碑及模型批次耗时/API/Token，便于下一轮真实运行复盘。
-- 内置 Hermes、Codex、OpenClaw 三种用量审计 adapter；其他 harness 可保持明确的
-  `unmetered` 状态，或通过 Python `UsageAdapter` 增加白名单解析器。
-- Hermes 继续提供一键 Skill 安装、逐请求 Hook、`delegate_task` 波次和 Cron evaluator
-  调度；这些便利能力位于集成层，核心 packet 与报告 Schema 保持宿主无关。
+Reinstall the editable package to expose the new command. This source update does not rebuild
+the checked-in release snapshot or replace an installed skill. See [Usage](docs/usage.md)
+and [usage metering](references/llm-usage.md).
 
-## 兼容性
+## Version 2.0.0
 
-- Python 3.11、3.12。
-- Windows 和 Ubuntu 由 CI 覆盖。
-- 核心流程可由任意能执行 CLI、读写 packet 文件的 harness 编排；不支持隔离并发时可按
-  清单顺序执行，仍须遵守最多一次修复和同一数据根边界。
-- 继续读取 schema 1.1 至 1.5 报告；新报告使用 schema 2.0。
-- 继续读取旧 source-index 的根级和嵌套条目结构。
-- `--force` 保留为 `--republish` 的兼容别名。
+Version 2.0 introduced the local monitor, 32 report sources and 51 discovery sources,
+cross-source clustering, Chinese/English output, and three-perspective analysis with synthesis.
+HTML is delivered first; PDF, requested Notion delivery, and independent evaluation follow.
+JSON and Markdown remain the versioned original records.
 
-## 升级说明
-
-- 默认流程使用 `finalize-edition --defer-tail`，HTML 就绪即返回；随后在后台运行 manifest 的 `tail.command` 完成 PDF、Notion 和评估。内置自动 evaluator scheduler 当前只支持 Hermes Cron；其他 host scheduler 应只读同一 hash-bound dossier 并调用 `finalize-evaluation`。
-- `--publish` 只增加 Notion 同步，不跳过本地保存或报告校验。
-- 首次运行会绑定唯一数据根。迁移目录前先执行 `daily-intel data-root status`，再显式执行 `adopt`。
-- 人工验证默认不自动打开；使用 `verify-pending` 或显式传入 `--open-verification`。
-- 使用 `daily-intel refresh-monitor` 初始化监控快照，再运行 `daily-intel serve --open --refresh-minutes 30` 打开本地情报台。
-- 发现来源只负责扩展发现面；既有日报 Token 上限、正文读取上限和核心来源配额保持不变。
-
-安装和使用见 [README](README.md)，完整变更见 [Changelog](CHANGELOG.md)。
-
-## 已知限制
-
-- 网络异常、首次登录或大量验证页面可能超过常规运行时限。
-- 自动 independent evaluator 创建与 job 对账目前只实现 Hermes Cron 集成；其他
-  harness 未自行调度时，tail 会保留为可恢复的 `partial`，不会撤回本地报告。
-- 用量 CLI 只注册 Hermes、Codex、OpenClaw；未知宿主不能冒用近似 adapter。没有自定义
-  Python adapter 时应保留 `unmetered` 和 `null` Token，完整覆盖只接受可审计证据。
-- 项目不会绕过验证码、付费墙、限流或站点访问控制。
-- 研判仅用于研究辅助，不构成个性化专业建议。
+Older report schemas and source-index views remain readable. Source access failures stay
+explicit, and interactive verification is opt-in. See the [changelog](CHANGELOG.md) for the
+development history and [known gaps](docs/exec-plans/tech-debt-tracker.md) for current limits.

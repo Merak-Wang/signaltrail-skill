@@ -341,3 +341,20 @@ def test_hugging_face_uses_top_page_and_rewrites_legacy_queue_urls():
     assert canonical_source_page_url(
         "huggingface_papers", "https://huggingface.co/papers"
     ) == expected
+
+
+def test_source_taxonomy_is_loaded():
+    config = load_config()
+    assert config.source_by_id("twz").category == "military"
+    assert config.source_by_id("weibo_hot").category == "domestic"
+    assert config.source_by_id("forbes").module == "information"
+    assert config.source_by_id("infoq_ai").category == "news"
+    assert config.source_by_id("infoq_ai").module == "technology"
+    assert config.source_by_id("yicai_economy").category == "market"
+    assert config.source_by_id("hacker_news").module == "technology"
+    assert config.source_by_id("twz").adapter_name == "twz_index"
+    assert config.source_by_id("defence_blog_aviation").adapter_name == "browser_index"
+    assert config.source_by_id("hacker_news").report_target == 15
+    assert config.source_by_id("bbc_world").report_target == 15
+    assert all(source.report_target == 15 for source in config.sources)
+    assert config.source_by_id("twz").report_max == 15

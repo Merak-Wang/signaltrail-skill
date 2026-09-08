@@ -1,6 +1,8 @@
 import importlib.util
+from datetime import date
 from pathlib import Path
 
+import pytest
 from PIL import Image
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -17,16 +19,78 @@ def test_repository_documentation_map_is_complete_and_linked():
     assert DOCS.validate_docs() == []
 
 
-def test_agent_map_stays_small_and_every_record_has_a_translation():
-    assert len((ROOT / "AGENTS.md").read_text(encoding="utf-8").splitlines()) <= 110
-    assert all(
-        DOCS.translation_path(record).is_file()
-        for record in DOCS.canonical_records()
+@pytest.fixture
+def documentation_root(tmp_path):
+    for relative in ("AGENTS.md", "ARCHITECTURE.md", "docs/README.md"):
+        path = tmp_path / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            "# Guide\n\n**Status:** Verified · **Owner:** Maintainers · "
+            "**Last verified:** 2026-09-08\n\nExplains this subsystem.\n",
+            encoding="utf-8",
+        )
+        translated = DOCS.translation_path(path, tmp_path)
+        translated.parent.mkdir(parents=True, exist_ok=True)
+        translated.write_text("# 指南\n", encoding="utf-8")
+    return tmp_path
+
+
+@pytest.mark.parametrize(
+    ("status", "verified", "error"),
+    [
+        ("Verified", "2026-09-08", None),
+        ("Verified", "2020-01-01", "Stale verification date"),
+        ("Historical", "2020-01-01", None),
+        ("Draft", "2026-99-01", "Invalid verification date"),
+        ("Historical", "2027-01-01", "Stale verification date"),
+        ("Unknown", "2026-09-08", "invalid status"),
+    ],
+)
+def test_record_dates_distinguish_current_and_historical(
+    documentation_root, status, verified, error
+):
+    path = documentation_root / "ARCHITECTURE.md"
+    path.write_text(
+        f"**Status:** {status}\n**Owner:** Maintainers\n**Last verified:** {verified}\n",
+        encoding="utf-8",
     )
+    errors = DOCS.validate_docs(documentation_root, today=date(2026, 9, 8))
+    assert (errors == []) if error is None else any(error in message for message in errors)
+
+
+def test_missing_translation_and_markdown_or_html_images_are_reported(documentation_root):
+    (documentation_root / "docs/zh-CN/ARCHITECTURE.md").unlink()
+    (documentation_root / "docs/README.md").write_text(
+        (documentation_root / "docs/README.md").read_text(encoding="utf-8")
+        + '\n![preview](missing.png)\n<img src="also-missing.png">\n',
+        encoding="utf-8",
+    )
+    errors = DOCS.validate_docs(documentation_root, today=date(2026, 9, 8))
+    assert len(errors) == 3
+    assert any("Missing Chinese translation" in error for error in errors)
+    assert any(": missing.png" in error for error in errors)
+    assert any(": also-missing.png" in error for error in errors)
+
+
+def test_local_links_support_spaces_encoding_and_external_resources(documentation_root):
+    target = documentation_root / "docs/a guide.md"
+    target.write_text("", encoding="utf-8")
+    document = documentation_root / "docs/README.md"
+    assert DOCS._local_target(document, "<a guide.md>") == target
+    assert DOCS._local_target(document, "a%20guide.md#section") == target
+    for link in ("https://example.com", "mailto:author@example.com", "#local", "data:image/png,a"):
+        assert DOCS._local_target(document, link) is None
+
+
+def test_runtime_and_release_snapshots_do_not_enter_current_document_checks(tmp_path):
+    for folder in ("data", "skills", "dist", "build", "node_modules"):
+        path = tmp_path / folder / "README.md"
+        path.parent.mkdir()
+        path.write_text("[stale link](missing.md)", encoding="utf-8")
+    assert DOCS.markdown_files(tmp_path) == []
 
 
 def test_markdown_discovery_excludes_repository_virtual_environments(
-    monkeypatch,
     tmp_path: Path,
 ):
     docs_dir = tmp_path / "docs"
@@ -43,40 +107,14 @@ def test_markdown_discovery_excludes_repository_virtual_environments(
     conventional_venv.write_text("third party", encoding="utf-8")
     local_plan = tmp_path / "plan.md"
     local_plan.write_text("local development notes", encoding="utf-8")
-    monkeypatch.setattr(DOCS, "ROOT", tmp_path)
 
-    discovered = DOCS.markdown_files()
+    discovered = DOCS.markdown_files(tmp_path)
 
     assert tracked in discovered
     assert nested_plan in discovered
     assert virtualenv_markdown not in discovered
     assert conventional_venv not in discovered
     assert local_plan not in discovered
-
-
-def test_readmes_describe_harness_usage_and_a_draft_video_roadmap():
-    chinese = (ROOT / "README.md").read_text(encoding="utf-8")
-    english = (ROOT / "README.en.md").read_text(encoding="utf-8")
-    example_chinese = (ROOT / "examples" / "README.md").read_text(encoding="utf-8")
-    example_english = (ROOT / "examples" / "README.en.md").read_text(encoding="utf-8")
-
-    assert "任何能够读取 `SKILL.md`" in chinese
-    assert "新闻讲解视频" in chinese
-    assert "Draft" in chinese
-    assert "Any harness that can read `SKILL.md`" in english
-    assert "news-explainer video" in english
-    assert "Draft" in english
-    assert "Hermes agents" not in english
-    assert "核心 Python 包不依赖 Hermes" not in chinese
-    assert "no Hermes dependency" not in english
-    for legacy_report in (
-        "2026-07-24-morning-r3.html",
-        "2026-07-25-morning-r1.html",
-    ):
-        assert legacy_report not in chinese
-        assert legacy_report not in english
-        assert legacy_report not in example_chinese
-        assert legacy_report not in example_english
 
 
 def test_public_markdown_hygiene_patterns_cover_session_and_personal_paths():
@@ -128,7 +166,7 @@ def test_readme_showcase_assets_match_the_current_schema_v20_gallery():
     assert gallery.count('<article class="analysis-card"') == 3
     assert gallery.count('<article class="analysis-card synthesis-card"') == 1
     assert 'id="analysis-synthesis"' in gallery
-    assert '<strong>37</strong><span>/ 45</span>' in gallery
+    assert "<strong>37</strong><span>/ 45</span>" in gallery
     assert "file://" not in gallery
     assert "C:\\Users" not in gallery
     assert "AppData" not in gallery
