@@ -112,6 +112,7 @@ def test_markdown_discovery_excludes_repository_virtual_environments(
 
     assert tracked in discovered
     assert nested_plan in discovered
+    assert nested_plan in DOCS.canonical_records(tmp_path)
     assert virtualenv_markdown not in discovered
     assert conventional_venv not in discovered
     assert local_plan not in discovered

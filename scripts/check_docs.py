@@ -71,8 +71,9 @@ def canonical_records(root: Path = ROOT) -> list[Path]:
     records = [root / name for name in ENTRY_DOCUMENTS]
     records.extend(
         path
-        for path in markdown_files(root / "docs")
-        if "zh-CN" not in path.relative_to(root / "docs").parts
+        for path in markdown_files(root)
+        if path.is_relative_to(root / "docs")
+        and "zh-CN" not in path.relative_to(root / "docs").parts
     )
     return sorted(records)
 
