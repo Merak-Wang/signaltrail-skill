@@ -2,9 +2,136 @@ import json
 from pathlib import Path
 
 import pytest
+import yaml
 
 from daily_intelligence.config import load_config
-from daily_intelligence.notion import append_evaluation, publish_report
+from daily_intelligence.notion import (
+    NotionPublisher,
+    append_evaluation,
+    parse_user_feedback,
+    publish_report,
+    report_to_blocks,
+    resolve_notion_mapping,
+    validate_notion_schema,
+)
+from tests.report_helpers import first_report_item, load_sample_report
+
+
+def test_notion_blocks_include_complete_analysis():
+    root = Path(__file__).resolve().parents[1]
+    report = load_sample_report(root)
+    first_report_item(report)["source_refs"][0]["published_at"] = "2026-07-12T01:00:00+08:00"
+    rendered = json.dumps(report_to_blocks(report), ensure_ascii=False)
+
+    assert "重要性 82/100" in rendered
+    assert "反证" in rendered
+    assert "影响" in rendered
+    assert "证据事件" in rendered
+    assert "发布时间：2026-07-12" in rendered
+    blocks = report_to_blocks(report)
+    block_types = {block["type"] for block in blocks}
+    assert {"callout", "table_of_contents", "table", "numbered_list_item"} <= block_types
+    top_level = [
+        block["heading_1"]["rich_text"][0]["text"]["content"]
+        for block in blocks
+        if block["type"] == "heading_1"
+    ]
+    assert top_level == ["资讯", "技术", "研判", "质量评估与用户反馈"]
+
+
+def test_notion_user_feedback_marker_is_machine_readable():
+    parsed = parse_user_feedback(
+        "用户反馈|相关性=5|准确性=4|分析价值=5|整体满意度=4|补充意见=增加国内市场"
+    )
+
+    assert parsed == {
+        "scores": {
+            "relevance": 5,
+            "accuracy": 4,
+            "analysis_value": 5,
+            "overall_satisfaction": 4,
+        },
+        "comment": "增加国内市场",
+    }
+
+
+def _hermes_notes_publisher(root: Path) -> NotionPublisher:
+    publisher = object.__new__(NotionPublisher)
+    publisher.config = yaml.safe_load(
+        (root / "configs" / "notion.yaml").read_text(encoding="utf-8")
+    )
+    publisher.schema = {
+        "properties": {
+            "Name": {"type": "title"},
+            "Date": {"type": "date"},
+            "Status": {
+                "type": "status",
+                "status": {
+                    "options": [
+                        {"name": "New"},
+                        {"name": "Reviewed"},
+                        {"name": "Archived"},
+                    ]
+                },
+            },
+            "Source": {"type": "select"},
+            "Tags": {"type": "multi_select"},
+        }
+    }
+    publisher.mapping = resolve_notion_mapping(publisher.config, publisher.schema)
+    return publisher
+
+
+def test_notion_properties_match_hermes_notes_schema():
+    root = Path(__file__).resolve().parents[1]
+    report = load_sample_report(root)
+    publisher = _hermes_notes_publisher(root)
+
+    morning = publisher.build_properties(report)
+    assert set(morning) == {"Name", "Date", "Status", "Source", "Tags"}
+    assert morning["Status"] == {"status": {"name": "New"}}
+    assert morning["Source"] == {"select": {"name": "SignalTrail"}}
+    assert {item["name"] for item in morning["Tags"]["multi_select"]} == {
+        "SignalTrail",
+        "Morning",
+    }
+
+    report["edition"] = "evening"
+    evening = publisher.build_properties(report)
+    assert evening["Status"] == {"status": {"name": "Reviewed"}}
+
+
+def test_notion_schema_mismatch_is_actionable():
+    root = Path(__file__).resolve().parents[1]
+    publisher = _hermes_notes_publisher(root)
+    publisher.schema["properties"]["Name"] = {"type": "rich_text"}
+
+    with pytest.raises(ValueError, match="Name.*expected title"):
+        validate_notion_schema(publisher.mapping, publisher.schema)
+
+
+def test_notion_auto_selects_dedicated_daily_intelligence_schema():
+    root = Path(__file__).resolve().parents[1]
+    config = yaml.safe_load((root / "configs" / "notion.yaml").read_text(encoding="utf-8"))
+    schema = {
+        "properties": {
+            "Title": {"type": "title"},
+            "Date": {"type": "date"},
+            "Version": {"type": "select"},
+            "Status": {
+                "type": "status",
+                "status": {"options": [{"name": "Published"}, {"name": "Final"}]},
+            },
+            "Source Count": {"type": "number"},
+            "Event Count": {"type": "number"},
+            "Pending Verification": {"type": "number"},
+        }
+    }
+
+    mapping = resolve_notion_mapping(config, schema)
+
+    assert mapping["profile"] == "daily_intelligence"
+    assert mapping["properties"]["title"] == "Title"
 
 
 def test_timezone_override_is_applied():
@@ -15,7 +142,7 @@ def test_interrupted_notion_publish_resumes_from_saved_progress(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ):
-    root = Path(__file__).resolve().parents[2]
+    root = Path(__file__).resolve().parents[1]
     report_path = root / "examples" / "sample_report.json"
     report = json.loads(report_path.read_text(encoding="utf-8"))
     registry_key = f"{report['date']}:{report['edition']}"
@@ -104,7 +231,7 @@ def test_notion_evaluation_publishes_an_updated_html_attachment(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ):
-    root = Path(__file__).resolve().parents[2]
+    root = Path(__file__).resolve().parents[1]
     report_path = root / "examples" / "sample_report.json"
     report = json.loads(report_path.read_text(encoding="utf-8"))
     evaluation = dict(report["quality_evaluation"])
@@ -170,6 +297,4 @@ def test_notion_evaluation_publishes_an_updated_html_attachment(
     assert second == ("page-1", "skipped_duplicate")
     assert FakePublisher.uploads == 1
     assert FakePublisher.appended[0]["type"] == "file"
-    assert FakePublisher.appended[0]["file"]["file_upload"] == {
-        "id": "evaluation-html-upload"
-    }
+    assert FakePublisher.appended[0]["file"]["file_upload"] == {"id": "evaluation-html-upload"}

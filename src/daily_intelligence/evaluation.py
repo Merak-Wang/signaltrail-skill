@@ -47,7 +47,8 @@ _EVALUATION_DIMENSION_GUIDANCE = {
         "and verification requirements explicit."
     ),
     "importance_ordering": (
-        "Featured events must be importance-descending; ordinary briefs must preserve "
+        "Featured events must be importance-descending within each section, not across "
+        "the concatenated section list; ordinary briefs must preserve "
         "the authoritative index and brief-plan order, not importance order."
     ),
     "factual_reliability": (
@@ -161,7 +162,7 @@ def build_evaluation_dossier(
             )
     dossier = {
         "schema_version": "1.0",
-        "policy": "independent_evaluation_dossier_v1",
+        "policy": "independent_evaluation_dossier_v2",
         "report_id": report.get("report_id"),
         "report_content_hash": bound_content_hash,
         "report_file_sha256": f"sha256:{sha256(report_path.read_bytes()).hexdigest()}",
@@ -199,6 +200,7 @@ def build_evaluation_dossier(
             },
             "ordinary_brief_order": "index_and_brief_plan",
             "featured_event_order": "importance_descending",
+            "featured_event_order_scope": "within_each_section",
         },
         "validation": {"errors": errors, "warnings": warnings},
         "report_summary": {
@@ -235,6 +237,12 @@ def build_evaluation_dossier(
         "ordering": {
             "ordinary_briefs": ordinary_order,
             "featured_importance": [event.get("importance") for event in featured],
+            "featured_importance_by_section": [
+                {"section_id": section.get("id"),
+                 "event_ids": [event.get("event_id") for event in section.get("items", [])],
+                 "importance": [event.get("importance") for event in section.get("items", [])]}
+                for section in report.get("sections", []) if isinstance(section, dict)
+            ],
         },
         "briefs": [
             {
@@ -314,7 +322,8 @@ def build_evaluation_dossier(
         ],
     }
     report_id = str(report.get("report_id") or "unknown-report")
-    output = data_dir / "evaluations" / "dossiers" / f"{report_id}.json"
+    # 契约升级使用独立版本路径，不重写已供历史评分引用的 v1 数据包。
+    output = data_dir / "evaluations" / "dossiers" / f"{report_id}-v2.json"
     try:
         return write_immutable_json(output, dossier)
     except FileExistsError:

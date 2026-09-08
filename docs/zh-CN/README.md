@@ -1,54 +1,48 @@
-# 工程记录
+# 文档
 
-**目的：** 编目规范工程记录及其权威性、状态和中英文对应关系。
-**状态：** 已验证
-**负责人：** 仓库维护者
-**最后验证：** 2026-08-23
+**状态：** 已验证 · **负责人：** 仓库维护者 · **最后验证：** 2026-09-08
 
-本目录是 SignalTrail 的工程记录系统。`AGENTS.md` 只指向这里，不重复全部内容。
-英文记录是权威版本，本目录保存对应中文译文。
+按当前任务选择入口。英文工程记录与本目录的中文译文一起维护。[English](../README.md)
 
-## 目录
+| 指南 | 内容 |
+| --- | --- |
+| [使用说明](usage.md) | 安装、数据路径、语言、来源、完整计量和恢复 |
+| [开发指南](development.md) | 测试选择、命名、代码与文档约定 |
+| [架构](ARCHITECTURE.md) | 模块归属、状态、文件和模型边界 |
+| [智能体说明](AGENTS.md) | 修改本仓库的规则 |
+| [路线图](roadmap.md) | 讲解、验证、音视频草案，尚未实现 |
+| [技术债](exec-plans/tech-debt-tracker.md) | 已知实现缺口和退出条件 |
 
-| 记录 | 回答的问题 | 状态 |
-| --- | --- | --- |
-| [架构](ARCHITECTURE.md) | 系统边界和依赖方向是什么？ | 已验证 |
-| [工程原则](design-docs/core-beliefs.md) | 哪些原则约束仓库边界？ | 已验证 |
-| [设计目录](design-docs/index.md) | 哪些设计记录是权威或详细资料？ | 已验证 |
-| [执行计划](exec-plans/index.md) | 哪些工作正在进行、已完成或列为债务？ | 已验证 |
-| [技术债追踪](exec-plans/tech-debt-tracker.md) | 哪些已知差距仍需决策或重构？ | 已验证 |
-| [产品规格目录](product-specs/index.md) | 用户和报告契约定义在哪里？ | 已验证 |
-| [验证矩阵](quality-score.md) | 已有哪些检查，哪些差距仍然开放？ | 已验证 |
-| [运行手册](../../references/runbook.md) | 如何运行和恢复任务？ | 已验证详情 |
-| [编辑策略](../../references/editorial-policy.md) | 证据和选稿规则是什么？ | 已验证详情 |
-| [详细系统设计](../../references/system-design.md) | 数据和状态契约是什么？ | 已验证详情 |
-| [LLM 用量操作](../../references/llm-usage.md) | 如何在不保存 Prompt、Response 或秘密的前提下计量宿主调用？ | 已验证详情 |
+## 运行参考
 
-英文权威目录见 [`docs/README.md`](../README.md)。
+以下是仓库维护者负责的中文权威运行文档，各自记录验证日期。
+Schema 修复说明是英文历史兼容记录。按任务读取需要的那一份。
 
-## 记录状态
+| 参考 | 用途 |
+| --- | --- |
+| [SKILL.md](../../SKILL.md) | 智能体执行步骤，英文运行入口 |
+| [运行手册](../../references/runbook.md) | 阶段恢复和运行检查 |
+| [系统契约](../../references/system-design.md) | 数据字段、状态和产物约定 |
+| [编辑策略](../../references/editorial-policy.md) | 来源选择、证据、访问和排序 |
+| [叙事研判](../../references/narrative-analysis.md) | 修复分析内容 |
+| [报告契约](../../templates/report-contract.md)和 [Schema](../../schemas/report.schema.json) | 草稿结构和机器校验 |
+| [用量说明](../../references/llm-usage.md) | 宿主适配器、计量和覆盖限制 |
+| [Windows 安装](../../references/windows-setup.md) | Windows 上的 Hermes 安装 |
+| [Notion 配置](../../references/notion-setup.md)和[Schema 修复](../../references/notion-schema-fix.md) | 可选远程交付 |
 
-- **草稿：** 正在评审，尚不能作为决策事实源。
-- **已验证：** 已在标明日期对照当前代码和测试。
-- **历史：** 为保留决策理由而存在，不代表当前行为。
-- **生成：** 由机械流程产生；更新方式是重新生成。
+## 历史
 
-若文档与实现不一致，按根目录 `AGENTS.md` 的优先级判断，并在同一变更中修复文档。
+已完成的运行记录解释当时的决定和测量结果，属于历史资料，不作为当前运行指令。
+其原验证日期不因时间推移失效。
 
-## 文档维护
+- [2026-08-25 晨报验收](exec-plans/completed-2026-08-25-morning-report-acceptance.md)
+- [2026-08-23 用量与优化实施](exec-plans/completed-2026-08-23-llm-usage-optimization-implementation.md)
+- [2026-08-05 日报重建](exec-plans/completed-2026-08-05-morning-report-regeneration.md)
+- [版本历史](../../CHANGELOG.md)和[发布说明](../../RELEASE_NOTES.md)
+- [示例报告](https://github.com/Merak-Wang/signaltrail-skill/blob/main/examples/README.md)：脱敏的历史输出
 
-每次变更从范围最小的英文权威记录开始，并同步更新 `docs/zh-CN/` 译文。范围或权威性发生
-变化时，相关目录、状态、负责人和验证日期一并更新。概览文档通过链接引用详细记录，使每条
-策略只有一个维护位置。CI 通过 `scripts/check_docs.py` 和 `tests/test_docs.py` 做结构检查。
+`skills/signaltrail/`、`build/` 和 `dist/` 是生成的发布或安装快照，不参与当前文档检查，
+仅通过明确要求的重建更新。本地被忽略的审计笔记不属于公开工程记录。
 
-长期设计决策位于 `design-docs/`，跨模块实施记录位于 `exec-plans/`。完成的计划以日期命名并
-保留决策理由。README 和产品契约说明用户可见行为，运行细节保存在 `references/`。
-
-维护中的 Python 函数和类使用精简、语义化的中文说明处理逻辑、输入和输出。输入要指出
-上游来源及实际消费的信息，输出要说明结果对下一阶段的意义；只复述类型或函数名会被
-`python scripts/check_code_comments.py` 拒绝。行内注释聚焦不直观的决策。
-
-## 语言策略
-
-英文是自动化工具与贡献者共用的权威工程记录。中文译文是面向维护者的可审阅镜像，并在
-同一次变更中更新。译文不得增加英文原文中不存在的规则。
+当前记录使用 Verified、Draft 或 Active，已完成记录使用 Historical，机械快照使用 Generated。
+维护中的文档说明目的、负责人和日期。维护约定与检查见[开发指南](development.md)。

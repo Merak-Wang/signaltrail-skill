@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -359,6 +360,9 @@ def _provider_relations(
     """
 
     lowered = (provider or "").casefold()
+    if all(key in usage for key in ("input_tokens", "cache_read_tokens", "cache_write_tokens")):
+        # Hermes CanonicalUsage 的 input 已扣除缓存，与 provider 原始 prompt 语义不同。
+        return TokenRelation.ADDITIONAL, TokenRelation.ADDITIONAL
     if "anthropic" in lowered:
         return TokenRelation.ADDITIONAL, TokenRelation.ADDITIONAL
     if nested_value(
@@ -371,13 +375,18 @@ def _provider_relations(
 
 
 def _safe_timestamp(payload: Mapping[str, Any], *keys: str) -> str | None:
-    """处理：只接受宿主时间字段中的短 ISO 风格字符串。
-    输入：hook/row 映射和固定时间键名。
-    输出：长度受限且不含空白控制字符的时间文本，否则为 None。
+    """处理：把宿主 ISO 时间或 Unix 秒数转为规范带时区时间。
+    输入：hook/row 映射和固定时间键名；只读有限数值或短字符串。
+    输出：长度受限的规范时间文本；非法、溢出或缺失字段返回 None。
     """
 
     for key in keys:
         value = nested_value(payload, (key,), ("extra", key))
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            try:
+                value = datetime.fromtimestamp(value, UTC).isoformat()
+            except (ValueError, OverflowError, OSError):
+                continue
         if normalized := normalize_timestamp(value):
             return normalized
     return None

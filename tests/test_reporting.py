@@ -5,7 +5,9 @@ from pathlib import Path
 from daily_intelligence.config import MediaConfig
 from daily_intelligence.local_output import render_report_html
 from daily_intelligence.media import DownloadedImage, materialize_report_images
-from daily_intelligence.notion import report_to_blocks
+from daily_intelligence.notion import (
+    report_to_blocks,
+)
 from daily_intelligence.reporting import (
     compile_report_data,
     report_content_hash,
@@ -16,6 +18,8 @@ from daily_intelligence.reporting import (
 )
 from daily_intelligence.reports import render_report_markdown
 from daily_intelligence.taxonomy import section_titles
+from daily_intelligence.utils import read_json
+from tests.report_helpers import load_sample_report, write_report_index
 
 _CJK = re.compile(r"[\u3400-\u9fff]")
 
@@ -1606,3 +1610,15 @@ def test_v15_numeric_scenarios_require_an_explicit_basis():
     report["analyses"][0]["scenario_basis"] = "以上数字仅用于情景推演，并非确定性预测。"
     errors, _warnings = validate_report_data(report, index)
     assert not any("scenario_basis" in error for error in errors)
+
+
+def test_report_rejects_claimed_access_not_present_in_index(tmp_path: Path):
+    root = Path(__file__).resolve().parents[1]
+    report = load_sample_report(root)
+    index_path = write_report_index(report, tmp_path / "index.json")
+    index = read_json(index_path)
+    index["items"][0]["content_status"] = "full_text"
+
+    errors, _warnings = validate_report_data(report, index)
+
+    assert any("does not match index content_status" in error for error in errors)

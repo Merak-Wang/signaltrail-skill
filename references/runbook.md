@@ -1,7 +1,9 @@
 # 日报运行手册
 
+**权威语言：** 中文（单语运行参考）
+**负责人：** 仓库维护者
 **状态：** 已验证运行参考
-**最后对照代码：** 2026-08-28
+**最后对照代码：** 2026-09-08
 **上级地图：** [`ARCHITECTURE.md`](../ARCHITECTURE.md)
 
 ## 调度与预算
@@ -19,7 +21,7 @@ HTML 交付后 -> 后台 PDF/可选 Notion -> 最多两次总尝试的有界独�
 
 32 个正式来源的 `report_target` 和 `report_max` 均为 15。默认 `collection.item_order: source`，每来源候选充足时交付网页、榜单或 Feed 的原 Top1–15；切换为 `published_at` 时，采集层把有效发布时间从新到旧写入当前 index，缺失发布时间和时间并列的条目保持稳定输入顺序，日报再取前 15 条。单源覆盖使用同名 `item_order`。两种模式都保留原始 `source_rank`；context、普通 brief、Markdown、HTML、PDF 与 Notion 必须维持当前 index/`brief_plan` 顺序，不能按 `importance` 重排。Hugging Face Papers 的 `source` 模式以 Trending Top 为准，较早发表的论文仍可能出现在当前 Top15。
 
-写作与评估保持角色隔离。`finalize-edition --defer-tail` 在不可变 JSON/Markdown 和 HTML 就绪后返回；authoring coordinator 立即交付 `artifacts.html_path`，再把 run 中的 `tail.command` 放进启用完成通知的后台 terminal。`complete-edition-tail` 生成 PDF、按请求发布 Notion，并先用当前 report/hash 预检已完成评估。内置的自动 host scheduler 当前只支持 Hermes Cron：它只读对账既有 job，每个 Cron 只执行一次；只有既有 job 明确失败或超过停滞窗口时才允许第二次且最后一次尝试，unknown/对账失败不会重复调度。independent evaluator 的输入只有 Python 生成的不可变 hash-bound dossier，输出是供 `finalize-evaluation` 接收的独立 JSON；它禁止修改报告。评估完成后刷新 HTML、桌面副本和归档索引，但同一 report revision 已存在的 PDF 直接复用；PDF 缺失时才补建，不能为加入评分重复渲染整份图片密集文档。目标日报显式使用了 `--publish` 时，调度合同才给评估命令追加 `--publish`。使用 Hermes 自动调度时，Gateway 必须运行并按部署要求保持可用；其他 harness 必须自行调度同一 dossier 并调用 `finalize-evaluation`，否则 tail 会如实保留为 `partial`。tail 或调度失败只写入 run，不撤回本地日报。晚间生成读取当天晨报和已存在的晨报评估；晨报评估尚未完成时按未评估历史处理。
+写作与评估保持角色隔离。`finalize-edition --defer-tail` 在不可变 JSON/Markdown 和 HTML 就绪后返回；authoring coordinator 立即交付 `artifacts.html_path`，再把 run 中的 `tail.command` 放进启用完成通知的后台 terminal。`complete-edition-tail` 生成 PDF、按请求发布 Notion，并先用当前 report/hash 预检已完成评估。通过 `signaltrail-hermes` 运行时，评估由带独立用量任务的本地一次性进程执行；普通入口保留 Hermes Cron 调度。两条路径都先对账现有任务；只有既有 job 明确失败或超过停滞窗口时才允许第二次且最后一次尝试，unknown/对账失败不会重复调度。independent evaluator 的输入只有 Python 生成的不可变 hash-bound dossier，输出是供 `finalize-evaluation` 接收的独立 JSON；它禁止修改报告。评估完成后刷新 HTML、桌面副本和归档索引，但同一 report revision 已存在的 PDF 直接复用；PDF 缺失时才补建，不能为加入评分重复渲染整份图片密集文档。目标日报显式使用了 `--publish` 时，调度合同才给评估命令追加 `--publish`。旧 Cron 调度需要 Gateway 保持可用；本地计量入口及覆盖限制见 [用量说明](llm-usage.md)。其他 harness 必须自行调度同一 dossier 并调用 `finalize-evaluation`，否则 tail 会如实保留为 `partial`。tail 或调度失败只写入 run，不撤回本地日报。晚间生成读取当天晨报和已存在的晨报评估；晨报评估尚未完成时按未评估历史处理。
 
 ## Harness 与用量接入
 
@@ -58,7 +60,7 @@ host scheduler、Gateway 和其他无人值守会话不得传 `--open-verificati
 - 旧同步路径的 `publishing` 失败：重试 `finalize-edition --publish`。
 - `failed`：阅读 manifest 的 `error`，修复后用 `run-edition --restart`。
 - `completed_partial`：本地报告有效；待验证链接可留到后续处理。
-- `evaluation pending`：日报已经完成；先检查独立评估调度和不可变 evaluation。Hermes 集成只有在当前 report ID/content hash 尚无完成评估、且既有 Cron 已明确 failed/expired 时，才创建一次新的有界评估尝试；其他 host scheduler 必须执行相同 preflight 和最多两次总尝试的边界。
+- `evaluation pending`：日报已经完成；先检查独立评估调度和不可变 evaluation。Hermes 集成只有在当前 report ID/content hash 尚无完成评估、且既有任务已明确 failed/expired 时，才创建一次新的有界评估尝试；其他 host scheduler 必须执行相同 preflight 和最多两次总尝试的边界。
 - 评估失败：保留 pending/错误日志与失败 job 身份，按上述 preflight 显式重试；不得撤回日报、无限重调度或由 brief/analysis authors 自评。
 - 监控部分失败：运行 `monitor-status` 查看来源状态；失败、限流和待验证不得改写为 `no_items`。旧快照仍可读取，下一次刷新会按 ETag/Last-Modified 和退避状态重试。
 

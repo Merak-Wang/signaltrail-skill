@@ -2,7 +2,7 @@
 
 **状态：** 已验证机器相邻契约
 **最后对照 Schema/校验器：** 2026-08-28
-**产品契约目录：** [`docs/product-specs/index.md`](../docs/product-specs/index.md)
+**文档入口：** [运行参考](../docs/README.md#runtime-references)
 
 输出 UTF-8 JSON。读取 packet 的 `output_language`：`zh-CN` 使用简体中文，`en` 使用英文；同一报告的标题、摘要、研判和评估建议不得混用输出语言。来源原题、URL、论文/项目名和技术术语可保留原文。Python 固定 schema/language/时间，生成报告、事件和分析 ID，并从索引补齐引用身份、access、来源排名、状态、计数和 `evaluation_status`。不要手工复制这些字段。
 
@@ -21,7 +21,7 @@ Schema，也不能放宽下列安全和状态边界。
 3. 研判。
 4. 质量评估与用户反馈（初次发布显示评估待补充）。
 
-七个 section 由 Python 按输出语言补齐并排序。渲染器按 brief 来源形成三级标题。所有正式来源的 `report_target` 与 `report_max` 都是 15；成功来源有至少 15 个真实候选时必须交付当前索引顺序的前 15 条，候选不足时使用实际可用条目，不得设置固定分数淘汰线。默认 `collection.item_order: source` 使当前索引与报告采用来源原 Top1–15；`published_at` 使当前索引按有效发布时间从新到旧排列，缺失发布时间和时间并列时保持稳定输入顺序，再采用其前 15 条。两种模式都保留原始 `source_rank` 作为来源 Top 标签。普通 `briefs[]` 必须保持当前 index/`brief_plan` 选择顺序，不得按内部 `importance` 二次重排；`importance` 仍可用于精选事件与研判选择。
+七个 section 由 Python 按输出语言补齐并排序。渲染器按 brief 来源形成三级标题。精选 `items[]` 在每个 section 内按 `importance` 降序，不要求跨 section 全局降序。所有正式来源的 `report_target` 与 `report_max` 都是 15；成功来源有至少 15 个真实候选时必须交付当前索引顺序的前 15 条，候选不足时使用实际可用条目，不得设置固定分数淘汰线。默认 `collection.item_order: source` 使当前索引与报告采用来源原 Top1–15；`published_at` 使当前索引按有效发布时间从新到旧排列，缺失发布时间和时间并列时保持稳定输入顺序，再采用其前 15 条。两种模式都保留原始 `source_rank` 作为来源 Top 标签。普通 `briefs[]` 必须保持当前 index/`brief_plan` 选择顺序，不得按内部 `importance` 二次重排；`importance` 仍可用于精选事件与研判选择。
 
 每个 brief author 逐项完成其 packet 的 `author_item_ids`，并只把一个符合 `output_schema` 的 JSON 对象写入 `draft_result_path`；Python 验证各批次、原样合并同语言的 `reusable_briefs` 并执行覆盖校验。`target_count` 是本来源最低覆盖数，`default_item_ids` 是本版唯一、确定且有序的普通 brief 边界。Python 不会用模板生成译题或 TL;DR；semantic cache 只可复用内容指纹、输出语言一致且独立评估已批准、并且仍位于对应 `brief_plan.default_item_ids` 内的旧 brief，不得用 Top15 之外的历史条目补位，草稿中越界的 item 也必须丢弃。
 

@@ -41,14 +41,24 @@ class UsageAdapter(Protocol):
         phase: str | None = None,
         call_id: str | None = None,
         source_event_id: str | None = None,
-    ) -> list[AdapterRecord]: ...
+    ) -> list[AdapterRecord]:
+        """处理：将单次宿主 Hook 转为允许持久化的用量记录。
+        输入：payload 来自宿主；phase、call_id、source_event_id 由调用方补充关联信息。
+        输出：只含允许字段的记录序列，供账本去重并追加事件。
+        """
+        ...
 
     def from_path(
         self,
         path: Path,
         *,
         phase: str | None = None,
-    ) -> list[AdapterRecord]: ...
+    ) -> list[AdapterRecord]:
+        """处理：从调用方指定的本地文件解析宿主用量。
+        输入：path 是待审计日志路径，phase 是调用方提供的阶段标签。
+        输出：通过格式和字段白名单检查的记录序列，供账本导入。
+        """
+        ...
 
 
 def read_bounded_bytes(path: Path) -> bytes:

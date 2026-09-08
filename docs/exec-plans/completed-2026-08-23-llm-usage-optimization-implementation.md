@@ -2,7 +2,7 @@
 
 **Purpose:** Preserve the accepted implementation boundary, measured optimization evidence,
 artifact lineage, and unresolved follow-up from the 2026-08-23 usage work.
-**Status:** Verified
+**Status:** Historical
 **Owner:** Repository maintainers
 **Last verified:** 2026-08-28
 
@@ -21,7 +21,7 @@ The accepted deterministic scope provides:
 - deferred, size-receipted PDF delivery with same-revision reuse and print-bound image resampling.
 
 The 2026-08-23 experiment and 2026-08-24 evaluator recovery remain the measured authority. The
-[active narrative plan](active-evidence-driven-professional-narrative.md) owns later delivery gates.
+[active narrative plan](../roadmap.md) owns later delivery gates.
 
 ## Qualified External Acceptance
 

@@ -1,180 +1,184 @@
-"""Validate the repository's Markdown map, translations, and local links."""
+"""Check current Markdown sources, translations, metadata, and local links."""
 
 from __future__ import annotations
 
+import os
 import re
 from datetime import date
 from pathlib import Path
-from urllib.parse import unquote
+from urllib.parse import unquote, urlsplit
 
 ROOT = Path(__file__).resolve().parents[1]
 IGNORED_PARTS = {
     ".git",
     ".agents",
+    ".codex",
     ".playwright-cli",
     ".pytest_cache",
     ".ruff_cache",
     ".nox",
     ".tox",
     ".venv",
+    "venv",
+    "env",
     "build",
     "dist",
     "output",
     "tmp",
-    "venv",
+    "data",
+    "skills",
+    "node_modules",
+    "__pycache__",
 }
-LINK_PATTERN = re.compile(r"(?<!!)\[[^\]]*\]\(([^)]+)\)")
-ENTRY_DOCUMENTS = (ROOT / "AGENTS.md", ROOT / "ARCHITECTURE.md")
-IGNORED_RELATIVE_FILES = {Path("plan.md")}
+ENTRY_DOCUMENTS = ("AGENTS.md", "ARCHITECTURE.md")
 MAX_VERIFICATION_AGE_DAYS = 180
 VERIFIED_PATTERN = re.compile(r"\*\*Last verified:\*\* (\d{4}-\d{2}-\d{2})")
+STATUS_PATTERN = re.compile(r"\*\*Status:\*\* (\w+)")
+LINK_PATTERN = re.compile(r"!?\[[^\]]*\]\((<[^>]+>|[^\s)]+)(?:\s+[^)]*)?\)")
+HTML_LINK_PATTERN = re.compile(r"""(?:src|href)=["']([^"']+)["']""")
 PROHIBITED_MARKDOWN_PATTERNS = {
-    "personal Windows user path": re.compile(
-        r"(?i)\b[A-Z]:[/\\]Users[/\\][^/\\\s<`]+"
-    ),
+    "personal Windows user path": re.compile(r"(?i)\b[A-Z]:[/\\]Users[/\\][^/\\\s<`]+"),
     "personal workspace path": re.compile(r"(?i)\b[A-Z]:[/\\]ai_project[/\\]"),
-    "Codex browser-session residue": re.compile(
-        r"(?i)Codex (?:in-app browser|应用内浏览器)"
-    ),
+    "Codex browser-session residue": re.compile(r"(?i)Codex (?:in-app browser|应用内浏览器)"),
 }
 
 
-def _is_ignored(path: Path) -> bool:
-    """处理：判断仓库路径是否位于生成目录、缓存或本地虚拟环境中。
+def markdown_files(root: Path = ROOT) -> list[Path]:
+    """处理：枚举当前文档，并在遍历前排除快照、运行数据和依赖目录。
     输入：
-    - ``path``：文档发现阶段枚举出的仓库内路径；消费其相对路径目录名。
-    输出：命中忽略目录时为 True，使第三方 Markdown 不进入记录或链接校验。
+    - ``root``：仓库根或测试目录；扫描其中的 Markdown，不跟随目录符号链接。
+    输出：需要检查的文档路径；不含本地计划、宿主审计和生成副本。
     """
+    files = []
+    for directory, folders, names in os.walk(root):
+        folders[:] = sorted(name for name in folders if name not in IGNORED_PARTS)
+        for name in names:
+            path = Path(directory) / name
+            if path.suffix != ".md" or path == root / "plan.md":
+                continue
+            if name.endswith("-hermes-and-cost-audit.md"):
+                continue
+            files.append(path)
+    return sorted(files)
 
-    return bool(set(path.relative_to(ROOT).parts) & IGNORED_PARTS)
 
-
-def canonical_records() -> list[Path]:
-    """处理：汇总根入口和 docs 下需要中文译文的英文权威记录。
+def canonical_records(root: Path = ROOT) -> list[Path]:
+    """处理：列出根入口与需要同步中文译文的英文工程记录。
     输入：
-    - 无显式业务参数：不接收参数；扫描仓库根入口及 docs 目录，并排除 zh-CN、生成和历史记录。
-    输出：需要维护中文译文的英文 Markdown 路径列表；
-      包含根级权威文档与 docs 中非生成、非历史记录。
+    - ``root``：仓库根或测试目录；采用同一文档发现规则排除生成和本地文件。
+    输出：英文记录路径，供元数据及翻译配对检查使用，包含历史记录。
     """
-    records = [*ENTRY_DOCUMENTS]
+    records = [root / name for name in ENTRY_DOCUMENTS]
     records.extend(
         path
-        for path in (ROOT / "docs").rglob("*.md")
-        if "zh-CN" not in path.parts and not _is_ignored(path)
+        for path in markdown_files(root)
+        if path.is_relative_to(root / "docs")
+        and "zh-CN" not in path.relative_to(root / "docs").parts
     )
     return sorted(records)
 
 
-def translation_path(record: Path) -> Path:
-    """处理：把英文权威记录映射到 docs/zh-CN 中的译文路径。
+def translation_path(record: Path, root: Path = ROOT) -> Path:
+    """处理：定位英文工程记录对应的中文镜像。
     输入：
-    - ``record``：docs 目录中的英文权威 Markdown 路径；用于计算对应中文译文位置。
-    输出：指向“把英文权威记录映射到 docs/zh-CN 中的译文路径”所生成、定位或确认产物的本地路径。
+    - ``record``：根入口或 docs 下的英文文件；消费相对目录和文件名。
+    - ``root``：仓库根；决定 docs/zh-CN 的位置。
+    输出：预期译文路径，供缺失译文检查和错误提示使用。
     """
-    if record.parent == ROOT:
-        return ROOT / "docs" / "zh-CN" / record.name
-    return ROOT / "docs" / "zh-CN" / record.relative_to(ROOT / "docs")
-
-
-def markdown_files() -> list[Path]:
-    """处理：列出文档检查范围内的全部 Markdown 文件。
-    输入：
-    - 无显式业务参数：不接收参数；扫描仓库根入口、docs 和中文译文中的 Markdown 文件。
-    输出：文档链接检查要扫描的 Markdown 路径列表；覆盖根入口、英文记录及 docs/zh-CN 译文。
-    """
-    return sorted(
-        path
-        for path in ROOT.rglob("*.md")
-        if path.relative_to(ROOT) not in IGNORED_RELATIVE_FILES and not _is_ignored(path)
-    )
+    relative = record.name if record.parent == root else record.relative_to(root / "docs")
+    return root / "docs" / "zh-CN" / relative
 
 
 def _local_target(document: Path, raw_target: str) -> Path | None:
-    """处理：把 Markdown 本地链接解析为可检查的绝对路径。
+    """处理：将相对链接转为本地路径，跳过网页和页内锚点。
     输入：
-    - ``document``：当前正在检查链接的 Markdown 文件路径；相对链接以其父目录为基准解析。
-    - ``raw_target``：Markdown 链接中尚未解码的目标文本；锚点和外部 URL 会被区分处理。
-    输出：指向“把 Markdown 本地链接解析为可检查的绝对路径”所生成、定位或确认产物的本地路径；
-      条件不满足时返回 None。
+    - ``document``：包含链接的 Markdown 路径；其父目录是相对链接的基准。
+    - ``raw_target``：提取的 URL 或尖括号路径；解码百分号并去掉查询和锚点。
+    输出：需要确认存在的路径；外部 URL、内嵌数据和页内锚点返回 None。
     """
-    target = raw_target.strip().strip("<>").split(maxsplit=1)[0]
-    if not target or target.startswith("#") or "://" in target or target.startswith("mailto:"):
+    target = raw_target.strip()
+    target = target[1:-1] if target.startswith("<") and target.endswith(">") else target
+    if not target or target.startswith("#") or urlsplit(target).scheme or target.startswith("//"):
         return None
     relative = unquote(target.split("#", 1)[0].split("?", 1)[0])
-    if not relative:
-        return None
-    return (document.parent / relative).resolve()
+    return (document.parent / relative).resolve() if relative else None
 
 
-def validate_docs() -> list[str]:
-    """处理：检查 AGENTS 大小、记录元数据、中英文配对和本地链接。
+def validate_docs(root: Path = ROOT, *, today: date | None = None) -> list[str]:
+    """处理：检查文档大小、元数据、翻译、隐私痕迹和本地链接。
     输入：
-    - 无显式业务参数：不接收参数；读取文档目录、英中映射和本地链接，汇总缺失或失效记录。
-    输出：可操作的校验错误消息列表；空列表表示通过当前规则。
+    - ``root``：仓库根或测试夹具目录；所有发现和配对使用同一根。
+    - ``today``：检查日期；默认系统日期，测试可固定它以验证过期行为。
+    输出：可定位文件的错误列表；空列表表示当前文档检查通过。
     """
     errors: list[str] = []
-    agent_lines = len((ROOT / "AGENTS.md").read_text(encoding="utf-8").splitlines())
-    if agent_lines > 110:
-        errors.append(f"AGENTS.md has {agent_lines} lines; keep the map at or below 110")
-
-    for record in canonical_records():
+    today = today or date.today()
+    for record in canonical_records(root):
+        relative = record.relative_to(root)
         if not record.is_file():
-            errors.append(f"Missing canonical record: {record.relative_to(ROOT)}")
-            continue
-        translation = translation_path(record)
-        if not translation.is_file():
-            errors.append(
-                "Missing Chinese translation: "
-                f"{translation.relative_to(ROOT)} for {record.relative_to(ROOT)}"
-            )
-        if record.name == "AGENTS.md":
+            errors.append(f"Missing canonical record: {relative}")
             continue
         text = record.read_text(encoding="utf-8")
-        if "**Status:**" not in text:
-            errors.append(f"Missing status: {record.relative_to(ROOT)}")
-        if "**Owner:**" not in text:
-            errors.append(f"Missing owner: {record.relative_to(ROOT)}")
+        translation = translation_path(record, root)
+        if not translation.is_file():
+            errors.append(f"Missing Chinese translation: {translation.relative_to(root)}")
+        if record.name == "AGENTS.md":
+            if len(text.splitlines()) > 110:
+                errors.append(f"{relative} exceeds 110 lines")
+            continue
+        status = STATUS_PATTERN.search(text)
+        if not status or status.group(1) not in {
+            "Verified",
+            "Draft",
+            "Active",
+            "Historical",
+            "Generated",
+        }:
+            errors.append(f"Missing or invalid status: {relative}")
+        if not re.search(r"\*\*Owner:\*\* \S", text):
+            errors.append(f"Missing owner: {relative}")
         match = VERIFIED_PATTERN.search(text)
         if not match:
-            errors.append(f"Missing verification date: {record.relative_to(ROOT)}")
+            errors.append(f"Missing verification date: {relative}")
             continue
-        verified = date.fromisoformat(match.group(1))
-        age = (date.today() - verified).days
-        if age < 0 or age > MAX_VERIFICATION_AGE_DAYS:
-            errors.append(
-                f"Stale verification date in {record.relative_to(ROOT)}: "
-                f"{verified} ({age} days old)"
-            )
+        try:
+            verified = date.fromisoformat(match.group(1))
+        except ValueError:
+            errors.append(f"Invalid verification date: {relative}: {match.group(1)}")
+            continue
+        age = (today - verified).days
+        historical = status and status.group(1) in {"Historical", "Generated"}
+        if age < 0 or (not historical and age > MAX_VERIFICATION_AGE_DAYS):
+            errors.append(f"Stale verification date: {relative}: {verified} ({age} days old)")
 
-    for document in markdown_files():
+    for document in markdown_files(root):
         text = document.read_text(encoding="utf-8")
+        relative = document.relative_to(root)
         for label, pattern in PROHIBITED_MARKDOWN_PATTERNS.items():
             if pattern.search(text):
-                errors.append(
-                    f"Prohibited {label} in {document.relative_to(ROOT)}"
-                )
-        for raw_target in LINK_PATTERN.findall(text):
+                errors.append(f"Prohibited {label} in {relative}")
+        # 图片与 HTML 内嵌资源也是读者路径；代码块中的示例不当作实际链接。
+        prose = re.sub(r"(?ms)^```[^\n]*\n.*?^```\s*$", "", text)
+        for raw_target in [*LINK_PATTERN.findall(prose), *HTML_LINK_PATTERN.findall(prose)]:
             target = _local_target(document, raw_target)
             if target is not None and not target.exists():
-                errors.append(
-                    f"Broken local link in {document.relative_to(ROOT)}: {raw_target}"
-                )
+                errors.append(f"Broken local link in {relative}: {raw_target}")
     return errors
 
 
 def main() -> int:
-    """处理：解析命令行参数并执行对应入口。
+    """处理：执行文档检查并打印可直接修复的错误。
     输入：
-    - 无显式业务参数：不接收参数；执行完整文档目录、翻译和链接检查并打印结果。
-    输出：进程退出码；0 表示检查通过，非 0 表示存在已输出的错误。
+    - 无显式业务参数：从脚本位置定位仓库，检查当前文档和中文镜像。
+    输出：终端检查结果和退出码；有错误时返回 1，全部通过返回 0。
     """
     errors = validate_docs()
+    for error in errors:
+        print(f"ERROR: {error}")
     if errors:
-        for error in errors:
-            print(f"ERROR: {error}")
         return 1
     print(
-        f"Documentation checks passed: {len(canonical_records())} canonical records, "
+        f"Documentation checks passed: {len(canonical_records())} records, "
         f"{len(markdown_files())} Markdown files."
     )
     return 0

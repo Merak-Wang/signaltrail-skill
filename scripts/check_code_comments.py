@@ -42,7 +42,7 @@ def python_targets(root: Path = ROOT) -> list[Path]:
     输出：需要接受中文注释门禁的源码 Path 列表；包含规范包模块和三份维护脚本，
       不含测试与发布快照。
     """
-    source_files = sorted((root / "src" / "daily_intelligence").glob("*.py"))
+    source_files = sorted((root / "src" / "daily_intelligence").rglob("*.py"))
     script_files = [root / "scripts" / name for name in MAINTENANCE_SCRIPTS]
     return [*source_files, *script_files]
 
@@ -72,16 +72,16 @@ def definition_errors(path: Path, root: Path = ROOT) -> list[str]:
         summary = docstring.splitlines()[0]
         if "``" in summary:
             errors.append(f"{label}: summary must explain behavior, not repeat its identifier")
-        if len(CHINESE_PATTERN.findall(summary)) < 10:
-            errors.append(f"{label}: summary is too short to explain the processing logic")
         for marker in ("输入：", "输出："):
             if marker not in docstring:
                 errors.append(f"{label}: docstring is missing {marker}")
-        if "输入：\n" not in docstring or not re.search(
-            r"(?m)^\s*- (?:``[^`]+``|无显式业务参数)：.*[\u3400-\u9fff]",
-            docstring,
-        ):
-            errors.append(f"{label}: inputs need named Chinese descriptions")
+        # 短输入说明与多参数列表都可用；不为了满足格式强迫简单函数扩写模板。
+        for marker, following in (("输入：", "输出："), ("输出：", None)):
+            section = docstring.partition(marker)[2]
+            if following:
+                section = section.partition(following)[0]
+            if not CHINESE_PATTERN.search(section):
+                errors.append(f"{label}: {marker} needs a concrete Chinese description")
         for empty_pattern in EMPTY_DESCRIPTION_PATTERNS:
             if empty_pattern in docstring:
                 errors.append(

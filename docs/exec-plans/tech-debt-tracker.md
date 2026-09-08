@@ -4,15 +4,13 @@
 impact, and measurable exit conditions.
 **Status:** Verified
 **Owner:** Repository maintainers
-**Last verified:** 2026-08-28
+**Last verified:** 2026-09-08
 
 ## Open Items
 
 | ID | Priority | Gap | Evidence / impact | Exit condition |
 | --- | --- | --- | --- | --- |
 | TD-002 | Medium | Validation and rendering remain concentrated in very long functions. | `validate_report_data`, `compile_report_data`, `render_report_markdown`, and `report_to_blocks` combine several rule or rendering families, increasing change and review risk. | Characterization coverage protects current output while cohesive typed helpers own individual rule and rendering families. |
-| TD-003 | Medium | Detailed `references/` are primarily Chinese while runtime entry documents are English. | Language authority is unclear when a detailed reference has no canonical English record or cataloged single-language status. | Every maintained reference declares its language authority; touched bilingual records keep a canonical English file and synchronized Chinese mirror. |
-| TD-004 | Low | CLI dispatch remains concentrated in `main()`. | Shared JSON readers and writers exist, while command routing still couples many unrelated handlers. | Cohesive command families have typed handlers and command-level characterization coverage. |
 | TD-005 | Medium | The zero-model monitor reports some collector-only formal sources as `unsupported`. | The [2026-08-05 run](completed-2026-08-05-morning-report-regeneration.md) showed the mismatch for Weibo; PBOC and ByteDance share it. Failure-rate reporting is overstated. | A collector-only status is visible and excluded from failure rates; monitor refresh stays free of specialized collection. |
 | TD-006 | High | A process-wide enrichment failure can strand a run in `extracting_content`. | The state persists before `extract_content`; ordinary preparation returns the existing non-terminal run and cannot resume the interrupted work. | Enrichment is checkpointed and re-entrant, with fault-injection coverage after the state transition and during immutable index creation. |
 | TD-007 | High | Authoring packets are mutable and lack a cryptographic binding to context and session. | Submission validates the packet currently on disk, while the session binds only the main context hash. Packet replacement can change authorized work after dispatch. | Packets are immutable; context and session persist each packet hash and authorized item IDs; begin, submit, and recovery revalidate the binding. |
@@ -34,11 +32,26 @@ impact, and measurable exit conditions.
 | TD-026 | Medium | **Codex/OpenClaw integrations:** durable-log imports lack task-selective scope. | OpenClaw import reads every usage-bearing row in the supplied audited per-agent database; Codex JSONL uses a fixed 64 MiB cap and no session/time filter. | Agent, session, and time filters bound both imports; Codex parsing streams bounded records, and absent provider-attempt counts remain unknown. |
 | TD-029 | High | Compiler-owned event IDs lack a verified cross-item continuation mechanism. | Python derives IDs from authorized current items, while a new article that updates an older event has no safe lineage declaration. | A bounded prior-event candidate set and validated update/supersession field support legitimate continuation and reject forged history. |
 | TD-030 | High | **Hermes integration:** delegated workers inherit the parent toolset. | Current `delegate_task` requests retain browser, search, and delegation schemas even when packet and output paths are narrow. Core packet validation still constrains accepted data. | Hermes supports per-child least-privilege toolsets, and delegated request-schema tests confirm the intended narrow capability set. |
-| TD-031 | High | Controlled optimization evidence has not met the stable quality and lifecycle gate. | The v2 trial reduced analysis tokens by 70.1% and missed quality floors. The 2026-08-25 run reached 37/45 under changed inputs with deadline and open-call qualifications. | Single-variable batch-size and phase-model trials pass quality floors, and a comparable lifecycle finishes within budget with zero open calls. |
+| TD-031 | High | Controlled optimization evidence has not met the stable quality and lifecycle gate. | The v2 trial reduced analysis tokens by 70.1% and missed quality floors. The 2026-08-25 run reached 37/45 under changed inputs with deadline and open-call qualifications. Frozen evaluator findings can also mistake valid section-local ordering for invalid global ordering; their scores require an evidence audit. | Single-variable batch-size and phase-model trials pass audited quality floors, and a comparable lifecycle finishes within budget with zero open calls. |
 | TD-032 | Medium | **Host orchestration:** root-like provider turns remain a context and tool-schema concentration. | Available sessions differ in model, snapshot, and recovery path; observed call totals span 33 to 108, preventing a causal root-turn comparison. | Comparable per-leaf measurements classify repeated context, tool schema, and polling; accepted changes reach at most 51 calls with stable quality and zero open lifecycles. |
 | TD-033 | High | **Hermes integration:** successful one-shot work can lack terminal hook events. | A v2 control recorded 24 attempts and 22 token-accounted terminal observations. The missing terminals make the task total a lower bound; core finalization correctly preserves `partial`. | Cancellation or transport terminals, or a durable reconciliation source, close every attempted request; unresolved fields remain unknown and the task remains partial. |
+| TD-037 | Low | Older docstrings still contain generic template wording. | Several foundation and report modules describe inputs as arbitrary paths and outputs as processing results; format checks cannot establish semantic quality. | Rewrite these contracts alongside their owning functions, naming actual provenance and downstream meaning; retain concise Chinese descriptions. |
 
 ## Resolved Items
+
+Resolved on 2026-09-08:
+
+- TD-003: the documentation index and each runtime reference now declare language authority.
+- TD-004: CLI handlers are grouped by responsibility in `commands/`, with a typed context and
+  command-level tests for aliases, option forwarding, output, exit codes, and data-root rejection.
+
+
+
+The metered Hermes launcher scopes the TD-020 and TD-033 workarounds to explicit local
+runs: it routes evaluator environments, waits for worker waves, and checks the host database.
+Legacy direct CLI/Cron entry points retain the gaps above. Raw auxiliary streams (including
+MoA), unknown auxiliary session lineage, and future incompatible Hermes APIs are outside the
+audited bridge; they must fail exact acceptance until fixtures and reconciliation cover them.
 
 Resolved during the 2026-08-28 documentation and release cleanup:
 
