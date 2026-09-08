@@ -147,6 +147,15 @@ daily-intel --help
 的处理流程见 [SKILL.md](SKILL.md)，用量与评估调度见
 [模型用量说明](references/llm-usage.md)和[运行手册](references/runbook.md)。
 
+Hermes 0.21 的完整计量运行从模型启动前接线，包括委派、辅助调用和独立评估：
+
+```text
+signaltrail-hermes run --ledger DATA_DIR --hermes-python HERMES_PYTHON --prompt-file PROMPT.txt --timeout 3600
+```
+
+`HERMES_PYTHON` 是安装了本项目的 Hermes 虚拟环境 Python；可加 `--provider` 和 `--model`。
+入口会等待工作波次，并与 Hermes 本次会话的用量数据库对账；缺失记录保留为 `partial`。
+
 ### Hermes 快捷安装
 
 下列脚本会安装 Python 包，并把 Skill 同步到 Hermes 的 `skills/research/signaltrail`。
@@ -271,6 +280,7 @@ daily-intel serve --open --refresh-minutes 30
 | `Desktop/daily-intelligence-…html` | 图片内嵌、可独立移动的单文件副本 |
 | `evaluations/dossiers/REPORT_ID.json` | 与报告及索引 Hash 绑定的独立评估只读输入 |
 | `usage/YYYY-MM-DD/TASK_ID/events/*.json` | 不含 prompt/正文的不可变模型用量审计事件 |
+| `host-runs/TASK_ID/receipt.json` | 完整计量启动的封存回执及宿主数据库对账 |
 | Notion | 可选的元数据页面与便携 HTML 附件 |
 
 `--data-dir` 或 `DAILY_INTEL_DATA_DIR` 指定本地数据根，报告历史位于其中的 `reports/`。

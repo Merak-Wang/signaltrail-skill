@@ -2,7 +2,7 @@
 
 **状态：** 已验证运行参考
 **Owner:** Repository maintainers
-**Last verified:** 2026-08-28
+**Last verified:** 2026-09-08
 
 本参考只在首次接入宿主、检查审计覆盖、补录 durable log 或扩展适配器时读取。
 日常 brief 和 analysis packet 已经自包含，不需要把本文件放入写作上下文。
@@ -102,6 +102,39 @@ signaltrail-usage finalize --ledger DATA_DIR --task-id TASK_ID --status complete
 
 ## Hermes：逐请求 hook
 
+完整计量运行使用显式启动器（首次安装后也可用 `python -m daily_intelligence.hermes_runner`）：
+
+```text
+signaltrail-hermes run --ledger DATA_DIR --hermes-python HERMES_PYTHON --prompt-file PROMPT.txt --provider opencode-go --model deepseek-v4-flash-vision-exp --timeout 3600
+```
+
+启动器先创建唯一 task，再启动 Hermes 0.21 进程；任务与 `SIGNALTRAIL_USAGE_*` 在首个模型调用前
+就已就绪。它用进程内观察器替代三个 SignalTrail shell 回调，保留其他插件及审批，并通过官方
+Python 委派接口等待每波最多三个 worker（每个最多 40 轮）。主请求、委派和辅助模型的标题生成、
+压缩等请求都记录开始与终态；辅助原始流或不支持的谱系明确使验收失败。没有修改全局 Hermes
+源码或配置。worker goal 可使用 `[signaltrail-phase:brief-authoring]` 或
+`[signaltrail-phase:analysis-authoring]` 指明阶段；未声明时仍计入所属任务并保留父子关联。
+
+宿主退出后必须与同一批会话在 `state.db/session_model_usage` 的调用数和 token 数只读对账。
+空任务、未知 token、写入故障、漏结束、冲突、缺失宿主回执或数据库不一致均封存为 `partial`。
+安全回执位于 `DATA_DIR/host-runs/TASK_ID/receipt.json`；本地宿主回答和诊断在同目录保存，
+不进入 `usage/`，也不应提交 Git。进程被终止时保留缺失事件，不能用累计值制造逐请求回执。
+
+通过此入口执行 tail 时，`SIGNALTRAIL_HERMES_PYTHON` 选择 `metered-local` 评估后端：先建立
+独立 evaluator task，再启动携带其环境的一次性进程；它独立封存并接受同样的数据库对账。
+调度声明独占创建，收尾状态未知时不会重复派发。主任务和评估 task 的非重叠总量合计才是
+生命周期成本。普通 CLI/Cron 启动仍遵循下述手工接线要求，不能自动声称完整计量。
+
+写作子任务按 packet 的文件契约提交，带 `signaltrail-phase` 写作标记的任务不再附加工具回复
+schema，避免文件已经写好后因口头回执格式触发整轮重写；Python 内容校验和有界修复仍然执行。
+本进程限制每波最多三个子任务、每个最多四十轮，并等待子任务及标题请求收尾后再封账。
+轮次耗尽的强制总结原本绕过常规 transport 和宿主计数；本入口单独补齐 OpenCode Go
+亲和 header、请求事件和原生辅助 usage 记录。仅有数据库总量相等不足以证明未审计分支
+没有调用；修复前已封账的漏记请求必须保留为外部覆盖缺口，不能倒填零 token。
+本地独立评估直接接收同一不可变 dossier 的完整 JSON，输出仍由原有评估校验器检查。
+v2 dossier 显式保留各 section 的精选排序证据，按栏目内 importance 降序评估，不能拼接后
+要求全局重排。历史 v1 数据包和评分保持不可变；若发现误判，审计结论单独说明。
+
 Hermes 的 `~/.hermes/config.yaml` 为三个 API observer 事件配置同一个本地命令：
 
 ```yaml
@@ -194,13 +227,14 @@ brief 与 analysis 验证失败会写 `*-rejections/attempt-N.json`：只含 dra
 无效提交最多授权一次修复；第二次不同无效提交是硬终态。同一无效草稿重放复用原回执。
 
 独立评估调度先执行当前 report ID/content hash preflight。仓库内置的自动 host scheduler
-当前只支持 Hermes：它只读对账 `hermes cron list --all`，只有明确失败或超时才允许第二次
-总尝试；unknown/reconciliation failure 不会触发重复 job。调度前创建 independent evaluator
+当前只支持 Hermes：本地计量入口检查进程封账回执，其他入口只读对账 `hermes cron list --all`。
+只有明确失败或超时才允许第二次总尝试；unknown/reconciliation failure 不会触发重复 job。
+调度前创建 independent evaluator
 子 usage task，并生成
-`evaluations/dossiers/<report_id>.json`：dossier 绑定 report/index 文件 Hash 和语义 content
+`evaluations/dossiers/<report_id>-v2.json`（历史 v1 无此版本后缀）：dossier 绑定 report/index 文件 Hash 和语义 content
 Hash，只携带九维评估所需验证结果、覆盖、排序、brief、精选事件、分析和相应索引证据。
 
-当前 Hermes Cron CLI 不能为独立 job 注入 task 专属 Hook 环境，因此“已创建/绑定 evaluator
+未使用上述完整计量启动器时，Hermes Cron CLI 不能为独立 job 注入 task 专属 Hook 环境，因此“已创建/绑定 evaluator
 task”不等于“逐请求 Hook 覆盖完成”；在宿主支持 job 级环境或插件映射前，必须把这项缺口
 保留为 partial，并用带 evaluation attempt 的 durable aggregate/import 作为恢复证据。
 其他 harness 可以由自己的 scheduler 只读同一 dossier、生成独立评估 JSON 并调用

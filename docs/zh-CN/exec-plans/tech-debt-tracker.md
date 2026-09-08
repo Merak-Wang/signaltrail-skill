@@ -3,7 +3,7 @@
 **目的：** 通过精简的证据、影响与可测退出条件，持续记录尚未解决的实现和集成缺口。
 **状态：** 已验证
 **负责人：** 仓库维护者
-**最后验证：** 2026-08-28
+**最后验证：** 2026-09-08
 
 ## 开放事项
 
@@ -33,11 +33,16 @@
 | TD-026 | 中 | **Codex/OpenClaw 集成：** Durable Log 导入缺少任务级范围选择。 | OpenClaw 导入会读取所提供已审计 Per-agent 数据库中的全部 Usage 行；Codex JSONL 采用固定 64 MiB 上限，且没有 Session/Time Filter。 | Agent、Session 与时间 Filter 约束两种导入；Codex 流式解析有界记录，缺失 Provider Attempt 数继续保持 unknown。 |
 | TD-029 | 高 | 编译器所有的 Event ID 缺少经过验证的跨条目连续机制。 | Python 从当前授权 item 派生 ID，新文章更新旧事件时缺少安全的血缘声明。 | 有界 Prior-event 候选集与经校验的 Update/Supersession 字段支持合法延续，并拒绝伪造历史。 |
 | TD-030 | 高 | **Hermes 集成：** 委派 Worker 继承父任务 Toolset。 | 当前 `delegate_task` 请求仍包含 Browser、Search 和 Delegation Schema，即使 Packet 和输出路径已经收窄。核心 Packet 校验继续约束可接受数据。 | Hermes 支持逐子任务最小权限 Toolset，委派请求 Schema 测试确认预期的窄能力集。 |
-| TD-031 | 高 | 受控优化证据尚未达到稳定质量与生命周期门禁。 | v2 试验减少 70.1% Analysis Token，质量低于地板；2026-08-25 运行在输入变化后达到 37/45，并有截止时间和未闭合调用限定。 | 单变量 Batch-size 与阶段模型试验达到质量地板，一个可比生命周期在预算内完成且未闭合调用为 0。 |
+| TD-031 | 高 | 受控优化证据尚未达到稳定质量与生命周期门禁。 | v2 试验减少 70.1% Analysis Token，质量低于地板；2026-08-25 运行在输入变化后达到 37/45，并有截止时间和未闭合调用限定。已冻结的评估结论还可能把合法的栏目内排序误判为全局排序错误，分数需经过证据复核。 | 单变量 Batch-size 与阶段模型试验达到经复核的质量地板，一个可比生命周期在预算内完成且未闭合调用为 0。 |
 | TD-032 | 中 | **宿主编排：** Root-like Provider Turn 仍是 Context 与 Tool Schema 集中点。 | 现有 Session 的模型、快照和恢复路径不同；观测调用总数分布在 33 至 108，无法形成因果比较。 | 可比的逐叶测量对重复 Context、Tool Schema 与轮询分类；接受结果最多 51 次调用、质量稳定且未闭合生命周期为 0。 |
 | TD-033 | 高 | **Hermes 集成：** 成功的 One-shot 工作可能缺少终态 Hook 事件。 | 一次 v2 对照记录 24 次尝试和 22 个可核算 Token 的终态 Observation。缺失终态使 Task 总量成为下界；核心 Finalization 正确保留 `partial`。 | Cancel/Transport 终态或 Durable 对账源闭合每个已尝试请求；未解析字段保持 unknown，Task 保持 partial。 |
 
 ## 已解决事项
+
+完整计量 Hermes 启动器为显式本地运行提供 TD-020 与 TD-033 的绕行实现：路由评估器环境，
+等待工作波次，并核对宿主数据库。历史直接 CLI/Cron 入口仍保留上述缺口。辅助原始流（包括
+MoA）、未知辅助会话谱系以及未来不兼容的 Hermes API 尚不在桥接审计范围内；在 Fixture 与
+对账覆盖前，必须拒绝把这些运行视为精确验收通过。
 
 2026-08-28 文档与发布清理已解决：
 

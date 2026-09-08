@@ -1144,7 +1144,16 @@ def _validate_finalized_summary(
         if optional_key not in stored:
             compatible.pop(optional_key, None)
     if stored != compatible:
-        raise RuntimeError(f"Finalized usage summary does not match events: {task.task_id}")
+        # Python 3.12 改变了 float sum；只接受已验证观测按旧顺序累加的延迟值。
+        legacy = _summarize_events(
+            task.task_id,
+            non_final_events,
+            completed_at_override=data["completed_at"],
+            legacy_latency_sum=True,
+        )
+        compatible["latency_ms"] = legacy["latency_ms"]
+        if stored != compatible:
+            raise RuntimeError(f"Finalized usage summary does not match events: {task.task_id}")
     if data["status"] == "completed" and expected["call_lifecycle"]["unclosed_call_count"]:
         raise RuntimeError(f"Completed usage task has unclosed calls: {task.task_id}")
     if pending_legacy_hash:
@@ -1304,9 +1313,10 @@ def _summarize_events(
     events: list[dict[str, Any]],
     *,
     completed_at_override: str | None = None,
+    legacy_latency_sum: bool = False,
 ) -> dict[str, Any]:
     """处理：从同一持锁快照派生 token、调用生命周期、覆盖率、耗时和成本。
-    输入：规范 task ID、完整性已验证事件以及 finalize 可用的完成时间覆盖。
+    输入：规范 task ID、已验证事件、完成时间覆盖及仅重放旧延迟累加时的兼容开关。
     输出：unknown-preserving summary；调用事件计数不会伪造任何未知 token 为零。
     """
 
@@ -1330,7 +1340,8 @@ def _summarize_events(
                 if name in item.latency
                 else unobservable("latency_dimension_not_exposed")
                 for item in selected
-            ]
+            ],
+            legacy_float_sum=legacy_latency_sum,
         )
         for name in sorted({key for item in selected for key in item.latency})
     }
@@ -1572,9 +1583,11 @@ def _token_conflicts(group: list[UsageObservation]) -> list[str]:
     return conflicts
 
 
-def _sum_measurements(values: list[Measurement | None]) -> dict[str, Any]:
+def _sum_measurements(
+    values: list[Measurement | None], *, legacy_float_sum: bool = False
+) -> dict[str, Any]:
     """处理：汇总字段测量，同时让任一未知值使总量保持不可观测。
-    输入：同一语义字段的 measurement/None 列表。
+    输入：同一字段的 measurement/None 列表；legacy_float_sum 仅复核旧延迟封存。
     输出：value/quality、已知上下界和未知观测数；unknown 永远不会变成零。
     """
 
@@ -1589,7 +1602,17 @@ def _sum_measurements(values: list[Measurement | None]) -> dict[str, Any]:
         }
     known = [item for item in present if item.value is not None]
     unknown_count = len(present) - len(known)
-    known_total = sum(item.value for item in known) if known else None
+    known_total: int | float | None = None
+    if known:
+        numbers = [item.value for item in known]
+        if legacy_float_sum:
+            known_total = 0
+            for number in numbers:
+                known_total += number
+        elif any(isinstance(number, float) for number in numbers):
+            known_total = float(sum((Decimal(str(number)) for number in numbers), Decimal(0)))
+        else:
+            known_total = sum(numbers)
     if unknown_count:
         return {
             "value": None,

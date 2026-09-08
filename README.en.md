@@ -175,6 +175,18 @@ starts outside the repository, set `DAILY_INTEL_SKILL_DIR` to the directory cont
 [model-usage operations](references/llm-usage.md) for metering, and the
 [runbook](references/runbook.md) for evaluation scheduling.
 
+For complete metering on Hermes 0.21, start the host through this entry point so
+delegated workers, auxiliary requests, and the independent evaluator are included:
+
+```text
+signaltrail-hermes run --ledger DATA_DIR --hermes-python HERMES_PYTHON --prompt-file PROMPT.txt --timeout 3600
+```
+
+`HERMES_PYTHON` is the Hermes virtual-environment Python with this project installed.
+Optional `--provider` and `--model` select the route. The launcher waits for worker
+waves and reconciles the same sessions against Hermes' usage database. Missing
+observations remain `partial`.
+
 ### Hermes quick install
 
 These scripts install the Python package and synchronize the skill to Hermes at
@@ -307,6 +319,7 @@ ranking even when it contains papers published in earlier years.
 | `Desktop/daily-intelligence-…html` | Portable single-file reading copy with images embedded |
 | `evaluations/dossiers/REPORT_ID.json` | Read-only independent-evaluation input bound to report and index hashes |
 | `usage/YYYY-MM-DD/TASK_ID/events/*.json` | Immutable model-usage audit events with no prompt or generated body |
+| `host-runs/TASK_ID/receipt.json` | Metered-host seal and host usage-database reconciliation |
 | Notion | Optional metadata page plus portable HTML attachment |
 
 `--data-dir` or `DAILY_INTEL_DATA_DIR` selects the local data root, with report history

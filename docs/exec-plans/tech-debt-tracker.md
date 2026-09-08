@@ -4,7 +4,7 @@
 impact, and measurable exit conditions.
 **Status:** Verified
 **Owner:** Repository maintainers
-**Last verified:** 2026-08-28
+**Last verified:** 2026-09-08
 
 ## Open Items
 
@@ -34,11 +34,17 @@ impact, and measurable exit conditions.
 | TD-026 | Medium | **Codex/OpenClaw integrations:** durable-log imports lack task-selective scope. | OpenClaw import reads every usage-bearing row in the supplied audited per-agent database; Codex JSONL uses a fixed 64 MiB cap and no session/time filter. | Agent, session, and time filters bound both imports; Codex parsing streams bounded records, and absent provider-attempt counts remain unknown. |
 | TD-029 | High | Compiler-owned event IDs lack a verified cross-item continuation mechanism. | Python derives IDs from authorized current items, while a new article that updates an older event has no safe lineage declaration. | A bounded prior-event candidate set and validated update/supersession field support legitimate continuation and reject forged history. |
 | TD-030 | High | **Hermes integration:** delegated workers inherit the parent toolset. | Current `delegate_task` requests retain browser, search, and delegation schemas even when packet and output paths are narrow. Core packet validation still constrains accepted data. | Hermes supports per-child least-privilege toolsets, and delegated request-schema tests confirm the intended narrow capability set. |
-| TD-031 | High | Controlled optimization evidence has not met the stable quality and lifecycle gate. | The v2 trial reduced analysis tokens by 70.1% and missed quality floors. The 2026-08-25 run reached 37/45 under changed inputs with deadline and open-call qualifications. | Single-variable batch-size and phase-model trials pass quality floors, and a comparable lifecycle finishes within budget with zero open calls. |
+| TD-031 | High | Controlled optimization evidence has not met the stable quality and lifecycle gate. | The v2 trial reduced analysis tokens by 70.1% and missed quality floors. The 2026-08-25 run reached 37/45 under changed inputs with deadline and open-call qualifications. Frozen evaluator findings can also mistake valid section-local ordering for invalid global ordering; their scores require an evidence audit. | Single-variable batch-size and phase-model trials pass audited quality floors, and a comparable lifecycle finishes within budget with zero open calls. |
 | TD-032 | Medium | **Host orchestration:** root-like provider turns remain a context and tool-schema concentration. | Available sessions differ in model, snapshot, and recovery path; observed call totals span 33 to 108, preventing a causal root-turn comparison. | Comparable per-leaf measurements classify repeated context, tool schema, and polling; accepted changes reach at most 51 calls with stable quality and zero open lifecycles. |
 | TD-033 | High | **Hermes integration:** successful one-shot work can lack terminal hook events. | A v2 control recorded 24 attempts and 22 token-accounted terminal observations. The missing terminals make the task total a lower bound; core finalization correctly preserves `partial`. | Cancellation or transport terminals, or a durable reconciliation source, close every attempted request; unresolved fields remain unknown and the task remains partial. |
 
 ## Resolved Items
+
+The metered Hermes launcher scopes the TD-020 and TD-033 workarounds to explicit local
+runs: it routes evaluator environments, waits for worker waves, and checks the host database.
+Legacy direct CLI/Cron entry points retain the gaps above. Raw auxiliary streams (including
+MoA), unknown auxiliary session lineage, and future incompatible Hermes APIs are outside the
+audited bridge; they must fail exact acceptance until fixtures and reconciliation cover them.
 
 Resolved during the 2026-08-28 documentation and release cleanup:
 

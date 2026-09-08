@@ -3,7 +3,7 @@
 **目的：** 定义规范系统边界、依赖方向、状态所有权与 Artifact 权威性。
 **状态：** 已验证
 **负责人：** 仓库维护者
-**最后验证：** 2026-08-25
+**最后验证：** 2026-09-08
 **范围：** `src/daily_intelligence/` 中的规范实现
 
 本文是领域、依赖、状态所有权和 artifact 权威性的顶层地图。详细运行策略仍位于
@@ -58,7 +58,7 @@ flowchart LR
 | 报告 | `reporting`、`reports` | 编译、Schema/跨字段校验、不可变记录 |
 | 投影 | `local_output`、`notion`、`dashboard` | HTML/PDF/Notion 和只读 Monitor 界面 |
 | 编排 | `workflow` | Run 状态机、截止时间、恢复、可重试 Tail |
-| 入口 | `cli`、`usage_cli`、`verification`、`importer` | 命令解析、用量 Hook/导入、显式人工验证、旧数据导入 |
+| 入口 | `cli`、`usage_cli`、`hermes_runner`、`verification`、`importer` | 命令解析、用量 Hook/导入、完整计量 Hermes 启动、显式人工验证、旧数据导入 |
 
 预期依赖方向是：基础 → 配置 → 采集 → 证据 → 情境 → 报告 → 投影 → 编排 → 入口。
 高层可以调用低层；反方向依赖必须有明确架构理由和测试。
@@ -66,6 +66,11 @@ flowchart LR
 用量审计是根植于基础层的横切本地 Sidecar。宿主 Adapter 向其供数，但不依赖报告或发布
 层；编排层只记录对用量任务的引用，入口层提供本地 start、hook、import、summary 和
 finalize 操作。
+
+显式 `hermes_runner` 入口与 `hosts.hermes` 桥在启动 Hermes 前创建任务，等待同步工作波次，观察主模型和辅助请求，
+仅在宿主退出后封存。进程内 Hermes 兼容桥保留其他 hook，不修改宿主安装源码；同一批会话的
+宿主用量计数经只读对账后才允许精确覆盖验收。此入口通过本地一次性进程为独立评估器注入
+单独任务；历史 Cron 路径仍可使用，但保留已记录的覆盖缺口。
 
 ## 主流程
 

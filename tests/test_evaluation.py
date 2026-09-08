@@ -70,3 +70,28 @@ def test_evaluation_dossier_is_immutable_hashed_and_allowlisted(tmp_path: Path):
     write_json(report_path, report)
     with pytest.raises(RuntimeError, match="Conflicting immutable evaluation dossier"):
         build_evaluation_dossier(report_path, index_path, data_dir)
+
+
+def test_featured_order_preserves_section_boundaries_and_old_dossier(monkeypatch, tmp_path):
+    monkeypatch.setattr('daily_intelligence.evaluation.validate_report_data',
+                        lambda *args: ([], []))
+    report = {"report_id": "report-1", "sections": [
+        {"id": "section-a", "items": [
+            {"event_id": "a1", "importance": 80}, {"event_id": "a2", "importance": 70}]},
+        {"id": "section-b", "items": [
+            {"event_id": "b1", "importance": 90}, {"event_id": "b2", "importance": 85}]},
+    ]}
+    legacy = write_json(tmp_path / 'evaluations/dossiers/report-1.json', {"policy": "v1"})
+    original = legacy.read_bytes()
+    report_path = write_json(tmp_path / 'report.json', report)
+    index_path = write_json(tmp_path / 'index.json', {"items": []})
+    path = build_evaluation_dossier(report_path, index_path, tmp_path)
+    dossier = read_json(path)
+    assert path.name == 'report-1-v2.json'
+    assert legacy.read_bytes() == original
+    assert dossier['evaluation_contract']['featured_event_order_scope'] == 'within_each_section'
+    assert dossier['ordering']['featured_importance'] == [80, 70, 90, 85]
+    assert dossier['ordering']['featured_importance_by_section'] == [
+        {"section_id": "section-a", "event_ids": ["a1", "a2"], "importance": [80, 70]},
+        {"section_id": "section-b", "event_ids": ["b1", "b2"], "importance": [90, 85]},
+    ]

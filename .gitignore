@@ -60,6 +60,11 @@ raw_html/
 # Local development plans
 /plan.md
 
+# Local machine maintenance and ad-hoc cost audits
+/docs/exec-plans/*-hermes-and-cost-audit.md
+/docs/zh-CN/exec-plans/*-hermes-and-cost-audit.md
+/_inspect_*.py
+
 # Local agent and editor state
 /.agents/
 /.code-review-graph/

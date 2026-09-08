@@ -3,7 +3,7 @@
 **Purpose:** Define canonical system boundaries, dependency direction, state ownership, and artifact authority.
 **Status:** Verified
 **Owner:** Repository maintainers
-**Last verified:** 2026-08-25
+**Last verified:** 2026-09-08
 **Scope:** Canonical implementation in `src/daily_intelligence/`
 
 This document is the top-level map of domains, dependencies, state ownership, and
@@ -63,7 +63,7 @@ these boundaries.
 | Report | `reporting`, `reports` | Compilation, schema/cross-field validation, immutable records |
 | Projection | `local_output`, `notion`, `dashboard` | HTML/PDF/Notion and read-only monitor views |
 | Orchestration | `workflow` | Run state machine, deadlines, recovery, retryable tail |
-| Entry points | `cli`, `usage_cli`, `verification`, `importer` | Command parsing, usage hooks/import, explicit human verification, legacy import |
+| Entry points | `cli`, `usage_cli`, `hermes_runner`, `verification`, `importer` | Command parsing, usage hooks/import, metered Hermes launch, explicit human verification, legacy import |
 
 The intended dependency direction is Foundation → Configuration → Acquisition → Evidence
 → Context → Report → Projection → Orchestration → Entry points. A high layer may call a
@@ -72,6 +72,13 @@ lower layer; the inverse requires an explicit architectural reason and tests.
 Usage audit is a cross-cutting local sidecar rooted in Foundation. Host adapters feed it without
 depending on report or publishing layers; Orchestration records references to its tasks, while
 Entry points expose local start, hook, import, summary, and finalize operations.
+
+The explicit `hermes_runner` entry point and `hosts.hermes` bridge start the task before launching Hermes, wait for
+synchronous worker waves, observes main and auxiliary requests, and seals only after host exit.
+Its process-local Hermes compatibility bridge preserves other hooks and does not edit the host
+installation. A read-only comparison against the same sessions' host usage counters gates exact
+coverage. Independent evaluators receive a separate task through a local one-shot process when
+this launcher is used; the legacy Cron path remains available with its documented coverage gap.
 
 ## Primary Flows
 
