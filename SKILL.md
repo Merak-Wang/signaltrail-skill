@@ -85,6 +85,14 @@ Never pass `--open-verification` during unattended work.
 
 Choose at most 12 item IDs needing article text:
 
+Inspect context `collection_coverage` for missing configured source cells and
+`enrichment_plan` for bounded body-gap suggestions. Choose IDs by editorial importance;
+the suggestions do not authorize browsing by writing workers or change source Top order.
+After enrichment, read `metadata.content_completion` and `content_attempts` in the index.
+Keep unresolved gaps explicit; a usable partial body is not complete evidence. Do not
+automatically repeat exhausted or blocked actions. See
+[collection evidence policy](references/editorial-policy.md#采集质量与补全停止) for scope.
+
 ```text
 daily-intel --data-dir DATA_DIR enrich-edition --run RUN.json --item-id ID1 --item-id ID2 --profile-dir PROFILE_DIR
 ```
@@ -166,6 +174,30 @@ schema, source order, counts, evidence, and language validate. Confirm tail/PDF 
 and separately retryable evaluation. For metered runs, wait for workers and imports,
 summarize and finalize all foreground/evaluator tasks, including failure or cancellation;
 retain unknown coverage and do not claim exact acceptance from partial observations.
+
+## Experimental explainers after a saved report
+
+When requested, use `signaltrail explainer prepare --run RUN.json`. Add `--experimental`
+for a disclosed preview of a `completed_partial` edition. Read the returned packet and its
+`payload.output_schema`; submit a shared ledger with `explainer ledger`, then write separate
+`zh-CN` and `en` drafts and submit each with `explainer script`. Python owns all canonical IDs.
+
+Use an isolated worker for each `explainer review-packet`, supplying only its packet. Re-extract
+all assertions, including titles, transitions and visual labels; submit the exact injected schema
+with `explainer review`. The host supplies distinct author/reviewer context labels. A second
+context is not a second independent news source. Each language permits one initial script and
+one repair, shared by format and semantic failures. Never invent observed usage.
+
+After both language reviews support their exact scripts, prepare and submit a bilingual review
+with `explainer bilingual-packet` and `explainer bilingual`. Build `explainer story` with both
+script paths and the exact bilingual receipt, then `explainer render`. A draft preview may omit
+the receipt, but must remain visibly Draft. Inspect both languages and both viewport widths;
+submit actual observations and PNG references through `explainer visual-review`.
+
+Return the local HTML and authoritative Markdown with the snapshot cutoff. Current-news mode
+is intentionally blocked until freshness adapters and live acceptance exist. Do not call a
+preview a current verified edition. Runtime policy and the complete commands are in
+[explainer policy](references/explainer-policy.md) and the [guide](docs/explainers.md).
 
 ## Monitor
 

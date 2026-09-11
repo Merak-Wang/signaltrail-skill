@@ -77,6 +77,26 @@ def test_missing_card_image_does_not_turn_the_index_page_into_an_image():
     assert items[0].image_url is None
 
 
+def test_static_index_prefers_srcset_width_over_fallback_src():
+    _title, rows = html_index_rows(
+        "<article><a href='/articles/one'>A sufficiently long public headline</a>"
+        "<img src='/small.jpg' srcset='/large.jpg 1600w, /small.jpg 400w'></article>"
+    )
+    assert rows[0]["image_url"] == "/large.jpg"
+
+
+def test_browser_index_uses_shared_srcset_parser_and_keeps_observed_dimensions():
+    items = browser_items_from_rows([{
+        "title": "A sufficiently long public headline", "href": "/articles/one",
+        "image_sources": [{
+            "srcset": "/large.jpg 1600w, /small.jpg 400w", "current_src": "/small.jpg",
+            "natural_width": 400, "natural_height": 300,
+        }],
+    }], _source(), "2026-09-11T06:00:00+08:00", "https://example.com/")
+    assert items[0].image_url == "https://example.com/large.jpg"
+    assert items[0].metadata["image_source_observations"][0]["natural_width"] == 400
+
+
 def test_parallel_prefetch_obeys_global_and_per_domain_limits(tmp_path: Path):
     config = AppConfig(
         timezone="Asia/Shanghai",

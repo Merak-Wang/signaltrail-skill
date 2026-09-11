@@ -3,7 +3,7 @@
 **权威语言：** 中文（单语运行参考）
 **负责人：** 仓库维护者
 **状态：** 已验证详细设计
-**最后对照代码：** 2026-09-08
+**最后对照代码：** 2026-09-11
 **上级地图：** [`ARCHITECTURE.md`](../ARCHITECTURE.md)
 
 ## 边界
@@ -39,11 +39,56 @@ Python 拥有状态迁移、revision、访问等级映射、限额、验证和�
 
 来源 YAML 声明基础页和静态探索页。operator 或 authoring coordinator 可以通过 CLI 写入 `state/source-pages.json` 增加同域名、高价值的动态栏目页；每来源最多 5 个。动态页是可撤销配置，不改变适配器代码。
 
-一次来源采集可以访问多个栏目页并去重。通用公开索引先用 httpx/Beautiful Soup 做无脚本预取，受全局与同域 semaphore 约束；无条目、登录/挑战、401/403、JavaScript 页面和专用 adapter 才进入顺序 Edge 回退，避免并发操作同一个持久化 profile。正文读取同样使用共享 `httpx.AsyncClient` 并发提取静态正文和元数据，只将仍可能补足正文的 JavaScript 壳页交给 Edge；明确的访问拒绝保留原状态，不用浏览器重撞。已有正文文件直接复用。429 或临时访问限制直接保留为 `rate_limited`。多页结果按轮询合并，避免 BBC/Guardian 的第一个栏目占满上限而饿死后续栏目。部分栏目成功、部分失败时，来源状态是 `partial`，且 `page_results` 保存每页状态和链接。访问失败永远不能静默变成 `no_items`。
+一次来源采集可以访问多个栏目页并去重。通用公开索引先用 httpx/Beautiful Soup 做无脚本预取，受全局与同域 semaphore 约束；无条目、登录/挑战、401/403、JavaScript 页面和专用 adapter 才进入顺序 Edge 回退，避免并发操作同一个持久化 profile。正文读取同样使用共享 `httpx.AsyncClient` 并发提取静态正文和元数据，将仍可能补足的壳页或部分正文交给一次 Edge 尝试；明确拒绝、限流、不支持类型、已知截断或带不完整提示的部分正文停止升级。完整且通过本地路径/可用哈希复核的正文才直接复用。正文没有独立的 rate_limited 枚举，沿用 verification_required 并在 challenge 与 completion 中标明限流；来源层仍保留 rate_limited。多页结果按轮询合并，避免 BBC/Guardian 的第一个栏目占满上限而饿死后续栏目。部分栏目成功、部分失败时，来源状态是 partial，且 page_results 保存每页状态和链接。访问失败永远不能静默变成 no_items。
 
 `run-edition` 默认不调用手工验证，避免 GUI 等待阻塞生成流程。用户显式运行 `verify-pending` 或传 `--open-verification` 时才启动本地 Edge 队列。队列汇总失败和待验证页面，用户点击链接后，采集器监听新标签并复用当前已登录页面立即提取；只有成功提取到条目才算完成。结果被原子合并到新索引；失败页面继续保留。已发布 run 会进入待修订状态，原报告保持不变，补充内容进入新 revision。同一日期与 edition 的后续 revision 可以复用自身上一 revision 的事件 ID 和来源条目；跨 edition、跨日期或换用另一事件 ID 时仍执行 `NEW` 重复拦截。`--unattended` 保留为默认非交互行为的兼容参数。
 
 ## 状态机与文件
+
+正文抽取在 HTTP 与浏览器路径共享 `content_extraction` 规则。具体正文区域优先于宽泛
+`main/body`，候选同时检查正文块、链接密度和不完整提示；达到字符数不再自动证明完整。
+短公告可标为 `full_text`，并在 `metadata.content_quality.extraction_status` 记录
+`short_complete`；宽泛区域、截断响应或可见的不完整提示最多为 `partial`。这些结果是
+`structural_heuristic`，不是事实核验。只有标题、加载提示或链接列表时仍为 `metadata_only`。
+HTTP 非 HTML 错误响应也保留失败或待验证状态。
+
+每次有效抽取写入唯一名称的结构 JSON 与派生 Markdown；`content_path` 继续指向 Markdown，
+`metadata.content_blocks_path` 指向 JSON。JSON 保留 `item_id`、原 URL、采集路径、选择器、
+质量记录，以及带 `block_id` 的标题、段落、列表和表格块；表格保存单元格文字、表头标记及
+跨行跨列声明。旧正文继续可读和复用，不把历史压平文本伪装成已恢复结构的新证据。
+
+正文 JSON schema 1.1 增加输入指纹与页面自述元信息；索引中的 `content_input` 记录 SHA-256、
+字节数、输入类型及截断，`content_artifacts` 记录 Markdown/结构 JSON 哈希。
+HTTP 指纹覆盖有界响应字节；浏览器指纹覆盖去除隐藏元素后的可见 DOM UTF-8，不是原响应。
+`content_source` 仅记录 page_declared 的作者、发布者、语言，`independent_origin` 保持 null。
+`collection.retain_public_html` 默认 false，开启后只对可用的无登录 HTTP 正文在运行目录写入
+`.response.bin`；不保存浏览器会话 HTML、响应头或挑战页。旧版无哈希文件继续可读。
+
+`collection.fallback_extractor` 允许 none（默认）和 trafilatura（可选 extraction 依赖）。
+备用库只读取已清理 HTML，失败与缺依赖保留基线；选用候选始终至多 partial。
+浏览器在来源等待时限内轮询可见文字，空容器挂载不等于正文就绪；超时仍保留实际不足状态。
+质量补充 title_overlap、numeric_tables_without_headers，关键字段和媒体核验未知时为 null。
+逐次 content_attempts 与最终 content_completion 分开；后一次失败不撤销前一次可用正文。
+complete 只表示未观测到正文结构缺口，with_gaps 保留 unresolved 与 stop_reason，主张充分性
+始终 not_assessed。新的 content_metrics 同时给出 successful、complete 和 with_gaps 计数。
+
+上下文增加 collection_coverage（已配置地区/主题/来源角色）及 enrichment_plan（有界正文建议）。
+覆盖从规范根级条目计算，排除历史保留项，失败与未采集分开；来源数量不代表独立核验。
+监控快照同样提供 collection_coverage，但 scope 为 current_monitor_refresh，只计本次选中来源
+及其刷新候选；包含选中的发现来源，不使用旧轮次记录扩张本次覆盖。
+失败 Feed 保留的缓存条目带 metadata.feed_stale，覆盖诊断排除它们，阅读缓存仍继续保留。
+计划不会执行搜索或改变来源排序，最终选中 ID 仍由协调器传入，run 的累计 12 篇限制不变。
+content_observations 将紧凑质量及停止原因传入 brief/analysis 数据包，原始响应不进入写作输入。
+
+连续性状态中的 `analysis_id` 仅表示三个固定栏目；具体论点使用 Python 根据领域、规范化
+判断和已编译事件集合派生的 `thesis_id`。`theses.json` 与 `watchlist.json` 使用状态 schema
+1.2，保留 `analysis_id` 兼容字段；`analysis-domains.json` 提供每栏目最新状态的兼容投影。
+旧论点没有具体身份时保留历史并标记 `identity_scope=legacy_unresolved`，不按同领域关系
+自动取代。共享连续性锁避免并发丢失状态；迟到报告不倒退同一论点或栏目。
+
+观察项绑定具体 `thesis_id` 与规范化信号文字。仅排版差异复用 ID；不同措辞不会被猜测为
+同一触发条件。未在新报告出现的观察项保持原状态，只有对应具体论点明确 `closed` 或
+`invalidated` 才关闭其观察项。跨措辞、跨证据版本的受验证延续尚未实现，见 TD-039。
 
 ```text
 created -> collecting -> building_context -> awaiting_selection

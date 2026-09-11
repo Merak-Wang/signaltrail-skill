@@ -7,6 +7,7 @@ import json
 import os
 import re
 import webbrowser
+from datetime import date, datetime, timedelta
 from io import BytesIO
 from pathlib import Path
 from time import perf_counter
@@ -151,6 +152,8 @@ UI_LABELS = {
         "evaluation_total": "独立评估总分",
         "delivery_without_score": "独立评估处理中，日报交付不等待评分。",
         "image_source": "图片来源",
+        "source_order": "原来源顺序",
+        "source_status": "来源与状态",
     },
     "en": {
         "none": "None",
@@ -225,6 +228,8 @@ UI_LABELS = {
         "evaluation_total": "Independent evaluation score",
         "delivery_without_score": "Independent evaluation is pending; report delivery does not wait for scoring.",
         "image_source": "Image source",
+        "source_order": "Original source order",
+        "source_status": "Sources and status",
     },
 }
 
@@ -588,6 +593,7 @@ def _source_section_html(
     media_path_prefix: str | None = None,
     embedded_image_sources: dict[str, str] | None = None,
     language: object = "zh-CN",
+    section_title: str = "",
 ) -> str:
     """处理：把同一来源的简报集合渲染为报告分区。
     输入：
@@ -596,6 +602,7 @@ def _source_section_html(
     - ``media_path_prefix``：HTML 或 Markdown 相对引用本地媒体文件时添加的路径前缀。
     - ``embedded_image_sources``：按图片哈希或路径索引的数据 URI；用于生成可独立打开的 HTML。
     - ``language``：规范语言标识；用于本地化选择或语言一致性判断。
+    - ``section_title``：报告原栏目名称；显示在来源标题右侧，保持来源内顺序。
     输出：“把同一来源的简报集合渲染为报告分区”得到的规范字符串，供调用方存储、比较或展示。
     """
     source_name = source.get("name") or _ui(language)["unknown_source"]
@@ -613,7 +620,8 @@ def _source_section_html(
         f'<section class="source-group" data-search="{_escape(source_name)}">'
         '<div class="source-heading">'
         f'<h3>{_external_link(source_name, source.get("url"))}</h3>'
-        f'<span>{len(items)} {_escape(_ui(language)["items"])}</span></div>'
+        f'<span>{_escape(section_title)} · '
+        f'{_escape(_ui(language)["source_order"])}</span></div>'
         f"{stories}</section>"
     )
 
@@ -866,6 +874,60 @@ def _evaluation_html(
     )
 
 
+def _masthead_html(report: dict[str, Any], language: object) -> str:
+    """处理：由报告记录构建三栏报头，不使用当前系统时间。
+    输入：报告日期、版次、生成时间和输出语言；未知或缺少时区的时间不推定为北京时间。
+    输出：已转义的日期、居中品牌和生成信息 HTML，供完整阅读页嵌入。
+    """
+    chinese = is_chinese_output(language)
+    raw_date = str(report.get("date") or "")
+    date_label = raw_date
+    try:
+        day = date.fromisoformat(raw_date)
+        weekdays = (
+            ("一", "二", "三", "四", "五", "六", "日")
+            if chinese else ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday")
+        )
+        date_label = (
+            f"{day.year} 年 {day.month} 月 {day.day} 日　星期{weekdays[day.weekday()]}"
+            if chinese else f"{raw_date} · {weekdays[day.weekday()]}"
+        )
+    except ValueError:
+        pass
+    generated = str(report.get("generated_at") or "")
+    generated_label = generated or localized(language, "时间未知", "Time unknown")
+    try:
+        timestamp = datetime.fromisoformat(generated)
+        offset = timestamp.utcoffset()
+        zone = ""
+        if offset == timedelta(hours=8):
+            zone = localized(language, "（北京时间）", " (UTC+08:00)")
+        elif offset is not None:
+            total = int(offset.total_seconds() / 60)
+            zone = f" (UTC{'+' if total >= 0 else '-'}{abs(total) // 60:02}:{abs(total) % 60:02})"
+        generated_label = f"{timestamp:%H:%M}{zone}"
+    except ValueError:
+        pass
+    edition_labels = EDITION_LABELS if chinese else EDITION_LABELS_EN
+    edition = edition_labels.get(str(report.get("edition")), str(report.get("edition") or ""))
+    revision = report.get("revision")
+    version = f"第 {revision} 版" if chinese else f"Revision {revision}"
+    brand = localized(language, "迹简日报", "SignalTrail")
+    subtitle = "SignalTrail" if chinese else "Daily Intelligence"
+    tagline = localized(language, "世界动态 · 科技进展", "World news · Technology")
+    generated_prefix = localized(language, "本版生成于", "Generated at")
+    return (
+        '<header class="masthead"><div class="shell masthead-grid">'
+        '<div class="edition-info">'
+        f'<time datetime="{_escape(raw_date)}">{_escape(date_label)}</time>'
+        f'<span>{_escape(edition)} / {_escape(version)}</span></div>'
+        f'<h1 class="report-brand">{_escape(brand)}<span>{_escape(subtitle)}</span></h1>'
+        '<div class="edition-info edition-info-right">'
+        f'<span>{_escape(tagline)}</span><time datetime="{_escape(generated)}">'
+        f'{_escape(generated_prefix)} {_escape(generated_label)}</time></div></div></header>'
+    )
+
+
 def render_report_html(
     report: dict[str, Any],
     evaluation: dict[str, Any] | None = None,
@@ -891,7 +953,6 @@ def render_report_html(
     language = report.get("language") or "zh-CN"
     labels = _ui(language)
     module_labels = MODULE_LABELS if is_chinese_output(language) else MODULE_LABELS_EN
-    edition_labels = EDITION_LABELS if is_chinese_output(language) else EDITION_LABELS_EN
     analysis_labels = (
         ANALYSIS_LABELS if is_chinese_output(language) else ANALYSIS_LABELS_EN
     )
@@ -911,6 +972,7 @@ def render_report_html(
                     media_path_prefix,
                     embedded_image_sources,
                     language,
+                    str(section.get("title") or ""),
                 )
                 for source, items in _group_items(section, language)
             )
@@ -991,6 +1053,7 @@ def render_report_html(
         else ""
     )
     toc_block = _toc_html(report)
+    masthead_block = _masthead_html(report, language)
     feedback_fields = (
         (labels["relevance"], "relevance"),
         (labels["accuracy"], "accuracy"),
@@ -1017,20 +1080,45 @@ def render_report_html(
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src https: data: file:; connect-src 'none'; base-uri 'none'; form-action 'none'">
 <title>{_escape(report.get('title'))}</title>
 <style>
-:root{{--ink:#18202a;--muted:#637083;--paper:#f5f2eb;--card:#fff;--line:#dfe3e8;--blue:#234a70;--red:#a53b2e;--gold:#a67424;--soft:#eef3f7}}
+
+:root{{--ink:#111111;--muted:#626262;--paper:#ffffff;--card:#fff;--line:#d7d7d7;--blue:#b61f24;--red:#b61f24;--gold:#b61f24;--soft:#f6f6f6}}
 *{{box-sizing:border-box}}html{{scroll-behavior:smooth}}body{{margin:0;color:var(--ink);background:var(--paper);font-family:"Microsoft YaHei","PingFang SC","Noto Sans CJK SC",sans-serif;line-height:1.72}}
-a{{color:var(--blue);text-decoration:none}}a:hover{{text-decoration:underline}}.shell{{width:min(1120px,calc(100% - 32px));margin:0 auto}}.masthead{{padding:56px 0 38px;background:linear-gradient(135deg,#172a3d,#254f6f);color:#fff;border-bottom:5px solid #bd8a39}}.eyebrow{{letter-spacing:.16em;text-transform:uppercase;color:#e5c98e;font-size:13px}}h1{{font-family:Georgia,"Noto Serif CJK SC",serif;font-size:clamp(34px,5vw,60px);line-height:1.14;margin:10px 0 16px;max-width:900px}}.metadata{{display:flex;gap:10px 24px;flex-wrap:wrap;color:#d9e3ec;font-size:14px}}.toolbar{{position:sticky;top:0;z-index:10;background:rgba(255,255,255,.96);border-bottom:1px solid var(--line);backdrop-filter:blur(12px)}}.toolbar-inner{{display:flex;align-items:center;gap:16px;padding:12px 0}}.toolbar nav{{display:flex;gap:18px;font-weight:700}}.toolbar input{{margin-left:auto;min-width:260px;padding:9px 12px;border:1px solid var(--line);border-radius:8px}}.tools{{display:flex;gap:10px;white-space:nowrap}}main{{padding:34px 0 70px}}.summary,.module,.analysis-module,.evaluation,.feedback,.pending{{background:var(--card);border:1px solid var(--line);border-radius:14px;box-shadow:0 8px 24px rgba(25,36,48,.05);margin:0 0 24px;padding:28px}}.summary h2,.module-label,.analysis-module>h2,.evaluation>h2,.feedback>h2{{font-family:Georgia,"Noto Serif CJK SC",serif;color:var(--blue);font-size:28px;margin:0 0 16px}}.summary ul{{margin:0;padding-left:24px}}.module-label{{font-size:34px;border-bottom:3px solid var(--gold);padding-bottom:10px}}.content-section{{padding:24px 0 6px;border-bottom:1px solid var(--line)}}.content-section:last-child{{border:0}}.content-section>h2{{font-size:24px;margin:0 0 16px}}.source-group{{margin:18px 0 28px}}.source-heading{{display:flex;align-items:center;justify-content:space-between;background:var(--soft);border-left:5px solid var(--blue);padding:10px 14px;margin-bottom:4px}}.source-heading h3{{font-size:19px;margin:0}}.source-heading span{{font-size:13px;color:var(--muted)}}.brief{{display:grid;grid-template-columns:38px minmax(220px,300px) minmax(0,1fr);gap:14px 18px;padding:18px 6px;border-bottom:1px dashed var(--line);break-inside:avoid}}.brief-heading{{grid-column:1/-1;grid-row:1;display:grid;grid-template-columns:38px minmax(0,1fr) auto;gap:12px;align-items:start}}.ordinal{{font:700 18px Georgia;color:var(--gold);padding-top:2px}}.brief h4{{font-size:17px;line-height:1.5;margin:0}}.translated-title{{font-weight:700;margin:5px 0 0;color:#35465a}}.story-time{{margin:5px 0 0;color:var(--muted);font-size:12px}}.badges{{display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end}}.badge{{display:inline-block;padding:2px 7px;border-radius:999px;font-size:11px;background:#eef2f5;color:#4d5a67}}.badge.status{{background:#f5e8e2;color:var(--red)}}.badge.rank{{background:#f6edd8;color:#7a581c}}.brief>.tldr{{grid-column:3;grid-row:2;margin:0;color:#344150}}.brief:not(.has-image)>.tldr{{grid-column:2/-1}}.tldr span{{font-size:11px;font-weight:800;letter-spacing:.08em;color:var(--red);margin-right:9px}}.brief>figure{{grid-column:2;grid-row:2;margin:0}}.brief figure img{{display:block;width:100%;max-width:300px;aspect-ratio:16/9;object-fit:cover;border-radius:8px}}.brief figcaption{{font-size:12px;color:var(--muted);line-height:1.45;margin-top:5px}}.empty-note,.evaluation-pending{{padding:18px;background:#f7f8f9;border:1px dashed #c9d0d7;border-radius:8px;color:var(--muted)}}.pending li{{display:flex;gap:10px;justify-content:space-between;border-bottom:1px solid var(--line);padding:8px 0}}.pending li span{{color:var(--muted);font-size:13px}}.analysis-domain>h3{{font-size:23px;margin:30px 0 14px;border-left:5px solid var(--red);padding-left:12px}}.analysis-card{{border:1px solid var(--line);border-radius:12px;margin:0 0 20px;padding:24px;break-inside:avoid}}.analysis-card>h4{{font-family:Georgia,"Noto Serif CJK SC",serif;font-size:23px;line-height:1.5;margin:0 0 10px}}.analysis-meta{{display:flex;gap:14px;flex-wrap:wrap;color:var(--muted);font-size:13px;padding-bottom:15px;border-bottom:1px solid var(--line)}}.analysis-part{{margin-top:18px}}.analysis-part h5{{font-size:15px;color:var(--red);margin:0 0 6px}}.analysis-part p,.analysis-part ul{{margin-top:0}}.stakeholder-grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px}}.stakeholder{{background:#f7f5ef;border-radius:8px;padding:14px}}.stakeholder p{{margin:4px 0}}.stakeholder small{{color:var(--muted)}}.follow-up{{border-top:1px solid var(--line);margin-top:24px;padding-top:18px}}.evaluation-score{{display:flex;align-items:baseline;gap:6px;margin:4px 0 18px}}.evaluation-score strong{{font:700 52px Georgia;color:var(--red)}}.evaluation-score span{{color:var(--muted)}}.table-wrap{{overflow:auto}}table{{width:100%;border-collapse:collapse}}th,td{{text-align:left;border-bottom:1px solid var(--line);padding:10px;vertical-align:top}}th{{background:var(--soft)}}.score{{font-weight:800;color:var(--red);white-space:nowrap}}.feedback-grid{{display:grid;grid-template-columns:repeat(4,1fr);gap:12px}}label{{font-size:13px;color:var(--muted)}}select,textarea{{width:100%;margin-top:5px;padding:9px;border:1px solid var(--line);border-radius:7px;background:#fff}}textarea{{min-height:100px}}.feedback .comment{{display:block;margin-top:16px}}button{{margin-top:14px;background:var(--blue);color:#fff;border:0;border-radius:8px;padding:10px 16px;font-weight:700;cursor:pointer}}.feedback-note{{color:var(--muted);font-size:12px}}.feedback-print{{display:none}}footer{{color:var(--muted);font-size:12px;padding:0 0 34px;text-align:center}}.hidden-by-search{{display:none!important}}
-.analysis-narrative{{max-width:76ch;margin:22px 0 18px;font-family:Georgia,"Noto Serif CJK SC",serif;font-size:17px;line-height:1.92;color:#253342}}.analysis-narrative p{{margin:0 0 1em}}.analysis-notebook{{margin-top:20px;border-top:1px solid var(--line);padding-top:14px}}.analysis-notebook summary{{cursor:pointer;color:var(--blue);font-weight:800;list-style-position:outside}}.analysis-notebook-body{{margin-top:12px;padding:2px 16px 12px;border-left:3px solid var(--line);color:#374556}}
-.summary,.module,.content-section,.analysis-module,.analysis-domain,.evaluation,.feedback{{scroll-margin-top:88px}}.toc-toggle{{position:fixed;z-index:32;left:14px;top:50%;display:flex;flex-direction:column;align-items:center;gap:6px;width:42px;margin:0;padding:13px 8px;transform:translateY(-50%);border:1px solid rgba(35,74,112,.2);border-radius:10px;background:rgba(255,255,255,.96);box-shadow:0 8px 24px rgba(25,36,48,.14);color:var(--blue);font-size:12px;letter-spacing:.12em;backdrop-filter:blur(12px);transition:opacity .2s,transform .2s}}.toc-toggle span:first-child{{font-size:17px;line-height:1}}body.toc-open .toc-toggle{{opacity:0;pointer-events:none;transform:translate(-12px,-50%)}}.report-toc{{position:fixed;z-index:31;left:14px;top:84px;bottom:18px;width:286px;display:flex;flex-direction:column;overflow:hidden;border:1px solid rgba(35,74,112,.16);border-radius:14px;background:rgba(255,255,255,.97);box-shadow:0 16px 42px rgba(22,42,61,.18);backdrop-filter:blur(16px);transform:translateX(calc(-100% - 30px));transition:transform .24s ease}}body.toc-open .report-toc{{transform:translateX(0)}}.toc-heading{{display:flex;align-items:center;justify-content:space-between;padding:16px 16px 12px;border-bottom:1px solid var(--line);color:var(--blue)}}.toc-heading strong{{font:700 18px Georgia,"Noto Serif CJK SC",serif}}.toc-close{{margin:0;padding:5px 9px;border:1px solid var(--line);border-radius:7px;background:var(--soft);color:var(--blue);font-size:12px}}.toc-nav{{overflow-y:auto;padding:10px}}.toc-link{{display:block;margin:2px 0;padding:7px 10px;border-left:3px solid transparent;border-radius:6px;color:#35465a;font-size:14px;line-height:1.4}}.toc-link:hover{{background:var(--soft);text-decoration:none}}.toc-link.toc-level-0{{margin-top:7px;font-weight:800;color:var(--blue)}}.toc-link.toc-level-1{{padding-left:22px;font-size:13px}}.toc-link.active{{border-left-color:var(--gold);background:#f6edd8;color:#634718}}.toc-scrim{{position:fixed;z-index:30;inset:0;visibility:hidden;background:rgba(18,30,42,.22);opacity:0;transition:opacity .2s,visibility .2s}}body.toc-open .toc-scrim{{visibility:visible;opacity:1}}
+a{{color:var(--blue);text-decoration:none}}a:hover{{text-decoration:underline}}.shell{{width:min(1120px,calc(100% - 32px));margin:0 auto}}.masthead{{padding:56px 0 38px;background:linear-gradient(135deg,#ffffff,#ffffff);color:#fff;border-bottom:5px solid #b61f24}}.eyebrow{{letter-spacing:.16em;text-transform:uppercase;color:#b61f24;font-size:13px}}h1{{font-family:Georgia,"Noto Serif CJK SC",serif;font-size:clamp(34px,5vw,60px);line-height:1.14;margin:10px 0 16px;max-width:900px}}.metadata{{display:flex;gap:10px 24px;flex-wrap:wrap;color:#626262;font-size:14px}}.toolbar{{position:sticky;top:0;z-index:10;background:rgba(255,255,255,.96);border-bottom:1px solid var(--line);backdrop-filter:blur(12px)}}.toolbar-inner{{display:flex;align-items:center;gap:16px;padding:12px 0}}.toolbar nav{{display:flex;gap:18px;font-weight:700}}.toolbar input{{margin-left:auto;min-width:260px;padding:9px 12px;border:1px solid var(--line);border-radius:8px}}.tools{{display:flex;gap:10px;white-space:nowrap}}main{{padding:34px 0 70px}}.summary,.module,.analysis-module,.evaluation,.feedback,.pending{{background:var(--card);border:1px solid var(--line);border-radius:14px;box-shadow:0 8px 24px rgba(30,30,30,.05);margin:0 0 24px;padding:28px}}.summary h2,.module-label,.analysis-module>h2,.evaluation>h2,.feedback>h2{{font-family:Georgia,"Noto Serif CJK SC",serif;color:var(--blue);font-size:28px;margin:0 0 16px}}.summary ul{{margin:0;padding-left:24px}}.module-label{{font-size:34px;border-bottom:3px solid var(--gold);padding-bottom:10px}}.content-section{{padding:24px 0 6px;border-bottom:1px solid var(--line)}}.content-section:last-child{{border:0}}.content-section>h2{{font-size:24px;margin:0 0 16px}}.source-group{{margin:18px 0 28px}}.source-heading{{display:flex;align-items:center;justify-content:space-between;background:var(--soft);border-left:5px solid var(--blue);padding:10px 14px;margin-bottom:4px}}.source-heading h3{{font-size:19px;margin:0}}.source-heading span{{font-size:13px;color:var(--muted)}}.brief{{display:grid;grid-template-columns:38px minmax(220px,300px) minmax(0,1fr);gap:14px 18px;padding:18px 6px;border-bottom:1px dashed var(--line);break-inside:avoid}}.brief-heading{{grid-column:1/-1;grid-row:1;display:grid;grid-template-columns:38px minmax(0,1fr) auto;gap:12px;align-items:start}}.ordinal{{font:700 18px Georgia;color:var(--gold);padding-top:2px}}.brief h4{{font-size:17px;line-height:1.5;margin:0}}.translated-title{{font-weight:700;margin:5px 0 0;color:#303030}}.story-time{{margin:5px 0 0;color:var(--muted);font-size:12px}}.badges{{display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end}}.badge{{display:inline-block;padding:2px 7px;border-radius:999px;font-size:11px;background:#f0f0f0;color:#626262}}.badge.status{{background:#f9eded;color:var(--red)}}.badge.rank{{background:#f9eded;color:#b61f24}}.brief>.tldr{{grid-column:3;grid-row:2;margin:0;color:#303030}}.brief:not(.has-image)>.tldr{{grid-column:2/-1}}.tldr span{{font-size:11px;font-weight:800;letter-spacing:.08em;color:var(--red);margin-right:9px}}.brief>figure{{grid-column:2;grid-row:2;margin:0}}.brief figure img{{display:block;width:100%;max-width:300px;aspect-ratio:16/9;object-fit:cover;border-radius:8px}}.brief figcaption{{font-size:12px;color:var(--muted);line-height:1.45;margin-top:5px}}.empty-note,.evaluation-pending{{padding:18px;background:#f7f7f7;border:1px dashed #d0d0d0;border-radius:8px;color:var(--muted)}}.pending li{{display:flex;gap:10px;justify-content:space-between;border-bottom:1px solid var(--line);padding:8px 0}}.pending li span{{color:var(--muted);font-size:13px}}.analysis-domain>h3{{font-size:23px;margin:30px 0 14px;border-left:5px solid var(--red);padding-left:12px}}.analysis-card{{border:1px solid var(--line);border-radius:12px;margin:0 0 20px;padding:24px;break-inside:avoid}}.analysis-card>h4{{font-family:Georgia,"Noto Serif CJK SC",serif;font-size:23px;line-height:1.5;margin:0 0 10px}}.analysis-meta{{display:flex;gap:14px;flex-wrap:wrap;color:var(--muted);font-size:13px;padding-bottom:15px;border-bottom:1px solid var(--line)}}.analysis-part{{margin-top:18px}}.analysis-part h5{{font-size:15px;color:var(--red);margin:0 0 6px}}.analysis-part p,.analysis-part ul{{margin-top:0}}.stakeholder-grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px}}.stakeholder{{background:#f7f7f7;border-radius:8px;padding:14px}}.stakeholder p{{margin:4px 0}}.stakeholder small{{color:var(--muted)}}.follow-up{{border-top:1px solid var(--line);margin-top:24px;padding-top:18px}}.evaluation-score{{display:flex;align-items:baseline;gap:6px;margin:4px 0 18px}}.evaluation-score strong{{font:700 52px Georgia;color:var(--red)}}.evaluation-score span{{color:var(--muted)}}.table-wrap{{overflow:auto}}table{{width:100%;border-collapse:collapse}}th,td{{text-align:left;border-bottom:1px solid var(--line);padding:10px;vertical-align:top}}th{{background:var(--soft)}}.score{{font-weight:800;color:var(--red);white-space:nowrap}}.feedback-grid{{display:grid;grid-template-columns:repeat(4,1fr);gap:12px}}label{{font-size:13px;color:var(--muted)}}select,textarea{{width:100%;margin-top:5px;padding:9px;border:1px solid var(--line);border-radius:7px;background:#fff}}textarea{{min-height:100px}}.feedback .comment{{display:block;margin-top:16px}}button{{margin-top:14px;background:var(--blue);color:#fff;border:0;border-radius:8px;padding:10px 16px;font-weight:700;cursor:pointer}}.feedback-note{{color:var(--muted);font-size:12px}}.feedback-print{{display:none}}footer{{color:var(--muted);font-size:12px;padding:0 0 34px;text-align:center}}.hidden-by-search{{display:none!important}}
+.analysis-narrative{{max-width:76ch;margin:22px 0 18px;font-family:Georgia,"Noto Serif CJK SC",serif;font-size:17px;line-height:1.92;color:#303030}}.analysis-narrative p{{margin:0 0 1em}}.analysis-notebook{{margin-top:20px;border-top:1px solid var(--line);padding-top:14px}}.analysis-notebook summary{{cursor:pointer;color:var(--blue);font-weight:800;list-style-position:outside}}.analysis-notebook-body{{margin-top:12px;padding:2px 16px 12px;border-left:3px solid var(--line);color:#303030}}
+.summary,.module,.content-section,.analysis-module,.analysis-domain,.evaluation,.feedback{{scroll-margin-top:88px}}.toc-toggle{{position:fixed;z-index:32;left:14px;top:50%;display:flex;flex-direction:column;align-items:center;gap:6px;width:42px;margin:0;padding:13px 8px;transform:translateY(-50%);border:1px solid rgba(182,31,36,.2);border-radius:10px;background:rgba(255,255,255,.96);box-shadow:0 8px 24px rgba(30,30,30,.14);color:var(--blue);font-size:12px;letter-spacing:.12em;backdrop-filter:blur(12px);transition:opacity .2s,transform .2s}}.toc-toggle span:first-child{{font-size:17px;line-height:1}}body.toc-open .toc-toggle{{opacity:0;pointer-events:none;transform:translate(-12px,-50%)}}.report-toc{{position:fixed;z-index:31;left:14px;top:84px;bottom:18px;width:286px;display:flex;flex-direction:column;overflow:hidden;border:1px solid rgba(182,31,36,.16);border-radius:14px;background:rgba(255,255,255,.97);box-shadow:0 16px 42px rgba(30,30,30,.18);backdrop-filter:blur(16px);transform:translateX(calc(-100% - 30px));transition:transform .24s ease}}body.toc-open .report-toc{{transform:translateX(0)}}.toc-heading{{display:flex;align-items:center;justify-content:space-between;padding:16px 16px 12px;border-bottom:1px solid var(--line);color:var(--blue)}}.toc-heading strong{{font:700 18px Georgia,"Noto Serif CJK SC",serif}}.toc-close{{margin:0;padding:5px 9px;border:1px solid var(--line);border-radius:7px;background:var(--soft);color:var(--blue);font-size:12px}}.toc-nav{{overflow-y:auto;padding:10px}}.toc-link{{display:block;margin:2px 0;padding:7px 10px;border-left:3px solid transparent;border-radius:6px;color:#303030;font-size:14px;line-height:1.4}}.toc-link:hover{{background:var(--soft);text-decoration:none}}.toc-link.toc-level-0{{margin-top:7px;font-weight:800;color:var(--blue)}}.toc-link.toc-level-1{{padding-left:22px;font-size:13px}}.toc-link.active{{border-left-color:var(--gold);background:#f9eded;color:#b61f24}}.toc-scrim{{position:fixed;z-index:30;inset:0;visibility:hidden;background:rgba(20,20,20,.22);opacity:0;transition:opacity .2s,visibility .2s}}body.toc-open .toc-scrim{{visibility:visible;opacity:1}}
 @media(min-width:1500px){{.toc-scrim{{display:none}}}}
 @media(max-width:720px){{.toolbar-inner{{align-items:flex-start;flex-wrap:wrap}}.toolbar input{{order:3;margin:0;width:100%;min-width:0}}.tools{{margin-left:auto}}.summary,.module,.analysis-module,.evaluation,.feedback,.pending{{padding:20px}}.brief{{grid-template-columns:32px minmax(0,1fr);gap:10px 12px}}.brief-heading{{grid-column:1/-1;grid-template-columns:32px 1fr}}.badges{{grid-column:2;justify-content:flex-start}}.brief>figure{{grid-column:2;grid-row:2}}.brief.has-image>.tldr{{grid-column:2;grid-row:3}}.brief:not(.has-image)>.tldr{{grid-column:2;grid-row:2}}.feedback-grid{{grid-template-columns:1fr 1fr}}.toc-toggle{{left:auto;right:8px;top:auto;bottom:12px;width:38px;padding:10px 8px;transform:none}}.toc-toggle span:last-child{{display:none}}body.toc-open .toc-toggle{{transform:translateX(12px)}}.report-toc{{left:8px;top:72px;bottom:8px;width:min(300px,calc(100vw - 24px))}}}}
-@media print{{body{{background:#fff;font-size:10.5pt}}.masthead{{padding:28px 0;background:#fff!important;color:#172a3d;border-bottom:3px solid #a67424}}.eyebrow{{color:#7a581c}}.metadata{{color:#536273}}.toolbar,.toc-toggle,.report-toc,.toc-scrim,.feedback button,.feedback-note,.feedback-grid,.feedback .comment{{display:none}}.feedback-print{{display:block}}.shell{{width:auto;margin:0 14mm}}main{{padding:12px 0}}.summary,.module,.analysis-module,.evaluation,.feedback,.pending{{box-shadow:none;border:0;border-radius:0;padding:10px 0;margin:0 0 12px}}.source-group,.brief,table,figure{{break-inside:avoid}}.analysis-domain>h3{{break-after:avoid}}.analysis-card{{break-inside:auto}}details.analysis-notebook:not([open])>.analysis-notebook-body{{display:block!important}}.analysis-notebook summary{{list-style:none}}a{{color:#18202a}}.content-section{{break-before:auto}}}}
+@media print{{body{{background:#fff;font-size:10.5pt}}.masthead{{padding:28px 0;background:#fff!important;color:#ffffff;border-bottom:3px solid #b61f24}}.eyebrow{{color:#b61f24}}.metadata{{color:#626262}}.toolbar,.toc-toggle,.report-toc,.toc-scrim,.feedback button,.feedback-note,.feedback-grid,.feedback .comment{{display:none}}.feedback-print{{display:block}}.shell{{width:auto;margin:0 14mm}}main{{padding:12px 0}}.summary,.module,.analysis-module,.evaluation,.feedback,.pending{{box-shadow:none;border:0;border-radius:0;padding:10px 0;margin:0 0 12px}}.source-group,.brief,table,figure{{break-inside:avoid}}.analysis-domain>h3{{break-after:avoid}}.analysis-card{{break-inside:auto}}details.analysis-notebook:not([open])>.analysis-notebook-body{{display:block!important}}.analysis-notebook summary{{list-style:none}}a{{color:#111111}}.content-section{{break-before:auto}}}}
+
+.masthead{{color:#111111}}.masthead h1{{color:#111111}}
+
+.story-link,.source-heading h3 a,.summary h2,.module-label,.analysis-module>h2,.evaluation>h2,.feedback>h2{{color:#111111}}
+.ordinal{{color:#626262}}.badge.rank{{background:#f0f0f0;color:#626262}}
+.masthead{{background:#fff;color:#111;border-top:5px solid #b61f24}}
+.masthead-grid{{display:grid;grid-template-columns:minmax(0,1fr) auto minmax(0,1fr);align-items:end;gap:16px;padding:22px 0 18px;border-bottom:1px solid #111}}
+.report-brand{{display:flex;flex-direction:column;align-items:center;font:700 43px/1.3 "Noto Serif CJK SC","Songti SC",SimSun,serif;letter-spacing:4px;margin:0;max-width:none}}
+.report-brand span{{font:600 13px/1.6 Georgia,serif;color:#b61f24;letter-spacing:2px}}
+.edition-info{{display:flex;flex-direction:column;gap:5px;font-size:12px;line-height:1.6;color:#626262}}
+.edition-info-right{{text-align:right;align-items:flex-end}}
+@media(max-width:720px){{.masthead-grid{{grid-template-columns:minmax(0,1fr) auto;gap:10px;padding:16px 0 12px}}.report-brand{{grid-column:1;grid-row:1;align-items:flex-start;font-size:30px;letter-spacing:2px}}.edition-info{{grid-column:2;grid-row:1;text-align:right;font-size:11px}}.edition-info-right{{grid-column:1/-1;grid-row:2;align-items:flex-start;text-align:left}}.edition-info-right>span{{display:none}}}}
+@media print{{.masthead{{border-top:0}}.masthead-grid{{padding:12px 0}}}}
+
+.toolbar nav{{order:3;margin-left:8px;font-size:13px;font-weight:400;white-space:nowrap}}
+.toolbar nav a{{color:#626262}}
+.toolbar input{{margin-left:0}}
+.toolbar .tools{{margin-left:auto}}
+.source-heading{{background:transparent;border-left:0;border-top:3px solid #b61f24;border-bottom:1px solid #111111;padding:11px 0;margin-bottom:4px;gap:12px;flex-wrap:wrap}}
+.source-heading h3{{font:700 20px/1.4 Georgia,"Microsoft YaHei",serif;margin:0;color:#111111}}
+.source-heading span{{font-size:12px;color:#626262}}
+@media(max-width:720px){{.toolbar input{{order:3}}.toolbar nav{{order:1;margin-left:0}}.toolbar .tools{{order:2}}}}
+
+.masthead{{padding:0;border-bottom:0}}
 </style>
 </head>
 <body>
 {toc_block}
-<header class="masthead"><div class="shell"><div class="eyebrow">SignalTrail · {edition_labels.get(str(report.get('edition')), _escape(report.get('edition')))}</div><h1>{_escape(report.get('title'))}</h1><div class="metadata"><span>{_escape(report.get('date'))}</span><span>{_escape(labels["revision"])} r{_escape(report.get('revision'))}</span><span>{_escape(report.get('generated_at'))}</span><span>{_escape(report_id)}</span></div></div></header>
-<div class="toolbar"><div class="shell toolbar-inner"><nav><a href="#module-information">{_escape(module_labels["information"])}</a><a href="#module-technology">{_escape(module_labels["technology"])}</a><a href="#analysis">{_escape(labels["analysis"])}</a><a href="#evaluation">{_escape(labels["evaluation"])}</a></nav><input id="search" type="search" placeholder="{_escape(labels["filter"])}"><div class="tools">{archive_link}{pdf_link}</div></div></div>
+{masthead_block}
+<div class="toolbar"><div class="shell toolbar-inner"><nav><a href="#evaluation">{_escape(labels["source_status"])}</a></nav><input id="search" type="search" placeholder="{_escape(labels["filter"])}"><div class="tools">{archive_link}{pdf_link}</div></div></div>
 <main class="shell"><section class="summary" id="summary"><h2>{_escape(labels["summary"])}</h2>{_list_html(report.get('executive_summary', []), language=language)}</section>{''.join(module_blocks)}{pending_block}<section class="analysis-module" id="analysis"><h2>{_escape(labels["analysis"])}</h2>{''.join(analysis_groups)}{synthesis_block}{changes_block}{watch_block}</section><section class="evaluation" id="evaluation"><h2>{_escape(labels["evaluation"])}</h2>{_evaluation_html(evaluation, language)}</section><section class="feedback" id="feedback"><h2>{_escape(labels["feedback"])}</h2><div class="feedback-grid">{feedback_controls}</div><label class="comment">{_escape(labels["comments"])}<textarea data-feedback="comment" placeholder="{_escape(labels["feedback_placeholder"])}"></textarea></label><div class="feedback-print">{_escape(feedback_print)}<br>{_escape(labels["comments"])}: ________________________________</div><button id="download-feedback" type="button">{_escape(labels["download_feedback"])}</button><p class="feedback-note">{_escape(labels["feedback_note"])}</p></section></main><footer class="shell">{_escape(labels["footer"])}</footer>
 <script>
 const reportMeta={feedback_data};

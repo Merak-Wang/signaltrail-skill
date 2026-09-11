@@ -1,17 +1,19 @@
 from __future__ import annotations
 
 import hashlib
+import json
+import unicodedata
 from pathlib import Path
 from typing import Any
 
-from .storage import next_revision, write_immutable_json
+from .storage import exclusive_lock, next_revision, write_immutable_json
 from .utils import read_json, write_json
 
 _STABLE_ANALYSIS_DOMAINS = {"geopolitics", "ai_technology", "markets"}
 
 
 def stable_analysis_id(domain: object) -> str:
-    """处理：为三个固定分析域生成跨日期、版本和评估修订稳定的论点身份。
+    """处理：为三个固定分析栏目生成跨日期、版本和评估修订稳定的栏目身份。
     输入：
     - ``domain``：报告编译器已验证的 geopolitics、ai_technology 或 markets 域名。
     输出：ANALYSIS-{DOMAIN} 形式的稳定 ID；未知域明确失败而不回退到日期 ID。
@@ -40,20 +42,53 @@ def _items(path: Path) -> list[dict[str, Any]]:
     raise ValueError(f"State file must contain a list or an object with items: {path}")
 
 
-def _watch_id(analysis_id: str, signal: str) -> str:
-    """处理：根据观察类型和稳定键生成连续性状态 ID。
-    输入：
-    - ``analysis_id``：外部分析任务的稳定 ID；与 signal 一起生成可观察任务键。
-    - ``signal``：需要监测的分析信号名称。
-    输出：可跨修订关联的稳定字符串标识，供索引、状态或发布记录使用。
+def _identity_text(value: str) -> str:
+    """处理：消除身份文本的排版差异，不猜测改写句子的语义等价性。
+    输入：报告中已验证的论点或观察信号文字。
+    输出：Unicode 规范化并压缩空白的稳定文本键，保留大小写与标点含义。
     """
-    digest = hashlib.sha256(f"{analysis_id}|{signal}".encode()).hexdigest()[:12]
+    return " ".join(unicodedata.normalize("NFC", value).split())
+
+
+def thesis_identity(analysis: dict[str, Any]) -> str:
+    """处理：把领域、具体判断和证据集合绑定为保守的论点身份。
+    输入：已编译分析中的 domain、claim 与 Python 拥有的事件 ID。
+    输出：可重复构建的 THESIS 标识；改写或换证据不会自动覆盖已有论点。
+    """
+    key = [
+        stable_analysis_id(analysis["domain"]), _identity_text(analysis["claim"]),
+        sorted(set(analysis.get("evidence_event_ids", []))),
+    ]
+    digest = hashlib.sha256(json.dumps(key, ensure_ascii=False).encode()).hexdigest()[:24]
+    return f"THESIS-{digest}"
+
+
+def _watch_id(thesis_id: str, signal: str) -> str:
+    """处理：将观察项绑定到具体论点，避免同领域的不同议题共用身份。
+    输入：论点 ID 与报告观察文字；文字只做保守的排版规范化。
+    输出：相同论点和规范信号下稳定的观察 ID，语义改写保持独立记录。
+    """
+    key = json.dumps([thesis_id, _identity_text(signal)], ensure_ascii=False)
+    digest = hashlib.sha256(key.encode()).hexdigest()[:24]
     return f"WATCH-{digest}"
 
 
 def update_continuity_state(
     report: dict[str, Any],
     data_dir: Path,
+) -> dict[str, str]:
+    """处理：串行更新跨报告共享状态，避免不同日期评估覆盖彼此结果。
+    输入：已通过连续性门槛的报告与绑定数据根。
+    输出：当前状态文件路径；并发占用时明确失败，供评估流程重试。
+    """
+    with exclusive_lock(data_dir / "state" / ".continuity.lock", {
+        "report_id": report["report_id"],
+    }):
+        return _update_continuity_state(report, data_dir)
+
+
+def _update_continuity_state(
+    report: dict[str, Any], data_dir: Path,
 ) -> dict[str, str]:
     """处理：从已评估报告更新论点、观察列表和预测状态。
     输入：
@@ -72,33 +107,22 @@ def update_continuity_state(
     skip_events = bool(excluded & {"event_summaries", "all"})
 
     theses_path = state_dir / "theses.json"
-    theses = {item["analysis_id"]: item for item in _items(theses_path) if item.get("analysis_id")}
-    current_domains = {
-        str(analysis.get("domain") or "")
-        for analysis in ([] if skip_analyses else report["analyses"])
+    theses = {
+        item.get("thesis_id") or item["analysis_id"]: item
+        for item in _items(theses_path) if item.get("thesis_id") or item.get("analysis_id")
     }
-    stable_ids = {
-        domain: stable_analysis_id(domain)
-        for domain in current_domains
-        if domain in _STABLE_ANALYSIS_DOMAINS
+    domains = {
+        item["analysis_id"]: item
+        for item in _items(state_dir / "analysis-domains.json") if item.get("analysis_id")
     }
-    superseded_analysis_ids: set[str] = set()
-    for legacy_id, legacy in theses.items():
-        domain = str(legacy.get("domain") or "")
-        successor = stable_ids.get(domain)
-        if (
-            successor
-            and legacy_id != successor
-            and legacy.get("status", "active") == "active"
-        ):
-            legacy["status"] = "superseded"
-            legacy["superseded_by"] = successor
-            legacy["updated_at"] = generated_at
-            legacy["last_report_id"] = report_id
-            superseded_analysis_ids.add(legacy_id)
+    for legacy in theses.values():
+        if not legacy.get("thesis_id"):
+            # 旧栏目状态可能已混合多个议题；只标记歧义，不伪造迁移关系或关闭原观察项。
+            legacy.setdefault("identity_scope", "legacy_unresolved")
     for analysis in [] if skip_analyses else report["analyses"]:
         analysis_id = stable_analysis_id(analysis["domain"])
-        previous = theses.get(analysis_id, {})
+        thesis_id = thesis_identity(analysis)
+        previous = theses.get(thesis_id, {})
         history = list(previous.get("history", []))
         if not any(item.get("report_id") == report_id for item in history):
             history.append(
@@ -111,8 +135,10 @@ def update_continuity_state(
                 }
             )
         status = "closed" if analysis["state_change"] in {"closed", "invalidated"} else "active"
-        theses[analysis_id] = {
+        record = {
             "analysis_id": analysis_id,
+            "thesis_id": thesis_id,
+            "identity_scope": "claim_and_evidence",
             "domain": analysis["domain"],
             "claim": analysis["claim"],
             "confidence": analysis["confidence"],
@@ -127,41 +153,49 @@ def update_continuity_state(
             "last_report_id": report_id,
             "history": history,
         }
+        # 迟到评估可以补全历史，不能把同一论点或栏目倒退到旧报告状态。
+        if str(previous.get("updated_at", "")) > generated_at:
+            previous["history"] = history
+        else:
+            theses[thesis_id] = record
+        if str(domains.get(analysis_id, {}).get("updated_at", "")) <= generated_at:
+            domains[analysis_id] = {**record, "identity_scope": "analysis_domain"}
 
     watchlist_path = state_dir / "watchlist.json"
     watchlist = {item["watch_id"]: item for item in _items(watchlist_path) if item.get("watch_id")}
-    active_watch_ids: set[str] = set()
+    for legacy in watchlist.values():
+        if not legacy.get("thesis_id"):
+            legacy.setdefault("identity_scope", "legacy_unresolved")
+    closed_thesis_ids: set[str] = set()
     for analysis in [] if skip_analyses else report["analyses"]:
+        thesis_id = thesis_identity(analysis)
+        if str(theses[thesis_id].get("updated_at", "")) > generated_at:
+            continue
         if analysis["state_change"] in {"closed", "invalidated"}:
+            closed_thesis_ids.add(thesis_id)
             continue
         analysis_id = stable_analysis_id(analysis["domain"])
         for signal in analysis["watch_signals"]:
-            watch_id = _watch_id(analysis_id, signal)
-            active_watch_ids.add(watch_id)
+            watch_id = _watch_id(thesis_id, signal)
             previous = watchlist.get(watch_id, {})
             watchlist[watch_id] = {
                 "watch_id": watch_id,
                 "analysis_id": analysis_id,
+                "thesis_id": thesis_id,
+                "identity_scope": "thesis_and_signal_text",
                 "signal": signal,
                 "status": "active",
                 "first_seen_at": previous.get("first_seen_at", generated_at),
                 "updated_at": generated_at,
                 "last_report_id": report_id,
             }
-    current_analysis_ids = {
-        stable_analysis_id(analysis["domain"])
-        for analysis in ([] if skip_analyses else report["analyses"])
-    }
-    for watch_id, item in watchlist.items():
-        if (
-            item.get("analysis_id") in current_analysis_ids
-            or item.get("analysis_id") in superseded_analysis_ids
-        ) and watch_id not in active_watch_ids:
+    for item in watchlist.values():
+        # 未提及不等于关闭；仅同一具体论点的明确终止能关闭其观察项。
+        if item.get("thesis_id") in closed_thesis_ids:
             item["status"] = "closed"
             item["updated_at"] = generated_at
             item["last_report_id"] = report_id
-            if item.get("analysis_id") in superseded_analysis_ids:
-                item["closure_reason"] = "analysis_superseded"
+            item["closure_reason"] = "thesis_closed"
 
     events_path = state_dir / "events.json"
     events = {item["event_id"]: item for item in _items(events_path) if item.get("event_id")}
@@ -190,12 +224,19 @@ def update_continuity_state(
 
     payloads = {
         "theses": {
-            "schema_version": "1.1",
+            "schema_version": "1.2",
             "updated_at": generated_at,
-            "items": sorted(theses.values(), key=lambda item: item["analysis_id"]),
+            "items": sorted(theses.values(), key=lambda item: (
+                item.get("thesis_id") or item["analysis_id"]
+            )),
+        },
+        "analysis-domains": {
+            "schema_version": "1.0",
+            "updated_at": generated_at,
+            "items": sorted(domains.values(), key=lambda item: item["analysis_id"]),
         },
         "watchlist": {
-            "schema_version": "1.1",
+            "schema_version": "1.2",
             "updated_at": generated_at,
             "items": sorted(watchlist.values(), key=lambda item: item["watch_id"]),
         },

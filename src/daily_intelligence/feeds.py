@@ -240,6 +240,7 @@ def _entry_image_candidates(
             raw_candidates.append(url)
     if "<img" in description_html.lower():
         for image in BeautifulSoup(description_html, "html.parser").find_all("img"):
+            raw_candidates.extend(srcset_candidates(image.get("srcset")))
             raw_candidates.extend(
                 str(image.get(attribute) or "")
                 for attribute in (
@@ -249,7 +250,6 @@ def _entry_image_candidates(
                     "data-lazy-src",
                 )
             )
-            raw_candidates.extend(srcset_candidates(image.get("srcset")))
     return normalize_image_candidates(raw_candidates, base_url)
 
 

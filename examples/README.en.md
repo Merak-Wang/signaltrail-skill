@@ -1,7 +1,7 @@
 # Examples
 
 **Status:** Current showcase and synthetic test fixtures
-**Last verified:** 2026-08-31
+**Last verified:** 2026-09-11
 
 [简体中文](README.md) | [English](README.en.md)
 
@@ -24,6 +24,10 @@ is the current complete run example:
 Download the HTML file and open it locally for the complete interactive reading
 experience. Public images are hosted by external sources and may become unavailable
 over time.
+
+The showcase and README screenshots received the new masthead, palette, and source headings on
+2026-09-11. Historical content, 424 news entries, 136 image references, and scores are unchanged.
+The original floating directory and continuous reading remain in place.
 
 ## Synthetic fixtures
 

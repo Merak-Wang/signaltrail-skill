@@ -13,6 +13,7 @@ import httpx
 
 from .access import classify_access_text
 from .clustering import cluster_articles
+from .collection_diagnostics import source_coverage
 from .config import AppConfig, SourceConfig
 from .feeds import (
     FeedFetchResult,
@@ -457,7 +458,9 @@ def _merge_source_items(
     by_canonical: dict[str, dict[str, Any]] = {}
     for result in feed_results:
         for article in result.items:
-            by_canonical[article.canonical_url] = article.to_dict()
+            payload = article.to_dict()
+            payload.setdefault("metadata", {})["feed_stale"] = result.stale
+            by_canonical[article.canonical_url] = payload
     for result in html_results:
         for article in result.items:
             payload = article.to_dict()
@@ -528,6 +531,7 @@ def _source_record(
         "module": source.module,
         "category": source.category,
         "region": source.region,
+        "language": source.language,
         "item_order": source.item_order,
         "methods": methods,
         "feed_urls": [result.feed_url for result in feed_results],
@@ -734,6 +738,7 @@ def refresh_monitor(
         html_by_source[source_id].append(result)
 
     fresh_items: list[dict[str, Any]] = []
+    coverage_items: list[dict[str, Any]] = []
     source_records: list[dict[str, Any]] = []
     for source in sources:
         source_items = _merge_source_items(
@@ -742,6 +747,11 @@ def refresh_monitor(
             html_by_source.get(source.id, []),
         )
         fresh_items.extend(source_items)
+        # Feed 失败时仍可保留旧缓存供阅读，但不能把它计作本次取得的覆盖。
+        coverage_items.extend(_merge_source_items(
+            source, [result for result in feed_results.get(source.id, []) if not result.stale],
+            html_by_source.get(source.id, []),
+        ))
         source_records.append(
             _source_record(
                 source,
@@ -826,6 +836,13 @@ def refresh_monitor(
         "clusters": clusters,
         "pending_verifications": pending,
         "health": health.get("sources", []),
+    }
+    snapshot["collection_coverage"] = {
+        **source_coverage({
+            "sources": source_records, "items": coverage_items,
+            "source_policies": {row["source_id"]: row for row in source_records},
+        }, sources),
+        "scope": "current_monitor_refresh",
     }
     output = data_dir / "monitor" / "snapshot.json"
     write_json(output, snapshot)

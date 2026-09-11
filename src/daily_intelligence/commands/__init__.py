@@ -3,10 +3,11 @@
 from argparse import Namespace
 from collections.abc import Callable
 
-from . import editions, monitor, reports, sources, verification
+from . import editions, explainers, monitor, reports, sources, verification
 from .common import CommandContext
 
 HANDLERS: dict[str, Callable[[Namespace, CommandContext], int]] = {
+    "explainer": explainers.handle_explainer,
     "source-page": sources.handle_source_page,
     "collect": sources.handle_collect,
     "import-legacy": sources.handle_import_legacy,

@@ -142,6 +142,20 @@ def test_feed_sniffing_and_html_discovery():
     ]
 
 
+def test_feed_html_image_prefers_srcset_over_low_resolution_src():
+    rss = b"""<rss><channel><item>
+      <title>A sufficiently detailed public news headline</title>
+      <link>https://news.example/story</link>
+      <description><![CDATA[<p>Public description.</p>
+        <img src='/small.jpg' srcset='/large.jpg 2x, /small.jpg 1x'>
+      ]]></description></item></channel></rss>"""
+    items = parse_feed_document(
+        rss, _source(), "https://news.example/rss.xml", "2026-09-11T06:00:00+08:00",
+        "Asia/Shanghai", max_items=10,
+    )
+    assert items[0].image_url == "https://news.example/large.jpg"
+
+
 def test_conditional_feed_cache_reuses_304_items(tmp_path: Path):
     requests: list[httpx.Request] = []
     rss = b"""<rss><channel><item>

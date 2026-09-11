@@ -6,6 +6,7 @@ from zoneinfo import ZoneInfo
 
 import httpx
 
+from daily_intelligence.collection_diagnostics import source_coverage
 from daily_intelligence.collector import collect_source
 from daily_intelligence.config import (
     AppConfig,
@@ -77,6 +78,9 @@ def test_monitor_snapshot_is_zero_token_and_reusable_by_editions(tmp_path: Path)
     snapshot = read_json(output)
 
     assert snapshot["token_usage"] == 0
+    assert snapshot["collection_coverage"]["scope"] == "current_monitor_refresh"
+    assert snapshot["collection_coverage"]["cells"][0]["item_count"] == 1
+    assert snapshot["collection_coverage"]["cells"][0]["status"] == "observed"
     assert snapshot["summary"]["item_count"] == 1
     assert snapshot["items"][0]["published_at"]
     assert snapshot["clusters"][0]["item_ids"] == [
@@ -92,6 +96,19 @@ def test_monitor_snapshot_is_zero_token_and_reusable_by_editions(tmp_path: Path)
     )
     assert len(cached["monitor_example"].items) == 1
     assert cached["monitor_example"].challenge["monitor_cache"] is True
+
+    failed_refresh = read_json(refresh_monitor(
+        config, tmp_path, include_discovery=False, force=True,
+        transport=httpx.MockTransport(lambda _: httpx.Response(429, text="Too many requests")),
+        now=now.replace(hour=11),
+    ))
+    assert failed_refresh["items"]  # 旧缓存仍供监控阅读。
+    assert failed_refresh["items"][0]["metadata"]["feed_stale"] is True
+    assert source_coverage(failed_refresh, config.sources)["cells"][0]["item_count"] == 0
+    cell = failed_refresh["collection_coverage"]["cells"][0]
+    assert cell["item_count"] == 0
+    assert cell["status"] == "not_observed"
+    assert cell["source_statuses"]["monitor_example"] == "partial"
 
 
 def test_monitor_cache_honors_source_or_publication_order(tmp_path: Path):

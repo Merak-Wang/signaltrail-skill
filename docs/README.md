@@ -1,6 +1,6 @@
 # Documentation
 
-**Status:** Verified · **Owner:** Repository maintainers · **Last verified:** 2026-09-08
+**Status:** Verified · **Owner:** Repository maintainers · **Last verified:** 2026-09-11
 
 Start with the guide for the work you are doing. English engineering records have Chinese
 mirrors under [zh-CN/](zh-CN/README.md).
@@ -11,8 +11,21 @@ mirrors under [zh-CN/](zh-CN/README.md).
 | [Development](development.md) | Test selection, naming, code and documentation conventions |
 | [Architecture](../ARCHITECTURE.md) | Module ownership, state, files, model boundaries |
 | [Agent instructions](../AGENTS.md) | Rules for changing this repository |
-| [Roadmap](roadmap.md) | Draft explainer, verification, audio and video scope; not implemented |
+| [Experimental explainers](explainers.md) | Implemented commands, bilingual reviews, immutable stories and current-admission limits |
+| [Roadmap](roadmap.md) | Bilingual explainers, verification and illustrated reading; video in the next upgrade |
 | [Technical debt](exec-plans/tech-debt-tracker.md) | Known implementation gaps and exit conditions |
+
+## Research and proposals
+
+- [Report A collection research and implementation](research/2026-09-11-collection-evidence.md):
+  section 3 source verification, local extraction, coverage diagnostics and bounded completion.
+
+- [News-explainer workflow research](research/2026-09-08-news-explainer-workflows.md): newsroom,
+  engineering, creator and public-social evidence; bilingual narrative choices, temporal checks,
+  an example and evaluation design. Research is complete; the experimental snapshot workflow is implemented. Current-news acceptance remains pending.
+- [Experimental explainer prompts](../templates/news-explainer-prompts.md): Chinese-authoritative
+  draft templates, including an English authoring prompt and bilingual review. These are not
+  current agent execution instructions; implementation and acceptance belong to the roadmap.
 
 ## Runtime references
 
@@ -26,6 +39,7 @@ Read only the reference needed for the task.
 | [Runbook](../references/runbook.md) | Stage recovery and operational checks |
 | [System contracts](../references/system-design.md) | Data fields, state and artifact contracts |
 | [Editorial policy](../references/editorial-policy.md) | Source selection, evidence, access and ordering |
+| [Explainer policy](../references/explainer-policy.md) | Experimental claim, review and story admission |
 | [Narrative analysis](../references/narrative-analysis.md) | Repairing analysis content |
 | [Report contract](../templates/report-contract.md) and [schema](../schemas/report.schema.json) | Draft shape and machine validation |
 | [Usage metering](../references/llm-usage.md) | Host adapters, accounting and coverage limits |
@@ -37,6 +51,7 @@ Read only the reference needed for the task.
 These completed run records explain decisions and measurements at the time. They are historical,
 not current operating instructions. Their original verification dates do not expire.
 
+- [2026-09-11 Report A code review](exec-plans/completed-2026-09-11-report-a-code-review.md)
 - [2026-08-25 morning-report acceptance](exec-plans/completed-2026-08-25-morning-report-acceptance.md)
 - [2026-08-23 usage and optimization implementation](exec-plans/completed-2026-08-23-llm-usage-optimization-implementation.md)
 - [2026-08-05 report regeneration](exec-plans/completed-2026-08-05-morning-report-regeneration.md)

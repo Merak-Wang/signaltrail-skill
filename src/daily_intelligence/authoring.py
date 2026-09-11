@@ -43,6 +43,8 @@ _ANALYSIS_MINIMUM_FRESH_FEATURED = 2
 _MAX_BRIEF_SUBMISSIONS = 2
 _MAX_ANALYSIS_SUBMISSIONS = 2
 _ANALYSIS_THESIS_FIELDS = (
+    "thesis_id",
+    "identity_scope",
     "analysis_id",
     "domain",
     "claim",
@@ -57,6 +59,8 @@ _ANALYSIS_THESIS_FIELDS = (
     "last_report_id",
 )
 _ANALYSIS_WATCHLIST_FIELDS = (
+    "thesis_id",
+    "identity_scope",
     "watch_id",
     "analysis_id",
     "signal",
@@ -1752,6 +1756,7 @@ def _analysis_candidates(
                     "discovered_at": indexed.get("discovered_at"),
                     "content_status": indexed.get("content_status"),
                     "content_path": indexed.get("content_path"),
+                    "content_observations": indexed.get("content_observations"),
                     "url": indexed.get("url"),
                 }
             )
@@ -1888,7 +1893,7 @@ def _select_analysis_theses(rows: object) -> list[dict[str, Any]]:
     输出：最多 12 条且每个核心领域优先不超过 4 条的字段白名单投影。
     """
 
-    recent = _recent_state_rows(rows, identity_field="analysis_id")
+    recent = _recent_state_rows(rows, identity_field="thesis_id")
     domain_order = [
         *_ANALYSIS_DOMAIN_ORDER,
         *sorted(
@@ -1941,8 +1946,8 @@ def _project_analysis_state(
         "user_feedback": context.get("user_feedback", []),
     }
     theses = _select_analysis_theses(source_rows["active_theses"])
-    selected_analysis_ids = {
-        str(row.get("analysis_id")) for row in theses if row.get("analysis_id")
+    selected_thesis_ids = {
+        str(row.get("thesis_id") or row.get("analysis_id")) for row in theses
     }
     watchlist = _recent_state_rows(
         source_rows["active_watchlist"],
@@ -1950,7 +1955,7 @@ def _project_analysis_state(
     )
     watchlist.sort(
         key=lambda row: (
-            str(row.get("analysis_id") or "") in selected_analysis_ids,
+            str(row.get("thesis_id") or row.get("analysis_id") or "") in selected_thesis_ids,
             str(row.get("updated_at") or row.get("first_seen_at") or ""),
             str(row.get("watch_id") or ""),
         ),
@@ -2149,6 +2154,10 @@ def prepare_analysis_packet(
             "from a selected featured event; unsupported references fail validation. "
             "When featured_freshness_minimum is greater than zero, select at least that "
             "many featured events whose candidate has fresh_for_report=true. "
+            "analysis_id identifies a domain column, not a thesis. Continuity thesis_id "
+            "binds a specific claim and evidence set; legacy_unresolved rows have ambiguous "
+            "identity. Do not assume a same-domain claim replaces an older thesis, or that "
+            "an omitted watch signal is closed. "
             "The output_schema is authoritative for every root and nested field, type, "
             "enum, length, and additional-property boundary. Never return any field listed "
             "in python_owned_output_fields. Return only the compact analysis payload."

@@ -3,6 +3,7 @@ from datetime import date
 from pathlib import Path
 
 import pytest
+from bs4 import BeautifulSoup
 from PIL import Image
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -146,10 +147,10 @@ def test_readme_showcase_assets_match_the_current_schema_v20_gallery():
         (ROOT / "README.en.md").read_text(encoding="utf-8"),
     ]
     expected_images = {
-        "morning-report-preview.png": (1440, 900),
-        "analysis-synthesis-preview.png": (1440, 900),
-        "quality-evaluation-preview.png": (1440, 900),
-        "mobile-report-preview.png": (390, 844),
+        "morning-report-preview.png": (1440, 1200),
+        "analysis-synthesis-preview.png": (1440, 1200),
+        "quality-evaluation-preview.png": (1440, 1200),
+        "mobile-report-preview.png": (390, 1000),
     }
     for filename, expected_size in expected_images.items():
         image_path = ROOT / "assets" / "readme" / filename
@@ -161,11 +162,12 @@ def test_readme_showcase_assets_match_the_current_schema_v20_gallery():
 
     gallery_path = ROOT / "examples" / "reports" / "2026-08-25-morning-r1.html"
     gallery = gallery_path.read_text(encoding="utf-8")
-    assert gallery.count('<section class="source-group"') == 30
-    assert gallery.count('<article class="brief') == 424
-    assert gallery.count('<img loading="lazy"') == 136
-    assert gallery.count('<article class="analysis-card"') == 3
-    assert gallery.count('<article class="analysis-card synthesis-card"') == 1
+    document = BeautifulSoup(gallery, "html.parser")
+    assert len(document.select("section.source-group")) == 30
+    assert len(document.select("article.brief")) == 424
+    assert len(document.select('img[loading="lazy"]')) == 136
+    assert len(document.select("article.analysis-card:not(.synthesis-card)")) == 3
+    assert len(document.select("article.analysis-card.synthesis-card")) == 1
     assert 'id="analysis-synthesis"' in gallery
     assert "<strong>37</strong><span>/ 45</span>" in gallery
     assert "file://" not in gallery

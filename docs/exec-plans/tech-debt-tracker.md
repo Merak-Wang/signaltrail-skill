@@ -4,7 +4,7 @@
 impact, and measurable exit conditions.
 **Status:** Verified
 **Owner:** Repository maintainers
-**Last verified:** 2026-09-08
+**Last verified:** 2026-09-11
 
 ## Open Items
 
@@ -36,8 +36,16 @@ impact, and measurable exit conditions.
 | TD-032 | Medium | **Host orchestration:** root-like provider turns remain a context and tool-schema concentration. | Available sessions differ in model, snapshot, and recovery path; observed call totals span 33 to 108, preventing a causal root-turn comparison. | Comparable per-leaf measurements classify repeated context, tool schema, and polling; accepted changes reach at most 51 calls with stable quality and zero open lifecycles. |
 | TD-033 | High | **Hermes integration:** successful one-shot work can lack terminal hook events. | A v2 control recorded 24 attempts and 22 token-accounted terminal observations. The missing terminals make the task total a lower bound; core finalization correctly preserves `partial`. | Cancellation or transport terminals, or a durable reconciliation source, close every attempted request; unresolved fields remain unknown and the task remains partial. |
 | TD-037 | Low | Older docstrings still contain generic template wording. | Several foundation and report modules describe inputs as arbitrary paths and outputs as processing results; format checks cannot establish semantic quality. | Rewrite these contracts alongside their owning functions, naming actual provenance and downstream meaning; retain concise Chinese descriptions. |
+| TD-038 | High | Experimental explainers do not yet support current-news admission or formal acceptance. | Bound scripts, model reviews and diagrams support snapshot previews; correction/update-chain retrieval, claim expiry, host-metered dispatch and human comprehension remain unavailable. Context-label checks do not enforce host isolation. | A trusted freshness adapter records exact checked evidence and correction chains, enforces claim-specific/edition deadlines, routes changed facts upstream, and passes frozen model/reader plus three-edition multi-host acceptance. |
+| TD-039 | Medium | Thesis and watch continuation lacks validated structured identities across wording or evidence changes. | State now preserves separate claim/evidence identities and never closes omitted watchers, but paraphrases and new evidence can create parallel records. | Bounded prior-thesis references and structured trigger conditions support validated continuation and explicit resolution, with ambiguous migration and forged-reference tests. |
+| TD-040 | Medium | Extraction and image relevance remain deterministic heuristics. | Structural quality and caption overlap fix local counterexamples; complex layouts, ambiguous captions, crop variants and target-specific image suitability have no corpus acceptance evidence. | A frozen multilingual page/image corpus measures extraction contamination, completeness and actual-pixel/crop suitability; uncertain cases retain explicit quality limits. |
+| TD-041 | Medium | Claim-driven collection and stakeholder blind-spot search are not implemented. | Report A section 3 adds configured region/topic/source-role diagnostics, local body-gap suggestions and bounded extraction, but no validated claim/source relationships, stakeholder inventory, search providers or calibrated utility/cost policy. | A bounded research channel records original/reprint lineage and support/refute/background roles per claim, audits unconfigured coverage against explicit targets, and stops search with measured budget/benefit and unresolved evidence. |
 
 ## Resolved Items
+
+The 2026-09-11 [Report A review](completed-2026-09-11-report-a-code-review.md) fixes extraction
+structure/selection, responsive-image ordering, domain/thesis collisions and omission-based
+watch closure. Remaining capability gaps are listed in Open Items above.
 
 Resolved on 2026-09-08:
 
@@ -91,7 +99,8 @@ Resolved during the
   unmetered values remain null.
 - Semantic cache separates content-stable fields from run-relative state and records versioned
   invalidation reasons while preserving plan order.
-- Stable analysis-domain IDs retain superseded history and close orphaned watchers safely.
+- Stable analysis-domain IDs retained superseded history and closed orphaned watchers at that
+  time; the 2026-09-11 review replaced domain-based supersession with separate thesis identities.
 - Brief and analysis rejection receipts, evaluation preflight, scheduler reconciliation, bounded
   evaluator attempts, and the hash-bound evaluator dossier are immutable.
 - Brief and analysis packets are self-contained and receiver-validated through nested output

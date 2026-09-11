@@ -104,16 +104,18 @@ def test_continuity_migrates_legacy_analysis_identity_without_losing_history(
 
     update_continuity_state(report, data_dir)
 
-    theses = {row["analysis_id"]: row for row in read_json(state_dir / "theses.json")["items"]}
-    assert theses["TH-AI-001"]["status"] == "superseded"
-    assert theses["TH-AI-001"]["superseded_by"] == "ANALYSIS-AI_TECHNOLOGY"
-    assert theses["TH-AI-001"]["history"] == [{"report_id": "legacy-report"}]
-    assert theses["ANALYSIS-AI_TECHNOLOGY"]["status"] == "active"
-    active = [row for row in theses.values() if row["status"] == "active"]
-    assert [row["analysis_id"] for row in active] == ["ANALYSIS-AI_TECHNOLOGY"]
+    theses = read_json(state_dir / "theses.json")["items"]
+    legacy = next(row for row in theses if row["analysis_id"] == "TH-AI-001")
+    assert legacy["status"] == "active"
+    assert legacy["identity_scope"] == "legacy_unresolved"
+    assert "superseded_by" not in legacy
+    assert legacy["history"] == [{"report_id": "legacy-report"}]
+    current = next(row for row in theses if row.get("thesis_id"))
+    assert current["analysis_id"] == "ANALYSIS-AI_TECHNOLOGY"
+    assert current["status"] == "active"
     watchlist = {row["watch_id"]: row for row in read_json(state_dir / "watchlist.json")["items"]}
-    assert watchlist["WATCH-LEGACY"]["status"] == "closed"
-    assert watchlist["WATCH-LEGACY"]["closure_reason"] == "analysis_superseded"
+    assert watchlist["WATCH-LEGACY"]["status"] == "active"
+    assert "closure_reason" not in watchlist["WATCH-LEGACY"]
 
 
 def test_save_report_validates_before_network_media(monkeypatch, tmp_path: Path):

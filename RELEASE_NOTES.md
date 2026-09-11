@@ -1,5 +1,19 @@
 # Release notes
 
+## Source update — 2026-09-11
+
+- HTML reports use the approved three-column masthead, white/black/red palette, and ruled source
+  headings. News remains continuous, with its original image/text layout and floating directory.
+  The public historical example and README screenshots now show this layout.
+- Collection diagnostics and bounded extraction fallbacks expose evidence gaps, preserve access
+  failures, and retain image provenance. Continuity separates domain columns from thesis identity.
+- Experimental explainers provide immutable evidence-bound drafts, language reviews, and illustrated
+  reading. Current-news publishing still requires freshness adapters and formal acceptance;
+  speech and video remain planned.
+
+Sync the current checkout into the local Hermes skill and reinstall its Python package to use
+these changes. Existing versioned JSON/Markdown and runtime data remain unchanged.
+
 ## Source update — 2026-09-08
 
 - `signaltrail` is now the preferred CLI name. `daily-intel`, Python imports, environment

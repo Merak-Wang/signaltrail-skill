@@ -1,6 +1,6 @@
 # Architecture
 
-**Status:** Verified · **Owner:** Repository maintainers · **Last verified:** 2026-09-08
+**Status:** Verified · **Owner:** Repository maintainers · **Last verified:** 2026-09-11
 
 This is the code map for SignalTrail. [Runtime contracts](references/system-design.md)
 describe data fields and recovery rules; [AGENTS.md](AGENTS.md) covers repository changes.
@@ -31,10 +31,12 @@ All modules below live in `src/daily_intelligence/`.
 | Shared types and I/O | `models`, `storage`, `utils`, `runtime`, `access`, `localization`, `taxonomy` | Paths, enums, atomic writes, data-root binding |
 | Configuration | `config` | Sources, limits, and runtime options |
 | Collection | `adapters`, `feeds`, `prefetch`, `collector`, `clustering` | Fetch, normalize, preserve source status and order |
-| Evidence | `content`, `media`, `image_policy`, `monitor` | Article text, images, snapshots, evidence lineage |
+| Collection diagnostics | `collection_diagnostics` | Configured-source coverage, bounded body-gap suggestions, local artifact integrity |
+| Evidence | `content`, `content_extraction`, `content_images`, `media`, `image_policy`, `monitor` | Structured article blocks, extraction quality, contextual image candidates, snapshots, evidence lineage |
 | Writing | `context`, `authoring`, `semantics`, `state` | Bounded packets, accepted batches, continuity and cache |
 | Report contract | `reporting` | Compile drafts, hydrate evidence, validate schema and cross-field rules |
 | Report storage | `reports` | Save reports and evaluations, render Markdown, update derived state |
+| Experimental explainers | `narrative`, `narrative_contracts`, `narrative_store`, `narrative_verification`, `story_stream` | Immutable report children, language reviews, diagrams; current-news admission blocked |
 | Delivery | `local_output`, `notion`, `dashboard` | HTML/PDF, remote copies, read-only monitor UI |
 | Workflow | `workflow` | Run checkpoints, deadlines, recovery, evaluator scheduling |
 | Usage and budget | `llm_usage/`, `llm_budget`, `evaluation` | Immutable usage events, dispatch reserves, evaluation dossiers |
@@ -83,7 +85,11 @@ collisions; paired report writes still have the transaction gap recorded as TD-0
 Authoring packets declare their output schema and authorized evidence. Python rejects extra
 fields and invented identities, records immutable rejection receipts, and allows at most one
 budget-approved repair. The semantic cache stores stable translated titles and summaries;
-each run recomputes importance and status. Analysis uses three stable domain identities.
+each run recomputes importance and status. Reports keep three stable analysis-domain IDs.
+Continuity state uses separate claim-and-evidence thesis IDs and thesis-bound watchers;
+omitted signals remain active. Legacy ambiguous rows retain their history, and
+`analysis-domains.json` provides the latest column projection. Cross-wording continuation
+remains TD-039.
 
 Usage storage accepts counts, timings, costs, bounded labels, and hashed lineage. It excludes
 prompts, responses, reasoning, tool arguments, raw host IDs, and secrets. Unknown observations

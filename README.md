@@ -14,10 +14,14 @@ SignalTrail 从你配置的公开来源收集新闻，生成带原文链接的�
 
 ![晨报预览](assets/readme/morning-report-preview.png)
 
+新版阅读页采用三栏报头、白底黑字与红色分隔线。新闻按来源连续展开，来源栏标明所属栏目；
+左侧悬浮目录支持展开、收起和阅读位置高亮。正文保留原有中英文标题、时间、配图和摘要排版。
+
 ## 报告示例
 
 一份报告包括按来源排列的新闻摘要、精选事件，以及地缘政治、AI / 技术和市场三个视角的分析。
-跨视角综合连接这些分析；独立评估列出评分和证据缺口。每条新闻保留原题、链接、时间和访问状态。
+跨视角综合连接这些分析；独立评估列出评分和证据缺口。每条新闻保留原题、链接和时间，
+访问状态与证据限制保存在原始报告中。
 
 [下载示例 HTML](https://github.com/Merak-Wang/signaltrail-skill/raw/refs/heads/main/examples/reports/2026-08-25-morning-r1.html)
 即可打开阅读。该历史示例有 424 条摘要、8 个精选事件，独立评分 37/45；
@@ -92,7 +96,8 @@ JSON 和 Markdown 是版本化原始记录；HTML、PDF 和 Notion 是阅读副�
 不保证所有来源、PDF 和评估都能在一小时内完成。[已知问题](docs/zh-CN/exec-plans/tech-debt-tracker.md)
 记录当前限制。
 
-新闻讲解稿、逐段核验、语音和视频仍在计划中，尚未提供；范围见[路线图](docs/zh-CN/roadmap.md)。
+实验性新闻讲解稿已支持证据绑定、语言审阅和图文阅读；当前新闻发布仍等待新鲜度适配与正式验收。
+语音和视频尚未提供，详见[讲解稿说明](docs/zh-CN/explainers.md)和[路线图](docs/zh-CN/roadmap.md)。
 
 ## 开发
 

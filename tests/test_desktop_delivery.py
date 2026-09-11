@@ -1,10 +1,12 @@
 import base64
+import copy
 import shutil
 import subprocess
 from io import BytesIO
 from pathlib import Path
 
 import pytest
+from bs4 import BeautifulSoup
 from PIL import Image
 from pypdf import PdfReader
 
@@ -316,3 +318,58 @@ def test_local_html_escapes_untrusted_report_text_and_urls():
     assert "<img src=x onerror=alert(1)>" not in rendered
     assert 'href="javascript:' not in rendered
     assert "Content-Security-Policy" in rendered
+
+
+@pytest.mark.parametrize(
+    ("language", "date_label", "edition", "source_order"),
+    [
+        ("zh-CN", "2026 年 7 月 25 日　星期六", "晨间版 / 第 1 版", "原来源顺序"),
+        ("en", "2026-07-25 · Saturday", "Morning Edition / Revision 1", "Original source order"),
+    ],
+)
+def test_newspaper_header_preserves_continuous_source_order_and_images(
+    language, date_label, edition, source_order,
+):
+    report = _report()
+    report["language"] = language
+    original = report["sections"][0]["briefs"][0]
+    report["sections"][0]["briefs"] = [
+        dict(copy.deepcopy(original), title=f"Story {i}", source_rank=i, importance=100-i)
+        for i in range(1, 19)
+    ]
+    before = copy.deepcopy(report)
+    soup = BeautifulSoup(render_report_html(report), "html.parser")
+
+    assert soup.select_one(".masthead-grid").get_text().find(date_label) >= 0
+    assert edition in soup.select_one(".edition-info").get_text()
+    assert "06:11" in soup.select_one(".edition-info-right").get_text()
+    assert soup.select_one(".source-heading span").get_text() == f"国际 · {source_order}"
+    assert [row.get_text() for row in soup.select(".brief h4")] == [
+        f"Story {i}" for i in range(1, 19)
+    ]
+    assert len(soup.select(".brief figure img")) == 18
+    assert len(soup.select(".brief .story-time")) == 0
+    assert soup.select_one("#toc-toggle")["aria-controls"] == "report-toc"
+    assert [a["href"] for a in soup.select(".toolbar nav a")] == ["#evaluation"]
+    assert not soup.select("[data-reading-entry], .st-pagination")
+    assert report == before
+
+
+@pytest.mark.parametrize(
+    ("timestamp", "expected"),
+    [
+        ("2026-07-25T04:05:00Z", "04:05 (UTC+00:00)"),
+        ("2026-07-25T04:05:00-03:30", "04:05 (UTC-03:30)"),
+        ("2026-07-25T04:05:00", "04:05"),
+        ("<script>bad</script>", "<script>bad</script>"),
+    ],
+)
+def test_masthead_uses_recorded_time_without_assuming_beijing(timestamp, expected):
+    report = _report()
+    report["generated_at"] = timestamp
+    rendered = render_report_html(report)
+    soup = BeautifulSoup(rendered, "html.parser")
+
+    assert soup.select_one(".edition-info-right time").get_text() == f"本版生成于 {expected}"
+    assert "北京时间" not in soup.select_one(".edition-info-right").get_text()
+    assert "<script>bad</script>" not in rendered

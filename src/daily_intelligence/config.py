@@ -127,14 +127,18 @@ class BrowserConfig:
 
 @dataclass(slots=True)
 class CollectionConfig:
-    """处理：保存全来源统一的候选排序默认值。
+    """处理：保存候选排序、本地备用抽取器和公共响应留存策略。
     输入：
     - ``item_order``：来源未单独覆盖时的候选顺序；``source`` 保留网页或 Feed 的原始
       Top 顺序，``published_at`` 按可用发布时间倒序。
+    - ``fallback_extractor``：none 保留基线；trafilatura 允许本地备用抽取。
+    - ``retain_public_html``：是否留存无登录 HTTP 的有界原响应；浏览器 DOM 不留存。
     输出：构造后的采集排序配置；AppConfig 会把该默认值补到所有正式与发现来源。
     """
 
     item_order: str = "source"
+    fallback_extractor: str = "none"
+    retain_public_html: bool = False
 
 
 @dataclass(slots=True)
@@ -414,6 +418,10 @@ def validate_collection_config(collection: CollectionConfig) -> CollectionConfig
     """
     if collection.item_order not in ITEM_ORDER_VALUES:
         raise ValueError("collection.item_order must be one of: source, published_at")
+    if collection.fallback_extractor not in {"none", "trafilatura"}:
+        raise ValueError("collection.fallback_extractor must be one of: none, trafilatura")
+    if not isinstance(collection.retain_public_html, bool):
+        raise ValueError("collection.retain_public_html must be a boolean")
     return collection
 
 

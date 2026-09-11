@@ -96,6 +96,27 @@ def test_collection_item_order_rejects_unknown_values(tmp_path):
         load_config(config_path)
 
 
+@pytest.mark.parametrize("option", ["fallback_extractor: unknown", "retain_public_html: 'yes'"])
+def test_collection_extraction_options_are_validated(tmp_path, option):
+    path = tmp_path / "sources.yaml"
+    path.write_text(f"collection:\n  {option}\nsources: []\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="collection\\."):
+        load_config(path)
+
+
+def test_collection_extractor_and_retention_are_opt_in(tmp_path):
+    path = tmp_path / "sources.yaml"
+    path.write_text("sources: []\n", encoding="utf-8")
+    config = load_config(path)
+    assert config.collection.fallback_extractor == "none"
+    assert config.collection.retain_public_html is False
+    path.write_text("collection:\n  fallback_extractor: trafilatura\n"
+                    "  retain_public_html: true\nsources: []\n", encoding="utf-8")
+    config = load_config(path)
+    assert config.collection.fallback_extractor == "trafilatura"
+    assert config.collection.retain_public_html is True
+
+
 def test_monitor_expands_sources_without_changing_newspaper_quotas():
     config = load_config()
 

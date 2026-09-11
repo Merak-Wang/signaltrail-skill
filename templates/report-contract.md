@@ -204,6 +204,11 @@ schema 2.0 中每个精选事件的 `source_item_ids` 必须恰好包含一篇�
 
 `state_change` 只能是 `new`、`strengthening`、`unchanged`、`weakening`、`revised`、`invalidated`、`closed`。Python 根据 domain 补齐 `perspectives`、`assessment_types` 和 `analysis_id`。
 
+`analysis_id` 只标识固定领域栏目，不代表长期论点身份。Python 在派生连续性状态中根据
+具体判断及其事件证据生成 `thesis_id`；该字段不由模型填写，也不改变报告 schema 2.0。
+同领域新判断不自动覆盖旧论点，未提及观察项不自动关闭。仅当相同具体论点明确终止时，
+其观察项才关闭；不同措辞与不同证据集合的自动延续暂不支持。
+
 - `perspectives`：`geopolitics`、`ai_research_engineering`、`equity_analysis`、`china_standpoint`、`western_standpoint`。
 - `assessment_types`：`trend`、`risk`、`learning_research`。
 - `narrative`、`historical_context`、`dialectical_analysis`、`stakeholder_positions`。

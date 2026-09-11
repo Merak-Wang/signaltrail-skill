@@ -1,6 +1,6 @@
 # 架构
 
-**状态：** 已验证 · **负责人：** 仓库维护者 · **最后验证：** 2026-09-08
+**状态：** 已验证 · **负责人：** 仓库维护者 · **最后验证：** 2026-09-11
 
 本文说明 SignalTrail 的代码分工。[运行契约](../../references/system-design.md)解释数据字段
 和恢复规则，[AGENTS.md](AGENTS.md)说明修改仓库时的约束。[English](../../ARCHITECTURE.md)
@@ -28,10 +28,12 @@ Python 负责身份、访问状态、修订分配、校验和持久化。模型�
 | 类型与 I/O | `models`、`storage`、`utils`、`runtime`、`access`、`localization`、`taxonomy` | 路径、枚举、原子写入、数据根绑定 |
 | 配置 | `config` | 来源、限额和运行选项 |
 | 采集 | `adapters`、`feeds`、`prefetch`、`collector`、`clustering` | 抓取、规范化、保留来源状态和顺序 |
-| 证据 | `content`、`media`、`image_policy`、`monitor` | 正文、图片、快照和证据关联 |
+| 采集诊断 | `collection_diagnostics` | 已配置来源覆盖、有界正文缺口建议和本地产物完整性 |
+| 证据 | `content`、`content_extraction`、`content_images`、`media`、`image_policy`、`monitor` | 结构化正文块、抽取质量、含上下文的配图候选、快照和证据关联 |
 | 写作 | `context`、`authoring`、`semantics`、`state` | 有界数据包、已接收批次、连续状态和缓存 |
 | 报告契约 | `reporting` | 编译草稿、补齐证据、校验 Schema 及跨字段规则 |
 | 报告存储 | `reports` | 保存报告和评估、渲染 Markdown、更新派生状态 |
+| 实验讲解 | `narrative`、`narrative_contracts`、`narrative_store`、`narrative_verification`、`story_stream` | 不可变日报子产物、语言审核和解释图；实时新闻准入保持阻断 |
 | 交付 | `local_output`、`notion`、`dashboard` | HTML/PDF、远程副本和只读监控界面 |
 | 工作流 | `workflow` | 检查点、期限、恢复和评估调度 |
 | 用量与预算 | `llm_usage/`、`llm_budget`、`evaluation` | 不可变用量事件、派发预留和评估数据包 |
@@ -76,7 +78,9 @@ Schema 1.1–1.5 报告保持可读，新报告使用 2.0 并要求跨视角综�
 
 写作包声明输出 Schema 和允许的证据。Python 拒绝额外字段及虚构身份，记录不可变拒绝回执，
 最多允许一次预算批准的修复。语义缓存保存稳定译题和摘要，每轮重算重要性和状态。
-三个分析领域使用稳定身份。
+报告保留三个稳定领域栏目 ID。连续状态另用判断与证据绑定的论点 ID，以及绑定具体论点的
+观察项；未提及的信号保持活跃。旧身份不明确的记录保留历史，`analysis-domains.json` 提供
+每栏目最新状态投影。跨措辞延续仍属于 TD-039。
 
 用量存储只接受计数、耗时、金额、有界标签和哈希关联；不收录 prompt、回复、推理、工具参数、
 原始宿主 ID 或密钥。未知观测保持 null。任务锁串行化追加与封账，封账拒绝未闭合调用。

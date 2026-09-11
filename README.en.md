@@ -16,12 +16,17 @@ if they can run local commands and read and write JSON files.
 
 ![Morning report preview](assets/readme/morning-report-preview.png)
 
+The updated reader has a three-column masthead, white pages, black text, and red rules.
+News runs continuously in source order, with each source heading identifying its section.
+The floating directory opens, collapses, and follows the reading position. Original headlines,
+translations, timestamps, images, and summary layouts remain intact.
+
 ## Example report
 
 A report contains news summaries grouped by source, selected events, and analysis from
 geopolitics, AI / technology, and markets. A synthesis connects the three perspectives;
 an independent evaluation records scores and evidence gaps. Each item retains its original
-headline, URL, time, and access status.
+headline, URL, and time; the original report retains access status and evidence limitations.
 
 [Download the example HTML](https://github.com/Merak-Wang/signaltrail-skill/raw/refs/heads/main/examples/reports/2026-08-25-morning-r1.html)
 and open it locally. This historical example has 424 summaries, eight selected events,
@@ -102,8 +107,9 @@ one-hour budget stops new work from being dispatched; it does not guarantee that
 PDF generation, and evaluation finish within an hour. The
 [technical-debt tracker](docs/exec-plans/tech-debt-tracker.md) records known gaps.
 
-Explainer scripts, claim verification, speech, and video are planned and have not shipped.
-See the [roadmap](docs/roadmap.md) for scope.
+Experimental explainers support evidence binding, language reviews, and illustrated reading.
+Current-news publishing still awaits freshness adapters and formal acceptance. Speech and video
+have not shipped. See [Explainers](docs/explainers.md) and the [roadmap](docs/roadmap.md).
 
 ## Contributing
 

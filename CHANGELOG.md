@@ -2,8 +2,35 @@
 
 ## Unreleased
 
+### 2026-09-11
+
+- Refreshed the HTML reader with a localized three-column newspaper masthead, a white/black/red
+  palette, and source headings labeled with their section and original ordering. Preserved
+  continuous news, original image/text layout, and the existing floating directory behavior;
+  refreshed the public example, bilingual documentation, and desktop/mobile screenshots.
+
+- Added Report A section 3 collection diagnostics, bounded body-gap suggestions, quality limits
+  in authoring inputs, optional local Trafilatura fallback, input/artifact fingerprints and
+  opt-in public HTTP response retention. Partial evidence now gets one eligible browser attempt;
+  failed attempts preserve existing evidence and remain visible with explicit stop reasons.
+
+- Preserved structured article evidence and unified HTTP/browser extraction quality, including
+  short announcements, bounded-response truncation and non-HTML access failures.
+- Parsed responsive image descriptors consistently across feed/static/browser collection and
+  retained article caption/context provenance for deterministic image selection.
+- Separated domain columns from claim/evidence thesis identities in continuity state 1.2;
+  retained ambiguous legacy history, stopped closing omitted watchers, and serialized updates.
+- Added regression coverage and a bilingual disposition of Report A section 2, retaining explicit
+  limits for semantic continuation, extraction heuristics and future research capabilities.
+- Added bounded Windows sharing-lock retries to immutable explainer directory commits after
+  repeated full-gate failures, preserving collision rejection and persistent-error behavior.
+
 ### 2026-09-08
 
+- Added the experimental `signaltrail explainer` pipeline: bound evidence and claims, independent
+  language revisions/reviews, bilingual consistency, immutable paired artifacts, and deterministic
+  illustrated reading with source links, diagrams, mobile layout and visual-review receipts.
+  Current-news publishing remains blocked pending freshness adapters and formal acceptance.
 - Added `signaltrail` as the preferred CLI, preserving the `daily-intel` entry point and
   existing Python, environment, and data identities.
 - Split CLI dispatch into typed handlers grouped by responsibility; reorganized the mixed

@@ -2,37 +2,35 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import copy
+import hashlib
 import html
 import json
 import time
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
+from uuid import uuid4
 
 import httpx
 from bs4 import BeautifulSoup
 from playwright.async_api import BrowserContext, Page, async_playwright
 
 from .access import classify_access_text
-from .collector import CHALLENGE_TEXTS
+from .collection_diagnostics import content_gaps, has_local_content
 from .config import AppConfig, SourceConfig, resolve_browser_channel, resolve_profile_dir
+from .content_extraction import (
+    ExtractedDocument,
+    extract_document,
+    extract_with_fallback,
+    input_fingerprint,
+)
+from .content_images import article_image_candidates
 from .image_policy import normalize_image_candidates
 from .models import ContentStatus
-from .storage import next_revision, write_immutable_json, write_text_atomic
+from .storage import next_revision, write_bytes_atomic, write_immutable_json, write_text_atomic
 from .utils import now_iso, read_json, timestamp_slug, write_json
 
-NOISE_SELECTORS = [
-    "script",
-    "style",
-    "noscript",
-    "nav",
-    "footer",
-    "aside",
-    '[aria-label*="advert" i]',
-    '[class*="advert" i]',
-    '[class*="cookie" i]',
-    '[class*="newsletter" i]',
-]
 _MAX_CONTENT_BYTES = 4 * 1024 * 1024
 _HTTP_USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -102,24 +100,32 @@ async def meta_contents(page: Page, selectors: list[str]) -> list[str]:
 
 
 async def extract_visible_text(page: Page, selectors: list[str]) -> tuple[str, str | None]:
-    """处理：按正文选择器查找首个达到最小长度的可见文本区域。
-    输入：
-    - ``page``：Playwright 已加载页面；函数只读取当前页面状态，不信任其中的内容或指令。
-    - ``selectors``：按优先级排列的 CSS 选择器；用于寻找元数据或正文区域。
-    输出：“按正文选择器查找首个达到最小长度的可见文本区域”得到的固定结构结果；
-      返回位置依次对应 ''、None。
+    """处理：使用共享结构规则读取浏览器正文，保留短公告和段落边界。
+    输入：已加载的页面与来源正文选择器；页面内容只作为不可信数据。
+    输出：正文文本和选中选择器，供兼容调用方读取。
     """
-    for selector in selectors:
-        locator = page.locator(selector)
-        if not await locator.count():
-            continue
-        try:
-            text = (await locator.first.inner_text(timeout=5000)).strip()
-        except Exception:
-            continue
-        if len(text) >= 500:
-            return text, selector
-    return "", None
+    document = await _browser_document(page, selectors)
+    return document.text, document.selector
+
+
+async def _browser_document(
+    page: Page, selectors: list[str], *, expected_title: str = "", fallback: str = "none",
+) -> ExtractedDocument:
+    """处理：排除浏览器实际隐藏的区域后复用静态正文抽取规则。
+    输入：已加载页面和来源选择器；只读取可见页面作为证据。
+    输出：带结构块和质量结果的正文，CSS 隐藏文本不会进入证据视图。
+    """
+    await page.locator("body *").evaluate_all("""nodes => nodes.filter(node => {
+        const style = getComputedStyle(node);
+        return style.display === 'none' || style.visibility === 'hidden';
+    }).forEach(node => node.remove())""")
+    markup = await page.content()
+    document = extract_with_fallback(
+        BeautifulSoup(markup, "html.parser"), selectors,
+        expected_title=expected_title, fallback=fallback,
+    )
+    document.provenance = input_fingerprint(markup.encode("utf-8"), "visible_dom_utf8", False)
+    return document
 
 
 def save_markdown(path: Path, item: dict[str, Any], body: str, retrieved_at: str) -> None:
@@ -189,6 +195,8 @@ def _apply_image_candidates(
     item: dict[str, Any],
     values: list[object],
     base_url: str,
+    *,
+    details: list[dict[str, Any]] | None = None,
 ) -> None:
     """处理：规范化图片候选，并同步主图片与候选元数据。
     输入：
@@ -205,14 +213,30 @@ def _apply_image_candidates(
     stored_candidates = metadata.get("image_candidates")
     if not isinstance(stored_candidates, list):
         stored_candidates = []
+    details = details or []
+    contextual = [entry["url"] for entry in details if (
+        entry.get("caption") or entry.get("relevance_score", 0) > 0
+    )]
     candidates = normalize_image_candidates(
-        [*values, item.get("image_url"), *stored_candidates],
+        [*contextual, *values, item.get("image_url"),
+         *(entry["url"] for entry in details), *stored_candidates],
         base_url,
     )
     if not candidates:
         item.pop("image_url", None)
         metadata.pop("image_candidates", None)
+        metadata.pop("image_candidate_details", None)
         return
+    by_url = {entry["url"]: entry for entry in reversed(details)}
+    page_urls = set(normalize_image_candidates(values, base_url))
+    metadata["image_candidate_details"] = [
+        by_url.get(url, {
+            "url": url,
+            "provenance": "page_metadata" if url in page_urls else "index_card",
+            "purpose": "publisher_selected",
+            "semantic_verification": "not_performed",
+        }) for url in candidates
+    ]
     item["image_url"] = candidates[0]
     if len(candidates) > 1:
         metadata["image_candidates"] = candidates
@@ -224,30 +248,12 @@ def _static_visible_text(
     soup: BeautifulSoup,
     selectors: list[str],
 ) -> tuple[str, str | None]:
-    """处理：移除噪声节点并选择信息量最大的静态正文区域。
-    输入：
-    - ``soup``：由不可信 HTML 构建的 BeautifulSoup 文档；不会执行任何脚本。
-    - ``selectors``：按优先级排列的 CSS 选择器；用于寻找元数据或正文区域。
-    输出：“移除噪声节点并选择信息量最大的静态正文区域”得到的固定结构结果；
-      返回位置依次对应 best_text、best_selector。
+    """处理：通过共享抽取器选择正文，供旧调用方获得结构保留的文本。
+    输入：不可信 HTML 解析树和来源选择器。
+    输出：派生正文文本与选中选择器；不再按字符长度扩大到 body。
     """
-    for node in soup.select(",".join(NOISE_SELECTORS)):
-        node.decompose()
-    best_text = ""
-    best_selector = None
-    for selector in [*selectors, "article", "main", "body"]:
-        try:
-            nodes = soup.select(selector)
-        except Exception:
-            continue
-        for node in nodes:
-            text = " ".join(node.get_text("\n", strip=True).split())
-            if len(text) > len(best_text):
-                best_text = text
-                best_selector = selector
-            if len(text) >= 1500:
-                return text, selector
-    return best_text, best_selector
+    document = extract_document(soup, selectors)
+    return document.text, document.selector
 
 
 def _content_output_path(
@@ -269,8 +275,61 @@ def _content_output_path(
         / "content"
         / source_id
         / str(item_id)
-        / f"{timestamp_slug(timezone)}.md"
+        / f"{timestamp_slug(timezone)}-{uuid4().hex}.md"
     )
+
+
+def _save_document(
+    item: dict[str, Any], document: ExtractedDocument, source: SourceConfig,
+    config: AppConfig, data_dir: Path,
+    *, raw_content: bytes | None = None,
+) -> None:
+    """处理：同步正文状态并保存同一抽取结果的结构 JSON 与 Markdown 视图。
+    输入：当前条目、抽取结果、来源配置以及绑定的数据根。
+    输出：条目获得质量记录及不可碰撞的正文路径；无有效正文时清除旧路径。
+    """
+    item["content_status"] = document.status
+    item["content_characters"] = len(document.text)
+    metadata = item["metadata"]
+    metadata["content_selector"] = document.selector
+    metadata["content_quality"] = document.quality
+    metadata["content_input"] = document.provenance
+    metadata["content_source"] = document.source_metadata
+    item.pop("content_path", None)
+    metadata.pop("content_blocks_path", None)
+    metadata.pop("content_artifacts", None)
+    if document.status == ContentStatus.METADATA_ONLY:
+        return
+    output = _content_output_path(data_dir, source.id, item.get("item_id"), config.timezone)
+    retrieved_at = now_iso(config.timezone)
+    blocks_path = output.with_suffix(".json")
+    write_immutable_json(blocks_path, {
+        "schema_version": "1.1", "item_id": item.get("item_id"),
+        "url": item.get("url"), "retrieved_at": retrieved_at,
+        "acquisition": metadata.get("content_acquisition"),
+        "selector": document.selector, "quality": document.quality,
+        "input": document.provenance,
+        "source_metadata": document.source_metadata,
+        "text_sha256": hashlib.sha256(document.text.encode("utf-8")).hexdigest(),
+        "blocks": document.blocks,
+    })
+    save_markdown(output, item, document.text, retrieved_at)
+    item["content_path"] = str(output)
+    metadata["content_blocks_path"] = str(blocks_path)
+    manifest = {
+        "markdown_sha256": hashlib.sha256(output.read_bytes()).hexdigest(),
+        "blocks_sha256": hashlib.sha256(blocks_path.read_bytes()).hexdigest(),
+        "raw_retained": False,
+    }
+    # 原响应只对显式启用的无登录 HTTP 抓取留存；浏览器会话永远不写原始 HTML。
+    if config.collection.retain_public_html and raw_content is not None:
+        raw_path = output.with_suffix(".response.bin")
+        write_bytes_atomic(raw_path, raw_content)
+        manifest.update(
+            raw_retained=True, raw_path=str(raw_path),
+            raw_sha256=hashlib.sha256(raw_content).hexdigest(),
+        )
+    metadata["content_artifacts"] = manifest
 
 
 def _apply_http_document(
@@ -281,6 +340,9 @@ def _apply_http_document(
     http_status: int,
     config: AppConfig,
     data_dir: Path,
+    *,
+    truncated: bool = False,
+    raw_content: bytes | None = None,
 ) -> bool:
     """处理：应用惰性 HTTP 正文，并判断浏览器回退是否仍有价值。
     输入：
@@ -312,6 +374,11 @@ def _apply_http_document(
         metadata["content_error"] = f"HTTP {http_status}"
         return False
 
+    metadata.pop("content_challenge", None)
+    metadata.pop("content_error", None)
+    metadata.pop("content_http_error", None)
+    metadata.setdefault("discovered_title", item.get("title"))
+
     title = _html_meta(
         soup,
         ['meta[property="og:title"]', 'meta[name="twitter:title"]'],
@@ -338,41 +405,36 @@ def _apply_http_document(
         soup,
         ['meta[property="og:image"]', 'meta[name="twitter:image"]'],
     )
-    _apply_image_candidates(item, image_candidates, final_url)
-
-    body, selector = _static_visible_text(soup, source.content_selectors)
-    if len(body) >= 1500:
-        status = ContentStatus.FULL_TEXT
-    elif len(body) >= 500:
-        status = ContentStatus.PARTIAL
-    else:
-        item["content_status"] = ContentStatus.METADATA_ONLY
-        item["content_characters"] = len(body)
-        metadata["content_selector"] = selector
-        return True
-    item["content_status"] = status
-    item["content_characters"] = len(body)
-    metadata["content_selector"] = selector
-    output = _content_output_path(
-        data_dir,
-        source.id,
-        item.get("item_id"),
-        config.timezone,
+    input_bytes = body_html.encode("utf-8") if raw_content is None else raw_content
+    document = extract_with_fallback(
+        soup, source.content_selectors, truncated=truncated,
+        expected_title=str(metadata.get("discovered_title") or ""),
+        fallback=config.collection.fallback_extractor,
     )
-    item["content_path"] = str(output)
-    save_markdown(output, item, body, now_iso(config.timezone))
-    return False
+    document.provenance = input_fingerprint(
+        input_bytes, "decoded_html_utf8" if raw_content is None else "http_response_body",
+        truncated,
+    )
+    _apply_image_candidates(
+        item, image_candidates, final_url,
+        details=article_image_candidates(document, str(item.get("title") or ""), final_url),
+    )
+    _save_document(item, document, source, config, data_dir, raw_content=input_bytes)
+    # 已明确截断的传输和订阅提示不会靠重开浏览器消除；其他正文缺口最多升级一次。
+    return document.status != ContentStatus.FULL_TEXT and not truncated and not (
+        document.quality.get("incomplete_marker") and document.status == ContentStatus.PARTIAL
+    )
 
 
 async def _read_bounded_html(
     response: httpx.Response,
     max_bytes: int = _MAX_CONTENT_BYTES,
-) -> bytes:
+) -> tuple[bytes, bool]:
     """处理：流式读取 HTTP 正文并在字节上限处停止。
     输入：
     - ``response``：已建立的 HTTP 流式响应；函数负责读取上限和错误语义。
     - ``max_bytes``：允许读取或下载的最大字节数；达到上限后停止或报错。
-    输出：受大小边界约束的字节内容，可直接写入文件或 HTTP 响应。
+    输出：受字节上限约束的正文和截断标记，防止截断响应被称为完整正文。
     """
     chunks: list[bytes] = []
     total = 0
@@ -382,9 +444,9 @@ async def _read_bounded_html(
             allowed = len(chunk) - (total - max_bytes)
             if allowed > 0:
                 chunks.append(chunk[:allowed])
-            break
+            return b"".join(chunks), True
         chunks.append(chunk)
-    return b"".join(chunks)
+    return b"".join(chunks), False
 
 
 async def _extract_http_one(
@@ -410,7 +472,7 @@ async def _extract_http_one(
         async with client.stream("GET", str(item["url"])) as response:
             # 外部响应始终只按不可信数据解析；不会执行页面脚本或其中的文字指令。
             content_type = response.headers.get("content-type", "").casefold()
-            if content_type and not any(
+            if response.status_code < 400 and content_type and not any(
                 marker in content_type
                 for marker in ("text/html", "application/xhtml+xml", "text/plain")
             ):
@@ -421,7 +483,7 @@ async def _extract_http_one(
                 )
                 metadata["content_acquisition"] = "http"
                 return False
-            content = await _read_bounded_html(response)
+            content, truncated = await _read_bounded_html(response)
             encoding = response.encoding or "utf-8"
             body_html = content.decode(encoding, errors="replace")
             return _apply_http_document(
@@ -432,6 +494,8 @@ async def _extract_http_one(
                 response.status_code,
                 config,
                 data_dir,
+                truncated=truncated,
+                raw_content=content,
             )
     except (httpx.HTTPError, UnicodeError) as exc:
         item["content_status"] = ContentStatus.FAILED
@@ -505,17 +569,12 @@ async def detect_challenge(page: Page, http_status: int | None) -> dict[str, Any
         title = (await page.title()).lower()
     with contextlib.suppress(Exception):
         body = (await page.locator("body").inner_text(timeout=3000)).lower()[:30000]
-    matched = next((text for text in CHALLENGE_TEXTS if text in title or text in body), None)
     iframe_count = 0
     with contextlib.suppress(Exception):
         iframe_count = await page.locator(
             'iframe[src*="captcha"], iframe[src*="challenge"], iframe[title*="challenge" i]'
         ).count()
-    return {
-        "required": http_status in {401, 403, 429} or matched is not None or iframe_count > 0,
-        "matched_text": matched,
-        "iframe_detected": iframe_count > 0,
-    }
+    return classify_access_text(http_status, title, body, iframe_detected=iframe_count > 0)
 
 
 def _ordered_targets(
@@ -578,13 +637,12 @@ async def _extract_one(
             timeout=config.browser.navigation_timeout_ms,
         )
         wait_ms = source.wait_ms or min(config.browser.default_wait_ms, 1000)
-        with contextlib.suppress(Exception):
-            await page.locator(",".join(source.content_selectors)).first.wait_for(
-                state="attached",
-                timeout=wait_ms,
-            )
         http_status = response.status if response else None
+        if http_status is None or http_status < 400:
+            await _wait_for_article_text(page, source.content_selectors, wait_ms)
         metadata["content_acquisition"] = "browser"
+        metadata["content_http_status"] = http_status
+        metadata["content_http_final_url"] = page.url
         challenge = await detect_challenge(page, http_status)
         if challenge["required"]:
             item["content_status"] = ContentStatus.VERIFICATION_REQUIRED
@@ -595,10 +653,10 @@ async def _extract_one(
             metadata["content_http_status"] = http_status
             metadata["content_error"] = f"HTTP {http_status}"
             return
-        with contextlib.suppress(Exception):
-            await page.locator(",".join(NOISE_SELECTORS)).evaluate_all(
-                "nodes => nodes.forEach(n => n.remove())"
-            )
+        metadata.pop("content_challenge", None)
+        metadata.pop("content_error", None)
+        metadata.pop("content_http_error", None)
+        metadata.setdefault("discovered_title", item.get("title"))
         title = await meta_content(
             page, ['meta[property="og:title"]', 'meta[name="twitter:title"]']
         )
@@ -624,33 +682,43 @@ async def _extract_one(
             page,
             ['meta[property="og:image"]', 'meta[name="twitter:image"]'],
         )
-        _apply_image_candidates(item, image_candidates, page.url)
-        body, selector = await extract_visible_text(page, source.content_selectors)
-        if len(body) >= 1500:
-            status = ContentStatus.FULL_TEXT
-        elif len(body) >= 500:
-            status = ContentStatus.PARTIAL
-        else:
-            status = ContentStatus.METADATA_ONLY
-        item["content_status"] = status
-        item["content_characters"] = len(body)
-        metadata["content_selector"] = selector
+        document = await _browser_document(
+            page, source.content_selectors,
+            expected_title=str(metadata.get("discovered_title") or ""),
+            fallback=config.collection.fallback_extractor,
+        )
+        _apply_image_candidates(
+            item, image_candidates, page.url,
+            details=article_image_candidates(document, str(item.get("title") or ""), page.url),
+        )
         metadata["content_http_status"] = http_status
-        if body:
-            output = _content_output_path(
-                data_dir,
-                source.id,
-                item.get("item_id"),
-                config.timezone,
-            )
-            item["content_path"] = str(output)
-            save_markdown(output, item, body, now_iso(config.timezone))
+        _save_document(item, document, source, config, data_dir)
     except Exception as exc:
         item["content_status"] = ContentStatus.FAILED
         metadata["content_error"] = f"{type(exc).__name__}: {exc}"
     finally:
         with contextlib.suppress(Exception):
             await page.close()
+
+
+async def _wait_for_article_text(page: Page, selectors: list[str], timeout_ms: int) -> None:
+    """处理：在配置时限内等待可见正文文字，而非仅等待空容器挂载。
+    输入：已加载页面、可信配置选择器和来源等待上限。
+    输出：不改变页面；超时仍交给抽取器记录不足，不点击或绕过访问限制。
+    """
+    with contextlib.suppress(Exception):
+        await page.wait_for_function(
+            """selectors => selectors.some(selector => {
+                try {
+                    return Array.from(document.querySelectorAll(selector)).some(node => {
+                        const text = (node.innerText || '').trim();
+                        return text.length >= 20;
+                    });
+                } catch { return false; }
+            })""",
+            arg=list(dict.fromkeys([*selectors, "article", "main"])),
+            timeout=max(1, timeout_ms),
+        )
 
 
 async def _run_parallel_extraction(
@@ -734,22 +802,10 @@ def _has_reusable_content(item: dict[str, Any], data_dir: Path) -> bool:
     - ``data_dir``：当前运行的唯一数据根；所有状态和版本化产物都必须位于其中。
     输出：布尔判断；True 表示满足处理说明中的条件，False 表示不满足且不产生该结果。
     """
-    if item.get("content_status") not in {
-        ContentStatus.FULL_TEXT,
-        ContentStatus.PARTIAL,
-    }:
-        return False
-    value = item.get("content_path")
-    if not value:
-        return False
-    path = Path(str(value))
-    candidate = path if path.is_absolute() else data_dir / path
-    try:
-        # 即使索引被篡改，也不允许把数据根之外的任意文件当作已缓存正文。
-        candidate.resolve().relative_to(data_dir.resolve())
-    except ValueError:
-        return False
-    return candidate.is_file()
+    return (
+        item.get("content_status") == ContentStatus.FULL_TEXT
+        and not content_gaps(item, data_dir)
+    )
 
 
 async def _extract_pipeline(
@@ -780,46 +836,126 @@ async def _extract_pipeline(
             metadata["content_acquisition"] = "cache"
     reusable_ids = {id(item) for item in reusable}
     pending = [item for item in targets if id(item) not in reusable_ids]
+    previous = {id(item): copy.deepcopy(item) for item in pending}
+    attempts: dict[int, list[dict[str, Any]]] = {id(item): [] for item in targets}
+    for item in pending:
+        _clear_content_attempt(item)
 
     http_started = time.perf_counter()
     # 先走无脚本 HTTP 快路径；只有失败或内容不足的条目才进入真实浏览器。
     browser_targets = (
         await _run_http_extraction(pending, config, data_dir) if pending else []
     )
+    for item in pending:
+        attempts[id(item)].append(_content_attempt(item, "http", data_dir))
+        _retain_better_content(item, previous[id(item)], data_dir)
     http_seconds = time.perf_counter() - http_started
     browser_started = time.perf_counter()
     if browser_targets:
-        await _extract_with_browser(
-            browser_targets,
-            config,
-            data_dir,
-            headed,
-            profile,
-            channel,
-        )
+        previous = {id(item): copy.deepcopy(item) for item in browser_targets}
+        for item in browser_targets:
+            _clear_content_attempt(item)
+        try:
+            await _extract_with_browser(
+                browser_targets, config, data_dir, headed, profile, channel,
+            )
+        except Exception as exc:
+            # 浏览器启动失败不得撤销 HTTP 已保存的证据；保留失败尝试并继续产生索引。
+            for item in browser_targets:
+                item["content_status"] = ContentStatus.FAILED
+                item.setdefault("metadata", {})["content_error"] = type(exc).__name__
+        for item in browser_targets:
+            attempts[id(item)].append(_content_attempt(item, "browser", data_dir))
+            _retain_better_content(item, previous[id(item)], data_dir)
     browser_seconds = time.perf_counter() - browser_started
+    for item in targets:
+        metadata = item.setdefault("metadata", {})
+        metadata["content_attempts"] = attempts[id(item)]
+        gaps = content_gaps(item, data_dir)
+        latest = attempts[id(item)][-1] if attempts[id(item)] else None
+        access_gaps = [gap for gap in (latest or {}).get("gaps", []) if gap in {
+            "rate_limited", "verification_required", "access_failed", "unsupported_content_type",
+        }]
+        unresolved = list(dict.fromkeys([*gaps, *access_gaps]))
+        metadata["content_completion"] = {
+            "status": "complete" if not unresolved else "with_gaps",
+            "unresolved": unresolved,
+            "stop_reason": (
+                "evidence_sufficient" if not unresolved else
+                access_gaps[0] if access_gaps else
+                "bounded_attempts_exhausted" if any(
+                    attempt["channel"] == "browser" for attempt in attempts[id(item)]
+                ) else "no_permitted_escalation"
+            ),
+            "claim_sufficiency": "not_assessed",
+        }
     return {
         "selected": len(targets),
         "cache_hits": len(reusable),
         "http_attempted": len(pending),
         "http_successful": sum(
-            item.get("metadata", {}).get("content_acquisition") == "http"
-            and item.get("content_status")
-            in {ContentStatus.FULL_TEXT, ContentStatus.PARTIAL}
-            for item in pending
-            if isinstance(item.get("metadata"), dict)
+            attempt["channel"] == "http" and attempt["status"] in {"full_text", "partial"}
+            for records in attempts.values() for attempt in records
         ),
         "browser_fallback": len(browser_targets),
+        "complete": sum(
+            item["metadata"]["content_completion"]["status"] == "complete" for item in targets
+        ),
+        "with_gaps": sum(
+            item["metadata"]["content_completion"]["status"] == "with_gaps" for item in targets
+        ),
         "successful": sum(
-            item.get("content_status")
-            in {ContentStatus.FULL_TEXT, ContentStatus.PARTIAL}
-            and bool(item.get("content_path"))
-            for item in targets
+            has_local_content(item, data_dir) for item in targets
         ),
         "http_seconds": round(http_seconds, 3),
         "browser_seconds": round(browser_seconds, 3),
         "total_seconds": round(time.perf_counter() - started, 3),
     }
+
+
+def _clear_content_attempt(item: dict[str, Any]) -> None:
+    """处理：清除上次采集字段，避免新访问失败被错误绑定到旧输入。
+    输入：已由流水线另存快照的当前条目。
+    输出：保留发现身份与元数据，正文尝试从未知状态重新开始。
+    """
+    item["content_status"] = ContentStatus.NOT_FETCHED
+    item.pop("content_path", None)
+    item.pop("content_characters", None)
+    metadata = item.setdefault("metadata", {})
+    for key in list(metadata):
+        if key.startswith("content_"):
+            metadata.pop(key)
+
+
+def _content_attempt(item: dict[str, Any], channel: str, data_dir: Path) -> dict[str, Any]:
+    """处理：在回退覆盖条目前记录实际尝试的状态与缺口。
+    输入：单次 HTTP 或浏览器处理后的条目、通道和当前数据根。
+    输出：不包含页面正文的尝试记录，使保留旧证据时仍能看见新访问失败。
+    """
+    metadata = item.get("metadata") or {}
+    return {
+        "channel": channel, "status": item.get("content_status"),
+        "http_status": metadata.get("content_http_status"),
+        "gaps": content_gaps(item, data_dir),
+        "input": metadata.get("content_input"),
+        "content_path": item.get("content_path"),
+        "blocks_path": metadata.get("content_blocks_path"),
+    }
+
+
+def _retain_better_content(
+    item: dict[str, Any], previous: dict[str, Any], data_dir: Path,
+) -> None:
+    """处理：回退失败或未减少缺口时恢复已经保存的正文证据。
+    输入：当前尝试与此前条目的独立快照；比较文件有效性和显式结构缺口。
+    输出：就地保留较可用的条目，失败尝试由流水线另行记录。
+    """
+    if has_local_content(previous, data_dir) and (
+        not has_local_content(item, data_dir)
+        or len(content_gaps(item, data_dir)) >= len(content_gaps(previous, data_dir))
+    ):
+        item.clear()
+        item.update(previous)
 
 
 def extract_content(

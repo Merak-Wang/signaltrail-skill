@@ -24,6 +24,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pypdf>=5,<7", "pytest>=8.3,<9", "ruff>=0.9,<1"]
+extraction = ["trafilatura>=2.0,<3"]
 
 [project.scripts]
 signaltrail = "daily_intelligence.cli:main"

@@ -14,6 +14,27 @@ from daily_intelligence.workflow import (
 )
 
 
+def test_explainer_cli_dispatches_explicit_parent_and_preview_flag(
+    cli_data_root, monkeypatch, capsys
+):
+    result = cli_data_root / "narratives/session/packet-r1.json"
+    prepare = Mock(return_value=result)
+    monkeypatch.setattr("daily_intelligence.commands.explainers.prepare_explainer", prepare)
+    run = cli_data_root / "run.json"
+    assert main(["explainer", "prepare", "--run", str(run), "--experimental"]) == 0
+    prepare.assert_called_once_with(run, cli_data_root, experimental=True)
+    assert json.loads(capsys.readouterr().out)["artifact_path"] == str(result)
+
+
+def test_explainer_cli_reports_rejected_parent_without_changing_report(
+    cli_data_root, monkeypatch, capsys
+):
+    prepare = Mock(side_effect=ValueError("Parent is not completed"))
+    monkeypatch.setattr("daily_intelligence.commands.explainers.prepare_explainer", prepare)
+    assert main(["explainer", "prepare", "--run", str(cli_data_root / "run.json")]) == 1
+    assert json.loads(capsys.readouterr().out)["status"] == "rejected"
+
+
 @pytest.fixture
 def cli_data_root(monkeypatch, tmp_path):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))

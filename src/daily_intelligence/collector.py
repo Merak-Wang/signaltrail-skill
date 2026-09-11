@@ -442,6 +442,10 @@ def collect_sources(
                 "tier": source.tier,
                 "bundle": source.bundle,
                 "item_order": source.item_order,
+                "language": source.language,
+                "region": source.region,
+                "module": source.module,
+                "category": source.category,
             }
             for source in selected
         },

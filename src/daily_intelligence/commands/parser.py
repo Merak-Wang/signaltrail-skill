@@ -4,6 +4,46 @@ import argparse
 from pathlib import Path
 
 
+def _add_explainer_parser(sub: argparse._SubParsersAction) -> None:
+    """处理：注册日报子产物的显式准备、写作、审核与预览命令。
+    输入：主命令树；各阶段仅接受自己依赖的确切文件路径。
+    输出：添加 explainer 子命令，不启动模型或改变日报发布流程。
+    """
+    explainer = sub.add_parser("explainer", help="Build and review report-derived explainers")
+    stages = explainer.add_subparsers(dest="action", required=True)
+    prepare = stages.add_parser("prepare", help="Freeze bounded evidence from a saved edition")
+    prepare.add_argument("--run", type=Path, required=True)
+    prepare.add_argument("--experimental", action="store_true")
+    ledger = stages.add_parser("ledger", help="Validate a shared claim ledger")
+    ledger.add_argument("--packet", type=Path, required=True)
+    ledger.add_argument("--input", type=Path, required=True)
+    script = stages.add_parser("script", help="Submit one language script")
+    script.add_argument("--ledger", type=Path, required=True)
+    script.add_argument("--input", type=Path, required=True)
+    script.add_argument("--author-context", required=True)
+    review_packet = stages.add_parser("review-packet", help="Prepare an independent review")
+    review_packet.add_argument("--script", type=Path, required=True)
+    for name in ("review", "bilingual"):
+        review = stages.add_parser(name, help=f"Submit {name} findings")
+        review.add_argument("--packet", type=Path, required=True)
+        review.add_argument("--input", type=Path, required=True)
+        review.add_argument("--reviewer-context", required=True)
+    bilingual = stages.add_parser("bilingual-packet", help="Bind both language reviews")
+    bilingual.add_argument("--zh-review", type=Path, required=True)
+    bilingual.add_argument("--en-review", type=Path, required=True)
+    story = stages.add_parser("story", help="Compose verbatim illustrated cards")
+    story.add_argument("--script", type=Path, action="append", required=True)
+    story.add_argument("--bilingual", type=Path)
+    render = stages.add_parser("render", help="Render the exact story revision")
+    render.add_argument("--story", type=Path, required=True)
+    render.add_argument("--mode", choices=["preview", "current"], default="preview")
+    visual = stages.add_parser("visual-review", help="Bind actual desktop/mobile review")
+    visual.add_argument("--projection", type=Path, required=True)
+    visual.add_argument("--input", type=Path, required=True)
+    status = stages.add_parser("status", help="Show coverage, freshness and usage limitations")
+    status.add_argument("--script", type=Path, required=True)
+
+
 def _common_parser() -> argparse.ArgumentParser:
     """处理：创建所有 CLI 子命令共享的参数解析器。
     输入：
@@ -25,6 +65,8 @@ def build_parser() -> argparse.ArgumentParser:
     """
     parser = _common_parser()
     sub = parser.add_subparsers(dest="command", required=True)
+
+    _add_explainer_parser(sub)
 
     data_root = sub.add_parser(
         "data-root",

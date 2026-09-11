@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import math
+import re
 from collections.abc import Iterable
 from urllib.parse import unquote, urljoin, urlsplit
 
@@ -75,15 +77,37 @@ def normalize_image_candidates(
 
 
 def srcset_candidates(value: object) -> list[str]:
-    """处理：按从最大或最后声明到最小或最先声明的顺序返回 srcset 地址。
-    输入：
-    - ``value``：待解析或规范化的单个输入值；非法值按函数契约返回空值或报错。
-    输出：“按从最大或最后声明到最小或最先声明的顺序返回 srcset 地址”得到的字符串列表；
-      顺序保持确定并可供下一步骤逐项处理。
+    """处理：解析响应式图片描述符，在同一单位内优先返回较大图片。
+    输入：页面或 Feed 中不可信的 srcset 属性；无描述符按 1x 处理。
+    输出：稳定去重的地址列表；非法描述符被丢弃，混用 w/x 时保持组间声明顺序。
     """
-    entries = []
-    for entry in str(value or "").split(","):
-        candidate = entry.strip().split()
-        if candidate:
-            entries.append(candidate[0])
-    return list(reversed(entries))
+    groups: dict[str, list[tuple[float, str]]] = {}
+    # URL 本身可能含逗号；先读到空白，再解析描述符，避免拆坏 CDN 查询或 data URL。
+    remaining = str(value or "")
+    while remaining := remaining.lstrip(" \t\n\r\f,"):
+        match = re.match(r"[^\s]+", remaining)
+        assert match is not None
+        token = match.group()
+        remaining = remaining[match.end():]
+        url = token.rstrip(",")
+        descriptors: list[str] = []
+        if not token.endswith(","):
+            descriptor_text, _separator, remaining = remaining.partition(",")
+            descriptors = descriptor_text.split()
+        if not descriptors:
+            unit, size = "x", 1.0
+        elif len(descriptors) == 1 and re.fullmatch(r"[0-9]+w", descriptors[0]):
+            unit, size = "w", float(descriptors[0][:-1])
+        elif len(descriptors) == 1 and re.fullmatch(
+            r"(?:[0-9]+(?:\.[0-9]+)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?x", descriptors[0]
+        ):
+            unit, size = "x", float(descriptors[0][:-1])
+        else:
+            continue
+        if size > 0 and math.isfinite(size):
+            groups.setdefault(unit, []).append((size, url))
+    return list(dict.fromkeys(
+        url
+        for entries in groups.values()
+        for _size, url in sorted(entries, key=lambda entry: -entry[0])
+    ))

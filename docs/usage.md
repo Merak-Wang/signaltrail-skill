@@ -99,6 +99,12 @@ The workflow also writes a portable desktop HTML copy with available validated i
 It returns HTML first, then finishes PDF, requested Notion delivery, and evaluation in a retryable
 tail. The default PDF soft size budget is 50 MiB; exceeding it records a warning.
 
+The HTML reader uses a three-column masthead with the report date, edition, and recorded
+generation time. White pages, black text, and red source rules frame a continuous news list.
+The original floating directory retains its expand/collapse and scroll tracking behavior;
+news order, bilingual headlines, image dimensions, and summary placement are unchanged.
+Search, archive/PDF links, and the sources/status entry remain available without reading-mode tabs.
+
 Read the run manifest before retrying. Use its `tail.command` for pending delivery work.
 Never edit status JSON or delete a lock while its process is active. Detailed stage recovery
 is in the [runbook](../references/runbook.md).

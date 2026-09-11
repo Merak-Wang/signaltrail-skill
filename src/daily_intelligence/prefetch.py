@@ -59,7 +59,7 @@ def html_index_rows(html: str) -> tuple[str, list[dict[str, Any]]]:
         image_candidates: list[str] = []
         seen_images: set[str] = set()
         for image in images:
-            raw_candidates = [
+            raw_candidates = srcset_candidates(image.get("srcset")) + [
                 str(image.get(attribute) or "")
                 for attribute in (
                     "src",
@@ -68,7 +68,6 @@ def html_index_rows(html: str) -> tuple[str, list[dict[str, Any]]]:
                     "data-lazy-src",
                 )
             ]
-            raw_candidates.extend(srcset_candidates(image.get("srcset")))
             for candidate in raw_candidates:
                 candidate = candidate.strip()
                 if (

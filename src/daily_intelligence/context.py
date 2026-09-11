@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any
 
 from .authoring import _brief_output_schema, batch_result_paths
+from .collection_diagnostics import enrichment_plan, source_coverage
 from .config import AppConfig
 from .localization import (
     localized,
@@ -51,6 +52,7 @@ _BRIEF_PACKET_CANDIDATE_FIELDS = (
     "category",
     "content_status",
     "content_path",
+    "content_observations",
     "source_candidate_rank",
     "source_rank",
     "source_language",
@@ -294,9 +296,35 @@ def _compact_candidates(
                     ),
                     "previously_reported": item.get("item_id") in reported_item_ids,
                     "semantic_fingerprint": semantic_fingerprint(item),
+                    **_content_observations(item),
                 }
             )
     return compact
+
+
+def _content_observations(item: dict[str, Any]) -> dict[str, Any]:
+    """处理：将正文质量和停止原因压缩为写作可见的证据限制。
+    输入：规范条目的采集元数据；忽略原始响应、候选列表及任意额外字段。
+    输出：可进入有界作者包的观测摘要，旧版无质量记录时不虚构检查结果。
+    """
+    metadata = item.get("metadata") or {}
+    quality = metadata.get("content_quality") or {}
+    completion = metadata.get("content_completion") or {}
+    if not quality and not completion:
+        return {}
+    return {"content_observations": {
+        "quality": {key: quality.get(key) for key in (
+            "extraction_status", "extractor", "region", "title_overlap",
+            "response_truncated", "incomplete_marker", "key_fields_verified", "media_verified",
+            "fact_verification",
+        )},
+        "numeric_tables_without_headers": (
+            len(quality["numeric_tables_without_headers"])
+            if "numeric_tables_without_headers" in quality else None
+        ),
+        "unresolved": completion.get("unresolved", []),
+        "stop_reason": completion.get("stop_reason"),
+    }}
 
 
 def _source_limit(
@@ -744,6 +772,8 @@ def build_context(
         target_language,
     )
 
+    candidate_ids = {candidate["item_id"] for candidate in candidates}
+
     bundle = {
         "schema_version": "2.0",
         "generated_at": now_iso(config.timezone),
@@ -774,6 +804,11 @@ def build_context(
             for source in index.get("sources", [])
         ],
         "candidate_items": candidates,
+        "collection_coverage": source_coverage(index, config.sources),
+        "enrichment_plan": enrichment_plan(
+            [item for item in index.get("items", []) if item.get("item_id") in candidate_ids],
+            config.sources, data_dir, config.budget.max_fulltext_per_run,
+        ),
         "reusable_briefs": list(reusable_briefs.values()),
         "semantic_cache_metrics": cache_metrics,
         "brief_authoring_batches": brief_batches,

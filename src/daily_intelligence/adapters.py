@@ -10,7 +10,7 @@ from urllib.parse import urljoin, urlsplit
 from playwright.sync_api import Page
 
 from .config import SourceConfig
-from .image_policy import normalize_image_candidates
+from .image_policy import normalize_image_candidates, srcset_candidates
 from .models import ArticleItem
 from .utils import canonicalize_url, clean_title, item_id, url_for_source_filter
 
@@ -173,25 +173,20 @@ def collect_browser_index(
                 a.innerText || ''
             ).trim(),
             href: a.href || '',
-            image_candidates: (() => {
+            image_sources: (() => {
                 const card = a.closest('article, li, [class*="card"], [class*="story"]');
                 const root = card || a;
                 const images = Array.from(root.querySelectorAll('img'));
-                return Array.from(new Set(images.flatMap(image => {
-                    const srcset = (image.getAttribute('srcset') || '')
-                        .split(',')
-                        .map(value => value.trim().split(/\\s+/)[0])
-                        .filter(Boolean)
-                        .reverse();
-                    return [
-                        image.currentSrc,
-                        image.getAttribute('src'),
-                        image.getAttribute('data-src'),
-                        image.getAttribute('data-original'),
-                        image.getAttribute('data-lazy-src'),
-                        ...srcset
-                    ].filter(Boolean);
-                })));
+                return images.map(image => ({
+                    srcset: image.getAttribute('srcset') || '',
+                    current_src: image.currentSrc || '',
+                    natural_width: image.naturalWidth || null,
+                    natural_height: image.naturalHeight || null,
+                    src: image.getAttribute('src') || '',
+                    data_src: image.getAttribute('data-src') || '',
+                    data_original: image.getAttribute('data-original') || '',
+                    data_lazy_src: image.getAttribute('data-lazy-src') || ''
+                }));
             })(),
             context: (() => {
                 const card = a.closest('article, li, [class*="card"], [class*="story"]');
@@ -235,6 +230,22 @@ def browser_items_from_rows(
         raw_candidates = row.get("image_candidates")
         if not isinstance(raw_candidates, list):
             raw_candidates = []
+        image_sources = row.get("image_sources")
+        if isinstance(image_sources, list):
+            raw_candidates = list(raw_candidates)
+            for image in image_sources:
+                if isinstance(image, dict):
+                    raw_candidates.extend([
+                        *srcset_candidates(image.get("srcset")),
+                        image.get("current_src"), image.get("data_original"),
+                        image.get("data_src"), image.get("data_lazy_src"), image.get("src"),
+                    ])
+            article.metadata["image_source_observations"] = [
+                {key: image.get(key) for key in (
+                    "current_src", "natural_width", "natural_height", "srcset",
+                )}
+                for image in image_sources if isinstance(image, dict)
+            ]
         image_candidates = normalize_image_candidates(
             [*raw_candidates, row.get("image_url")],
             base_url,
