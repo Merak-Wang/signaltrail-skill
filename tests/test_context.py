@@ -1,9 +1,83 @@
 import json
+from hashlib import sha256
 from pathlib import Path
 
+import pytest
+
+import daily_intelligence.context as context_module
 from daily_intelligence.config import load_config
 from daily_intelligence.context import _continuity_entry, build_context
 from daily_intelligence.utils import read_json, write_json
+
+
+def test_coordinator_bounds_history_while_authority_keeps_complete_state(tmp_path):
+    for name, key in (("theses", "thesis_id"), ("watchlist", "watch_id")):
+        write_json(tmp_path / "state" / f"{name}.json", {"items": [
+            {key: f"{name}-{n}", "domain": "geopolitics", "status": "active",
+             "claim": "有证据支持但仍需后续核验的历史判断。" * 20,
+             "signal": "下一步需要验证的公开信号。" * 20}
+            for n in range(300)
+        ]})
+    index_path = write_json(tmp_path / "indexes" / "2026-09-12" / "morning-r1.json", {
+        "date": "2026-09-12", "edition": "morning", "items": [],
+    })
+    context_path = build_context(index_path, load_config(), tmp_path, "morning")
+    authority = read_json(context_path)
+    coordinator_path = Path(authority["coordinator_path"])
+    coordinator = read_json(coordinator_path)
+    assert len(authority["active_theses"]) == 300
+    assert len(authority["active_watchlist"]) == 300
+    assert len(coordinator["active_theses"]) <= 12
+    assert len(coordinator["active_watchlist"]) <= 30
+    assert coordinator_path.stat().st_size < context_path.stat().st_size / 3
+    assert coordinator["authoritative_context_sha256"] == sha256(
+        context_path.read_bytes()
+    ).hexdigest()
+    assert coordinator["brief_plan"] == authority["brief_plan"]
+    assert coordinator["candidate_items"] == authority["candidate_items"]
+    assert "reusable_briefs" not in coordinator
+
+
+def test_enriched_rank_below_prefix_is_retained_without_changing_top_plan(tmp_path):
+    items = [{
+        "item_id": f"bbc-{n}", "source_id": "bbc_world", "title": f"Public headline {n}",
+        "url": f"https://www.bbc.com/news/articles/{n}", "metadata": {"source_rank": n},
+        "content_status": "full_text" if n == 29 else "not_fetched",
+    } for n in range(1, 36)]
+    index_path = write_json(tmp_path / "indexes" / "2026-09-12" / "morning-r1.json", {
+        "date": "2026-09-12", "edition": "morning", "items": items,
+    })
+    context = read_json(build_context(index_path, load_config(), tmp_path, "morning"))
+    ids = [item["item_id"] for item in context["candidate_items"]]
+    assert ids[-1] == "bbc-29"
+    assert len(ids) == 26
+    assert context["brief_plan"][0]["default_item_ids"] == [f"bbc-{n}" for n in range(1, 16)]
+
+
+def test_context_recovery_skips_revision_with_orphaned_immutable_packet(monkeypatch, tmp_path):
+    index_path = write_json(tmp_path / "indexes" / "2026-09-12" / "morning-r1.json", {
+        "date": "2026-09-12", "edition": "morning", "items": [{
+            "item_id": "bbc-1", "source_id": "bbc_world", "title": "Public source headline",
+            "url": "https://www.bbc.com/news/articles/one", "metadata": {},
+        }],
+    })
+    immutable = context_module.write_immutable_json
+
+    def interrupt(path, payload):
+        result = immutable(path, payload)
+        if "brief-batch" in path.name:
+            raise OSError("simulated context interruption")
+        return result
+
+    monkeypatch.setattr(context_module, "write_immutable_json", interrupt)
+    with pytest.raises(OSError, match="context interruption"):
+        build_context(index_path, load_config(), tmp_path, "morning")
+    orphan = next((tmp_path / "context" / "2026-09-12").glob("*-brief-batch-*.json"))
+    before = orphan.read_bytes()
+    monkeypatch.setattr(context_module, "write_immutable_json", immutable)
+    output = build_context(index_path, load_config(), tmp_path, "morning")
+    assert output.name == "morning-r2.json"
+    assert orphan.read_bytes() == before
 
 
 def test_evening_context_loads_morning_and_continuity_state(tmp_path: Path):

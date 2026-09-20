@@ -47,6 +47,7 @@ Schema 修复说明是英文历史兼容记录。按任务读取需要的那一�
 已完成的运行记录解释当时的决定和测量结果，属于历史资料，不作为当前运行指令。
 其原验证日期不因时间推移失效。
 
+- [2026-09-12 运行成本优化](exec-plans/completed-2026-09-12-runtime-cost-optimization.md)
 - [2026-09-11 报告 A 代码审阅](exec-plans/completed-2026-09-11-report-a-code-review.md)
 - [2026-08-25 晨报验收](exec-plans/completed-2026-08-25-morning-report-acceptance.md)
 - [2026-08-23 用量与优化实施](exec-plans/completed-2026-08-23-llm-usage-optimization-implementation.md)

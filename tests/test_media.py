@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from copy import deepcopy
 from io import BytesIO
 from pathlib import Path
 from typing import Any
@@ -46,6 +47,60 @@ def _png_bytes() -> bytes:
     )
     image.save(output, format="PNG")
     return output.getvalue()
+
+
+def test_image_windows_reuse_one_pool_and_cache_each_complete_batch(monkeypatch, tmp_path):
+    report = _report()
+    template = report["sections"][0]["briefs"][0]
+    briefs = [{**deepcopy(template), "item_id": f"image-{n}"} for n in range(36)]
+    report["sections"][0]["briefs"] = briefs
+    index = {"items": [
+        {"item_id": brief["item_id"], "image_url": f"https://cdn.example/{n}.png"}
+        for n, brief in enumerate(briefs)
+    ]}
+    content = _png_bytes()
+    stored = _image_record(content)
+    image_path = tmp_path / stored["local_path"]
+    image_path.parent.mkdir(parents=True)
+    image_path.write_bytes(content)
+    clients = []
+    batches = []
+    checkpoints = []
+    original_batch = media_module._download_image_batch
+    original_checkpoint = media_module._write_image_cache
+
+    def download(url, _data_dir, _config, *, client, **_kwargs):
+        clients.append(client)
+        fields = {key: value for key, value in stored.items() if key not in {"caption", "credit"}}
+        return DownloadedImage(**{**fields, "source_url": url, "resolved_url": url}, reused=False)
+
+    def batch(rows, *args, **kwargs):
+        batches.append(len(rows))
+        return original_batch(rows, *args, **kwargs)
+
+    def checkpoint(*args):
+        checkpoints.append(1)
+        return original_checkpoint(*args)
+
+    monkeypatch.setattr(media_module, "download_image", download)
+    monkeypatch.setattr(media_module, "_download_image_batch", batch)
+    monkeypatch.setattr(media_module, "_write_image_cache", checkpoint)
+    config = MediaConfig(global_concurrency=12, max_images_per_report=36)
+    assert materialize_report_images(report, index, tmp_path, config, downloader=download) == []
+    assert batches == [12, 12, 12]
+    assert len(checkpoints) == 3
+    assert len({id(client) for client in clients}) == 1
+    assert all(client.is_closed for client in clients)
+    assert [brief["item_id"] for brief in briefs] == [f"image-{n}" for n in range(36)]
+    assert report["media_metrics"]["attached"] == 36
+
+    def forbid_client(**_kwargs):
+        raise AssertionError("A warm cache must not create a network client")
+
+    monkeypatch.setattr(media_module.httpx, "Client", forbid_client)
+    assert materialize_report_images(report, index, tmp_path, config, downloader=download) == []
+    assert len(clients) == 36
+    assert batches == [12, 12, 12]
 
 
 def _image_record(content: bytes, source_url: str = "https://cdn.example/story.png") -> dict:
@@ -420,8 +475,9 @@ def test_materialize_report_images_tries_later_candidates_after_a_failure(
     }
 
 
+@pytest.mark.parametrize("caption", ["The source's caption for the second photo.", ""])
 def test_materialize_report_images_uses_fallback_for_the_same_story(
-    tmp_path: Path,
+    tmp_path: Path, caption: str,
 ):
     report = _report()
     index = {
@@ -435,7 +491,11 @@ def test_materialize_report_images_uses_fallback_for_the_same_story(
                     "image_candidates": [
                         "https://cdn.example/broken.png",
                         "https://cdn.example/working.png",
-                    ]
+                    ],
+                    "image_candidate_details": [
+                        {"url": "https://cdn.example/broken.png", "caption": "First photo."},
+                        {"url": "https://cdn.example/working.png", "caption": caption},
+                    ],
                 },
             }
         ]
@@ -478,6 +538,7 @@ def test_materialize_report_images_uses_fallback_for_the_same_story(
         == "https://cdn.example/working.png"
     )
     assert report["media_metrics"]["failed"] == 0
+    assert report["sections"][0]["briefs"][0]["image"]["caption"] == caption
 
 
 def test_materialize_report_images_reuses_persistent_url_cache_without_network(
@@ -532,6 +593,13 @@ def test_materialize_report_images_reuses_persistent_url_cache_without_network(
     assert warnings == []
     assert report["sections"][0]["briefs"][0]["image"]["sha256"] == stored["sha256"]
     assert report["media_metrics"]["reused_files"] == 1
+    assert report["sections"][0]["briefs"][0]["image"]["caption"] == ""
+
+    index["items"][0]["metadata"] = {
+        "image_candidate_details": [{"url": source_url, "caption": "New caption from the site."}]
+    }
+    materialize_report_images(report, index, tmp_path, MediaConfig())
+    assert report["sections"][0]["briefs"][0]["image"]["caption"] == "New caption from the site."
 
 
 def test_image_cache_discards_entries_from_pre_quality_schema(tmp_path: Path):
@@ -634,6 +702,24 @@ def test_materialized_image_matches_the_report_schema(tmp_path: Path):
     schema = read_json(Path(__file__).resolve().parents[1] / "schemas" / "report.schema.json")
 
     jsonschema.Draft202012Validator(schema).validate(report)
+    assert report["sections"][0]["briefs"][0]["image"]["caption"] == ""
+
+
+def test_empty_caption_stays_empty_in_reading_projections():
+    image = _image_record(_png_bytes())
+    image["caption"] = ""
+    report = _report(image)
+
+    markdown = render_report_markdown(report, media_path_prefix="../..")
+    html = render_report_html(report)
+    blocks = report_to_blocks(report)
+
+    assert f"![](../../{image['local_path']})" in markdown
+    assert 'alt=""' in html
+    assert "<figcaption>Example News</figcaption>" in html
+    story = next(block for block in blocks if block["type"] == "numbered_list_item")
+    image_block = story["numbered_list_item"]["children"][0]["image"]
+    assert image_block["caption"][0]["text"]["content"] == "Example News"
 
 
 def test_local_and_notion_projections_render_a_vertical_uploaded_image_stream():

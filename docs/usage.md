@@ -1,6 +1,6 @@
 # Usage
 
-**Status:** Verified · **Owner:** Repository maintainers · **Last verified:** 2026-09-08
+**Status:** Verified · **Owner:** Repository maintainers · **Last verified:** 2026-09-20
 
 Use this guide after the [quick start](../README.en.md). It covers local configuration,
 host setup, and where to find a finished report. [中文](zh-CN/usage.md)
@@ -98,6 +98,10 @@ automatic evaluator scheduling must dispatch the dossier itself and call `finali
 The workflow also writes a portable desktop HTML copy with available validated images embedded.
 It returns HTML first, then finishes PDF, requested Notion delivery, and evaluation in a retryable
 tail. The default PDF soft size budget is 50 MiB; exceeding it records a warning.
+
+Images retain the news site's caption in its original language. The report's `image.caption`
+is an empty string when no caption is available; headlines, alt text, and generated descriptions
+are never used as substitutes. Image credits remain separate from captions.
 
 The HTML reader uses a three-column masthead with the report date, edition, and recorded
 generation time. White pages, black text, and red source rules frame a continuous news list.

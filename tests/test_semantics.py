@@ -1,3 +1,5 @@
+from copy import deepcopy
+from hashlib import sha256
 from pathlib import Path
 
 import pytest
@@ -14,6 +16,58 @@ from daily_intelligence.semantics import (
     update_semantic_cache_from_report,
 )
 from daily_intelligence.utils import read_json, write_json
+
+
+def test_semantic_identity_reuses_same_evidence_across_storage_paths():
+    original = _item()
+    original.update(content_status="full_text", content_path="content/first.md")
+    original["metadata"]["content_text_sha256"] = sha256(b"bounded evidence").hexdigest()
+    relocated = deepcopy(original)
+    relocated["content_path"] = "content/second.md"
+    assert semantic_fingerprint(original) == semantic_fingerprint(relocated)
+    relocated["metadata"]["content_text_sha256"] = sha256(b"new evidence").hexdigest()
+    assert semantic_fingerprint(original) != semantic_fingerprint(relocated)
+    for item in (original, relocated):
+        item["metadata"].pop("content_text_sha256")
+    assert semantic_fingerprint(original) != semantic_fingerprint(relocated)
+
+
+def test_compact_context_keeps_content_digest_and_cache_identity(tmp_path):
+    item = _item()
+    item["metadata"]["content_text_sha256"] = sha256(b"article text").hexdigest()
+    index_path = write_json(tmp_path / "indexes" / "2026-09-12" / "morning-r1.json", {
+        "date": "2026-09-12", "edition": "morning", "items": [item],
+    })
+    context = read_json(build_context(index_path, load_config(), tmp_path, "morning"))
+    candidate = context["candidate_items"][0]
+    assert candidate["semantic_fingerprint"] == semantic_fingerprint(item)
+    assert semantic_fingerprint(candidate) == semantic_fingerprint(item)
+
+
+def test_approved_semantics_skip_model_work_after_body_path_moves(tmp_path):
+    item = _item()
+    item.update(content_status="full_text", content_path=str(tmp_path / "content" / "first.md"))
+    item["metadata"]["content_text_sha256"] = sha256(b"unchanged article").hexdigest()
+    report_id = "daily-relocated-evidence"
+    update_semantic_cache_from_report({
+        "report_id": report_id, "generated_at": "2026-09-12T06:00:00+08:00",
+        "sections": [{"briefs": [_brief()]}],
+    }, {"items": [item]}, tmp_path)
+    assert reusable_semantic_brief(item, load_semantic_cache(tmp_path)) is None
+    _approve(report_id, tmp_path)
+    item["content_path"] = str(tmp_path / "content" / "second.md")
+    index_path = write_json(tmp_path / "indexes" / "2026-09-12" / "evening-r1.json", {
+        "date": "2026-09-12", "edition": "evening", "items": [item],
+    })
+    context = read_json(build_context(index_path, load_config(), tmp_path, "evening"))
+    assert context["semantic_cache_metrics"]["approved_and_reused"] == 1
+    assert context["brief_authoring_batches"] == []
+    assert context["reusable_briefs"][0]["tldr"] == _brief()["tldr"]
+    projected = read_json(Path(context["coordinator_path"]))
+    assert projected["reusable_brief_count"] == 1
+    assert "reusable_briefs" not in projected
+    assert "semantic_fingerprint" not in projected["candidate_items"][0]
+    assert "content_text_sha256" not in projected["candidate_items"][0]
 
 
 def _item(description: str = "公开摘要") -> dict:

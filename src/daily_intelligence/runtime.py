@@ -53,6 +53,7 @@ def resolved_data_root_hint(path: Path) -> str:
         "indexes",
         "context",
         "content",
+        "content-checkpoints",
         "reports",
         "evaluations",
         "state",
@@ -88,6 +89,7 @@ def validate_run_data_root(run: dict[str, Any], run_path: Path, data_dir: Path) 
         for key in (
             "index_path",
             "context_path",
+            "coordinator_path",
             "json_path",
             "markdown_path",
             "html_path",

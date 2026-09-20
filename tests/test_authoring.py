@@ -25,9 +25,64 @@ from daily_intelligence.workflow import (
     accept_authoring_metrics,
     assemble_authoring,
     begin_authoring,
+    enrich_edition,
     get_authoring_status,
     prepare_authoring_analysis,
 )
+
+
+@pytest.mark.parametrize("phase", ["begin", "submit", "recover"])
+def test_authoring_rejects_packet_replacement_at_each_acceptance_boundary(tmp_path, phase):
+    data_dir, run_path = _authoring_run(tmp_path)
+    context = read_json(Path(read_json(run_path)["artifacts"]["context_path"]))
+    batch = context["brief_authoring_batches"][0]
+    packet_path = Path(batch["packet_path"])
+    packet = read_json(packet_path)
+    if phase != "begin":
+        begin_authoring(run_path, data_dir)
+        session = read_json(Path(read_json(run_path)["artifacts"]["authoring"]["session_path"]))
+        result_path = Path(session["batches"][0]["draft_result_path"])
+        write_json(result_path, _valid_batch_payload(packet))
+    packet["candidates"][0]["description"] = "替换后的不同事实"
+    write_json(packet_path, packet)
+    with pytest.raises(RuntimeError, match="packet changed after binding"):
+        if phase == "begin":
+            begin_authoring(run_path, data_dir)
+        elif phase == "submit":
+            accept_authoring_batch(run_path, batch["batch_id"], result_path, data_dir)
+        else:
+            prepare_authoring_analysis(run_path, data_dir)
+
+
+def test_analysis_packet_is_idempotent_and_bound_to_session(tmp_path):
+    data_dir, run_path = _authoring_run(tmp_path)
+    begin_authoring(run_path, data_dir)
+    session_path = Path(read_json(run_path)["artifacts"]["authoring"]["session_path"])
+    session = read_json(session_path)
+    for batch in session["batches"]:
+        write_json(
+            Path(batch["draft_result_path"]),
+            _valid_batch_payload(read_json(Path(batch["packet_path"]))),
+        )
+    prepare_authoring_analysis(run_path, data_dir)
+    prepared = read_json(session_path)
+    packet_path = Path(prepared["paths"]["analysis_packet"])
+    before = packet_path.read_bytes()
+    prepare_authoring_analysis(run_path, data_dir)
+    assert packet_path.read_bytes() == before
+    assert read_json(session_path)["analysis_started_at"] == prepared["analysis_started_at"]
+    packet_path.write_bytes(before + b" ")
+    with pytest.raises(RuntimeError, match="Analysis input changed after dispatch"):
+        prepare_authoring_analysis(run_path, data_dir)
+
+
+def test_enrichment_cannot_replace_dispatched_authoring_context(tmp_path):
+    data_dir, run_path = _authoring_run(tmp_path)
+    begin_authoring(run_path, data_dir)
+    before = run_path.read_bytes()
+    with pytest.raises(RuntimeError, match="before authoring dispatch"):
+        enrich_edition(run_path, load_config(), data_dir, ["bbc-0"], 1)
+    assert run_path.read_bytes() == before
 
 
 def _authoring_run(tmp_path: Path, item_count: int = 2) -> tuple[Path, Path]:

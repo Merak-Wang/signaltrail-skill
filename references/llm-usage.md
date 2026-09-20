@@ -3,12 +3,17 @@
 **权威语言：** 中文（单语运行参考）
 **状态：** 已验证运行参考
 **Owner:** Repository maintainers
-**Last verified:** 2026-09-08
+**Last verified:** 2026-09-12
 
 本参考只在首次接入宿主、检查审计覆盖、补录 durable log 或扩展适配器时读取。
 日常 brief 和 analysis packet 已经自包含，不需要把本文件放入写作上下文。
 
 ## 审计边界
+
+单个 Hook 的生命周期与 Usage 写入共用一次任务锁和已验证的事件快照，减少同一
+Hook 内反复读取历史事件。快照只存活于当前线程的这次持锁事务；下一次操作会重读
+并验证磁盘记录，封存摘要及损坏检测规则不变。这是本地 I/O 优化，不减少真实模型
+调用或改变已计量 Token；缺失用量仍为 unknown。
 
 一次前台 SignalTrail 运行只绑定一个 usage task；authoring coordinator、brief authors、
 analysis author 和其他前台嵌套会话的模型调用都写入或补录到同一 task。independent

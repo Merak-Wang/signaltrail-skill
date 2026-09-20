@@ -1,6 +1,6 @@
 # Architecture
 
-**Status:** Verified · **Owner:** Repository maintainers · **Last verified:** 2026-09-11
+**Status:** Verified · **Owner:** Repository maintainers · **Last verified:** 2026-09-12
 
 This is the code map for SignalTrail. [Runtime contracts](references/system-design.md)
 describe data fields and recovery rules; [AGENTS.md](AGENTS.md) covers repository changes.
@@ -68,7 +68,8 @@ have separate retryable state; their failure cannot revoke a saved local report.
 | Files under the data root | Ownership |
 | --- | --- |
 | `indexes/`, `content/`, `reports/` | Versioned evidence and report records; existing revisions are not overwritten |
-| `context/` | Run-bound authoring inputs and receipts; packet integrity gaps are tracked as TD-007 |
+| `context/` | Immutable authoring inputs, bounded coordinator projections, hash-bound sessions and receipts |
+| `content-checkpoints/` | Completed extraction results bound to an input index and selected IDs; safe index-commit recovery |
 | `runs/` | Atomic mutable checkpoints, including references to usage tasks |
 | `usage/…/events/` | Immutable, allowlisted usage events; authoritative for usage totals |
 | `evaluations/dossiers/` | Immutable inputs bound to report/index hashes; current dossiers use `-v2.json` |

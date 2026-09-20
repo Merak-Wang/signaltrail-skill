@@ -15,12 +15,66 @@ from daily_intelligence.content import (
     _ordered_targets,
     _run_http_extraction,
     _run_parallel_extraction,
+    extract_content,
     extract_visible_text,
     synchronize_nested_items,
 )
 from daily_intelligence.content_extraction import extract_document
 from daily_intelligence.models import ContentStatus
-from daily_intelligence.utils import read_json
+from daily_intelligence.utils import read_json, write_json
+
+
+@pytest.mark.parametrize("after_index_write", [False, True])
+def test_extraction_resumes_index_commit_without_repeating_acquisition(
+    monkeypatch, tmp_path, after_index_write,
+):
+    import daily_intelligence.content as module
+
+    item = _item()
+    index_path = write_json(tmp_path / "indexes" / "2026-09-12" / "morning-r1.json", {
+        "date": "2026-09-12", "edition": "morning", "items": [item],
+        "sources": [{"items": [dict(item)]}],
+    })
+    calls = []
+
+    async def extract(targets, *_args):
+        calls.append(1)
+        targets[0]["content_status"] = "verification_required"
+        return {"selected": 1, "successful": 0}
+
+    immutable = module.write_immutable_json
+
+    def fail_index(path, payload):
+        if path.name == "morning-r2.json":
+            if after_index_write:
+                immutable(path, payload)
+            raise OSError("simulated index commit interruption")
+        return immutable(path, payload)
+
+    monkeypatch.setattr(module, "_extract_pipeline", extract)
+    monkeypatch.setattr(module, "resolve_profile_dir", lambda *_args: tmp_path / "profile")
+    monkeypatch.setattr(module, "write_immutable_json", fail_index)
+    kwargs = dict(
+        index_path=index_path, config=load_config(), data_dir=tmp_path,
+        selected_ids=[item["item_id"]], max_items=1, headed=False,
+        checkpoint_path=tmp_path / "content-checkpoints" / "operation.json",
+    )
+    with pytest.raises(OSError, match="commit interruption"):
+        extract_content(**kwargs)
+    monkeypatch.setattr(module, "write_immutable_json", immutable)
+    output = extract_content(**kwargs)
+    assert output.name == "morning-r2.json"
+    assert calls == [1]
+    payload = read_json(output)
+    assert payload["items"][0]["content_status"] == "verification_required"
+    assert payload["sources"][0]["items"][0] == payload["items"][0]
+    assert read_json(index_path)["items"][0]["content_status"] == "not_fetched"
+    assert extract_content(**kwargs) == output
+    changed = read_json(index_path)
+    changed["items"][0]["title"] = "Different input"
+    write_json(index_path, changed)
+    with pytest.raises(ValueError, match="checkpoint does not match"):
+        extract_content(**kwargs)
 
 
 def test_short_article_beats_long_related_body_and_preserves_structured_evidence(tmp_path):
@@ -173,7 +227,63 @@ def test_image_selection_uses_article_caption_before_unrelated_metadata(tmp_path
     assert details[0]["provenance"] == "article_body"
     assert details[0]["relevance_score"] > 0
     assert details[0]["semantic_verification"] == "not_performed"
+    assert next(row for row in details if row["url"].endswith("/small.jpg"))["caption"] == (
+        "Orion reactor commissioning test."
+    )
+    metadata_image = next(row for row in details if row["url"].endswith("/generic-brand.jpg"))
+    assert metadata_image["caption"] == ""
     assert not any(entry["url"].endswith(("/brand.jpg", "/unrelated.jpg")) for entry in details)
+
+
+@pytest.mark.parametrize("figure", [
+    "<figure><img src='/photo.jpg'><figcaption>{caption}</figcaption></figure>",
+    "<div class='wp-caption'><a><img src='/photo.jpg'></a>"
+    "<p class='wp-caption-text'>{caption}</p></div>",
+    "<div><picture><img data-src='/photo.jpg'></picture>"
+    "<span class='image-caption'>{caption}</span></div>",
+    "<div><img src='/photo.jpg'><span itemprop='caption'>{caption}</span></div>",
+])
+def test_article_image_captions_preserve_publisher_text(tmp_path, figure):
+    config = load_config()
+    item = _item()
+    markup = (
+        "<article><p>The publisher describes the commissioning of a new reactor.</p>"
+        + figure.format(
+            caption="  反应堆<strong>调试</strong>现场 &amp; control room.\n 摄影：李明。 "
+        )
+        + "</article>"
+    )
+    _apply_http_document(
+        item, config.source_by_id(item["source_id"]), markup, item["url"], 200,
+        config, tmp_path,
+    )
+    details = item["metadata"]["image_candidate_details"]
+    assert details[0]["caption"] == "反应堆调试现场 & control room. 摄影：李明。"
+    index = {"items": [item], "sources": [{"items": [{"item_id": item["item_id"]}]}]}
+    synchronize_nested_items(index)
+    assert index["sources"][0]["items"][0]["metadata"]["image_candidate_details"] == details
+
+
+def test_missing_caption_never_uses_alt_title_or_a_neighboring_figure(tmp_path):
+    config = load_config()
+    item = _item()
+    markup = (
+        "<article><p>The publisher describes the commissioning of a new reactor.</p>"
+        "<figure><img src='/first.jpg'><figcaption>First photo only.</figcaption></figure>"
+        "<figure><img src='/second.jpg' alt='An accessible description' "
+        "title='A tooltip'></figure><p>A nearby paragraph is not a caption.</p></article>"
+    )
+    _apply_http_document(
+        item, config.source_by_id(item["source_id"]), markup, item["url"], 200,
+        config, tmp_path,
+    )
+    captions = {
+        row["url"]: row["caption"] for row in item["metadata"]["image_candidate_details"]
+    }
+    assert captions == {
+        "https://www.bbc.com/first.jpg": "First photo only.",
+        "https://www.bbc.com/second.jpg": "",
+    }
 
 
 def test_repeated_extraction_never_overwrites_prior_body_or_blocks(tmp_path):

@@ -68,7 +68,9 @@ daily-intel --data-dir DATA_DIR --timezone Asia/Shanghai run-edition --edition m
 ```
 
 Use `--edition evening` and/or `--language en` when requested. Read the returned run
-manifest and `artifacts.context_path`. Formal sources target at most 15 items each.
+manifest and `artifacts.coordinator_path` (fall back to `artifacts.context_path` for older runs).
+The coordinator projection bounds history; do not preload the full authoritative context or
+accepted brief text. Formal sources target at most 15 items each.
 Preserve the current `brief_plan` and index order. The default is source Top order;
 only change `collection.item_order` to `published_at` when the user requests it.
 Preserve `source_rank`; never reorder ordinary briefs by importance.
@@ -99,6 +101,11 @@ daily-intel --data-dir DATA_DIR enrich-edition --run RUN.json --item-id ID1 --it
 
 If `brief_plan` is missing, refresh it with `--max-items 0`. Root `items[]` is canonical;
 nested `sources[].items[]` is the synchronized legacy view.
+
+Finish enrichment before `begin-authoring`. If a run is interrupted in `extracting_content`,
+repeat `enrich-edition --run RUN.json` without item IDs to resume its saved selection.
+Completed extraction is reused across index/context commit failures. Read the updated
+`artifacts.coordinator_path` after enrichment; dispatched packet inputs must never be edited.
 
 ## 3. Write briefs
 

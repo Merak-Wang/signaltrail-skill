@@ -81,6 +81,7 @@ class UsageLedger:
         """
 
         candidate = Path(data_dir).expanduser().resolve()
+        self._transaction_state = threading.local()
         if candidate.name == "usage":
             self.data_dir = candidate.parent
             self.usage_root = candidate
@@ -331,7 +332,9 @@ class UsageLedger:
             evaluation_attempt=evaluation_attempt,
             parent_session_id=parent_session_id,
         )
-        return self._ingest_hook_records(handle, records, call_id=call_id)
+        # 一个 hook 的生命周期和 usage 共享同一锁及已验证快照；退出后立即丢弃。
+        with self._task_guard(handle):
+            return self._ingest_hook_records(handle, records, call_id=call_id)
 
     def _ingest_hook_records(
         self,
@@ -571,8 +574,18 @@ class UsageLedger:
         """
 
         handle = self._canonical_task_handle(task)
-        with self._task_id_guard(handle.task_id):
+        snapshots = getattr(self._transaction_state, "snapshots", None)
+        if snapshots is None:
+            snapshots = self._transaction_state.snapshots = {}
+        if handle.task_id in snapshots:
             yield
+            return
+        with self._task_id_guard(handle.task_id):
+            snapshots[handle.task_id] = None
+            try:
+                yield
+            finally:
+                snapshots.pop(handle.task_id)
 
     @contextmanager
     def _task_id_guard(self, task_id: str) -> Iterator[None]:
@@ -699,7 +712,12 @@ class UsageLedger:
         }
         _validate_event_envelope(task, path, event)
         try:
-            return write_immutable_json(path, event)
+            result = write_immutable_json(path, event)
+            snapshot = getattr(self._transaction_state, "snapshots", {}).get(task.task_id)
+            if snapshot is not None:
+                snapshot.append(event)
+                snapshot.sort(key=lambda row: row["event_id"])
+            return result
         except FileExistsError:
             existing, pending_legacy_hash = _read_validated_event(task, path)
             if pending_legacy_hash:
@@ -736,6 +754,9 @@ class UsageLedger:
         """
 
         event_dir = task.path / "events"
+        snapshots = getattr(self._transaction_state, "snapshots", {})
+        if snapshots.get(task.task_id) is not None:
+            return snapshots[task.task_id]
         if not event_dir.exists():
             if missing_ok:
                 return []
@@ -748,6 +769,8 @@ class UsageLedger:
             if pending_legacy_hash:
                 pending_legacy_hashes.add(event["event_id"])
         _validate_event_set(task, events, pending_legacy_hashes)
+        if task.task_id in snapshots:
+            snapshots[task.task_id] = events
         return events
 
     def _finalized_paths(self, task: TaskHandle) -> list[Path]:

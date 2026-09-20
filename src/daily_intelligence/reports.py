@@ -238,7 +238,7 @@ def _brief_markdown(
         if image_url:
             lines.extend(
                 [
-                    f"![{image.get('caption', item['title'])}]({image_url})",
+                    f"![{image.get('caption', '')}]({image_url})",
                     "",
                     f"*{localized(language, '图片来源', 'Image source')}{colon} "
                     f"{image.get('credit', localized(language, '原始来源', 'Original source'))}*",

@@ -1,7 +1,7 @@
 # 结构化日报契约（schema 2.0）
 
 **状态：** 已验证机器相邻契约
-**最后对照 Schema/校验器：** 2026-08-28
+**最后对照 Schema/校验器：** 2026-09-20
 **文档入口：** [运行参考](../docs/README.md#runtime-references)
 
 输出 UTF-8 JSON。读取 packet 的 `output_language`：`zh-CN` 使用简体中文，`en` 使用英文；同一报告的标题、摘要、研判和评估建议不得混用输出语言。来源原题、URL、论文/项目名和技术术语可保留原文。Python 固定 schema/language/时间，生成报告、事件和分析 ID，并从索引补齐引用身份、access、来源排名、状态、计数和 `evaluation_status`。不要手工复制这些字段。
@@ -111,7 +111,7 @@ analysis author 的输入只有 `prepare-analysis` 生成的 analysis packet，�
 
 brief author 不输出 `title`；Python 从索引注入权威原题，避免模型逐条复制确定性文本。`zh-CN` 报告仅在 packet 的 `translation_required` 为 true 时填写自然、完整的 `title_zh`；`en` 报告同理填写 `title_en`。原题已经符合输出语言时不写译题字段，非当前语言的另一个译题字段也必须省略。不要添加 `[英]`、`[EN]`、`[中]`、`[ZH]`、来源名或截断原文。TL;DR 不得是“来源 X 报道”“详见原文链接”“正文/摘要未获取”、错误语言前缀、标题重复或其他占位文案。若索引已有 `full_text/partial`，读取 `content_path` 后总结；否则根据公开 `description`/摘要翻译并压缩；只有标题时，仅把标题明确表达的事实忠实改写成目标语言短句，不得添加标题外事实。访问状态只保存在 `source_ref.access` 或内部 `evidence_note`，不进入 TL;DR。
 
-`featured_event_id`、`source_ref`、`primary_source`、来源排名和可选 `image` 由 Python 补齐。analysis author 的草稿不得填写 `event_id`、`source_refs`、图片 URL 或本地路径；Python 只使用同一索引 item 已观察到的公开配图，安全下载后再进入图文流。`items[]` 是证据与连续性层，通常 6—10 条、硬上限 12 条；普通 brief 不需要逐条研判。精选事件草稿只引用索引 item ID：
+`featured_event_id`、`source_ref`、`primary_source`、来源排名和可选 `image` 由 Python 补齐。analysis author 的草稿不得填写 `event_id`、`source_refs`、图片 URL 或本地路径；Python 只使用同一索引 item 已观察到的公开配图，安全下载后再进入图文流。`image.caption` 只保留该图片在新闻网站上的原文图注；无图注时为 `""`，不以标题或生成描述替代，不要求与报告语言一致。`items[]` 是证据与连续性层，通常 6—10 条、硬上限 12 条；普通 brief 不需要逐条研判。精选事件草稿只引用索引 item ID：
 
 ```json
 {

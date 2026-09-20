@@ -3,7 +3,7 @@
 **权威语言：** 中文（单语运行参考）
 **负责人：** 仓库维护者
 **状态：** 已验证运行策略
-**最后对照代码：** 2026-09-11
+**最后对照代码：** 2026-09-20
 **文档目录：** [`docs/README.md`](../docs/README.md)
 
 ## 来源与正文
@@ -122,5 +122,6 @@ independent evaluator 与 brief/analysis authors 隔离，只审查已保存或�
 - 正文配图保留替代文本、原始图注、邻接段落和用途；有图注或标题词法关联的候选优先于网页通用元数据。无上下文正文图不替换发布者已提供的元数据配图。`metadata.image_candidate_details` 中的分数仅为词法线索，`semantic_verification=not_performed`，不得把排序当作视觉事实核验。宽泛页面、推荐区和明确的装饰图不作为正文配图依据。
 - 下载器不带 Cookie、登录态、浏览器 Profile、Authorization 或页面指令。每次跳转都重新校验，只允许公开网络的 HTTP/HTTPS 80/443 端口；内网、本机、链路本地和无法确认的地址一律拒绝。若系统代理把公网域名映射到 `198.18.0.0/15` fake-IP，下载器必须先通过带 TLS 的公共 DNS 再确认真实目标全部是公网地址；裸 fake-IP、确认失败或真实目标含内网地址仍一律拒绝。
 - 采集阶段拒绝 URL 已明确标注为 placeholder、no-image、blank 或 transparent 的候选；下载后还要拒绝纯色或近乎纯色的低信息栅格图。只接受通过内容校验的 JPEG、PNG、GIF 和 WebP；拒绝 SVG、HTML、空响应、伪装格式、单图超过 8 MiB 或超过 2500 万像素的文件。默认每版最多 1000 张、合计 80 MiB，可在 `configs/sources.yaml` 的 `media` 段收紧。
-- 图片按 SHA-256 内容寻址并原子写入 `DATA_DIR/media/images/`。报告保存原始 URL、最终 URL、本地相对路径、MIME、尺寸、字节数、hash、标题型说明与来源署名；不得移除水印或伪造版权归属。
+- 图片按 SHA-256 内容寻址并原子写入 `DATA_DIR/media/images/`。报告保存原始 URL、最终 URL、本地相对路径、MIME、尺寸、字节数、hash、原站图注与来源署名；不得移除水印或伪造版权归属。
+- `image.caption` 按实际选中的候选 URL 读取 `metadata.image_candidate_details[].caption`，保留新闻网站图注的原文与语言。正文支持 `figcaption`、WordPress 和常见图片 caption 容器；没有对应图注时保存空字符串，不用新闻标题、alt、邻接段落或模型生成文字补齐。图片回退时使用备用图片自己的图注；命中图片缓存时仍从当前新闻索引读取图注。
 - 图片失败是可见的附属媒体失败：先在同一条新闻的候选链中回退，再继续后续新闻；失败项不占成功图片额度。最终仍无法取得图片时不渲染图片区域并降级为文字，不得改写来源状态、伪装成 `no_items`，也不得阻止其余新闻发布。

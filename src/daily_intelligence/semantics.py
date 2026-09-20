@@ -136,10 +136,9 @@ def tldr_quality_issue(
 
 
 def semantic_fingerprint(item: dict[str, Any]) -> str:
-    """处理：只哈希会合理改变翻译或摘要语义的证据字段。
-    输入：
-    - ``item``：单个规范条目对象；通常包含 item_id、来源、标题、URL、时间和元数据。
-    输出：“只哈希会合理改变翻译或摘要语义的证据字段”得到的规范字符串，供调用方存储、比较或展示。
+    """处理：以正文内容身份代替存储位置，避免相同证据重复写作。
+    输入：权威索引或紧凑投影；正文摘要由本地抽取器生成，旧记录保留路径身份。
+    输出：语义证据指纹；标题、摘要、正文或访问级别改变时失效。
     """
     payload = {
         "title": clean_title(str(item.get("title") or "")),
@@ -149,6 +148,11 @@ def semantic_fingerprint(item: dict[str, Any]) -> str:
         "content_status": str(item.get("content_status") or "not_fetched"),
         "content_path": str(item.get("content_path") or ""),
     }
+    metadata = item.get("metadata") or {}
+    content_digest = metadata.get("content_text_sha256") or item.get("content_text_sha256")
+    if isinstance(content_digest, str) and re.fullmatch(r"[0-9a-f]{64}", content_digest):
+        payload.pop("content_path")
+        payload["content_text_sha256"] = content_digest
     encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 

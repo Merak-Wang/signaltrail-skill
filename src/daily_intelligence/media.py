@@ -7,6 +7,7 @@ import threading
 import time
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from contextlib import ExitStack
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from functools import lru_cache
@@ -687,6 +688,9 @@ def _download_image_batch(
     config: MediaConfig,
     max_bytes: int,
     downloader: Callable[..., DownloadedImage],
+    *,
+    resources: ExitStack | None = None,
+    shared: dict[str, Any] | None = None,
 ) -> dict[str, DownloadedImage | Exception]:
     """处理：使用共享连接池和同域限制下载一个优先级批次。
     输入：
@@ -714,7 +718,19 @@ def _download_image_batch(
                 results[source_url] = exc
         return results
 
-    domain_limits: dict[str, threading.BoundedSemaphore] = {}
+    if resources is None or shared is None:
+        with ExitStack() as stack:
+            return _download_image_batch(
+                rows, data_dir, config, max_bytes, downloader, resources=stack, shared={},
+            )
+    if "client" not in shared:
+        shared["client"] = resources.enter_context(httpx.Client(
+            timeout=config.request_timeout_seconds, follow_redirects=False, trust_env=False,
+        ))
+        shared["executor"] = resources.enter_context(ThreadPoolExecutor(
+            max_workers=config.global_concurrency, thread_name_prefix="daily-intel-image",
+        ))
+    domain_limits = shared.setdefault("domain_limits", {})
     domain_lock = threading.Lock()
 
     def guarded(
@@ -746,28 +762,16 @@ def _download_image_batch(
             )
 
     results = {}
-    worker_count = min(config.global_concurrency, len(rows))
-    with (
-        httpx.Client(
-            timeout=config.request_timeout_seconds,
-            follow_redirects=False,
-            trust_env=False,
-        ) as client,
-        ThreadPoolExecutor(
-            max_workers=worker_count,
-            thread_name_prefix="daily-intel-image",
-        ) as executor,
-    ):
-        futures = {
-            executor.submit(guarded, client, source_url, referer): source_url
-            for source_url, referer in rows
-        }
-        for future in as_completed(futures):
-            source_url = futures[future]
-            try:
-                results[source_url] = future.result()
-            except (ImageDownloadError, OSError) as exc:
-                results[source_url] = exc
+    futures = {
+        shared["executor"].submit(guarded, shared["client"], source_url, referer): source_url
+        for source_url, referer in rows
+    }
+    for future in as_completed(futures):
+        source_url = futures[future]
+        try:
+            results[source_url] = future.result()
+        except (ImageDownloadError, OSError) as exc:
+            results[source_url] = exc
     return results
 
 
@@ -797,6 +801,32 @@ def materialize_report_images(
     config: MediaConfig,
     *,
     downloader: Callable[..., DownloadedImage] = download_image,
+) -> list[str]:
+    """处理：在整轮图片处理期间复用连接池，结束或失败时统一释放资源。
+    输入：已编译报告、权威索引、数据根、图片预算及可注入下载器。
+    输出：按原优先级附图后的报告和显式警告；全缓存命中时不创建网络资源。
+    """
+    with ExitStack() as resources:
+        return _materialize_report_images(
+            report, index, data_dir, config, downloader=downloader, resources=resources,
+        )
+
+
+def _indexed_image_caption(indexed: dict[str, Any], image_url: str) -> str:
+    """处理：按选中图片 URL 读取当前新闻的原站图注。
+    输入：当前新闻索引及实际下载成功的候选 URL。
+    输出：报告图片 caption；缺失时返回空串，不借用标题或缓存说明。
+    """
+    details = (indexed.get("metadata") or {}).get("image_candidate_details", [])
+    return next(
+        (str(entry.get("caption") or "") for entry in details if entry["url"] == image_url),
+        "",
+    )
+
+
+def _materialize_report_images(
+    report: dict[str, Any], index: dict[str, Any], data_dir: Path, config: MediaConfig,
+    *, downloader: Callable[..., DownloadedImage], resources: ExitStack,
 ) -> list[str]:
     """处理：将权威索引图片绑定到报告简报并持久化本地副本。
     输入：
@@ -855,6 +885,7 @@ def materialize_report_images(
     cache = _load_image_cache(data_dir) if cache_enabled else {"entries": {}}
     cache_entries = cache["entries"]
     cache_warning_emitted = False
+    shared: dict[str, Any] = {}
 
     def resolve_rows(
         rows: list[tuple[str, str | None]],
@@ -901,6 +932,8 @@ def materialize_report_images(
             config,
             max_bytes,
             downloader,
+            resources=resources,
+            shared=shared,
         )
         resolved_by_url.update(batch_results)
         if not cache_enabled:
@@ -924,6 +957,7 @@ def materialize_report_images(
                 cache_warning_emitted = True
 
     cursor = 0
+    prefetched_until = 0
     while cursor < len(candidates):
         if int(metrics["attached"]) >= config.max_images_per_report:
             metrics["skipped_budget"] += len(candidates) - cursor
@@ -933,19 +967,19 @@ def materialize_report_images(
             metrics["skipped_budget"] += len(candidates) - cursor
             break
 
-        batch_limit = config.global_concurrency if cache_enabled else 1
-        primary_rows = [
-            (
-                image_candidates[0],
-                str(indexed.get("url") or "") or None,
+        if cursor >= prefetched_until:
+            # 完整消费已预取的窗口，避免滑动一位后反复启动单张下载。
+            batch_limit = min(
+                config.global_concurrency if cache_enabled else 1,
+                config.max_images_per_report - int(metrics["attached"]),
             )
-            for _order, _brief, indexed, image_candidates
-            in candidates[cursor : cursor + batch_limit]
-        ]
-        resolve_rows(
-            primary_rows,
-            min(config.max_image_bytes, remaining_bytes),
-        )
+            prefetched_until = min(len(candidates), cursor + batch_limit)
+            primary_rows = [
+                (image_candidates[0], str(indexed.get("url") or "") or None)
+                for _order, _brief, indexed, image_candidates
+                in candidates[cursor:prefetched_until]
+            ]
+            resolve_rows(primary_rows, min(config.max_image_bytes, remaining_bytes))
 
         _order, brief, indexed, image_candidates = candidates[cursor]
         cursor += 1
@@ -1003,7 +1037,7 @@ def materialize_report_images(
             "byte_size": downloaded.byte_size,
             "width": downloaded.width,
             "height": downloaded.height,
-            "caption": str(indexed.get("title") or brief.get("title") or "新闻配图"),
+            "caption": _indexed_image_caption(indexed, image_url),
             "credit": credit,
         }
         metrics["attached"] += 1

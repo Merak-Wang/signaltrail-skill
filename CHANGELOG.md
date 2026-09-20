@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+### 2026-09-20
+
+- Retained news-site captions on the selected report image, including candidate fallback and
+  cached downloads. Missing captions stay empty; titles, alt text, and generated descriptions
+  are not substitutes. Added common article-caption extraction and empty-caption rendering.
+
+### 2026-09-12
+
+- Kept image prefetch windows full and reused one connection/thread pool per materialization;
+  warm caches create no network resources. Reused validated usage-event snapshots only inside
+  one locked hook transaction, retaining verification on the next operation.
+- Added a bounded coordinator context that omits repeated cached prose and Python-only hashes.
+  Content-backed semantic fingerprints survive storage-path changes, and enriched candidates
+  below the ordinary prefix remain available without changing source Top15 selection.
+- Bound immutable brief/analysis inputs to authoring sessions, rejected evidence replacement
+  after dispatch, and revalidated run lineage under edition locks. Enrichment resumes its saved
+  selection and reuses completed extraction across index/context commit failures.
+- Added offline regression coverage and a bilingual optimization record; model routing and
+  production token, price, latency and quality measurements remain unchanged/unmeasured.
+
 ### 2026-09-11
 
 - Refreshed the HTML reader with a localized three-column newspaper masthead, a white/black/red

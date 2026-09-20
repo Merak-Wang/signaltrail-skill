@@ -3,8 +3,30 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from .content_extraction import ExtractedDocument
+from bs4 import Tag
+
+from .content_extraction import ExtractedDocument, _inline_text
 from .image_policy import normalize_image_candidates, srcset_candidates
+
+
+def _image_caption(node: Tag, root: Tag) -> str:
+    """处理：从图片所在的单图容器读取网站图注，不借用相邻图片说明。
+    输入：正文图片节点及选中的正文边界。
+    输出：清理空白后的原文图注；正文范围内没有对应图注时返回空串。
+    """
+    for container in node.parents:
+        # 单图容器内的 caption 才属于当前图片，避免借用相邻配图的说明。
+        if len(container.find_all("img", limit=2)) != 1:
+            break
+        caption = container.select_one(
+            'figcaption, .wp-caption-text, .image-caption, .photo-caption, '
+            '.caption, [itemprop="caption"]'
+        )
+        if caption is not None:
+            return re.sub(r"\s+", " ", _inline_text(caption)).strip()
+        if container is root:
+            break
+    return ""
 
 
 def _terms(text: str) -> set[str]:
@@ -36,11 +58,7 @@ def article_image_candidates(
             r"\b(?:logo|avatar|icon)\b|头像|图标", alt, re.I,
         ):
             continue
-        figure = node.find_parent("figure")
-        if figure is not None and root is not figure and root not in figure.parents:
-            figure = None
-        caption_node = figure.select_one("figcaption") if figure else None
-        caption = caption_node.get_text(" ", strip=True)[:1000] if caption_node else ""
+        caption = _image_caption(node, root)
         adjacent = node.find_next("p")
         surrounding = (
             adjacent.get_text(" ", strip=True)[:1000]

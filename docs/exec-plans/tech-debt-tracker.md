@@ -4,7 +4,7 @@
 impact, and measurable exit conditions.
 **Status:** Verified
 **Owner:** Repository maintainers
-**Last verified:** 2026-09-11
+**Last verified:** 2026-09-12
 
 ## Open Items
 
@@ -12,10 +12,7 @@ impact, and measurable exit conditions.
 | --- | --- | --- | --- | --- |
 | TD-002 | Medium | Validation and rendering remain concentrated in very long functions. | `validate_report_data`, `compile_report_data`, `render_report_markdown`, and `report_to_blocks` combine several rule or rendering families, increasing change and review risk. | Characterization coverage protects current output while cohesive typed helpers own individual rule and rendering families. |
 | TD-005 | Medium | The zero-model monitor reports some collector-only formal sources as `unsupported`. | The [2026-08-05 run](completed-2026-08-05-morning-report-regeneration.md) showed the mismatch for Weibo; PBOC and ByteDance share it. Failure-rate reporting is overstated. | A collector-only status is visible and excluded from failure rates; monitor refresh stays free of specialized collection. |
-| TD-006 | High | A process-wide enrichment failure can strand a run in `extracting_content`. | The state persists before `extract_content`; ordinary preparation returns the existing non-terminal run and cannot resume the interrupted work. | Enrichment is checkpointed and re-entrant, with fault-injection coverage after the state transition and during immutable index creation. |
-| TD-007 | High | Authoring packets are mutable and lack a cryptographic binding to context and session. | Submission validates the packet currently on disk, while the session binds only the main context hash. Packet replacement can change authorized work after dispatch. | Packets are immutable; context and session persist each packet hash and authorized item IDs; begin, submit, and recovery revalidate the binding. |
-| TD-008 | High | Source-cache health and authoring-session lineage can be overstated after state changes. | Cached items can yield formal `success` after a partial acquisition, and enrichment can rebuild context after authoring dispatch. Downstream state may describe a superseded evidence boundary. | Acquisition health is stored separately from item availability, and a rebuilt bound context deterministically invalidates its authoring session. |
-| TD-009 | Medium | Context compaction can omit an explicitly enriched item below the per-source cap. | `_compact_candidates` expands by enriched-item count, so an enriched item below rank 25 can remain outside the prefix. | Explicitly enriched evidence is unioned into bounded context while Top order remains stable; a rank-26-or-lower regression passes. |
+| TD-008 | High | Source-cache health can still be overstated after partial acquisition. | Cached items can yield formal `success`. Post-dispatch enrichment/index replacement is now rejected and session lineage is checked during acceptance and recovery. | Acquisition health is stored separately from item availability, with partial-page failure and cache-hit fixtures. |
 | TD-010 | Medium | Report persistence lacks a shared revision transaction, and evaluator attempts share a mutable pre-save draft path. | JSON can persist before its Markdown peer; concurrent evaluator attempts can replace the same draft before entering the edition lock. | One report-revision transaction covers paired artifacts, and each evaluator attempt has an immutable draft with crash and collision coverage. |
 | TD-011 | Low | Acquisition-path telemetry is coarser than authoring telemetry. | Live acquisition is recorded as `browser_or_http`; legacy batch timing can start at session creation when a host omits dispatch time. This limits latency diagnosis. | Browser and HTTP paths have distinct measurements; host dispatch timestamps are used when present, and absent latency remains unknown. |
 | TD-012 | Medium | Monitor eligibility and projection-ready milestones use separate truth checks. | Direct loading accepts states that preflight rejects, and an HTML failure can be followed by an unconditional ready milestone. | A shared monitor-snapshot validator governs every reader, and readiness derives from confirmed artifact existence. |
@@ -28,7 +25,6 @@ impact, and measurable exit conditions.
 | TD-020 | High | **Hermes integration:** scheduled evaluators cannot route per-request hooks to the task-specific child ledger. | Direct hooks retain terminal lineage. The [2026-08-25 scheduled run](completed-2026-08-25-morning-report-acceptance.md) emitted no task-routed leaves and required aggregate import. | An audited job-environment mapping yields complete pre/post/error leaves and an exact child ledger for a scheduled Hermes evaluator. |
 | TD-021 | Medium | **Codex/OpenClaw integrations:** usage adapters lack sanitized fixtures from identified real host versions. | Synthetic cumulative-counter and SQLite schema-v17 fixtures cover audited layouts; host-format changes remain unverified against real samples. | Minimal secret-free fixtures carry explicit host versions and pass fail-closed parser regressions. |
 | TD-023 | Medium | **Host integration:** provider cost and tool-call token splits are unavailable when the host omits them. | The ledger records omitted fields as `unobservable`; this limits cost comparison while preserving accounting truth. | Exposed host fields are retained exactly. Any derived value is versioned, provenance-bound, and labeled as an estimate; unavailable fields remain unobservable. |
-| TD-025 | High | Workflow mutators can retain stale run state while waiting for the edition lock. | Begin, analysis preparation, assembly, enrichment, finalization, and index adoption do not all re-read attempt and artifact lineage inside one lock boundary. | Every mutator revalidates current attempt and lineage under the lock; long work commits through attempt/context-hash compare-and-swap with restart-race coverage. |
 | TD-026 | Medium | **Codex/OpenClaw integrations:** durable-log imports lack task-selective scope. | OpenClaw import reads every usage-bearing row in the supplied audited per-agent database; Codex JSONL uses a fixed 64 MiB cap and no session/time filter. | Agent, session, and time filters bound both imports; Codex parsing streams bounded records, and absent provider-attempt counts remain unknown. |
 | TD-029 | High | Compiler-owned event IDs lack a verified cross-item continuation mechanism. | Python derives IDs from authorized current items, while a new article that updates an older event has no safe lineage declaration. | A bounded prior-event candidate set and validated update/supersession field support legitimate continuation and reject forged history. |
 | TD-030 | High | **Hermes integration:** delegated workers inherit the parent toolset. | Current `delegate_task` requests retain browser, search, and delegation schemas even when packet and output paths are narrow. Core packet validation still constrains accepted data. | Hermes supports per-child least-privilege toolsets, and delegated request-schema tests confirm the intended narrow capability set. |
@@ -42,6 +38,14 @@ impact, and measurable exit conditions.
 | TD-041 | Medium | Claim-driven collection and stakeholder blind-spot search are not implemented. | Report A section 3 adds configured region/topic/source-role diagnostics, local body-gap suggestions and bounded extraction, but no validated claim/source relationships, stakeholder inventory, search providers or calibrated utility/cost policy. | A bounded research channel records original/reprint lineage and support/refute/background roles per claim, audits unconfigured coverage against explicit targets, and stops search with measured budget/benefit and unresolved evidence. |
 
 ## Resolved Items
+
+Resolved in the 2026-09-12 [cost and latency optimization](completed-2026-09-12-runtime-cost-optimization.md):
+
+- TD-006: enrichment resumes its bound selection; completed extraction checkpoints avoid reacquisition after index/context commit failures. An interrupted acquisition stage may still repeat bounded work.
+- TD-007: new brief/analysis inputs are immutable; context/session packet hashes and authorized IDs are revalidated at begin, submit, recovery and assembly. Legacy hashless sessions retain a compatibility boundary.
+- TD-009: enriched items outside the prefix remain candidates; rank-29 regression preserves Top15.
+- TD-025: nine workflow mutation entry points reread attempts and artifact lineage inside the edition lock; injected pre-lock changes cannot overwrite the newer run.
+
 
 The 2026-09-11 [Report A review](completed-2026-09-11-report-a-code-review.md) fixes extraction
 structure/selection, responsive-image ordering, domain/thesis collisions and omission-based

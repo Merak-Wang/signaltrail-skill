@@ -3,7 +3,7 @@
 **目的：** 通过精简的证据、影响与可测退出条件，持续记录尚未解决的实现和集成缺口。
 **状态：** 已验证
 **负责人：** 仓库维护者
-**最后验证：** 2026-09-11
+**最后验证：** 2026-09-12
 
 ## 开放事项
 
@@ -11,10 +11,7 @@
 | --- | --- | --- | --- | --- |
 | TD-002 | 中 | 校验与渲染仍集中在少数超长函数。 | `validate_report_data`、`compile_report_data`、`render_report_markdown` 和 `report_to_blocks` 各自混合多组规则或渲染职责，提高了变更和审阅风险。 | 刻画测试保护当前输出，各规则与渲染族由内聚的类型化 Helper 分别承担。 |
 | TD-005 | 中 | 零模型 Monitor 会把部分 collector-only 正式来源标为 `unsupported`。 | [2026-08-05 运行](completed-2026-08-05-morning-report-regeneration.md)记录了微博的差异；PBOC 与 ByteDance 也受影响，失败率因此偏高。 | 状态展示 collector-only 并从失败率中排除；Monitor 刷新不调用专用采集。 |
-| TD-006 | 高 | 正文富化的进程级失败可能使运行滞留在 `extracting_content`。 | 状态在 `extract_content` 前持久化；普通准备入口会返回现有非终态运行，无法恢复中断工作。 | 正文富化支持检查点与可重入，并通过状态迁移后和不可变索引创建期间的故障注入覆盖。 |
-| TD-007 | 高 | 写作 Packet 可变，且没有与 Context 和 Session 建立密码学绑定。 | 提交校验磁盘上的当前 Packet，而 Session 只绑定主 Context Hash。派发后的 Packet 替换可以改变授权任务。 | Packet 不可变；Context 与 Session 保存逐包 Hash 和授权 item ID；开始、提交与恢复都会复核绑定。 |
-| TD-008 | 高 | 状态变化后，来源缓存健康度和写作 Session 血缘可能被高估。 | 缓存条目可以在部分采集后形成正式 `success`，正文富化也能在写作派发后重建 Context。下游状态可能描述已被替换的证据边界。 | 采集健康度与条目可用性分开存储，重建已绑定 Context 时确定性作废对应写作 Session。 |
-| TD-009 | 中 | Context 压缩可能遗漏低于逐来源上限的显式富化条目。 | `_compact_candidates` 按富化条目数量扩展前缀，因此排名低于 25 的富化条目仍可能位于前缀之外。 | 显式富化证据并入有界 Context，Top 顺序保持稳定，并通过排名 26 以后条目的回归。 |
+| TD-008 | 高 | 部分采集后来源缓存健康度仍可能被高估。 | 缓存条目可能形成正式 `success`；本次已禁止派发后富化或替换索引，并在接收和恢复时验证 Session 血缘。 | 采集健康度与条目可用性分开存储，并覆盖部分页面失败与缓存命中的组合。 |
 | TD-010 | 中 | 报告持久化缺少共享 Revision 事务，Evaluator 尝试仍共用可变的保存前草稿路径。 | JSON 可能先于 Markdown 落盘；并发 Evaluator 尝试可在进入 Edition 锁前替换同一草稿。 | 一个报告 Revision 事务覆盖配对工件，每次 Evaluator 尝试使用不可变草稿，并具备崩溃与碰撞覆盖。 |
 | TD-011 | 低 | 采集路径遥测比写作遥测粗。 | 实时采集统一记为 `browser_or_http`；宿主省略派发时间时，旧批次耗时可能从 Session 创建时间开始，限制了耗时诊断。 | Browser 与 HTTP 路径分别计量；存在宿主派发时间时采用该时间，缺失耗时保持 unknown。 |
 | TD-012 | 中 | Monitor 资格与投影就绪里程碑使用不同的事实检查。 | 直接加载会接受预检拒绝的状态，HTML 失败后也可能出现无条件就绪里程碑。 | 所有读取方共用 Monitor 快照校验器，就绪状态仅由已确认存在的工件派生。 |
@@ -27,7 +24,6 @@
 | TD-020 | 高 | **Hermes 集成：** 调度 Evaluator 无法把逐请求 Hook 路由到任务专属子账本。 | 直接 Hook 可保留终态血缘；[2026-08-25 调度运行](completed-2026-08-25-morning-report-acceptance.md)没有任务路由叶子，需要导入 Session 聚合。 | 经审计的 Job 环境映射让调度 Hermes Evaluator 产生完整 pre/post/error 叶子和精确子账本。 |
 | TD-021 | 中 | **Codex/OpenClaw 集成：** Usage Adapter 缺少来自明确真实宿主版本的脱敏 Fixture。 | 累计计数和 SQLite schema-v17 的合成 Fixture 覆盖已审计布局，真实样本尚未验证宿主格式变化。 | 最小无秘密 Fixture 带有明确宿主版本，并通过 fail-closed Parser 回归。 |
 | TD-023 | 中 | **宿主集成：** 宿主省略 Provider 成本或工具调用 Token 拆分时，这些字段不可取得。 | 账本将省略字段记为 `unobservable`，在保持核算真实性的同时限制成本比较。 | 宿主字段按原值保留；派生值具有版本、来源并明确标为估算；不可取得的字段继续为 unobservable。 |
-| TD-025 | 高 | Workflow Mutator 等待 Edition 锁时可能保留旧 Run 状态。 | Begin、Analysis 准备、Assembly、Enrichment、Finalization 与 Index Adoption 尚未全部在同一锁边界内重读 Attempt 和工件血缘。 | 每个 Mutator 在锁内复核当前 Attempt 与血缘；长操作通过 Attempt/Context Hash CAS 提交，并具有 Restart 竞态覆盖。 |
 | TD-026 | 中 | **Codex/OpenClaw 集成：** Durable Log 导入缺少任务级范围选择。 | OpenClaw 导入会读取所提供已审计 Per-agent 数据库中的全部 Usage 行；Codex JSONL 采用固定 64 MiB 上限，且没有 Session/Time Filter。 | Agent、Session 与时间 Filter 约束两种导入；Codex 流式解析有界记录，缺失 Provider Attempt 数继续保持 unknown。 |
 | TD-029 | 高 | 编译器所有的 Event ID 缺少经过验证的跨条目连续机制。 | Python 从当前授权 item 派生 ID，新文章更新旧事件时缺少安全的血缘声明。 | 有界 Prior-event 候选集与经校验的 Update/Supersession 字段支持合法延续，并拒绝伪造历史。 |
 | TD-030 | 高 | **Hermes 集成：** 委派 Worker 继承父任务 Toolset。 | 当前 `delegate_task` 请求仍包含 Browser、Search 和 Delegation Schema，即使 Packet 和输出路径已经收窄。核心 Packet 校验继续约束可接受数据。 | Hermes 支持逐子任务最小权限 Toolset，委派请求 Schema 测试确认预期的窄能力集。 |
@@ -41,6 +37,14 @@
 | TD-041 | 中 | 尚未实现逐主张搜集与主体盲区搜索。 | 报告 A 第三部分已增加配置地区/主题/来源角色诊断、本地正文缺口建议及有界抽取；仍无经过校验的主张/来源关系、主体清单、搜索 Provider 或标定的收益/成本策略。 | 有界研究通道记录原始/转载关系及逐主张支持、反驳、背景角色，按显式目标检查未配置覆盖，并用可测预算/收益及残留缺口停止搜索。 |
 
 ## 已解决事项
+
+2026-09-12 [成本与耗时优化](completed-2026-09-12-runtime-cost-optimization.md)完成：
+
+- TD-006：富化按已绑定选择恢复，完整提取检查点避免索引与 Context 提交失败后的重复抓取；抓取尚未完成时仍可能重做该有界阶段。
+- TD-007：新 Brief 与 Analysis 输入不可变，Context/Session 绑定逐包摘要及授权 ID，开始、提交、恢复和组装复验。旧无摘要会话仍有兼容边界。
+- TD-009：前缀以外的已富化条目进入候选，排名 29 的回归保持 Top15 不变。
+- TD-025：九个运行变更入口在 Edition 锁内重读并验证尝试及产物血缘；抢锁前运行变化的注入测试会拒绝旧状态覆盖。
+
 
 2026-09-11 的[报告 A 审阅](completed-2026-09-11-report-a-code-review.md)修复了正文结构与
 选择、响应式图片排序、领域与论点身份碰撞，以及因未提及而关闭观察项的问题。

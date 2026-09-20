@@ -51,6 +51,7 @@ Read only the reference needed for the task.
 These completed run records explain decisions and measurements at the time. They are historical,
 not current operating instructions. Their original verification dates do not expire.
 
+- [2026-09-12 runtime cost optimization](exec-plans/completed-2026-09-12-runtime-cost-optimization.md)
 - [2026-09-11 Report A code review](exec-plans/completed-2026-09-11-report-a-code-review.md)
 - [2026-08-25 morning-report acceptance](exec-plans/completed-2026-08-25-morning-report-acceptance.md)
 - [2026-08-23 usage and optimization implementation](exec-plans/completed-2026-08-23-llm-usage-optimization-implementation.md)

@@ -664,6 +664,14 @@ def begin_authoring_session(
         raise ValueError("Authoring context must be a JSON object")
     paths = _authoring_paths(context_path)
     context_sha256 = sha256(context_path.read_bytes()).hexdigest()
+    bound_batches = {}
+    for batch in context.get("brief_authoring_batches", []):
+        if isinstance(batch, dict) and batch.get("packet_path"):
+            packet = _read_bound_packet(batch, data_dir)
+            bound_batches[str(batch["batch_id"])] = {
+                "packet_sha256": sha256(Path(batch["packet_path"]).read_bytes()).hexdigest(),
+                "author_item_ids": packet["author_item_ids"],
+            }
     if paths["session"].exists():
         existing = read_json(paths["session"])
         if not isinstance(existing, dict):
@@ -692,6 +700,7 @@ def begin_authoring_session(
             existing["context_sha256"] = context_sha256
             existing["run_attempt"] = int(run.get("attempt", 1))
             write_json(paths["session"], existing)
+        _validate_session_binding(run, existing, data_dir)
         return paths["session"]
 
     timezone = str(run.get("timezone") or "Asia/Shanghai")
@@ -720,6 +729,7 @@ def begin_authoring_session(
                 "draft_result_path": str(draft_path),
                 "result_path": str(result_path),
                 "author_item_count": int(batch.get("author_item_count", 0)),
+                **bound_batches[str(batch["batch_id"])],
             }
         )
     session = {
@@ -742,6 +752,44 @@ def begin_authoring_session(
         "paths": {key: str(value) for key, value in paths.items() if key != "directory"},
     }
     return write_immutable_json(paths["session"], session)
+
+
+def _read_bound_packet(batch: dict[str, Any], data_dir: Path) -> dict[str, Any]:
+    """处理：在使用作者包前校验派发时绑定的字节摘要和授权条目。
+    输入：权威情境或会话中的批次记录与数据根；旧记录没有摘要时仅兼容读取。
+    输出：同一次读取解析出的包；改包或扩大授权范围会失败。
+    """
+    path = require_data_root_path(Path(batch["packet_path"]), data_dir, "Authoring packet")
+    content = path.read_bytes()
+    if batch.get("packet_sha256") and sha256(content).hexdigest() != batch["packet_sha256"]:
+        raise RuntimeError("Authoring packet changed after binding")
+    packet = json.loads(content)
+    if not isinstance(packet, dict):
+        raise ValueError("Authoring packet must be a JSON object")
+    if ("author_item_ids" in batch
+            and packet.get("author_item_ids") != batch["author_item_ids"]):
+        raise RuntimeError("Authoring packet authorized items changed")
+    return packet
+
+
+def _validate_session_binding(run: dict[str, Any], session: dict[str, Any], data_dir: Path) -> None:
+    """处理：在提交和恢复前拒绝旧尝试、旧情境和被替换的作者包。
+    输入：当前运行、已派发会话与唯一数据根。
+    输出：无返回值；仅允许同一证据版本继续使用已经完成的模型工作。
+    """
+    path = require_data_root_path(Path(session["context_path"]), data_dir, "Authoring context")
+    current = Path(run.get("artifacts", {}).get("context_path", path)).resolve()
+    if (current != path or int(session.get("run_attempt", 1)) != int(run.get("attempt", 1))):
+        raise RuntimeError("Authoring session belongs to a different run attempt or context")
+    if (session.get("context_sha256")
+            and sha256(path.read_bytes()).hexdigest() != session["context_sha256"]):
+        raise RuntimeError("Authoring context changed after dispatch")
+    for batch in session.get("batches", []):
+        _read_bound_packet(batch, data_dir)
+    for name, digest in session.get("input_artifact_sha256", {}).items():
+        artifact = require_data_root_path(Path(session["paths"][name]), data_dir, "Analysis input")
+        if sha256(artifact.read_bytes()).hexdigest() != digest:
+            raise RuntimeError("Analysis input changed after dispatch")
 
 
 def _batch_entry(session: dict[str, Any], batch_id: str) -> dict[str, Any]:
@@ -1066,6 +1114,7 @@ def submit_authoring_batch(
     session = read_json(session_path)
     if not isinstance(session, dict):
         raise ValueError("Authoring session must be a JSON object")
+    _validate_session_binding(run, session, data_dir)
     batch = _batch_entry(session, batch_id)
     packet_path = require_data_root_path(
         Path(str(batch["packet_path"])),
@@ -1098,7 +1147,7 @@ def submit_authoring_batch(
             raise RuntimeError(
                 f"Brief repair was not authorized for {batch_id}; preserve the rejection receipt"
             )
-    packet = read_json(packet_path)
+    packet = _read_bound_packet(batch, data_dir)
     payload = read_json(input_path)
     if not isinstance(packet, dict):
         raise ValueError("Authoring packet must be a JSON object")
@@ -1162,6 +1211,7 @@ def recover_valid_authoring_drafts(
     输出：本次通过原批次校验并创建不可变接收回执的 batch_id 列表；非法或不完整草稿
       仍保持缺失状态，由后续降级逻辑显式记录，绝不绕过授权 ID 与语义校验。
     """
+    _validate_session_binding(run, session, data_dir)
     recovered: list[str] = []
     for batch in session.get("batches", []):
         if not isinstance(batch, dict) or not batch.get("batch_id"):
@@ -1186,7 +1236,7 @@ def recover_valid_authoring_drafts(
         if not draft_path.is_file() or not packet_path.is_file():
             continue
         try:
-            packet = read_json(packet_path)
+            packet = _read_bound_packet(batch, data_dir)
             payload = read_json(draft_path)
         except (OSError, ValueError):
             continue
@@ -2041,6 +2091,18 @@ def _project_continuity_reports(rows: object) -> list[dict[str, Any]]:
     ]
 
 
+def _write_analysis_input(path: Path, payload: dict[str, Any]) -> None:
+    """处理：幂等保存分析输入，禁止后续准备步骤替换已派发的证据。
+    输入：Python 生成的简报骨架或分析包及其会话专属路径。
+    输出：首次独占写入；重复同内容复用，变更内容要求新会话。
+    """
+    if path.exists():
+        if read_json(path) != payload:
+            raise RuntimeError("Analysis input changed; start a new run/revision")
+    else:
+        write_immutable_json(path, payload)
+
+
 def prepare_analysis_packet(
     run: dict[str, Any],
     data_dir: Path,
@@ -2068,6 +2130,7 @@ def prepare_analysis_packet(
     session = read_json(session_path)
     if not isinstance(session, dict):
         raise ValueError("Authoring session must be a JSON object")
+    _validate_session_binding(run, session, data_dir)
     context_path = require_data_root_path(
         Path(str(session["context_path"])),
         data_dir,
@@ -2109,9 +2172,11 @@ def prepare_analysis_packet(
             "missing_batches": missing_batches,
             "effective_coverage_targets": coverage_targets,
         }
-    write_json(paths["skeleton"], skeleton)
+    _write_analysis_input(paths["skeleton"], skeleton)
 
-    analysis_started_at = now_iso(str(run.get("timezone") or "Asia/Shanghai"))
+    analysis_started_at = session.get("analysis_started_at") or now_iso(
+        str(run.get("timezone") or "Asia/Shanghai")
+    )
     analysis_state = _project_analysis_state(context)
     candidate_events = _analysis_candidates(sections, context, max_candidates)
     fresh_candidate_count = sum(
@@ -2199,7 +2264,11 @@ def prepare_analysis_packet(
         "state_projection": analysis_state["state_projection"],
         "delivery_degradation": skeleton.get("delivery_degradation"),
     }
-    write_json(paths["analysis_packet"], packet)
+    _write_analysis_input(paths["analysis_packet"], packet)
+    session["input_artifact_sha256"] = {
+        name: sha256(paths[name].read_bytes()).hexdigest()
+        for name in ("skeleton", "analysis_packet")
+    }
 
     batch_metrics = []
     delegation_metrics = _delegation_metrics_by_batch(session)
@@ -2310,6 +2379,7 @@ def assemble_report_draft(
     session = read_json(session_path)
     if not isinstance(session, dict):
         raise ValueError("Authoring session must be a JSON object")
+    _validate_session_binding(run, session, data_dir)
     context_path = require_data_root_path(
         Path(str(session["context_path"])),
         data_dir,

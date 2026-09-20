@@ -567,12 +567,14 @@ def _brief_html(
     if isinstance(image, dict) and (
         image.get("local_path") or image.get("source_url") or image.get("url")
     ):
+        caption = " · ".join(
+            _escape(image.get(key)) for key in ("caption", "credit") if image.get(key)
+        )
         figure = (
             '<figure><img loading="lazy" referrerpolicy="no-referrer" '
             f'src="{_image_src(image, media_path_prefix, embedded_image_sources)}" '
             f'alt="{_escape(image.get("caption"))}">'
-            f'<figcaption>{_escape(image.get("caption"))} · '
-            f'{_escape(image.get("credit"))}</figcaption></figure>'
+            f'<figcaption>{caption}</figcaption></figure>'
         )
     image_class = " has-image" if figure else ""
     return (

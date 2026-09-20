@@ -1744,11 +1744,6 @@ def validate_report_data(
                         source_counts[source_id] += 1
                     if urlsplit(str(primary.get("url", ""))).scheme not in {"http", "https"}:
                         errors.append(f"{item_prefix}.primary_source.url: invalid URL")
-                image = item.get("image")
-                if isinstance(image, dict):
-                    require_output_language(
-                        image.get("caption"), f"{item_prefix}.image.caption"
-                    )
             for note_index, note in enumerate(item.get("evidence_notes", [])):
                 require_output_language(
                     note, f"{item_prefix}.evidence_notes[{note_index}]"

@@ -1,6 +1,6 @@
 # 架构
 
-**状态：** 已验证 · **负责人：** 仓库维护者 · **最后验证：** 2026-09-11
+**状态：** 已验证 · **负责人：** 仓库维护者 · **最后验证：** 2026-09-12
 
 本文说明 SignalTrail 的代码分工。[运行契约](../../references/system-design.md)解释数据字段
 和恢复规则，[AGENTS.md](AGENTS.md)说明修改仓库时的约束。[English](../../ARCHITECTURE.md)
@@ -63,7 +63,8 @@ created → collecting → building_context → awaiting_selection
 | 数据根下的文件 | 归属 |
 | --- | --- |
 | `indexes/`、`content/`、`reports/` | 版本化证据和报告，不覆盖已有修订 |
-| `context/` | 绑定运行的写作输入与回执；数据包完整性缺口见 TD-007 |
+| `context/` | 不可变写作输入、有界协调器投影、绑定哈希的会话与回执 |
+| `content-checkpoints/` | 绑定输入索引与选中 ID 的完整提取结果；支持索引提交恢复 |
 | `runs/` | 原子更新的检查点，包含用量任务引用 |
 | `usage/…/events/` | 不可变、仅含允许字段的用量事件，用量合计的事实源 |
 | `evaluations/dossiers/` | 绑定报告与索引哈希的不可变输入，当前使用 `-v2.json` |

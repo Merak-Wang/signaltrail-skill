@@ -1,10 +1,16 @@
 from __future__ import annotations
 
+from hashlib import sha256
 from math import ceil
 from pathlib import Path
 from typing import Any
 
-from .authoring import _brief_output_schema, batch_result_paths
+from .authoring import (
+    _brief_output_schema,
+    _project_analysis_state,
+    _project_continuity_reports,
+    batch_result_paths,
+)
 from .collection_diagnostics import enrichment_plan, source_coverage
 from .config import AppConfig
 from .localization import (
@@ -274,12 +280,10 @@ def _compact_candidates(
         # 采集层已经按当前来源的 item_order 写好 index；这里必须保留该顺序，
         # 否则正文状态或发布时间会把 brief_plan 从 Top1–15 改成另一组条目。
         base_limit = min(per_source, max(5, report_targets.get(source_id, 5) * 2))
-        enriched_count = sum(
-            item.get("content_status") in {"full_text", "partial"}
-            for item, _source_rank in ranked_items
-        )
-        limit = max(base_limit, enriched_count)
-        for rank, (item, source_rank) in enumerate(ranked_items[:limit], start=1):
+        for rank, (item, source_rank) in enumerate(ranked_items, start=1):
+            # 正文预算已经约束富化量；低排名的已取证条目也必须进入候选，Top 顺序不变。
+            if rank > base_limit and item.get("content_status") not in {"full_text", "partial"}:
+                continue
             compact.append(
                 {
                     **{
@@ -296,6 +300,8 @@ def _compact_candidates(
                     ),
                     "previously_reported": item.get("item_id") in reported_item_ids,
                     "semantic_fingerprint": semantic_fingerprint(item),
+                    **({"content_text_sha256": item["metadata"]["content_text_sha256"]}
+                       if (item.get("metadata") or {}).get("content_text_sha256") else {}),
                     **_content_observations(item),
                 }
             )
@@ -613,7 +619,7 @@ def _write_brief_authoring_packets(
             ),
             "candidates": packet_candidates,
         }
-        write_json(packet_path, packet)
+        write_immutable_json(packet_path, packet)
         packets.append(
             {
                 **batch,
@@ -621,6 +627,8 @@ def _write_brief_authoring_packets(
                 "draft_result_path": str(draft_result_path.resolve()),
                 "result_path": str(accepted_result_path.resolve()),
                 "author_item_count": len(author_item_ids),
+                "packet_sha256": sha256(packet_path.read_bytes()).hexdigest(),
+                "author_item_ids": author_item_ids,
             }
         )
     return packets
@@ -761,6 +769,9 @@ def build_context(
     )
     context_dir = data_dir / "context" / date
     revision = next_revision(context_dir, edition)
+    # 上次可能只写成部分批次包；为新情境跳过这些保留的修订，绝不覆盖孤立证据。
+    while any(context_dir.glob(f"{edition}-r{revision}-*.json")):
+        revision += 1
     context_stem = f"{edition}-r{revision}"
     brief_batches = _write_brief_authoring_packets(
         candidates,
@@ -965,7 +976,46 @@ def build_context(
         },
     }
     output = context_dir / f"{context_stem}.json"
+    coordinator_path = output.with_name(f"{context_stem}-coordinator.json")
+    bundle["coordinator_path"] = str(coordinator_path.resolve())
     # 带修订号的情境包是不可变记录；latest 仅用于方便定位当前版本。
     write_immutable_json(output, bundle)
+    write_immutable_json(coordinator_path, coordinator_context(bundle, output))
     write_json(data_dir / "context" / f"latest-{edition}.json", bundle)
     return output
+
+
+def coordinator_context(bundle: dict[str, Any], context_path: Path) -> dict[str, Any]:
+    """处理：为协调器投影有限连续性状态，避免历史全文随轮次重复进入模型。
+    输入：本地权威情境和它的确切版本路径；候选与写作计划保持原有顺序。
+    输出：可供选题和调度的独立视图；完整历史保留在权威情境，作者只读自己的包。
+    """
+    projection = _project_analysis_state(bundle)
+    result = {
+        key: value for key, value in bundle.items()
+        if key not in {
+            "active_theses", "active_watchlist", "open_predictions", "user_feedback",
+            "continuity_reports", "reusable_briefs",
+        }
+    }
+    result.update(projection)
+    # 校验摘要与授权 ID 的重复清单由 Python 消费，不占协调器的选题上下文。
+    result["candidate_items"] = [
+        {key: value for key, value in item.items()
+         if key not in {"semantic_fingerprint", "content_text_sha256"}}
+        for item in bundle.get("candidate_items", [])
+    ]
+    result["brief_authoring_batches"] = [
+        {key: value for key, value in batch.items()
+         if key not in {"packet_sha256", "author_item_ids"}}
+        for batch in bundle.get("brief_authoring_batches", [])
+    ]
+    result["continuity_reports"] = _project_continuity_reports(bundle.get("continuity_reports", []))
+    result["reusable_brief_count"] = len(bundle.get("reusable_briefs", []))
+    result["authoritative_context_path"] = str(context_path.resolve())
+    result["authoritative_context_sha256"] = sha256(context_path.read_bytes()).hexdigest()
+    result["coordinator_rule"] = (
+        "Use this projection for selection and orchestration. Do not preload the full context "
+        "or accepted briefs. Python merges cached text; workers read only their assigned packet."
+    )
+    return result

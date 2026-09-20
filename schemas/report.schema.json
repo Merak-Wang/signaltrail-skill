@@ -255,7 +255,7 @@
                   "required": ["url", "caption", "credit"],
                   "properties": {
                     "url": {"type": "string", "format": "uri"},
-                    "caption": {"type": "string", "minLength": 1},
+                    "caption": {"type": "string"},
                     "credit": {"type": "string", "minLength": 1}
                   },
                   "additionalProperties": false
@@ -349,7 +349,7 @@
                     "byte_size": {"type": "integer", "minimum": 1, "maximum": 20971520},
                     "width": {"type": "integer", "minimum": 1},
                     "height": {"type": "integer", "minimum": 1},
-                    "caption": {"type": "string", "minLength": 1},
+                    "caption": {"type": "string"},
                     "credit": {"type": "string", "minLength": 1}
                   },
                   "additionalProperties": false

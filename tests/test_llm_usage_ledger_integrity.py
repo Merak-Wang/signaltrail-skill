@@ -13,6 +13,31 @@ from daily_intelligence.llm_usage import CallHandle, TaskHandle, UsageLedger
 from daily_intelligence.llm_usage.adapters.base import canonical_digest
 
 
+def test_hook_reads_each_existing_event_once_but_revalidates_next_transaction(
+    tmp_path, monkeypatch,
+):
+    ledger = UsageLedger(tmp_path)
+    task = ledger.start_task("hermes", task_id="snapshot-scope")
+    ledger.ingest_hook(task, "hermes", _usage_payload("first"))
+    paths = list((task.path / "events").glob("*.json"))
+    counts = {path: 0 for path in paths}
+    read_text = Path.read_text
+
+    def read(path, *args, **kwargs):
+        if path in counts:
+            counts[path] += 1
+        return read_text(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", read)
+    ledger.ingest_hook(task, "hermes", _usage_payload("second"))
+    assert set(counts.values()) == {1}
+    ledger.ingest_hook(task, "hermes", _usage_payload("third"))
+    assert set(counts.values()) == {2}
+    paths[0].write_text("{}", encoding="utf-8")
+    with pytest.raises(RuntimeError):
+        ledger.ingest_hook(task, "hermes", _usage_payload("fourth"))
+
+
 def _usage_payload(request_id: str = "request-1") -> dict[str, Any]:
     """处理：构造不含正文且带精确总量的 Hermes 回执。
     输入：仅用于调用关联且不会落盘明文的 request ID。

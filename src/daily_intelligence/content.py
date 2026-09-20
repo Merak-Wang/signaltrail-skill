@@ -28,6 +28,7 @@ from .content_extraction import (
 from .content_images import article_image_candidates
 from .image_policy import normalize_image_candidates
 from .models import ContentStatus
+from .runtime import require_data_root_path
 from .storage import next_revision, write_bytes_atomic, write_immutable_json, write_text_atomic
 from .utils import now_iso, read_json, timestamp_slug, write_json
 
@@ -234,6 +235,7 @@ def _apply_image_candidates(
             "url": url,
             "provenance": "page_metadata" if url in page_urls else "index_card",
             "purpose": "publisher_selected",
+            "caption": "",
             "semantic_verification": "not_performed",
         }) for url in candidates
     ]
@@ -295,6 +297,7 @@ def _save_document(
     metadata["content_quality"] = document.quality
     metadata["content_input"] = document.provenance
     metadata["content_source"] = document.source_metadata
+    metadata["content_text_sha256"] = hashlib.sha256(document.text.encode("utf-8")).hexdigest()
     item.pop("content_path", None)
     metadata.pop("content_blocks_path", None)
     metadata.pop("content_artifacts", None)
@@ -967,6 +970,7 @@ def extract_content(
     headed: bool,
     profile_dir: Path | None = None,
     browser_channel: str | None = None,
+    checkpoint_path: Path | None = None,
 ) -> Path:
     """处理：按选中条目和全文预算复用已有正文，再执行 HTTP 与浏览器分层提取。
     输入：
@@ -978,6 +982,7 @@ def extract_content(
     - ``headed``：是否显示真实浏览器窗口；人工登录或验证场景需要开启。
     - ``profile_dir``：持久化浏览器 Profile 目录；保存用户已授权的浏览器会话。
     - ``browser_channel``：Playwright 浏览器通道名称；为空时使用配置或默认 Chromium。
+    - ``checkpoint_path``：运行专属恢复记录；绑定输入索引与选中条目，复用已经完成的提取。
     输出：指向“按选中条目和全文预算复用已有正文，
       再执行 HTTP 与浏览器分层提取”所生成、定位或确认产物的本地路径。
     """
@@ -994,6 +999,17 @@ def extract_content(
     targets = _ordered_targets(items, selected_ids, effective_limit)
     if not targets:
         raise ValueError("No selected item IDs were found in the index")
+    binding = {
+        "index_sha256": hashlib.sha256(index_path.read_bytes()).hexdigest(),
+        "selected_ids": [item["item_id"] for item in targets],
+    }
+    if checkpoint_path is not None:
+        checkpoint_path = require_data_root_path(checkpoint_path, data_dir, "Content checkpoint")
+        if checkpoint_path.is_file():
+            saved = read_json(checkpoint_path)
+            if not isinstance(saved, dict) or saved.get("binding") != binding:
+                raise ValueError("Content checkpoint does not match the input index and selection")
+            return _commit_extraction_checkpoint(saved, data_dir)
     profile = resolve_profile_dir(config, profile_dir)
     profile.mkdir(parents=True, exist_ok=True)
     channel = resolve_browser_channel(config, browser_channel)
@@ -1018,7 +1034,30 @@ def extract_content(
     payload["revision"] = revision
     payload["index_id"] = f"index-{date}-{edition}-r{revision}"
     output = index_dir / f"{edition}-r{revision}.json"
+    if checkpoint_path is not None:
+        # 先保存完整提取结果；索引或上下文提交失败后无需重新访问来源。
+        saved = {"binding": binding, "output_path": str(output.resolve()), "payload": payload}
+        write_immutable_json(checkpoint_path, saved)
+        return _commit_extraction_checkpoint(saved, data_dir)
     # 修订产物不可覆盖；latest.json 只是可重建的便利指针。
     write_immutable_json(output, payload)
+    write_json(data_dir / "indexes" / "latest.json", payload)
+    return output
+
+
+def _commit_extraction_checkpoint(saved: dict[str, Any], data_dir: Path) -> Path:
+    """处理：从已绑定检查点提交不可变索引，或核对上次已完成的同一提交。
+    输入：提取完成后保存的索引对象、目标路径和当前数据根。
+    输出：同一索引修订的路径；目标冲突时拒绝覆盖，latest 保持可重建。
+    """
+    output = require_data_root_path(Path(saved["output_path"]), data_dir, "Enriched index")
+    payload = saved["payload"]
+    if not isinstance(payload, dict):
+        raise ValueError("Content checkpoint payload must be an object")
+    if output.exists():
+        if read_json(output) != payload:
+            raise ValueError("Enriched index conflicts with the content checkpoint")
+    else:
+        write_immutable_json(output, payload)
     write_json(data_dir / "indexes" / "latest.json", payload)
     return output

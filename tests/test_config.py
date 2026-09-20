@@ -297,12 +297,13 @@ def test_live_hermes_data_root_is_bound_once(tmp_path):
     assert adopted["previous_data_root"] == str(first.resolve())
 
 
-def test_run_artifacts_must_remain_under_active_data_root(tmp_path):
+@pytest.mark.parametrize("artifact", ["index_path", "context_path", "coordinator_path"])
+def test_run_artifacts_must_remain_under_active_data_root(tmp_path, artifact):
     data_dir = tmp_path / "canonical"
     run_path = data_dir / "runs" / "2026-07-17" / "morning.json"
     run = {
         "data_root": str(data_dir.resolve()),
-        "artifacts": {"index_path": str(tmp_path / "other" / "index.json")},
+        "artifacts": {artifact: str(tmp_path / "other" / "index.json")},
     }
 
     with pytest.raises(ValueError, match="outside the active DAILY_INTEL_DATA_DIR"):

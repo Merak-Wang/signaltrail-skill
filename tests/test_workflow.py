@@ -1,7 +1,10 @@
+from contextlib import contextmanager
+from hashlib import sha256
 from pathlib import Path
 
 import pytest
 
+import daily_intelligence.workflow as workflow_module
 from daily_intelligence.config import OutputConfig, load_config
 from daily_intelligence.llm_usage import UsageLedger
 from daily_intelligence.utils import read_json, write_json
@@ -16,6 +19,135 @@ from daily_intelligence.workflow import (
     prepare_edition,
 )
 from tests.report_helpers import load_sample_report, write_report_index
+
+
+@pytest.mark.parametrize("operation", [
+    "enrich", "begin", "analysis", "assemble", "adopt", "finalize", "tail", "batch", "metrics",
+])
+def test_workflow_mutators_reject_run_changed_before_lock(monkeypatch, tmp_path, operation):
+    index_path = write_json(tmp_path / "indexes" / "2026-09-12" / "morning-r1.json", {
+        "date": "2026-09-12", "edition": "morning", "items": [],
+    })
+    run_path = write_json(tmp_path / "runs" / "2026-09-12" / "morning.json", {
+        "date": "2026-09-12", "edition": "morning", "attempt": 1,
+        "status": RunStatus.COMPLETED if operation == "tail" else RunStatus.AWAITING_AUTHORING,
+        "artifacts": {
+            "index_path": str(index_path), "context_path": str(tmp_path / "context.json"),
+        },
+    })
+
+    @contextmanager
+    def race(*_args):
+        changed = read_json(run_path)
+        changed["attempt"] = 2
+        write_json(run_path, changed)
+        yield
+
+    monkeypatch.setattr(workflow_module, "exclusive_lock", race)
+    config = load_config()
+    operations = {
+        "enrich": lambda: enrich_edition(run_path, config, tmp_path, [], 0),
+        "begin": lambda: workflow_module.begin_authoring(run_path, tmp_path),
+        "analysis": lambda: workflow_module.prepare_authoring_analysis(run_path, tmp_path),
+        "assemble": lambda: workflow_module.assemble_authoring(
+            run_path, tmp_path / "draft.json", tmp_path,
+        ),
+        "adopt": lambda: adopt_index_for_run(config, tmp_path, index_path),
+        "finalize": lambda: finalize_edition(run_path, tmp_path / "draft.json", tmp_path),
+        "tail": lambda: complete_edition_tail(run_path, tmp_path),
+        "batch": lambda: workflow_module.accept_authoring_batch(
+            run_path, "batch", tmp_path / "draft.json", tmp_path,
+        ),
+        "metrics": lambda: workflow_module.accept_authoring_metrics(
+            run_path, tmp_path / "metrics.json", tmp_path,
+        ),
+    }
+    with pytest.raises(RuntimeError, match="Run changed before lock acquisition"):
+        operations[operation]()
+    assert read_json(run_path)["attempt"] == 2
+
+
+@pytest.mark.parametrize("failure_stage", ["extraction", "context"])
+def test_enrichment_resumes_bound_selection_after_interruption(
+    monkeypatch, tmp_path, failure_stage,
+):
+    index_path = write_json(tmp_path / "indexes" / "2026-09-12" / "morning-r1.json", {
+        "date": "2026-09-12", "edition": "morning", "items": [],
+    })
+    run_path = write_json(tmp_path / "runs" / "2026-09-12" / "morning.json", {
+        "date": "2026-09-12", "edition": "morning", "status": RunStatus.AWAITING_SELECTION,
+        "collection_window": {}, "artifacts": {"index_path": str(index_path)},
+    })
+    calls = []
+    fail_once = [True]
+
+    def extract(**kwargs):
+        calls.append(kwargs)
+        if failure_stage == "extraction" and fail_once.pop():
+            raise OSError("simulated extraction interruption")
+        return index_path
+
+    def context(*_args, **_kwargs):
+        if failure_stage == "context" and fail_once.pop():
+            raise OSError("simulated context interruption")
+        return write_json(tmp_path / "context" / "morning-r1.json", {})
+
+    monkeypatch.setattr(workflow_module, "extract_content", extract)
+    monkeypatch.setattr(workflow_module, "build_context", context)
+    config = load_config()
+    selected = [f"item-{n}" for n in range(20)]
+    with pytest.raises(OSError, match="interruption"):
+        enrich_edition(run_path, config, tmp_path, selected, None)
+    interrupted = read_json(run_path)
+    assert interrupted["status"] == RunStatus.EXTRACTING_CONTENT
+    assert interrupted["pending_enrichment"]["selected_ids"] == selected[:12]
+    with pytest.raises(ValueError, match="original selected IDs"):
+        enrich_edition(run_path, config, tmp_path, ["unrelated-item"], None)
+    fail_once.append(False)
+    enrich_edition(run_path, config, tmp_path, selected, None)
+    finished = read_json(run_path)
+    assert finished["status"] == RunStatus.AWAITING_AUTHORING
+    assert "pending_enrichment" not in finished
+    assert finished["artifacts"]["selected_item_ids"] == selected[:12]
+    assert calls[0]["checkpoint_path"] == calls[1]["checkpoint_path"]
+    assert calls[1]["selected_ids"] == selected[:12]
+
+
+@pytest.mark.parametrize("completed_checkpoint", [False, True])
+def test_enrichment_deadline_allows_only_completed_checkpoint_recovery(
+    monkeypatch, tmp_path, completed_checkpoint,
+):
+    index = write_json(tmp_path / "indexes" / "2026-09-12" / "morning-r1.json", {
+        "date": "2026-09-12", "edition": "morning", "items": [],
+    })
+    checkpoint = tmp_path / "content-checkpoints" / "operation.json"
+    if completed_checkpoint:
+        write_json(checkpoint, {})
+    run_path = write_json(tmp_path / "runs" / "2026-09-12" / "morning.json", {
+        "date": "2026-09-12", "edition": "morning", "status": RunStatus.EXTRACTING_CONTENT,
+        "deadline_at": "2000-01-01T00:00:00+08:00", "collection_window": {},
+        "artifacts": {"index_path": str(index)},
+        "pending_enrichment": {
+            "index_sha256": sha256(index.read_bytes()).hexdigest(),
+            "selected_ids": ["item-1"], "requested_ids": ["item-1"],
+            "checkpoint_path": str(checkpoint),
+        },
+    })
+    calls = []
+
+    def extract(**kwargs):
+        assert completed_checkpoint
+        calls.append(kwargs["selected_ids"])
+        return index
+
+    monkeypatch.setattr(workflow_module, "extract_content", extract)
+    enrich_edition(run_path, load_config(), tmp_path, [], None)
+    run = read_json(run_path)
+    assert run["status"] == RunStatus.AWAITING_AUTHORING
+    assert calls == ([["item-1"]] if completed_checkpoint else [])
+    if not completed_checkpoint:
+        assert run["budget_exhausted"] is True
+        assert run["enrichment_stop_reason"] == "deadline_exceeded_before_resume"
 
 
 def test_active_usage_binding_links_only_the_matching_data_root(

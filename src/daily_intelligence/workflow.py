@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import os
 import re
@@ -11,6 +12,7 @@ from enum import StrEnum
 from pathlib import Path
 from time import perf_counter
 from typing import Any
+from uuid import uuid4
 from zoneinfo import ZoneInfo
 
 from .authoring import (
@@ -789,6 +791,14 @@ def _update_run(path: Path, run: dict[str, Any], status: RunStatus, **fields: An
     )
     previous_status = str(run.get("status") or "")
     run.update(fields)
+    context_value = run.get("artifacts", {}).get("context_path")
+    if context_value:
+        context_path = Path(context_value)
+        coordinator = context_path.with_name(f"{context_path.stem}-coordinator.json")
+        if coordinator.is_file():
+            run["artifacts"]["coordinator_path"] = str(coordinator.resolve())
+        else:
+            run["artifacts"].pop("coordinator_path", None)
     run["status"] = status
     run["updated_at"] = timestamp
     if previous_status != status.value:
@@ -798,6 +808,22 @@ def _update_run(path: Path, run: dict[str, Any], status: RunStatus, **fields: An
             {"status": status.value, "timestamp": timestamp}
         )
     write_json(path, run)
+
+
+def _reload_locked_run(path: Path, expected: dict[str, Any], data_dir: Path) -> dict[str, Any]:
+    """处理：取得版次锁后重读运行，拒绝按旧快照覆盖新尝试或证据。
+    输入：锁前快照、运行路径和数据根；调用方必须持有对应版次锁。
+    输出：同一尝试与状态的最新运行；无关的新指标保留，冲突要求重新读取后重试。
+    """
+    current = read_json_object(path, "Run manifest")
+    validate_run_data_root(current, path, data_dir)
+    fields = ("attempt", "status", "date", "edition")
+    artifacts = ("index_path", "context_path")
+    if (any(current.get(key) != expected.get(key) for key in fields)
+            or any(current.get("artifacts", {}).get(key) != expected.get("artifacts", {}).get(key)
+                   for key in artifacts)):
+        raise RuntimeError("Run changed before lock acquisition; reload the current run")
+    return current
 
 
 def _lock_payload(edition: str, timestamp: str) -> dict[str, Any]:
@@ -981,6 +1007,25 @@ def adopt_index_for_run(config: AppConfig, data_dir: Path, index_path: Path) -> 
         return None
     run = read_json_object(run_path, "Run manifest")
     validate_run_data_root(run, run_path, data_dir)
+    lock_path = data_dir / "locks" / f"{index['date']}-{index['edition']}.lock"
+    with exclusive_lock(lock_path, _lock_payload(str(index["edition"]), now_iso(config.timezone))):
+        run = _reload_locked_run(run_path, run, data_dir)
+        if (run.get("status") not in TERMINAL_STATUSES
+                and run.get("artifacts", {}).get("authoring", {}).get("session_path")):
+            raise RuntimeError(
+                "Index adoption must finish before authoring dispatch; restart the run"
+            )
+        return _adopt_locked_index(config, data_dir, index_path, index, run_path, run)
+
+
+def _adopt_locked_index(
+    config: AppConfig, data_dir: Path, index_path: Path, index: dict[str, Any],
+    run_path: Path, run: dict[str, Any],
+) -> Path:
+    """处理：持有版次锁时生成验证后情境并更新运行产物。
+    输入：已重读的运行与验证索引；已派发会话的替换在入口拒绝。
+    输出：更新后的运行路径；已发布报告保留旧修订血缘。
+    """
     context_config = replace(
         config,
         output=replace(
@@ -1060,6 +1105,7 @@ def begin_authoring(run_path: Path, data_dir: Path) -> Path:
         lock_path,
         _lock_payload(edition, now_iso(str(run.get("timezone", "Asia/Shanghai")))),
     ):
+        run = _reload_locked_run(run_path, run, data_dir)
         context_path = require_data_root_path(
             Path(str(run["artifacts"]["context_path"])),
             data_dir,
@@ -1105,7 +1151,10 @@ def accept_authoring_batch(
         raise RuntimeError(
             f"Run must be awaiting authoring, got {run.get('status')!r}"
         )
-    return submit_authoring_batch(run, batch_id, result_path, data_dir)
+    lock_path = data_dir / "locks" / f"{run['date']}-{run['edition']}.lock"
+    with exclusive_lock(lock_path, _lock_payload(str(run["edition"]), now_iso("Asia/Shanghai"))):
+        run = _reload_locked_run(run_path, run, data_dir)
+        return submit_authoring_batch(run, batch_id, result_path, data_dir)
 
 
 def accept_authoring_metrics(
@@ -1127,7 +1176,10 @@ def accept_authoring_metrics(
         raise RuntimeError(
             f"Run must be awaiting authoring, got {run.get('status')!r}"
         )
-    return record_authoring_metrics(run, metrics_path, data_dir)
+    lock_path = data_dir / "locks" / f"{run['date']}-{run['edition']}.lock"
+    with exclusive_lock(lock_path, _lock_payload(str(run["edition"]), now_iso("Asia/Shanghai"))):
+        run = _reload_locked_run(run_path, run, data_dir)
+        return record_authoring_metrics(run, metrics_path, data_dir)
 
 
 def get_authoring_status(run_path: Path, data_dir: Path) -> dict[str, Any]:
@@ -1235,6 +1287,7 @@ def prepare_authoring_analysis(
         lock_path,
         _lock_payload(edition, now_iso(str(run.get("timezone", "Asia/Shanghai")))),
     ):
+        run = _reload_locked_run(run_path, run, data_dir)
         _require_llm_budget(run, run_path, data_dir, "analysis")
         prepared = prepare_analysis_packet(
             run,
@@ -1299,6 +1352,7 @@ def assemble_authoring(
         lock_path,
         _lock_payload(edition, now_iso(str(run.get("timezone", "Asia/Shanghai")))),
     ):
+        run = _reload_locked_run(run_path, run, data_dir)
         assembled = assemble_report_draft(run, analysis_path, data_dir)
         authoring = run["artifacts"]["authoring"]
         authoring.update(
@@ -1568,6 +1622,7 @@ def enrich_edition(
     if run.get("status") not in {
         RunStatus.AWAITING_SELECTION,
         RunStatus.AWAITING_AUTHORING,
+        RunStatus.EXTRACTING_CONTENT,
     }:
         raise RuntimeError(
             f"Run must be awaiting selection or authoring, got {run.get('status')!r}"
@@ -1580,6 +1635,9 @@ def enrich_edition(
         lock_path,
         _lock_payload(edition, now_iso(config.timezone)),
     ):
+        run = _reload_locked_run(run_path, run, data_dir)
+        if run.get("artifacts", {}).get("authoring", {}).get("session_path"):
+            raise RuntimeError("Enrichment must finish before authoring dispatch; restart the run")
         index_path = require_data_root_path(
             Path(run["artifacts"]["index_path"]), data_dir, "Run index"
         )
@@ -1598,16 +1656,54 @@ def enrich_edition(
         if requested_limit < 0:
             raise ValueError("max_items cannot be negative")
         accepted_ids = requested_ids[: min(requested_limit, remaining_budget)]
-        if _deadline_exceeded(run):
+        pending = run.get("pending_enrichment")
+        if run.get("status") == RunStatus.EXTRACTING_CONTENT:
+            if not isinstance(pending, dict):
+                raise RuntimeError(
+                    "Interrupted enrichment has no checkpoint binding; restart the run"
+                )
+            if selected_ids and list(dict.fromkeys(selected_ids)) not in (
+                pending["selected_ids"],
+                pending.get("original_selection", pending["requested_ids"]),
+            ):
+                raise ValueError(
+                    "Resume enrichment with the original selected IDs or an empty selection"
+                )
+            if pending["index_sha256"] != hashlib.sha256(index_path.read_bytes()).hexdigest():
+                raise ValueError("Enrichment input index changed after checkpoint binding")
+            accepted_ids = pending["selected_ids"]
+            requested_ids = pending["requested_ids"]
+            checkpoint = require_data_root_path(
+                Path(pending["checkpoint_path"]), data_dir, "Content checkpoint"
+            )
+            if _deadline_exceeded(run) and not checkpoint.is_file():
+                accepted_ids = []
+                run["budget_exhausted"] = True
+                run["enrichment_stop_reason"] = "deadline_exceeded_before_resume"
+        elif _deadline_exceeded(run):
             accepted_ids = []
             run["budget_exhausted"] = True
         cumulative_ids = [*previous_ids, *accepted_ids]
         if accepted_ids:
+            if not isinstance(pending, dict):
+                pending = {
+                    "index_sha256": hashlib.sha256(index_path.read_bytes()).hexdigest(),
+                    "selected_ids": accepted_ids,
+                    "requested_ids": requested_ids,
+                    "original_selection": list(dict.fromkeys(selected_ids)),
+                    "checkpoint_path": str((
+                        data_dir / "content-checkpoints" / f"{uuid4().hex}.json"
+                    ).resolve()),
+                }
+                run["pending_enrichment"] = pending
             _update_run(
                 run_path,
                 run,
                 RunStatus.EXTRACTING_CONTENT,
                 updated_at=now_iso(config.timezone),
+                next_action=(
+                    "Resume enrich-edition with this run and the original selection (or no IDs)."
+                ),
             )
             index_path = extract_content(
                 index_path=index_path,
@@ -1618,6 +1714,7 @@ def enrich_edition(
                 headed=headed,
                 profile_dir=profile_dir,
                 browser_channel=browser_channel,
+                checkpoint_path=Path(pending["checkpoint_path"]),
             )
         context_config = replace(
             config,
@@ -1661,6 +1758,7 @@ def enrich_edition(
                 "enrichment": enrichment,
             }
         )
+        run.pop("pending_enrichment", None)
         _update_run(
             run_path,
             run,
@@ -1668,7 +1766,8 @@ def enrich_edition(
             updated_at=now_iso(config.timezone),
             artifacts=run["artifacts"],
             next_action=(
-                "Author a report from context_path, then run finalize-edition "
+                "Read coordinator_path and dispatch its authoring packets, "
+                "then run finalize-edition "
                 "with this run manifest and the report draft."
             ),
         )
@@ -1802,6 +1901,7 @@ def finalize_edition(
     timezone = str(run.get("timezone", "Asia/Shanghai"))
     lock_timestamp = now_iso(timezone)
     with exclusive_lock(lock_path, _lock_payload(edition, lock_timestamp)):
+        run = _reload_locked_run(run_path, run, data_dir)
         if run.get("status") in {
             RunStatus.COMPLETED,
             RunStatus.COMPLETED_PARTIAL,
@@ -2079,7 +2179,7 @@ def complete_edition_tail(
     timezone = str(run.get("timezone", "Asia/Shanghai"))
     lock_path = data_dir / "locks" / f"{date}-{edition}.lock"
     with exclusive_lock(lock_path, _lock_payload(edition, now_iso(timezone))):
-        run = read_json_object(run_path, "Run manifest")
+        run = _reload_locked_run(run_path, run, data_dir)
         tail = dict(run.get("tail") or {})
         if tail.get("status") == "completed":
             return run_path

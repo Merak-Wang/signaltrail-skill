@@ -2,6 +2,8 @@ import json
 import re
 from pathlib import Path
 
+import pytest
+
 from daily_intelligence.config import MediaConfig
 from daily_intelligence.local_output import render_report_html
 from daily_intelligence.media import DownloadedImage, materialize_report_images
@@ -53,6 +55,18 @@ def test_sample_report_validates():
     root = Path(__file__).resolve().parents[1]
     report = root / "examples" / "sample_report.json"
     errors, _warnings = validate_report(report)
+    assert errors == []
+
+
+@pytest.mark.parametrize("caption", ["Engineers inspect the reactor on Monday.", ""])
+def test_legacy_event_image_allows_original_language_or_empty_caption(caption):
+    report = load_sample_report(Path(__file__).resolve().parents[1])
+    _first_report_item(report)["image"] = {
+        "url": "https://cdn.example/reactor.jpg", "caption": caption, "credit": "Example News",
+    }
+
+    errors, _warnings = validate_report_data(report)
+
     assert errors == []
 
 
@@ -858,7 +872,8 @@ def test_v15_prefers_publication_time_in_every_report_projection():
     assert "发布时间｜2026-07-12T01:00:00+08:00" in notion
 
 
-def test_v15_compiler_binds_only_the_indexed_public_image(tmp_path: Path):
+@pytest.mark.parametrize("caption", ["Engineers inspect the reactor on Monday.", ""])
+def test_v15_compiler_binds_only_the_indexed_public_image(tmp_path: Path, caption: str):
     report = _v15_report()
     index = _v15_index(report)
     index.update(
@@ -869,6 +884,9 @@ def test_v15_compiler_binds_only_the_indexed_public_image(tmp_path: Path):
         }
     )
     index["items"][0]["image_url"] = "https://cdn.example/public-story.png"
+    index["items"][0].setdefault("metadata", {})["image_candidate_details"] = [{
+        "url": index["items"][0]["image_url"], "caption": caption,
+    }]
     digest = "a" * 64
 
     compile_report_data(report, index)
@@ -896,6 +914,7 @@ def test_v15_compiler_binds_only_the_indexed_public_image(tmp_path: Path):
     assert errors == []
     assert brief["image"]["source_url"] == index["items"][0]["image_url"]
     assert brief["image"]["credit"] == brief["primary_source"]["name"]
+    assert brief["image"]["caption"] == caption
     assert report["media_metrics"]["attached"] == 1
 
 
