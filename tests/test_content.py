@@ -8,8 +8,8 @@ import httpx
 import pytest
 from bs4 import BeautifulSoup
 
-from daily_intelligence.config import load_config
-from daily_intelligence.content import (
+from signaltrail.config import load_config
+from signaltrail.content import (
     _apply_http_document,
     _extract_pipeline,
     _ordered_targets,
@@ -19,16 +19,16 @@ from daily_intelligence.content import (
     extract_visible_text,
     synchronize_nested_items,
 )
-from daily_intelligence.content_extraction import extract_document
-from daily_intelligence.models import ContentStatus
-from daily_intelligence.utils import read_json, write_json
+from signaltrail.content_extraction import extract_document
+from signaltrail.models import ContentStatus
+from signaltrail.utils import read_json, write_json
 
 
 @pytest.mark.parametrize("after_index_write", [False, True])
 def test_extraction_resumes_index_commit_without_repeating_acquisition(
     monkeypatch, tmp_path, after_index_write,
 ):
-    import daily_intelligence.content as module
+    import signaltrail.content as module
 
     item = _item()
     index_path = write_json(tmp_path / "indexes" / "2026-09-12" / "morning-r1.json", {
@@ -187,7 +187,7 @@ def test_browser_and_static_paths_use_the_same_short_article_rule():
 
 
 def test_http_byte_limit_records_partial_content(monkeypatch, tmp_path):
-    from daily_intelligence import content
+    from signaltrail import content
 
     config = load_config()
     item = _item()
@@ -529,11 +529,11 @@ def test_content_pipeline_reuses_existing_successful_content(monkeypatch, tmp_pa
         raise AssertionError("browser must not run for reusable content")
 
     monkeypatch.setattr(
-        "daily_intelligence.content._run_http_extraction",
+        "signaltrail.content._run_http_extraction",
         unexpected_http,
     )
     monkeypatch.setattr(
-        "daily_intelligence.content._extract_with_browser",
+        "signaltrail.content._extract_with_browser",
         unexpected_browser,
     )
 
@@ -620,7 +620,7 @@ def test_enrichment_is_parallel_across_domains_and_serial_within_domain(
         active_by_domain[domain] -= 1
         active -= 1
 
-    monkeypatch.setattr("daily_intelligence.content._extract_one", fake_extract_one)
+    monkeypatch.setattr("signaltrail.content._extract_one", fake_extract_one)
     targets = [
         {"item_id": "a1", "url": "https://a.example/1"},
         {"item_id": "a2", "url": "https://a.example/2"},

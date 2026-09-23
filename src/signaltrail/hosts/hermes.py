@@ -15,7 +15,7 @@ from pathlib import Path, PureWindowsPath
 from typing import Any
 from uuid import uuid4
 
-from daily_intelligence.llm_usage import UsageLedger
+from signaltrail.llm_usage import UsageLedger
 
 API_EVENTS = frozenset({"pre_api_request", "post_api_request", "api_request_error"})
 FILE_WORKER_PHASE = re.compile(

@@ -108,7 +108,7 @@ signaltrail-usage finalize --ledger DATA_DIR --task-id TASK_ID --status complete
 
 ## Hermes：逐请求 hook
 
-完整计量运行使用显式启动器（首次安装后也可用 `python -m daily_intelligence.hermes_runner`）：
+完整计量运行使用显式启动器（首次安装后也可用 `python -m signaltrail.hermes_runner`）：
 
 ```text
 signaltrail-hermes run --ledger DATA_DIR --hermes-python HERMES_PYTHON --prompt-file PROMPT.txt --provider opencode-go --model deepseek-v4-flash-vision-exp --timeout 3600

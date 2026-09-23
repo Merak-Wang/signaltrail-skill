@@ -22,6 +22,86 @@ def _is_relative_to(path: Path, root: Path) -> bool:
     return True
 
 
+def _legacy_data_root(hermes_home: Path) -> Path:
+    """处理：定位旧版 Hermes 数据目录，供一次目录改名后的路径兼容使用。
+    输入：Hermes 主目录；不读取或改写运行数据。
+    输出：旧版 daily-intelligence 数据根的规范路径。
+    """
+    return hermes_home.expanduser().resolve() / "daily-intelligence"
+
+
+def _migration_binding_matches(data_dir: Path) -> bool:
+    """处理：确认新登记明确记录旧根到新根的迁移关系。
+    输入：新数据根及 Hermes canonical registry；双目录并存时只信显式 previous_data_root。
+    输出：登记的当前根与旧根均匹配时返回 True，不改写绑定文件。
+    """
+    root = data_dir.expanduser().resolve()
+    if root.name != "signaltrail":
+        return False
+    registry_path = data_root_registry_path(root.parent)
+    if not registry_path.is_file():
+        return False
+    payload = read_json(registry_path)
+    return (
+        isinstance(payload, dict)
+        and Path(str(payload.get("data_root", ""))).expanduser().resolve() == root
+        and Path(str(payload.get("previous_data_root", ""))).expanduser().resolve()
+        == _legacy_data_root(root.parent)
+    )
+
+
+def _map_legacy_path(path: Path, data_dir: Path) -> Path:
+    """处理：仅在旧目录已移走时，把历史绝对路径映射到同级新目录。
+    输入：待读写路径与当前数据根；新旧根同时存在时不猜测迁移方向。
+    输出：兼容后的规范路径；磁盘上的历史记录保持原字节不变。
+    """
+    root = data_dir.expanduser().resolve()
+    legacy = _legacy_data_root(root.parent)
+    resolved = path.expanduser().resolve()
+    authorized = not legacy.exists() or _migration_binding_matches(root)
+    if (root.name == "signaltrail" and authorized and root.exists()
+            and _is_relative_to(resolved, legacy)):
+        return (root / resolved.relative_to(legacy)).resolve()
+    return resolved
+
+
+def _map_legacy_values(
+    value: Any, data_dir: Path, *, allow_existing_legacy: bool = False
+) -> Any:
+    """处理：递归转换运行清单内指向旧数据根的绝对路径字符串。
+    输入：已读取的 manifest 对象和新数据根；只处理内存副本。
+    输出：下游可直接读取的对象，不回写原始 JSON、Markdown 或其哈希。
+    """
+    if isinstance(value, dict):
+        return {
+            key: _map_legacy_values(
+                item, data_dir, allow_existing_legacy=allow_existing_legacy
+            )
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [
+            _map_legacy_values(item, data_dir, allow_existing_legacy=allow_existing_legacy)
+            for item in value
+        ]
+    if isinstance(value, str):
+        path = Path(value)
+        if path.is_absolute():
+            root = data_dir.expanduser().resolve()
+            legacy = _legacy_data_root(root.parent)
+            if allow_existing_legacy and root.name == "signaltrail" and root.exists():
+                resolved = path.expanduser().resolve()
+                mapped = (
+                    (root / resolved.relative_to(legacy)).resolve()
+                    if _is_relative_to(resolved, legacy) else resolved
+                )
+            else:
+                mapped = _map_legacy_path(path, root)
+            if mapped != path.expanduser().resolve():
+                return str(mapped)
+    return value
+
+
 def require_data_root_path(path: Path, data_dir: Path, label: str) -> Path:
     """处理：拒绝不属于当前数据根的控制或数据 artifact。
     输入：
@@ -30,8 +110,8 @@ def require_data_root_path(path: Path, data_dir: Path, label: str) -> Path:
     - ``label``：用于错误消息的字段或产物名称，使失败能定位到具体输入。
     输出：指向“拒绝不属于当前数据根的控制或数据 artifact”所生成、定位或确认产物的本地路径。
     """
-    resolved = path.expanduser().resolve()
     root = data_dir.expanduser().resolve()
+    resolved = _map_legacy_path(path, root)
     if not _is_relative_to(resolved, root):
         raise ValueError(
             f"{label} is outside the active DAILY_INTEL_DATA_DIR: {resolved}. "
@@ -78,6 +158,10 @@ def validate_run_data_root(run: dict[str, Any], run_path: Path, data_dir: Path) 
     root = data_dir.expanduser().resolve()
     # 所有清单与其引用的产物必须属于同一数据根，防止跨运行串写状态。
     require_data_root_path(run_path, root, "Run manifest")
+    # 旧运行清单的绝对路径只在内存中换根，磁盘事实文件不被改写。
+    run.update(_map_legacy_values(
+        run, root, allow_existing_legacy=_migration_binding_matches(root)
+    ))
     recorded = run.get("data_root")
     if recorded and Path(str(recorded)).expanduser().resolve() != root:
         raise ValueError(
@@ -109,6 +193,14 @@ def data_root_registry_path(hermes_home: Path) -> Path:
     输出：指向“返回 Hermes 保存 SignalTrail 数据根绑定的登记表路径”所生成、定位或确认产物的本地
       路径。
     """
+    return hermes_home.expanduser().resolve() / "state" / "signaltrail-data-root.json"
+
+
+def _legacy_data_root_registry_path(hermes_home: Path) -> Path:
+    """处理：返回旧版绑定文件路径，供升级时只读回退。
+    输入：Hermes 主目录；不改名或删除旧登记。
+    输出：daily-intelligence-data-root.json 的本地路径。
+    """
     return hermes_home.expanduser().resolve() / "state" / "daily-intelligence-data-root.json"
 
 
@@ -119,6 +211,8 @@ def _load_data_root_registry(hermes_home: Path) -> dict[str, Any] | None:
     输出：登记表内容；文件尚不存在时返回 None。
     """
     registry_path = data_root_registry_path(hermes_home)
+    if not registry_path.exists():
+        registry_path = _legacy_data_root_registry_path(hermes_home)
     if not registry_path.exists():
         return None
     payload = read_json(registry_path)
@@ -137,7 +231,7 @@ def load_bound_data_root(hermes_home: Path) -> Path | None:
     payload = _load_data_root_registry(hermes_home)
     if payload is None:
         return None
-    return Path(str(payload["data_root"])).expanduser().resolve()
+    return _map_legacy_path(Path(str(payload["data_root"])), hermes_home / "signaltrail")
 
 
 def bind_data_root(
@@ -164,9 +258,10 @@ def bind_data_root(
         return {"status": "external_unbound", "data_root": str(root)}
 
     registry_path = data_root_registry_path(home)
+    canonical_registry_exists = registry_path.exists()
     existing = _load_data_root_registry(home)
     previous = (
-        Path(str(existing["data_root"])).expanduser().resolve() if existing else None
+        _map_legacy_path(Path(str(existing["data_root"])), root) if existing else None
     )
     if previous and previous != root and not adopt:
         # 更换记录系统必须显式 adopt，避免无意中把一段历史分裂到两个数据根。
@@ -175,7 +270,7 @@ def bind_data_root(
             f"{previous}. Refusing to use {root}. Use `signaltrail --data-dir \"{root}\" "
             "data-root adopt` only after confirming the intended history."
         )
-    if previous == root:
+    if previous == root and canonical_registry_exists:
         return {"status": "bound", "registry_path": str(registry_path), **existing}
     payload = {
         "schema_version": DATA_ROOT_REGISTRY_SCHEMA,

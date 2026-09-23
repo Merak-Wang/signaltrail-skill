@@ -8,20 +8,20 @@ from types import SimpleNamespace
 import pytest
 from bs4 import BeautifulSoup
 
-from daily_intelligence.collection_diagnostics import has_local_content
-from daily_intelligence.config import load_config
-from daily_intelligence.content import (
+from signaltrail.collection_diagnostics import has_local_content
+from signaltrail.config import load_config
+from signaltrail.content import (
     _apply_http_document,
     _extract_one,
     _extract_pipeline,
     extract_content,
 )
-from daily_intelligence.content_extraction import extract_document, extract_with_fallback
-from daily_intelligence.utils import read_json, write_json
+from signaltrail.content_extraction import extract_document, extract_with_fallback
+from signaltrail.utils import read_json, write_json
 
 
 def test_selected_feed_content_survives_web_access_failure(monkeypatch, tmp_path):
-    from daily_intelligence.feeds import parse_feed_document
+    from signaltrail.feeds import parse_feed_document
 
     config = load_config()
     source = config.source_by_id("bbc_world")
@@ -42,7 +42,7 @@ def test_selected_feed_content_survives_web_access_failure(monkeypatch, tmp_path
             target["metadata"]["content_error"] = "HTTP 503"
         return []
 
-    monkeypatch.setattr("daily_intelligence.content._run_http_extraction", http)
+    monkeypatch.setattr("signaltrail.content._run_http_extraction", http)
     metrics = asyncio.run(_extract_pipeline([item], config, tmp_path, False,
                                            tmp_path / "profile", None))
     assert metrics["successful"] == 1
@@ -55,7 +55,7 @@ def test_selected_feed_content_survives_web_access_failure(monkeypatch, tmp_path
 
 
 def test_longer_web_body_replaces_feed_excerpt_with_equal_structural_gaps(tmp_path):
-    from daily_intelligence.content import _retain_better_content
+    from signaltrail.content import _retain_better_content
 
     config = load_config()
     previous = _item()
@@ -149,7 +149,7 @@ def test_optional_provider_failure_keeps_baseline(monkeypatch, failure):
 
     monkeypatch.setitem(sys.modules, "trafilatura",
                         None if failure == "missing" else SimpleNamespace(extract=extract))
-    monkeypatch.setattr("daily_intelligence.content_extraction.version", lambda _: "test")
+    monkeypatch.setattr("signaltrail.content_extraction.version", lambda _: "test")
     result = extract_with_fallback(BeautifulSoup(
         "<body><p>The announcement describes the unchanged service terms.</p></body>",
         "html.parser"), [], fallback="trafilatura")
@@ -167,7 +167,7 @@ def test_provider_only_receives_cleaned_html_and_does_not_prove_completeness(mon
         return "<body><p>The announcement describes the unchanged service terms.</p></body>"
 
     monkeypatch.setitem(sys.modules, "trafilatura", SimpleNamespace(extract=extract))
-    monkeypatch.setattr("daily_intelligence.content_extraction.version", lambda _: "test")
+    monkeypatch.setattr("signaltrail.content_extraction.version", lambda _: "test")
     result = extract_with_fallback(BeautifulSoup(
         "<body><p>The announcement describes the unchanged service terms.</p>"
         "<p hidden>HIDDEN</p><script>SECRET_SCRIPT</script></body>", "html.parser"), [],
@@ -195,7 +195,7 @@ def test_real_trafilatura_adapter_is_local_and_returns_audited_candidate():
 def test_fallback_cannot_hide_table_loss(monkeypatch):
     monkeypatch.setitem(sys.modules, "trafilatura", SimpleNamespace(extract=lambda *args, **kwargs:
         "<body><p>The announcement describes the unchanged service terms.</p></body>"))
-    monkeypatch.setattr("daily_intelligence.content_extraction.version", lambda _: "test")
+    monkeypatch.setattr("signaltrail.content_extraction.version", lambda _: "test")
     result = extract_with_fallback(BeautifulSoup(
         "<body><p>The announcement describes the unchanged service terms.</p>"
         "<table><tr><th>Price</th></tr><tr><td>10</td></tr></table></body>", "html.parser"), [],
@@ -285,8 +285,8 @@ def test_partial_body_escalates_once_and_browser_failure_preserves_evidence(
         else:
             _apply(targets[0], original.replace("body", "article"), config, tmp_path)
 
-    monkeypatch.setattr("daily_intelligence.content._run_http_extraction", http)
-    monkeypatch.setattr("daily_intelligence.content._extract_with_browser", browser)
+    monkeypatch.setattr("signaltrail.content._run_http_extraction", http)
+    monkeypatch.setattr("signaltrail.content._extract_with_browser", browser)
     metrics = asyncio.run(_extract_pipeline([item], config, tmp_path, False, tmp_path / "profile",
                                            None))
     assert counts == {"http": 1, "browser": 1}
@@ -326,7 +326,7 @@ def test_enriched_revision_keeps_original_and_synchronizes_nested_evidence(monke
             )
         return []
 
-    monkeypatch.setattr("daily_intelligence.content._run_http_extraction", http)
+    monkeypatch.setattr("signaltrail.content._run_http_extraction", http)
     result = read_json(extract_content(original, config, tmp_path, [item["item_id"]], 1, False,
                                        tmp_path / "profile"))
     assert original.read_bytes() == original_bytes

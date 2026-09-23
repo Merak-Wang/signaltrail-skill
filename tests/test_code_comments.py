@@ -16,7 +16,7 @@ def test_maintained_python_definitions_have_semantic_chinese_contracts():
 
 
 def test_comment_checks_include_nested_packages_and_accept_concise_inputs(tmp_path):
-    source = tmp_path / "src/daily_intelligence/commands/monitor.py"
+    source = tmp_path / "src/signaltrail/commands/monitor.py"
     source.parent.mkdir(parents=True)
     source.write_text(
         'def load(path):\n'

@@ -34,7 +34,7 @@ Yahoo 遇到 HTTP 429，状态为 `rate_limited`。主运行耗时 2,226 秒，�
 - **复算：** 从上述工件得出的数量、排序、item ID 相等性、校验和与栏目合计。
 - **审阅：** 规范源码行为及其聚焦回归覆盖。
 
-规范实现位于 [src/daily_intelligence](../../../src/daily_intelligence/)。生成副本和安装副本未进入
+规范实现位于 [src/signaltrail](../../../src/signaltrail/)。生成副本和安装副本未进入
 代码审阅的事实源边界。
 
 ## 工件血缘

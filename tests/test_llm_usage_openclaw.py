@@ -6,8 +6,8 @@ from pathlib import Path
 
 import pytest
 
-from daily_intelligence.llm_usage import ObservationQuality, TokenRelation
-from daily_intelligence.llm_usage.adapters.openclaw import OpenClawAdapter
+from signaltrail.llm_usage import ObservationQuality, TokenRelation
+from signaltrail.llm_usage.adapters.openclaw import OpenClawAdapter
 
 
 def _create_current_agent_db(

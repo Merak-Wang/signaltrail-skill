@@ -4,8 +4,8 @@ import json
 from pathlib import Path
 from typing import Any
 
-from daily_intelligence.llm_usage import UsageLedger
-from daily_intelligence.llm_usage.adapters.codex import CodexAdapter
+from signaltrail.llm_usage import UsageLedger
+from signaltrail.llm_usage.adapters.codex import CodexAdapter
 
 
 def _usage(

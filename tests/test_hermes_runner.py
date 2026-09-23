@@ -6,14 +6,14 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
-from daily_intelligence.hermes_runner import coverage_complete
-from daily_intelligence.hosts.hermes import (
+from signaltrail.hermes_runner import coverage_complete
+from signaltrail.hosts.hermes import (
     HermesObserver,
     bounded_delegation_config,
     file_worker_tasks,
     is_usage_command,
 )
-from daily_intelligence.llm_usage import UsageLedger
+from signaltrail.llm_usage import UsageLedger
 
 
 def test_concurrent_observer_is_exact_and_preserves_lineage(tmp_path):
@@ -131,7 +131,7 @@ def test_bridge_enforces_host_limits_at_actual_dispatch(monkeypatch, tmp_path):
     import sys
     from types import SimpleNamespace
 
-    import daily_intelligence.hosts.hermes as bridge
+    import signaltrail.hosts.hermes as bridge
 
     ledger = UsageLedger(tmp_path)
     task = ledger.start_task("hermes")
@@ -180,7 +180,7 @@ def test_forced_summary_preserves_affinity_and_records_success_and_failure(monke
     import sys
     from types import SimpleNamespace
 
-    from daily_intelligence.hosts.hermes import install_iteration_summary_bridge
+    from signaltrail.hosts.hermes import install_iteration_summary_bridge
 
     ledger = UsageLedger(tmp_path)
     task = ledger.start_task("hermes")
@@ -244,7 +244,7 @@ def test_forced_summary_preserves_affinity_and_records_success_and_failure(monke
 
 
 def test_local_evaluator_launch_is_metered_and_never_duplicated(monkeypatch, tmp_path):
-    import daily_intelligence.workflow as workflow
+    import signaltrail.workflow as workflow
 
     monkeypatch.setenv("SIGNALTRAIL_HERMES_PYTHON", "hermes-python")
     monkeypatch.setenv("SIGNALTRAIL_HERMES_MODEL", "test-model")
@@ -270,7 +270,7 @@ def test_local_evaluator_launch_is_metered_and_never_duplicated(monkeypatch, tmp
     assert command[command.index("--task-id") + 1] == "eval-task"
     assert "cron" not in command
     prompt = (tmp_path / "evaluation-launches/eval-task/prompt.txt").read_text(encoding="utf-8")
-    assert '"hermes-python" -m daily_intelligence.cli' in prompt
+    assert '"hermes-python" -m signaltrail.cli' in prompt
     assert 'runpy.run_module' not in prompt
     assert prompt.endswith('{}')
     assert workflow.reconcile_evaluation_scheduler(receipt)["status"] == "unknown"
@@ -286,7 +286,7 @@ def test_local_evaluator_launch_is_metered_and_never_duplicated(monkeypatch, tmp
 
 
 def test_unknown_local_evaluator_is_rechecked_without_redispatch(monkeypatch, tmp_path):
-    import daily_intelligence.workflow as workflow
+    import signaltrail.workflow as workflow
 
     scheduler = {"backend": "metered-local", "status": "unknown", "attempt": 1}
     run = {"artifacts": {"json_path": str(tmp_path / "report.json"),
@@ -311,8 +311,8 @@ def test_unknown_local_evaluator_is_rechecked_without_redispatch(monkeypatch, tm
 
 
 def test_measurement_sum_is_stable_without_rounding_large_integers():
-    from daily_intelligence.llm_usage.ledger import _sum_measurements
-    from daily_intelligence.llm_usage.models import exact, unobservable
+    from signaltrail.llm_usage.ledger import _sum_measurements
+    from signaltrail.llm_usage.models import exact, unobservable
 
     values = [exact(value, "test") for value in [0.1, 0.2, 0.3]]
     assert _sum_measurements(values)["value"] == 0.6
@@ -325,7 +325,7 @@ def test_measurement_sum_is_stable_without_rounding_large_integers():
 
 
 def test_historical_float_seal_is_verified_without_accepting_tampering(tmp_path):
-    from daily_intelligence.llm_usage.adapters.base import canonical_digest
+    from signaltrail.llm_usage.adapters.base import canonical_digest
 
     ledger = UsageLedger(tmp_path)
     task = ledger.start_task("hermes")
@@ -415,7 +415,7 @@ def test_auxiliary_sync_async_failures_and_format_compatibility(monkeypatch, tmp
     from dataclasses import dataclass
     from types import ModuleType, SimpleNamespace
 
-    from daily_intelligence.hosts.hermes import install_auxiliary_bridge
+    from signaltrail.hosts.hermes import install_auxiliary_bridge
 
     ledger = UsageLedger(tmp_path)
     task = ledger.start_task("hermes")

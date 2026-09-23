@@ -5,12 +5,12 @@ from types import SimpleNamespace
 
 import pytest
 
-from daily_intelligence import browser_collection
-from daily_intelligence.browser_collection import collect_browser_page, collect_browser_pages
-from daily_intelligence.collector import collect_sources
-from daily_intelligence.config import AppConfig, BrowserConfig, SourceConfig
-from daily_intelligence.models import SourceResult
-from daily_intelligence.utils import read_json
+from signaltrail import browser_collection
+from signaltrail.browser_collection import collect_browser_page, collect_browser_pages
+from signaltrail.collector import collect_sources
+from signaltrail.config import AppConfig, BrowserConfig, SourceConfig
+from signaltrail.models import SourceResult
+from signaltrail.utils import read_json
 
 
 class Page:
@@ -185,8 +185,8 @@ def test_collect_sources_merges_async_failures_without_retrying(monkeypatch, tmp
         for name in ["first", "second"]
     ]
     config = AppConfig(timezone="UTC", browser=BrowserConfig(), sources=sources)
-    monkeypatch.setattr("daily_intelligence.collector.load_monitor_results", lambda *_: {})
-    monkeypatch.setattr("daily_intelligence.collector.prefetch_browser_pages", lambda *_: {})
+    monkeypatch.setattr("signaltrail.collector.load_monitor_results", lambda *_: {})
+    monkeypatch.setattr("signaltrail.collector.prefetch_browser_pages", lambda *_: {})
 
     async def pages(selected, *_args):
         return {
@@ -201,7 +201,7 @@ def test_collect_sources_merges_async_failures_without_retrying(monkeypatch, tmp
             for source in reversed(selected)
         }
 
-    monkeypatch.setattr("daily_intelligence.collector.collect_browser_pages", pages)
+    monkeypatch.setattr("signaltrail.collector.collect_browser_pages", pages)
     index = read_json(
         collect_sources(config, tmp_path, "morning", False, profile_dir=tmp_path / "profile")
     )

@@ -1,8 +1,8 @@
 import json
 from pathlib import Path
 
-from daily_intelligence.config import load_config
-from daily_intelligence.importer import import_legacy
+from signaltrail.config import load_config
+from signaltrail.importer import import_legacy
 
 
 def test_importer_marks_401_as_verification_required(tmp_path: Path):

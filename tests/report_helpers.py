@@ -3,7 +3,7 @@
 import json
 from pathlib import Path
 
-from daily_intelligence.utils import write_json
+from signaltrail.utils import write_json
 
 
 def load_sample_report(root: Path) -> dict:

@@ -1,4 +1,4 @@
-from daily_intelligence.clustering import cluster_articles, cosine_similarity, lexical_vector
+from signaltrail.clustering import cluster_articles, cosine_similarity, lexical_vector
 
 
 def _item(item_id: str, source_id: str, title: str, url: str) -> dict:

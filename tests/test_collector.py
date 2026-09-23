@@ -1,16 +1,16 @@
 from dataclasses import replace
 from pathlib import Path
 
-from daily_intelligence.collector import (
+from signaltrail.collector import (
     collect_source,
     merge_resume_index,
     merge_verified_results,
 )
-from daily_intelligence.config import load_config
-from daily_intelligence.context import build_context
-from daily_intelligence.models import ArticleItem, SourceResult
-from daily_intelligence.utils import read_json, write_json
-from daily_intelligence.verification import (
+from signaltrail.config import load_config
+from signaltrail.context import build_context
+from signaltrail.models import ArticleItem, SourceResult
+from signaltrail.utils import read_json, write_json
+from signaltrail.verification import (
     pending_verification_pages,
     write_verification_queue,
 )
@@ -313,7 +313,7 @@ def test_collect_source_never_keeps_an_access_error_as_no_items(monkeypatch, tmp
         error="HTTP 403",
     )
     monkeypatch.setattr(
-        "daily_intelligence.collector.collect_one", lambda *_args, **_kwargs: failed
+        "signaltrail.collector.collect_one", lambda *_args, **_kwargs: failed
     )
 
     result = collect_source(None, source, config, tmp_path)
@@ -354,7 +354,7 @@ def test_multi_page_source_merge_is_balanced(monkeypatch, tmp_path: Path):
             items=items,
         )
 
-    monkeypatch.setattr("daily_intelligence.collector.collect_one", fake_collect_one)
+    monkeypatch.setattr("signaltrail.collector.collect_one", fake_collect_one)
 
     result = collect_source(None, source, config, tmp_path)
 
@@ -399,7 +399,7 @@ def test_multi_page_source_can_sort_by_publication_without_losing_top_rank(
             items=items,
         )
 
-    monkeypatch.setattr("daily_intelligence.collector.collect_one", fake_collect_one)
+    monkeypatch.setattr("signaltrail.collector.collect_one", fake_collect_one)
 
     result = collect_source(None, source, config, tmp_path)
 

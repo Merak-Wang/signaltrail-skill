@@ -60,7 +60,7 @@ signaltrail --help
 使用 SignalTrail 生成今天的中文晨报，保存本地 HTML 和 PDF。
 ```
 
-`signaltrail` 是统一命令入口。命令行准备可复现的采集、校验和存档步骤；智能体根据证据包完成写作。仅运行 `run-edition` 会停在写作交接阶段，不会自行生成完整日报。
+`signaltrail` 是统一命令入口；Python 包可 `import signaltrail`，也可用 `python -m signaltrail.cli` 启动。命令行准备可复现的采集、校验和存档步骤；智能体根据证据包完成写作。仅运行 `run-edition` 会停在写作交接阶段，不会自行生成完整日报。
 
 ### Hermes 安装
 
@@ -82,6 +82,8 @@ bash ./scripts/install.sh
 python -m playwright install chromium
 ```
 
+从旧版升级时，请先卸载 `daily-intelligence-skill` Python 包，再安装此版本的 `signaltrail-skill`。停止运行中的任务后，将旧的 Hermes 数据目录和专用浏览器配置目录改名为 `signaltrail`；目录改名保留全部历史报告。完整步骤见[升级说明](docs/zh-CN/usage.md#从旧版升级)。
+
 更完整的配置、数据目录、计量运行和恢复说明见[使用指南](docs/zh-CN/usage.md)。
 
 ## 本地监控
@@ -95,7 +97,7 @@ signaltrail serve --open --refresh-minutes 30
 
 ## 数据、成本与能力边界
 
-报告 JSON 和 Markdown 是版本化原始记录；HTML、PDF 是可重建的阅读投影。现有报告修订不会被覆盖。来源访问失败、限流和验证挑战会保留其实际状态。运行数据默认保存在本机，升级时沿用同一数据目录；路径和恢复方法见[使用指南](docs/zh-CN/usage.md)。
+报告 JSON 和 Markdown 是版本化原始记录；HTML、PDF 是可重建的阅读投影。现有报告修订不会被覆盖。来源访问失败、限流和验证挑战会保留其实际状态。运行数据默认保存在本机的 Hermes `signaltrail/` 目录。旧版用户可按[升级说明](docs/zh-CN/usage.md#从旧版升级)将历史数据目录改名迁移，保留报告和运行历史。
 
 采集、监控、图片处理和 HTML 演示渲染不调用模型。日报写作与图文讲解由智能体宿主执行；批次 token 门槛用于限制单批输入／输出规模，实际用量取决于宿主是否提供计量数据。新闻来源、网络状况、证据完整度和模型速度都会影响交付时间与内容覆盖。
 

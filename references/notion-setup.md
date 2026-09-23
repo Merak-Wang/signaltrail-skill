@@ -92,7 +92,7 @@ Hermes 运行时也会读取 Hermes Home 下的 `.env`。仓库内的 `.env` 已
 | Source | Select | `SignalTrail` |
 | Tags | Multi-select | 项目名和版本时段 |
 
-`daily_intelligence` 配置还支持 `Version`、`Source Count`、`Event Count` 和 `Pending Verification`。旧版顶层 `properties`、`values` 配置仍可读取。
+`signaltrail` 配置还支持 `Version`、`Source Count`、`Event Count` 和 `Pending Verification`。旧版顶层 `properties`、`values` 配置仍可读取。
 
 ## 发布行为
 

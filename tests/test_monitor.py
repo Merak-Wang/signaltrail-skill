@@ -7,23 +7,23 @@ from zoneinfo import ZoneInfo
 
 import httpx
 
-from daily_intelligence.collection_diagnostics import source_coverage
-from daily_intelligence.collector import collect_source
-from daily_intelligence.config import (
+from signaltrail.collection_diagnostics import source_coverage
+from signaltrail.collector import collect_source
+from signaltrail.config import (
     AppConfig,
     BrowserConfig,
     MonitorConfig,
     SourceConfig,
 )
-from daily_intelligence.dashboard import create_monitor_server
-from daily_intelligence.models import ArticleItem, SourceResult, SourceStatus
-from daily_intelligence.monitor import (
+from signaltrail.dashboard import create_monitor_server
+from signaltrail.models import ArticleItem, SourceResult, SourceStatus
+from signaltrail.monitor import (
     _feed_phase,
     fresh_monitor_snapshot_path,
     load_monitor_results,
     refresh_monitor,
 )
-from daily_intelligence.utils import read_json, write_json
+from signaltrail.utils import read_json, write_json
 
 
 def test_known_feeds_run_while_unknown_source_is_discovering(tmp_path):
@@ -423,7 +423,7 @@ def test_monitor_snapshot_remains_a_fallback_when_live_collection_fails(
         error="HTTP 403",
     )
     monkeypatch.setattr(
-        "daily_intelligence.collector.page_needs_browser",
+        "signaltrail.collector.page_needs_browser",
         lambda _result: False,
     )
 

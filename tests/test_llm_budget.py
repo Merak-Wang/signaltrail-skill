@@ -1,7 +1,7 @@
 from pathlib import Path
 
-from daily_intelligence.llm_budget import append_budget_receipt, evaluate_llm_budget
-from daily_intelligence.llm_usage import UsageLedger
+from signaltrail.llm_budget import append_budget_receipt, evaluate_llm_budget
+from signaltrail.llm_usage import UsageLedger
 
 
 def test_budget_keeps_unmetered_usage_unknown_and_nonblocking(tmp_path: Path):

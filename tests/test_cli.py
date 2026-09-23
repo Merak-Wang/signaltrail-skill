@@ -6,17 +6,17 @@ from unittest.mock import Mock
 
 import pytest
 
-from daily_intelligence.cli import build_parser, main
-from daily_intelligence.commands import HANDLERS
-from daily_intelligence.utils import read_json, write_json
-from daily_intelligence.workflow import (
+from signaltrail.cli import build_parser, main
+from signaltrail.commands import HANDLERS
+from signaltrail.utils import read_json, write_json
+from signaltrail.workflow import (
     RunStatus,
 )
 
 
 def test_slides_cli_prepares_bounded_batches(cli_data_root, monkeypatch, capsys):
     prepare = Mock(return_value={"plan_path": "slides-plan.json", "news_count": 18})
-    monkeypatch.setattr("daily_intelligence.commands.slides.prepare_slides", prepare)
+    monkeypatch.setattr("signaltrail.commands.slides.prepare_slides", prepare)
     report, index = cli_data_root / "report.json", cli_data_root / "index.json"
     assert main(["slides", "prepare", "--report", str(report), "--index", str(index),
                  "--batch-size", "3", "--item-id", "news-1"]) == 0
@@ -36,7 +36,7 @@ def test_research_cli_prepares_before_a_report_with_explicit_approval(
 ):
     questions = write_json(cli_data_root / "questions.json", {"questions": []})
     prepare = Mock(return_value=cli_data_root / "snapshot.json")
-    monkeypatch.setattr("daily_intelligence.commands.research.prepare_research_snapshot", prepare)
+    monkeypatch.setattr("signaltrail.commands.research.prepare_research_snapshot", prepare)
     index = cli_data_root / "index.json"
     assert main(["research", "prepare", "--index", str(index), "--item-id", "item-1",
                  "--cutoff", "2026-09-20T09:00:00+08:00", "--questions", str(questions)]) == 0
@@ -55,7 +55,7 @@ def test_explainer_cli_dispatches_explicit_parent_and_preview_flag(
 ):
     result = cli_data_root / "narratives/session/packet-r1.json"
     prepare = Mock(return_value=result)
-    monkeypatch.setattr("daily_intelligence.commands.explainers.prepare_explainer", prepare)
+    monkeypatch.setattr("signaltrail.commands.explainers.prepare_explainer", prepare)
     run = cli_data_root / "run.json"
     assert main(["explainer", "prepare", "--run", str(run), "--experimental"]) == 0
     prepare.assert_called_once_with(run, cli_data_root, experimental=True)
@@ -66,7 +66,7 @@ def test_explainer_cli_reports_rejected_parent_without_changing_report(
     cli_data_root, monkeypatch, capsys
 ):
     prepare = Mock(side_effect=ValueError("Parent is not completed"))
-    monkeypatch.setattr("daily_intelligence.commands.explainers.prepare_explainer", prepare)
+    monkeypatch.setattr("signaltrail.commands.explainers.prepare_explainer", prepare)
     assert main(["explainer", "prepare", "--run", str(cli_data_root / "run.json")]) == 1
     assert json.loads(capsys.readouterr().out)["status"] == "rejected"
 
@@ -75,7 +75,7 @@ def test_explainer_cli_reports_rejected_parent_without_changing_report(
 def cli_data_root(monkeypatch, tmp_path):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
     monkeypatch.setenv("DAILY_INTEL_DATA_DIR", str(tmp_path / "data"))
-    monkeypatch.setattr("daily_intelligence.cli.load_hermes_environment", lambda: None)
+    monkeypatch.setattr("signaltrail.cli.load_hermes_environment", lambda: None)
     return tmp_path / "data"
 
 
@@ -91,7 +91,7 @@ def test_all_parser_commands_have_handlers_and_signaltrail_entrypoints():
         (Path(__file__).resolve().parents[1] / "pyproject.toml").read_text(encoding="utf-8")
     )
     entries = project["project"]["scripts"]
-    assert entries["signaltrail"] == "daily_intelligence.cli:main"
+    assert entries["signaltrail"] == "signaltrail.cli:main"
     assert "daily-intel" not in entries
     assert all(name.startswith("signaltrail") for name in entries)
     assert parser.prog == "signaltrail"
@@ -100,7 +100,7 @@ def test_all_parser_commands_have_handlers_and_signaltrail_entrypoints():
 @pytest.mark.parametrize("command", ["serve", "serve-monitor"])
 def test_monitor_server_aliases_forward_the_same_options(cli_data_root, monkeypatch, command):
     serve = Mock()
-    monkeypatch.setattr("daily_intelligence.commands.monitor.serve_monitor", serve)
+    monkeypatch.setattr("signaltrail.commands.monitor.serve_monitor", serve)
     assert main([command, "--port", "8766", "--refresh-minutes", "30", "--open"]) == 0
     args, kwargs = serve.call_args
     assert args[1] == cli_data_root
@@ -144,7 +144,7 @@ def test_source_commands_dispatch_and_keep_path_output(
 ):
     output = cli_data_root / "result.json"
     worker = Mock(return_value=output)
-    monkeypatch.setattr(f"daily_intelligence.commands.sources.{operation}", worker)
+    monkeypatch.setattr(f"signaltrail.commands.sources.{operation}", worker)
     arguments = [
         str(cli_data_root / "indexes/test.json") if arg == "INDEX" else arg for arg in arguments
     ]
@@ -159,7 +159,7 @@ def test_source_commands_dispatch_and_keep_path_output(
 
 def test_validation_exit_code_stderr_and_data_root_guard(cli_data_root, monkeypatch, capsys):
     validate = Mock(return_value=(["invalid evidence"], ["missing time"]))
-    monkeypatch.setattr("daily_intelligence.commands.reports.validate_report", validate)
+    monkeypatch.setattr("signaltrail.commands.reports.validate_report", validate)
     arguments = ["validate-report", "draft.json", "--index", str(cli_data_root / "index.json")]
     assert main(arguments) == 1
     captured = capsys.readouterr()
@@ -177,7 +177,7 @@ def test_notion_publication_dispatch_preserves_explicit_republish(
     cli_data_root, monkeypatch, capsys
 ):
     publish = Mock(return_value=("page-1", "published"))
-    monkeypatch.setattr("daily_intelligence.commands.reports.publish_report", publish)
+    monkeypatch.setattr("signaltrail.commands.reports.publish_report", publish)
     report = cli_data_root / "reports/report.json"
     assert main(["publish-notion", str(report), "--republish"]) == 0
     assert publish.call_args.kwargs["force"] is True
@@ -244,7 +244,7 @@ def test_run_edition_can_open_interactive_verification_after_collection(
     calls = []
 
     monkeypatch.setattr(
-        "daily_intelligence.commands.editions.prepare_edition",
+        "signaltrail.commands.editions.prepare_edition",
         lambda **_kwargs: run_path,
     )
 
@@ -268,7 +268,7 @@ def test_run_edition_can_open_interactive_verification_after_collection(
         return {"status": "completed_without_capture", "captured_pages": 0}
 
     monkeypatch.setattr(
-        "daily_intelligence.commands.editions.run_pending_verification",
+        "signaltrail.commands.editions.run_pending_verification",
         fake_verification,
     )
 
@@ -320,7 +320,7 @@ def test_run_edition_does_not_open_verification_by_default(monkeypatch, tmp_path
         },
     )
     monkeypatch.setattr(
-        "daily_intelligence.commands.editions.prepare_edition",
+        "signaltrail.commands.editions.prepare_edition",
         lambda **_kwargs: run_path,
     )
 
@@ -328,7 +328,7 @@ def test_run_edition_does_not_open_verification_by_default(monkeypatch, tmp_path
         raise AssertionError("verification must remain opt-in")
 
     monkeypatch.setattr(
-        "daily_intelligence.commands.editions.run_pending_verification",
+        "signaltrail.commands.editions.run_pending_verification",
         fail_if_opened,
     )
 

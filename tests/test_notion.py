@@ -4,8 +4,8 @@ from pathlib import Path
 import pytest
 import yaml
 
-from daily_intelligence.config import load_config
-from daily_intelligence.notion import (
+from signaltrail.config import load_config
+from signaltrail.notion import (
     NotionPublisher,
     append_evaluation,
     parse_user_feedback,
@@ -110,7 +110,7 @@ def test_notion_schema_mismatch_is_actionable():
         validate_notion_schema(publisher.mapping, publisher.schema)
 
 
-def test_notion_auto_selects_dedicated_daily_intelligence_schema():
+def test_notion_auto_selects_dedicated_signaltrail_schema():
     root = Path(__file__).resolve().parents[1]
     config = yaml.safe_load((root / "configs" / "notion.yaml").read_text(encoding="utf-8"))
     schema = {
@@ -194,9 +194,9 @@ def test_interrupted_notion_publish_resumes_from_saved_progress(
 
     monkeypatch.setenv("NOTION_TOKEN", "test-token")
     monkeypatch.setenv("NOTION_DATA_SOURCE_ID", "test-source")
-    monkeypatch.setattr("daily_intelligence.notion.NotionPublisher", FakePublisher)
+    monkeypatch.setattr("signaltrail.notion.NotionPublisher", FakePublisher)
     monkeypatch.setattr(
-        "daily_intelligence.notion.report_to_blocks",
+        "signaltrail.notion.report_to_blocks",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
             AssertionError("HTML attachment mode must not publish rich-text report blocks")
         ),
@@ -284,9 +284,9 @@ def test_notion_evaluation_publishes_an_updated_html_attachment(
 
     monkeypatch.setenv("NOTION_TOKEN", "test-token")
     monkeypatch.setenv("NOTION_DATA_SOURCE_ID", "test-source")
-    monkeypatch.setattr("daily_intelligence.notion.NotionPublisher", FakePublisher)
+    monkeypatch.setattr("signaltrail.notion.NotionPublisher", FakePublisher)
     monkeypatch.setattr(
-        "daily_intelligence.notion.validate_evaluation_data",
+        "signaltrail.notion.validate_evaluation_data",
         lambda _evaluation, _report: [],
     )
 

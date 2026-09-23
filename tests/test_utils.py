@@ -3,8 +3,8 @@ from pathlib import Path
 
 import pytest
 
-from daily_intelligence.storage import write_immutable_json
-from daily_intelligence.utils import (
+from signaltrail.storage import write_immutable_json
+from signaltrail.utils import (
     read_json,
     read_json_object,
     write_bytes_atomic,
@@ -48,10 +48,10 @@ def test_atomic_writer_retries_a_transient_windows_replace_error(monkeypatch, tm
 
     monkeypatch.setattr(Path, "replace", transient_replace)
     monkeypatch.setattr(
-        "daily_intelligence.utils._is_retryable_windows_replace_error",
+        "signaltrail.utils._is_retryable_windows_replace_error",
         lambda _error: True,
     )
-    monkeypatch.setattr("daily_intelligence.utils.sleep", lambda _delay: None)
+    monkeypatch.setattr("signaltrail.utils.sleep", lambda _delay: None)
 
     assert write_json(path, {"status": "complete"}) == path
     assert read_json(path) == {"status": "complete"}

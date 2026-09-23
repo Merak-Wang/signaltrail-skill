@@ -13,14 +13,14 @@ Native Windows Hermes stores its active profile under `%LOCALAPPDATA%\hermes`, n
 
 ```text
 %LOCALAPPDATA%\hermes\skills
-%LOCALAPPDATA%\hermes\daily-intelligence
-%LOCALAPPDATA%\hermes\browser-profiles\daily-intelligence
+%LOCALAPPDATA%\hermes\signaltrail
+%LOCALAPPDATA%\hermes\browser-profiles\signaltrail
 %LOCALAPPDATA%\hermes\.env
 ```
 
 `HERMES_HOME` overrides this root. Unix and WSL use `~/.hermes` when no override is set.
 
-## Installation and moving the directory
+## Installation and upgrade migration
 
 Put the Skill in its final directory before installing the Python package. Use an editable install
 for development only:
@@ -37,11 +37,28 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install.ps1
 
 `ExecutionPolicy Bypass` applies only to that child process; it does not change the machine or user policy. The installer mirrors the repository into the real Hermes skills directory while excluding secrets, runtime data, browser profiles, authenticated HTML, screenshots and Playwright debug output.
 
+The Python distribution is `signaltrail-skill`, the import package is `signaltrail`, and the module entry point is `python -m signaltrail.cli`. When upgrading from `daily-intelligence-skill`, stop Hermes tasks, uninstall the old distribution, rename the old data and dedicated profile directories, then install the new package:
+
+```powershell
+python -m pip uninstall daily-intelligence-skill
+Move-Item "$env:LOCALAPPDATA\hermes\daily-intelligence" "$env:LOCALAPPDATA\hermes\signaltrail"
+Move-Item "$env:LOCALAPPDATA\hermes\browser-profiles\daily-intelligence" "$env:LOCALAPPDATA\hermes\browser-profiles\signaltrail"
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install.ps1
+signaltrail --data-dir "$env:LOCALAPPDATA\hermes\signaltrail" data-root adopt
+signaltrail --data-dir "$env:LOCALAPPDATA\hermes\signaltrail" data-root status
+```
+
+Rename only existing directories whose new destination is absent. If both exist, inspect them before
+proceeding. A full copy is also possible if you verify it yourself before `data-root adopt`; that command
+only switches the binding and records the prior root. It does not copy files or verify integrity. The old
+registry remains a read-only fallback. Renaming or copying preserves the history; report IDs and legacy
+`DAILY_INTEL_*` environment-variable names remain unchanged. See [upgrade details](../docs/usage.md#upgrade-from-an-earlier-version).
+
 An editable install records the source directory. Uninstall it before moving or renaming that
 directory, then reinstall from the new location:
 
 ```powershell
-python -m pip uninstall daily-intelligence-skill
+python -m pip uninstall signaltrail-skill
 ```
 
 ## Environment
@@ -69,11 +86,11 @@ recovery boundary.
 
 ## Canonical data root
 
-The first normal command binds one runtime root in `%LOCALAPPDATA%\hermes\state\daily-intelligence-data-root.json`. A later command using another root fails before it reads or writes run artifacts. Inspect or deliberately migrate the binding with:
+The canonical binding is `%LOCALAPPDATA%\hermes\state\signaltrail-data-root.json`. A later command using another root fails before it reads or writes run artifacts. Inspect the current binding or explicitly adopt the migrated root with:
 
 ```powershell
-signaltrail --data-dir "$env:LOCALAPPDATA\hermes\daily-intelligence" data-root status
-signaltrail --data-dir "$env:LOCALAPPDATA\hermes\daily-intelligence" data-root adopt
+signaltrail --data-dir "$env:LOCALAPPDATA\hermes\signaltrail" data-root status
+signaltrail --data-dir "$env:LOCALAPPDATA\hermes\signaltrail" data-root adopt
 ```
 
 Adoption does not merge or delete an old directory.
@@ -83,19 +100,19 @@ Adoption does not merge or delete an old directory.
 Every successful `finalize-edition` creates a local reading page, A4 PDF, and archive index under:
 
 ```text
-%LOCALAPPDATA%\hermes\daily-intelligence\reports\index.html
+%LOCALAPPDATA%\hermes\signaltrail\reports\index.html
 ```
 
 This does not require Notion credentials. Windows uses installed Edge to print a self-contained HTML projection after eagerly loading every embedded image; PDF-bound images are resampled to the print boundary and transcoded before embedding, so the result does not depend on the authenticated browser profile, external network requests, or local media paths. If headless Edge is unavailable, ReportLab produces a simpler PDF and applies the same bounded image projection. Set `output.pdf_engine: reportlab` in `configs/sources.yaml` to force that fallback, or remove `pdf` from `output.formats` to generate HTML only. `output.pdf_max_bytes` defaults to 52,428,800 bytes; projection returns explicit timing/size fields and preserves an over-budget PDF with a warning for diagnosis.
 
-`open_after_finalize` defaults to false so 06:00/18:00 tasks do not open a window. Set it true only for interactive use. `copy_html_to_desktop` defaults to true in the bundled configuration, so every finalized edition also writes `daily-intelligence-YYYY-MM-DD-EDITION-rN.html` to the current user's Desktop. The desktop projection embeds validated cached images as data URIs so the HTML can be moved to another device as one file; archive and eventual PDF links remain absolute local links. Set an absolute `output.desktop_dir` to override the detected Desktop. A failed desktop write is reported as `desktop_html_error` without rolling back the local JSON/Markdown/HTML truth. HTML/PDF may be refreshed after independent evaluation; JSON/Markdown remain the immutable facts.
+`open_after_finalize` defaults to false so 06:00/18:00 tasks do not open a window. Set it true only for interactive use. `copy_html_to_desktop` defaults to true in the bundled configuration, so every finalized edition also writes `signaltrail-YYYY-MM-DD-EDITION-rN.html` to the current user's Desktop. The desktop projection embeds validated cached images as data URIs so the HTML can be moved to another device as one file; archive and eventual PDF links remain absolute local links. Set an absolute `output.desktop_dir` to override the detected Desktop. A failed desktop write is reported as `desktop_html_error` without rolling back the local JSON/Markdown/HTML truth. HTML/PDF may be refreshed after independent evaluation; JSON/Markdown remain the immutable facts.
 
 ## Manual source verification
 
 `run-edition` never opens the verification queue by default. Run collection first, then start manual verification only when ready:
 
 ```powershell
-signaltrail run-edition --edition morning --profile-dir "$env:LOCALAPPDATA\hermes\browser-profiles\daily-intelligence"
+signaltrail run-edition --edition morning --profile-dir "$env:LOCALAPPDATA\hermes\browser-profiles\signaltrail"
 signaltrail verify-source reuters --browser-channel msedge
 signaltrail verify-pending --index "C:\path\to\index.json" --browser-channel msedge --timeout-seconds 300
 ```

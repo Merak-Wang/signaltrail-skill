@@ -3,8 +3,8 @@ from pathlib import Path
 
 import pytest
 
-from daily_intelligence.narrative_store import load_artifact
-from daily_intelligence.news_slides import (
+from signaltrail.narrative_store import load_artifact
+from signaltrail.news_slides import (
     estimate_tokens,
     prepare_slides,
     render_slides,
@@ -12,7 +12,7 @@ from daily_intelligence.news_slides import (
     slides_status,
     submit_slides,
 )
-from daily_intelligence.utils import write_json
+from signaltrail.utils import write_json
 from tests.report_helpers import load_sample_report, write_report_index
 
 

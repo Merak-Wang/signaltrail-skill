@@ -39,7 +39,7 @@ Repair the lower-priority record in the same change.
 | Delivery | `local_output.py`, `notion.py`, `verification.py` | `test_desktop_delivery.py`, `test_notion.py`, `test_verification.py` |
 | Packaging and docs | `scripts/`, `SKILL.md`, `docs/README.md` | `test_hermes_package.py`, `test_docs.py` |
 
-Paths above are relative to `src/daily_intelligence/` and `tests/`.
+Paths above are relative to `src/signaltrail/` and `tests/`.
 
 ## Before submitting
 

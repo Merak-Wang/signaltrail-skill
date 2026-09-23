@@ -46,10 +46,17 @@ Reinstall the package or run the installer to refresh the CLI entry points and a
 Hermes skill. This repository now maintains only root `src/`; release packages are generated
 under ignored `dist/`. There is no maintained `skills/signaltrail/` source copy.
 
-**Command migration:** replace `daily-intel` with `signaltrail` in scripts and scheduled jobs.
-The old command alias is no longer installed. Python imports, `DAILY_INTEL_*` environment
-variables, existing data directories and stored report IDs retain their names. Use the same
-data directory during an upgrade; do not copy private runtime files into the skill package.
+**Command and package migration:** replace `daily-intel` with `signaltrail` in scripts and scheduled
+jobs. The old command alias is no longer installed. The Python import package and module entry point
+are now `signaltrail` and `python -m signaltrail.cli`; the distribution is `signaltrail-skill`, replacing
+`daily-intelligence-skill`. Uninstall the old distribution before installing the new one. Legacy
+`DAILY_INTEL_*` environment-variable names and stored report IDs remain compatible.
+
+Hermes defaults are now `signaltrail/` for runtime data and `browser-profiles/signaltrail/` for the
+dedicated browser profile. Stop active jobs and rename the old `daily-intelligence/` directories during
+an explicit migration, preserving all saved history. Run `data-root adopt` after the move to write the
+new binding; it switches the binding and records the previous root but does not copy files or verify a
+copy. The old registry remains a read-only fallback. See the [upgrade guide](docs/usage.md#upgrade-from-an-earlier-version).
 
 ## Experimental features and scope
 

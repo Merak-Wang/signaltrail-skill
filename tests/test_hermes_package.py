@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from daily_intelligence import __version__
+from signaltrail import __version__
 
 ROOT = Path(__file__).resolve().parents[1]
 SPEC = importlib.util.spec_from_file_location(
@@ -67,10 +67,11 @@ def test_community_package_contains_runtime_and_excludes_repository_state(tmp_pa
     assert result["status"] == "built"
     assert result["name"] == "signaltrail"
     assert (output / "SKILL.md").is_file()
-    assert (output / "src" / "daily_intelligence" / "cli.py").is_file()
-    assert (output / "src" / "daily_intelligence" / "usage_cli.py").is_file()
-    assert (output / "src" / "daily_intelligence" / "commands" / "editions.py").is_file()
-    assert (output / "src" / "daily_intelligence" / "llm_usage" / "__init__.py").is_file()
+    assert (output / "src" / "signaltrail" / "cli.py").is_file()
+    assert (output / "src" / "signaltrail" / "usage_cli.py").is_file()
+    assert (output / "src" / "signaltrail" / "commands" / "editions.py").is_file()
+    assert (output / "src" / "signaltrail" / "llm_usage" / "__init__.py").is_file()
+    assert not (output / "src" / "daily_intelligence").exists()
     assert (output / "configs" / "sources.yaml").is_file()
     assert (output / "schemas" / "report.schema.json").is_file()
     assert (output / "schemas" / "llm-usage.schema.json").is_file()
@@ -119,7 +120,7 @@ def test_installer_copies_complete_project_and_excludes_local_environments(
     source = tmp_path / "source"
     target = tmp_path / "hermes" / "skills" / "research" / "signaltrail"
     resources = (
-        "SKILL.md", "pyproject.toml", "src/daily_intelligence/__init__.py",
+        "SKILL.md", "pyproject.toml", "src/signaltrail/__init__.py",
         "configs/sources.yaml", "schemas/report.schema.json", "templates/report-contract.md",
         "references/runbook.md", "assets/monitor/index.html",
     )
@@ -172,6 +173,9 @@ def test_windows_installer_excludes_nested_skill_snapshots():
 
     assert '"skills"' in excluded_dirs
     assert '"skills"' in legacy_entries
+    assert '"src/daily_intelligence"' in legacy_entries
+    assert '"daily_intelligence_skill.egg-info"' in legacy_entries
+    assert '"signaltrail_skill.egg-info"' in legacy_entries
     assert "/XD $excludedDirs" in text
 
 
@@ -204,6 +208,8 @@ def test_installers_sync_into_platform_hermes_skill_roots_and_exclude_repo_state
     assert '${HOME}/.hermes' in shell
     assert 'skills_root="${hermes_home}/skills"' in shell
     assert 'target_dir="${skills_root}/research/signaltrail"' in shell
+    assert '"daily_intelligence_skill.egg-info", "signaltrail_skill.egg-info"' in shell
+    assert '"src/daily_intelligence"' in shell
     assert "if source != target:" in shell
     assert "shutil.copytree(source, target, ignore=ignore)" in shell
     assert '".code-review-graph"' in shell

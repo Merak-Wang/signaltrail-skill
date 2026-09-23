@@ -423,12 +423,12 @@ def schedule_independent_evaluation(
         'python -c "import base64,runpy,sys; '
         f"sys.path.insert(0, base64.urlsafe_b64decode('{encoded_source_root}').decode()); "
         "sys.argv=['signaltrail']+sys.argv[1:]; "
-        "runpy.run_module('daily_intelligence.cli', run_name='__main__')\""
+        "runpy.run_module('signaltrail.cli', run_name='__main__')\""
     )
     hermes_python = os.environ.get("SIGNALTRAIL_HERMES_PYTHON")
     if hermes_python and usage_task_id:
         # 本地启动器已经固定 PYTHONPATH；模块入口避免 oneshot 拒绝内联脚本。
-        cli_prefix = f'"{hermes_python}" -m daily_intelligence.cli'
+        cli_prefix = f'"{hermes_python}" -m signaltrail.cli'
     report = read_json(report_path) if report_path.is_file() else None
     language = (
         report.get("language")
@@ -502,7 +502,7 @@ def schedule_independent_evaluation(
             return {"status": "unknown", "attempt": attempt,
                     "reason": "evaluation_launch_already_claimed"}
         command = [
-            hermes_python, "-m", "daily_intelligence.hermes_runner", "run",
+            hermes_python, "-m", "signaltrail.hermes_runner", "run",
             "--ledger", str(data_dir), "--hermes-python", hermes_python,
             "--prompt-file", str(prompt_path), "--task-id", usage_task_id,
             "--phase", "independent-evaluation", "--evaluation-attempt", str(attempt),

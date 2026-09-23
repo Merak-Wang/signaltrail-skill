@@ -11,9 +11,9 @@ import tempfile
 from pathlib import Path
 from time import perf_counter
 
-from daily_intelligence.clustering import lexical_tokens
-from daily_intelligence.research import prepare_research_snapshot, search_research
-from daily_intelligence.utils import write_json
+from signaltrail.clustering import lexical_tokens
+from signaltrail.research import prepare_research_snapshot, search_research
+from signaltrail.utils import write_json
 
 CASES = [
     ("算力账单", "算力账单下降只在业务量、质量和其他成本相同的条件下成立。"),

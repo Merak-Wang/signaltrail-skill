@@ -4,16 +4,16 @@ from pathlib import Path
 
 import pytest
 
-from daily_intelligence.config import OutputConfig
-from daily_intelligence.narrative import (
+from signaltrail.config import OutputConfig
+from signaltrail.narrative import (
     prepare_explainer,
     script_segments,
     submit_ledger,
     submit_script,
 )
-from daily_intelligence.narrative_store import load_artifact
-from daily_intelligence.reports import save_report
-from daily_intelligence.utils import write_json
+from signaltrail.narrative_store import load_artifact
+from signaltrail.reports import save_report
+from signaltrail.utils import write_json
 from tests.report_helpers import load_sample_report, write_report_index
 
 
@@ -175,7 +175,7 @@ def test_every_visible_label_is_a_reviewable_segment(explainer_case):
 
 
 def test_policy_change_invalidates_old_packet(explainer_case, monkeypatch):
-    from daily_intelligence.narrative_contracts import POLICY
+    from signaltrail.narrative_contracts import POLICY
 
     c = explainer_case
     monkeypatch.setitem(POLICY, "version", "changed")

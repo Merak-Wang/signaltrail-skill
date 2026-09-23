@@ -3,15 +3,15 @@ import hashlib
 from dataclasses import replace
 from pathlib import Path
 
-from daily_intelligence.collection_diagnostics import (
+from signaltrail.collection_diagnostics import (
     content_gaps,
     enrichment_plan,
     has_local_content,
     source_coverage,
 )
-from daily_intelligence.config import SourceConfig, load_config
-from daily_intelligence.context import build_context
-from daily_intelligence.utils import read_json, write_json
+from signaltrail.config import SourceConfig, load_config
+from signaltrail.context import build_context
+from signaltrail.utils import read_json, write_json
 
 
 def test_cache_checks_hashes_and_data_root_but_reads_legacy_files(tmp_path):
@@ -121,7 +121,7 @@ def test_plan_does_not_repeat_exhausted_or_blocked_preserved_partial_content(tmp
 
 
 def test_quality_limits_reach_brief_and_analysis_inputs(tmp_path):
-    from daily_intelligence.authoring import _analysis_candidates
+    from signaltrail.authoring import _analysis_candidates
 
     source = load_config().sources[0]
     item = {"item_id": "story", "source_id": source.id, "title": "Service update",

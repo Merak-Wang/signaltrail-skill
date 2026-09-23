@@ -6,10 +6,10 @@ from pathlib import Path
 import pytest
 from bs4 import BeautifulSoup
 
-from daily_intelligence.narrative import script_segments, submit_script
-from daily_intelligence.narrative_store import load_artifact, parent_path
-from daily_intelligence.narrative_verification import prepare_review, submit_review
-from daily_intelligence.research import (
+from signaltrail.narrative import script_segments, submit_script
+from signaltrail.narrative_store import load_artifact, parent_path
+from signaltrail.narrative_verification import prepare_review, submit_review
+from signaltrail.research import (
     evaluate_research,
     prepare_research_snapshot,
     search_research,
@@ -17,9 +17,9 @@ from daily_intelligence.research import (
     submit_research_memo,
     update_research_questions,
 )
-from daily_intelligence.research_delivery import bind_research_to_report, render_composite_view
-from daily_intelligence.story_stream import build_story_stream, render_story
-from daily_intelligence.utils import write_json
+from signaltrail.research_delivery import bind_research_to_report, render_composite_view
+from signaltrail.story_stream import build_story_stream, render_story
+from signaltrail.utils import write_json
 from tests.test_narrative import explainer_case as explainer_case
 
 
@@ -251,7 +251,7 @@ def test_approved_discovery_feed_bridges_without_expanding_daily_index(research_
 def test_snapshot_fingerprint_describes_bytes_read_before_parallel_update(
     research_case, monkeypatch
 ):
-    from daily_intelligence import research
+    from signaltrail import research
 
     c = research_case
     before = c["index"].read_bytes()

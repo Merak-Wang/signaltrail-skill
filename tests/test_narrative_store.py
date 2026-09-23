@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from daily_intelligence.narrative_store import load_artifact, save_artifact
+from signaltrail.narrative_store import load_artifact, save_artifact
 
 
 def test_immutable_pair_and_markdown_tampering(tmp_path):
@@ -41,13 +41,13 @@ def test_interruption_after_pair_commit_repairs_index_on_replay(tmp_path, monkey
     def fail(*args, **kwargs):
         raise OSError("index interrupted")
 
-    monkeypatch.setattr("daily_intelligence.narrative_store.os.link", fail)
+    monkeypatch.setattr("signaltrail.narrative_store.os.link", fail)
     with pytest.raises(OSError):
         save_artifact(tmp_path, "session", "ledger", {"n": 1}, {}, "paired")
     directory = tmp_path / "narratives/session"
     assert (directory / "ledger-r1/artifact.json").is_file()
     assert (directory / "ledger-r1/artifact.md").is_file()
-    monkeypatch.setattr("daily_intelligence.narrative_store.os.link", original)
+    monkeypatch.setattr("signaltrail.narrative_store.os.link", original)
     repaired = save_artifact(tmp_path, "session", "ledger", {"n": 1}, {}, "paired")
     assert repaired.name == "ledger-r1.json"
     assert not (directory / "ledger-r2").exists()
@@ -90,7 +90,7 @@ def test_transient_windows_directory_lock_retries_same_immutable_revision(tmp_pa
         return original(path, target)
 
     monkeypatch.setattr(Path, "rename", temporarily_locked)
-    monkeypatch.setattr("daily_intelligence.narrative_store.time.sleep", lambda _: None)
+    monkeypatch.setattr("signaltrail.narrative_store.time.sleep", lambda _: None)
     saved = save_artifact(tmp_path, "session", "ledger", {"n": 1}, {}, "paired")
     assert len(attempts) == 3 and len(set(attempts)) == 1
     assert saved.name == "ledger-r1.json"
@@ -107,7 +107,7 @@ def test_persistent_windows_directory_lock_fails_after_bounded_retries(tmp_path,
         raise error
 
     monkeypatch.setattr(Path, "rename", always_locked)
-    monkeypatch.setattr("daily_intelligence.narrative_store.time.sleep", lambda _: None)
+    monkeypatch.setattr("signaltrail.narrative_store.time.sleep", lambda _: None)
     with pytest.raises(PermissionError, match="persistent access failure"):
         save_artifact(tmp_path, "session", "ledger", {"n": 1}, {}, "paired")
     assert len(attempts) == 5
@@ -127,7 +127,7 @@ def test_retry_never_overwrites_a_destination_created_after_the_first_attempt(
         raise error
 
     monkeypatch.setattr(Path, "rename", collision)
-    monkeypatch.setattr("daily_intelligence.narrative_store.time.sleep", lambda _: None)
+    monkeypatch.setattr("signaltrail.narrative_store.time.sleep", lambda _: None)
     with pytest.raises(FileExistsError, match="Refusing to overwrite"):
         save_artifact(tmp_path, "session", "ledger", {"n": 1}, {}, "paired")
     directory = tmp_path / "narratives/session/ledger-r1"

@@ -5,7 +5,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from daily_intelligence.authoring import (
+from signaltrail.authoring import (
     _analysis_candidates,
     _analysis_output_schema,
     _brief_output_schema,
@@ -16,10 +16,10 @@ from daily_intelligence.authoring import (
     validate_analysis_evidence,
     validate_authoring_batch,
 )
-from daily_intelligence.config import load_config
-from daily_intelligence.context import build_context
-from daily_intelligence.utils import read_json, write_json
-from daily_intelligence.workflow import (
+from signaltrail.config import load_config
+from signaltrail.context import build_context
+from signaltrail.utils import read_json, write_json
+from signaltrail.workflow import (
     RunStatus,
     accept_authoring_batch,
     accept_authoring_metrics,

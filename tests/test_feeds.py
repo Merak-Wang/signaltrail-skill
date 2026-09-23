@@ -4,14 +4,14 @@ from pathlib import Path
 import httpx
 import pytest
 
-from daily_intelligence.config import SourceConfig
-from daily_intelligence.feeds import (
+from signaltrail.config import SourceConfig
+from signaltrail.feeds import (
     discover_feed_urls,
     fetch_feed,
     looks_like_feed,
     parse_feed_document,
 )
-from daily_intelligence.utils import read_json
+from signaltrail.utils import read_json
 
 
 def _source() -> SourceConfig:
@@ -220,7 +220,7 @@ def _parse_saved(content, tmp_path):
 
 
 def test_long_feed_content_preserves_tail_without_expanding_candidates(tmp_path):
-    from daily_intelligence.context import _compact_candidates
+    from signaltrail.context import _compact_candidates
 
     prefix = "A public report provides observations and measurements. " * 30
 

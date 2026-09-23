@@ -32,7 +32,7 @@ See the [news slides workflow](docs/news-slides.md).
 
 ## Code map
 
-All modules below live in `src/daily_intelligence/`.
+All modules below live in `src/signaltrail/`.
 
 | Responsibility | Modules | Boundary |
 | --- | --- | --- |
@@ -58,9 +58,10 @@ Domain modules must not import `cli` or `commands`. In `commands/`, `parser.py` 
 the registry maps names to handlers, and each handler family calls domain functions through
 a typed `CommandContext`. `signaltrail` is the main CLI entry point.
 
-The names `daily_intelligence`, `DAILY_INTEL_*`, and existing report IDs remain for compatibility.
-The public product and new CLI name are SignalTrail. See [development](docs/development.md)
-before adding another alias or package.
+The public Python import and module entry point are `signaltrail` and `python -m signaltrail.cli`;
+the command is `signaltrail`, and the distribution is `signaltrail-skill`. Legacy `DAILY_INTEL_*`
+environment variables and stored report IDs remain compatible. Old Hermes `daily-intelligence`
+data and browser-profile directories migrate by an explicit rename; see [usage](docs/usage.md).
 
 ## State and files
 

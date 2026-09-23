@@ -5,9 +5,9 @@ import pytest
 from bs4 import BeautifulSoup
 from PIL import Image
 
-from daily_intelligence.narrative import submit_script
-from daily_intelligence.narrative_store import load_artifact
-from daily_intelligence.story_stream import (
+from signaltrail.narrative import submit_script
+from signaltrail.narrative_store import load_artifact
+from signaltrail.story_stream import (
     build_story_stream,
     render_story,
     render_story_html,
@@ -95,7 +95,7 @@ def test_projection_failure_leaves_story_and_report_available(explainer_case, mo
     def fail(*args, **kwargs):
         raise OSError("Disk unavailable")
 
-    monkeypatch.setattr("daily_intelligence.story_stream.write_text_atomic", fail)
+    monkeypatch.setattr("signaltrail.story_stream.write_text_atomic", fail)
     with pytest.raises(OSError):
         render_story(story, c["root"])
     assert load_artifact(story, c["root"])["kind"] == "story"

@@ -60,7 +60,7 @@ Load the repository root [`SKILL.md`](SKILL.md) in your agent, then ask for a re
 Use SignalTrail to create today's English morning report as local HTML and PDF.
 ```
 
-`signaltrail` is the unified CLI. It prepares reproducible collection, validation, and storage steps; the agent writes from the evidence packets. Running `run-edition` alone stops at the authoring handoff and does not produce a complete report by itself.
+`signaltrail` is the unified CLI. The Python package can be imported as `signaltrail` or launched with `python -m signaltrail.cli`. The CLI prepares reproducible collection, validation, and storage steps; the agent writes from the evidence packets. Running `run-edition` alone stops at the authoring handoff and does not produce a complete report by itself.
 
 ### Install for Hermes
 
@@ -82,6 +82,8 @@ The scripts synchronize the Skill to Hermes and install the Python command. Brow
 python -m playwright install chromium
 ```
 
+When upgrading from the earlier package, uninstall the old `daily-intelligence-skill` Python distribution before installing `signaltrail-skill`. Stop active runs, then rename the old Hermes data and dedicated browser-profile directories to `signaltrail`; renaming keeps all saved report history. See [Upgrade from an earlier version](docs/usage.md#upgrade-from-an-earlier-version) for exact paths and commands.
+
 See the [usage guide](docs/usage.md) for host setup, data directories, metered runs, and recovery.
 
 ## Local monitor
@@ -95,7 +97,7 @@ The monitor refreshes sources, organizes the news stream, and clusters related s
 
 ## Data, cost, and boundaries
 
-Versioned report JSON and Markdown are the original records; HTML and PDF are rebuildable reading views. Existing report revisions are not overwritten. Source access failures, rate limits, and verification challenges retain their actual status. Runtime data stays on the local machine by default; reuse the same data directory when upgrading. The [usage guide](docs/usage.md) explains paths and recovery.
+Versioned report JSON and Markdown are the original records; HTML and PDF are rebuildable reading views. Existing report revisions are not overwritten. Source access failures, rate limits, and verification challenges retain their actual status. Runtime data stays local in the Hermes `signaltrail/` directory by default. Existing users can rename the old data directory as described in [Upgrade from an earlier version](docs/usage.md#upgrade-from-an-earlier-version), preserving reports and run history.
 
 Collection, monitoring, image handling, and HTML rendering make no model calls. The agent host performs report and slide writing. Batch token gates limit estimated input and output size; actual usage depends on what the host reports. Source availability, network access, evidence coverage, and model latency affect delivery and coverage.
 

@@ -56,9 +56,10 @@ or delete regression coverage merely to reduce the test count.
 | Name | Use |
 | --- | --- |
 | SignalTrail / `signaltrail` | Product, skill ID, main CLI; `daily-intel` is no longer installed |
-| `daily_intelligence` | Existing Python import package |
-| `daily-intelligence-skill` | Existing Python distribution name |
-| `DAILY_INTEL_*`, data directories, report IDs | Persisted compatibility surface; change only with a tested migration |
+| `signaltrail` | Python import package and `python -m signaltrail.cli` module entry point |
+| `signaltrail-skill` | Python distribution; replaces the previous `daily-intelligence-skill` distribution |
+| `DAILY_INTEL_*`, report IDs | Legacy environment names and stored identifiers remain compatible |
+| Hermes `signaltrail/` data and browser-profile directories | Current defaults; rename the old `daily-intelligence/` directories during explicit migration |
 
 Use verbs for operations (`collect_sources`, `save_report`) and nouns for data.
 CLI handlers use `handle_<command>` and live in `commands/`; they translate options into domain

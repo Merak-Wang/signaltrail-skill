@@ -1,7 +1,7 @@
 from bs4 import BeautifulSoup
 
-import daily_intelligence.slide_renderer as renderer
-from daily_intelligence.slide_renderer import render_slides_html
+import signaltrail.slide_renderer as renderer
+from signaltrail.slide_renderer import render_slides_html
 
 
 def _deck() -> dict:

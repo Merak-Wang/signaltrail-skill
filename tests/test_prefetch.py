@@ -6,11 +6,11 @@ from pathlib import Path
 
 import httpx
 
-from daily_intelligence.adapters import browser_items_from_rows
-from daily_intelligence.collector import collect_source
-from daily_intelligence.config import AppConfig, BrowserConfig, SourceConfig
-from daily_intelligence.models import ArticleItem, SourceResult, SourceStatus
-from daily_intelligence.prefetch import _prefetch_all, html_index_rows, page_needs_browser
+from signaltrail.adapters import browser_items_from_rows
+from signaltrail.collector import collect_source
+from signaltrail.config import AppConfig, BrowserConfig, SourceConfig
+from signaltrail.models import ArticleItem, SourceResult, SourceStatus
+from signaltrail.prefetch import _prefetch_all, html_index_rows, page_needs_browser
 
 
 def _source(
@@ -232,7 +232,7 @@ def test_prefetch_stops_stream_at_limit_and_marks_partial(monkeypatch, tmp_path)
         async def aclose(self):
             closed.append(True)
 
-    monkeypatch.setattr("daily_intelligence.prefetch._MAX_HTML_BYTES", len(page) + 10)
+    monkeypatch.setattr("signaltrail.prefetch._MAX_HTML_BYTES", len(page) + 10)
     config = AppConfig(timezone="UTC", browser=BrowserConfig(), sources=[])
     results = asyncio.run(_prefetch_all(
         [_source()], config, tmp_path,

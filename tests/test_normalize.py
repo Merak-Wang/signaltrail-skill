@@ -1,6 +1,6 @@
 from dataclasses import replace
 
-from daily_intelligence.adapters import (
+from signaltrail.adapters import (
     _published_at,
     arxiv_items_from_rows,
     browser_items_from_rows,
@@ -9,10 +9,10 @@ from daily_intelligence.adapters import (
     seed_items_from_payload,
     twz_items_from_rows,
 )
-from daily_intelligence.collector import classify_source_status, is_eligible
-from daily_intelligence.config import load_config
-from daily_intelligence.models import SourceStatus, order_source_items
-from daily_intelligence.utils import canonicalize_url, url_for_source_filter
+from signaltrail.collector import classify_source_status, is_eligible
+from signaltrail.config import load_config
+from signaltrail.models import SourceStatus, order_source_items
+from signaltrail.utils import canonicalize_url, url_for_source_filter
 
 
 def test_tracking_parameters_are_removed():

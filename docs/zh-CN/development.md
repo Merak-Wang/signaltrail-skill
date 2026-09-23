@@ -52,9 +52,10 @@ Hermes 重试可能复用请求 ID。观察器用请求 ID 和宿主开始时间
 | 名称 | 用途 |
 | --- | --- |
 | SignalTrail / `signaltrail` | 产品、Skill ID、主 CLI；不再安装 `daily-intel` |
-| `daily_intelligence` | 现有 Python 导入包 |
-| `daily-intelligence-skill` | 现有 Python 发行包名 |
-| `DAILY_INTEL_*`、数据目录、报告 ID | 持久化兼容接口，只能经过有测试的迁移改变 |
+| `signaltrail` | Python 导入包及 `python -m signaltrail.cli` 模块入口 |
+| `signaltrail-skill` | Python 发行包；替代旧 `daily-intelligence-skill` 发行包 |
+| `DAILY_INTEL_*`、报告 ID | 旧环境变量名称和已存标识继续兼容 |
+| Hermes `signaltrail/` 数据与浏览器配置目录 | 当前默认路径；显式迁移时将旧 `daily-intelligence/` 目录改名 |
 
 操作用动词命名，如 `collect_sources`、`save_report`；数据用名词。
 CLI 处理函数采用 `handle_<command>`，放在 `commands/`，负责把参数传给领域函数并输出结果。

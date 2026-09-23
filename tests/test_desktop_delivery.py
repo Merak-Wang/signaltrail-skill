@@ -10,8 +10,8 @@ from bs4 import BeautifulSoup
 from PIL import Image
 from pypdf import PdfReader
 
-from daily_intelligence.config import OutputConfig, load_config, validate_output_config
-from daily_intelligence.local_output import render_report_html, write_local_outputs
+from signaltrail.config import OutputConfig, load_config, validate_output_config
+from signaltrail.local_output import render_report_html, write_local_outputs
 from tests.report_helpers import first_report_item, load_sample_report
 
 
@@ -192,7 +192,7 @@ def test_edge_pdf_receives_embedded_images_instead_of_relative_media(
         captured["html"] = html_document or ""
         output_path.write_bytes(b"%PDF-1.4\n%%EOF\n")
 
-    monkeypatch.setattr("daily_intelligence.local_output._edge_pdf", fake_edge_pdf)
+    monkeypatch.setattr("signaltrail.local_output._edge_pdf", fake_edge_pdf)
     outputs = write_local_outputs(
         _report(),
         data_dir,
@@ -218,7 +218,7 @@ def test_desktop_delivery_failure_is_explicit_without_losing_local_html(
         desktop_dir=str((tmp_path / "Desktop").resolve()),
     )
     monkeypatch.setattr(
-        "daily_intelligence.local_output.write_desktop_html",
+        "signaltrail.local_output.write_desktop_html",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(PermissionError("denied")),
     )
 
@@ -249,7 +249,7 @@ def test_evaluation_refresh_reuses_existing_pdf_and_renders_only_when_missing(
         return "fake", None
 
     monkeypatch.setattr(
-        "daily_intelligence.local_output.render_pdf_from_html",
+        "signaltrail.local_output.render_pdf_from_html",
         fake_pdf,
     )
     initial = write_local_outputs(_report(), data_dir, config)
@@ -300,7 +300,7 @@ def test_pdf_size_budget_is_explicit_and_non_destructive(
         return "fake", None
 
     monkeypatch.setattr(
-        "daily_intelligence.local_output.render_pdf_from_html",
+        "signaltrail.local_output.render_pdf_from_html",
         fake_pdf,
     )
     outputs = write_local_outputs(

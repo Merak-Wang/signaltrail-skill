@@ -42,7 +42,7 @@ def python_targets(root: Path = ROOT) -> list[Path]:
     输出：需要接受中文注释门禁的源码 Path 列表；包含规范包模块和三份维护脚本，
       不含测试与发布快照。
     """
-    source_files = sorted((root / "src" / "daily_intelligence").rglob("*.py"))
+    source_files = sorted((root / "src" / "signaltrail").rglob("*.py"))
     script_files = [root / "scripts" / name for name in MAINTENANCE_SCRIPTS]
     return [*source_files, *script_files]
 

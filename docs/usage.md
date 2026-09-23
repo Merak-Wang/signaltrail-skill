@@ -8,8 +8,9 @@ host setup, and where to find a finished report. [中文](zh-CN/usage.md)
 ## Installation
 
 Install the checkout with `python -m pip install -e .`, then load its root `SKILL.md` in
-your agent. Keep the checkout: source configuration, schemas, and templates are runtime inputs.
-When launching outside it, set `DAILY_INTEL_SKILL_DIR` to the absolute checkout path.
+your agent. The Python import is `signaltrail`; its module entry point is
+`python -m signaltrail.cli`. Keep the checkout: configuration, schemas and templates are runtime
+inputs. `DAILY_INTEL_SKILL_DIR` remains accepted when launching outside the checkout.
 
 The checkout maintains one root `src/`. A release build places the complete installable skill
 in `dist/signaltrail/`, including `SKILL.md`, source, configuration, schemas, templates, references,
@@ -18,9 +19,10 @@ the complete skill into Hermes and installs the Python project from that directo
 environments and runtime data are excluded. `-Editable` (Windows) or `--editable` (macOS/Linux)
 instead binds the Python installation to the original source directory for development.
 
-The main command is `signaltrail`; new installations no longer provide `daily-intel`.
-Update existing shell scripts and scheduled commands to use `signaltrail`, then reinstall
-the project to refresh its entry points. Existing data paths and `DAILY_INTEL_*` variables remain valid.
+The Python distribution is now `signaltrail-skill`, replacing `daily-intelligence-skill`.
+The main command is `signaltrail`; new installations do not provide `daily-intel`. Update scripts
+and scheduled jobs to use the new command. Existing `DAILY_INTEL_*` environment variables and
+stored report IDs remain supported.
 
 Windows can use system Edge. For browser collection on macOS or Linux, install Chromium
 in the same Python environment:
@@ -34,12 +36,47 @@ the system libraries and may require administrator access. The Hermes install sc
 the README synchronize the skill to `skills/research/signaltrail`; Windows-specific setup
 is in [windows-setup.md](../references/windows-setup.md).
 
+## Upgrade from an earlier version
+
+Stop SignalTrail and Hermes jobs before moving data or browser profiles. Uninstall the old Python
+distribution, then install the complete new checkout or release package. On Windows:
+
+```powershell
+python -m pip uninstall daily-intelligence-skill
+Move-Item "$env:LOCALAPPDATA\hermes\daily-intelligence" "$env:LOCALAPPDATA\hermes\signaltrail"
+Move-Item "$env:LOCALAPPDATA\hermes\browser-profiles\daily-intelligence" "$env:LOCALAPPDATA\hermes\browser-profiles\signaltrail"
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install.ps1
+signaltrail --data-dir "$env:LOCALAPPDATA\hermes\signaltrail" data-root adopt
+signaltrail --data-dir "$env:LOCALAPPDATA\hermes\signaltrail" data-root status
+```
+
+On macOS/Linux, from the checkout or complete extracted package:
+
+```sh
+python -m pip uninstall daily-intelligence-skill
+mv ~/.hermes/daily-intelligence ~/.hermes/signaltrail
+mv ~/.hermes/browser-profiles/daily-intelligence ~/.hermes/browser-profiles/signaltrail
+bash ./scripts/install.sh
+signaltrail --data-dir "$HOME/.hermes/signaltrail" data-root adopt
+signaltrail --data-dir "$HOME/.hermes/signaltrail" data-root status
+```
+
+Run each rename only when the old directory exists and the new destination does not. If both paths
+exist, stop and inspect them; do not merge histories automatically. A configured `HERMES_HOME`
+replaces the default root above. Directory renames preserve reports, runs, indexes, cache and usage
+history. After a rename, use `data-root adopt` to write the new
+`state/signaltrail-data-root.json` registry and record the prior root, then use `status` to confirm it.
+The old registry remains a read-only fallback. A copy-based migration may keep the old tree staged:
+copy the complete data root and verify it independently before adopting the new path. Adoption changes
+the binding and records the prior root; it does not copy files or verify their integrity. Update saved
+`--profile-dir` paths and scheduled commands too.
+
 ## Data directory
 
-Pass `--data-dir DATA_DIR` before the subcommand, or set `DAILY_INTEL_DATA_DIR`.
-Reuse the existing directory on upgrades. Hermes defaults are
-`%LOCALAPPDATA%\hermes\daily-intelligence` on Windows and `~/.hermes/daily-intelligence`
-on macOS/Linux. A configured `HERMES_HOME` uses its `daily-intelligence/` child.
+Pass `--data-dir DATA_DIR` before the subcommand, or set the legacy `DAILY_INTEL_DATA_DIR`.
+Hermes defaults are `%LOCALAPPDATA%\hermes\signaltrail` on Windows and `~/.hermes/signaltrail`
+on macOS/Linux. A configured `HERMES_HOME` uses its `signaltrail/` child. Dedicated browser profiles
+default to `browser-profiles/signaltrail/` under the Hermes home.
 
 ```sh
 signaltrail --data-dir DATA_DIR data-root status

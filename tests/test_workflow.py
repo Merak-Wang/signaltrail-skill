@@ -4,11 +4,11 @@ from pathlib import Path
 
 import pytest
 
-import daily_intelligence.workflow as workflow_module
-from daily_intelligence.config import OutputConfig, load_config
-from daily_intelligence.llm_usage import UsageLedger
-from daily_intelligence.utils import read_json, write_json
-from daily_intelligence.workflow import (
+import signaltrail.workflow as workflow_module
+from signaltrail.config import OutputConfig, load_config
+from signaltrail.llm_usage import UsageLedger
+from signaltrail.utils import read_json, write_json
+from signaltrail.workflow import (
     RunStatus,
     _active_usage_binding,
     _attach_usage_binding,
@@ -242,19 +242,19 @@ def test_two_stage_run_reaches_completed(monkeypatch, tmp_path: Path):
         output = kwargs["data_dir"] / "indexes" / "2026-07-11" / "morning-r2.json"
         return write_json(output, source)
 
-    monkeypatch.setattr("daily_intelligence.workflow.today_str", lambda _timezone: "2026-07-11")
+    monkeypatch.setattr("signaltrail.workflow.today_str", lambda _timezone: "2026-07-11")
     monkeypatch.setattr(
-        "daily_intelligence.workflow.refresh_monitor",
+        "signaltrail.workflow.refresh_monitor",
         lambda _config, data_dir: write_json(
             data_dir / "monitor" / "snapshot.json",
             {"generated_at": "2026-07-11T05:45:00+08:00", "token_usage": 0},
         ),
     )
-    monkeypatch.setattr("daily_intelligence.workflow.collect_sources", fake_collect_sources)
-    monkeypatch.setattr("daily_intelligence.workflow.build_context", fake_build_context)
-    monkeypatch.setattr("daily_intelligence.workflow.extract_content", fake_extract_content)
+    monkeypatch.setattr("signaltrail.workflow.collect_sources", fake_collect_sources)
+    monkeypatch.setattr("signaltrail.workflow.build_context", fake_build_context)
+    monkeypatch.setattr("signaltrail.workflow.extract_content", fake_extract_content)
     monkeypatch.setattr(
-        "daily_intelligence.workflow.schedule_independent_evaluation",
+        "signaltrail.workflow.schedule_independent_evaluation",
         lambda *_args, **_kwargs: {"status": "scheduled", "detail": "local-eval"},
     )
 
@@ -339,25 +339,25 @@ def test_prepare_reuses_fresh_monitor_snapshot_without_refresh(
         )
 
     monkeypatch.setattr(
-        "daily_intelligence.workflow.today_str",
+        "signaltrail.workflow.today_str",
         lambda _timezone: "2026-07-24",
     )
     monkeypatch.setattr(
-        "daily_intelligence.workflow.fresh_monitor_snapshot_path",
+        "signaltrail.workflow.fresh_monitor_snapshot_path",
         lambda *_args, **_kwargs: snapshot_path,
     )
     monkeypatch.setattr(
-        "daily_intelligence.workflow.refresh_monitor",
+        "signaltrail.workflow.refresh_monitor",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
             AssertionError("fresh snapshot must avoid refresh")
         ),
     )
     monkeypatch.setattr(
-        "daily_intelligence.workflow.collect_sources",
+        "signaltrail.workflow.collect_sources",
         fake_collect_sources,
     )
     monkeypatch.setattr(
-        "daily_intelligence.workflow.build_context",
+        "signaltrail.workflow.build_context",
         fake_build_context,
     )
 
@@ -396,8 +396,8 @@ def test_enrich_edition_records_only_ids_accepted_under_hard_cap(monkeypatch, tm
     def fake_build_context(index, _config, data, edition, collection_window=None):
         return write_json(data / "context" / f"{edition}.json", {"index": str(index)})
 
-    monkeypatch.setattr("daily_intelligence.workflow.extract_content", fake_extract_content)
-    monkeypatch.setattr("daily_intelligence.workflow.build_context", fake_build_context)
+    monkeypatch.setattr("signaltrail.workflow.extract_content", fake_extract_content)
+    monkeypatch.setattr("signaltrail.workflow.build_context", fake_build_context)
     requested = [f"item-{position}" for position in range(20)]
 
     enrich_edition(run_path, config, data_dir, requested, max_items=None)
@@ -432,7 +432,7 @@ def test_existing_run_rejects_silent_output_language_change(monkeypatch, tmp_pat
             "status": RunStatus.AWAITING_SELECTION,
         },
     )
-    monkeypatch.setattr("daily_intelligence.workflow.today_str", lambda _timezone: "2026-07-25")
+    monkeypatch.setattr("signaltrail.workflow.today_str", lambda _timezone: "2026-07-25")
 
     with pytest.raises(RuntimeError, match="--restart"):
         prepare_edition(config, data_dir, "morning")
@@ -471,7 +471,7 @@ def test_verified_index_reopens_published_run_as_a_report_revision(monkeypatch, 
         captured["language"] = config.output.language
         return context_path
 
-    monkeypatch.setattr("daily_intelligence.workflow.build_context", fake_build_context)
+    monkeypatch.setattr("signaltrail.workflow.build_context", fake_build_context)
 
     adopt_index_for_run(load_config(), data_dir, index_path)
 
@@ -539,15 +539,15 @@ def test_deferred_tail_returns_after_html_then_finishes_requested_work(
             "requested_formats": output_config.formats,
         }
 
-    monkeypatch.setattr("daily_intelligence.workflow.save_report", fake_save)
+    monkeypatch.setattr("signaltrail.workflow.save_report", fake_save)
     monkeypatch.setattr(
-        "daily_intelligence.workflow.publish_report",
+        "signaltrail.workflow.publish_report",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
             AssertionError("Notion must not block local delivery")
         ),
     )
     monkeypatch.setattr(
-        "daily_intelligence.workflow.schedule_independent_evaluation",
+        "signaltrail.workflow.schedule_independent_evaluation",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
             AssertionError("evaluation must wait for the tail worker")
         ),
@@ -577,7 +577,7 @@ def test_deferred_tail_returns_after_html_then_finishes_requested_work(
     assert run["tail"]["command"].startswith("signaltrail --data-dir ")
 
     monkeypatch.setattr(
-        "daily_intelligence.workflow.write_local_outputs",
+        "signaltrail.workflow.write_local_outputs",
         lambda *_args, **_kwargs: {
             "html_path": str(html_path),
             "pdf_path": str(saved_report_path.with_suffix(".pdf")),
@@ -587,11 +587,11 @@ def test_deferred_tail_returns_after_html_then_finishes_requested_work(
         },
     )
     monkeypatch.setattr(
-        "daily_intelligence.workflow.publish_report",
+        "signaltrail.workflow.publish_report",
         lambda *_args, **_kwargs: ("notion-page", "published"),
     )
     monkeypatch.setattr(
-        "daily_intelligence.workflow.schedule_independent_evaluation",
+        "signaltrail.workflow.schedule_independent_evaluation",
         lambda *_args, **_kwargs: {"status": "scheduled", "detail": "evaluation-job"},
     )
 
@@ -651,7 +651,7 @@ def test_schema_20_context_rejects_legacy_draft_before_persistence(monkeypatch, 
         },
     )
     monkeypatch.setattr(
-        "daily_intelligence.workflow.save_report",
+        "signaltrail.workflow.save_report",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
             AssertionError("legacy draft must be rejected before persistence")
         ),
@@ -711,11 +711,11 @@ def test_deferred_tail_records_projection_failure_without_retracting_html(
         },
     )
     monkeypatch.setattr(
-        "daily_intelligence.workflow.write_local_outputs",
+        "signaltrail.workflow.write_local_outputs",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("edge unavailable")),
     )
     monkeypatch.setattr(
-        "daily_intelligence.workflow.schedule_independent_evaluation",
+        "signaltrail.workflow.schedule_independent_evaluation",
         lambda *_args, **_kwargs: {"status": "scheduled", "detail": "evaluation-job"},
     )
 
@@ -750,7 +750,7 @@ def test_finalize_validation_failure_returns_to_awaiting_authoring(monkeypatch, 
         },
     )
     monkeypatch.setattr(
-        "daily_intelligence.workflow.save_report",
+        "signaltrail.workflow.save_report",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(ValueError("bad access")),
     )
 

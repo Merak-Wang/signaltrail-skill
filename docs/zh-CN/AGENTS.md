@@ -35,7 +35,7 @@ Python 负责采集、状态、校验、版本和发布。
 | 交付 | `local_output.py`、`notion.py`、`verification.py` | `test_desktop_delivery.py`、`test_notion.py`、`test_verification.py` |
 | 打包与文档 | `scripts/`、`SKILL.md`、`docs/README.md` | `test_hermes_package.py`、`test_docs.py` |
 
-上表代码和测试路径分别相对于 `src/daily_intelligence/` 与 `tests/`。
+上表代码和测试路径分别相对于 `src/signaltrail/` 与 `tests/`。
 
 ## 提交前
 

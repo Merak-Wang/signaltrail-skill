@@ -39,7 +39,7 @@ This record uses three evidence classes:
   from those artifacts.
 - **Reviewed:** canonical source behavior and its focused regression coverage.
 
-Canonical implementation authority is [src/daily_intelligence](../../src/daily_intelligence/).
+Canonical implementation authority is [src/signaltrail](../../src/signaltrail/).
 Generated and installed copies were excluded from the review boundary.
 
 ## Artifact Lineage

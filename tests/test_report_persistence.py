@@ -3,10 +3,10 @@ from pathlib import Path
 import pytest
 from pypdf import PdfReader
 
-from daily_intelligence.config import OutputConfig
-from daily_intelligence.reports import save_report
-from daily_intelligence.state import update_continuity_state
-from daily_intelligence.utils import read_json, write_json
+from signaltrail.config import OutputConfig
+from signaltrail.reports import save_report
+from signaltrail.state import update_continuity_state
+from signaltrail.utils import read_json, write_json
 from tests.report_helpers import load_sample_report, write_report_index
 
 
@@ -129,7 +129,7 @@ def test_save_report_validates_before_network_media(monkeypatch, tmp_path: Path)
         raise AssertionError("media must not run before semantic validation")
 
     monkeypatch.setattr(
-        "daily_intelligence.reports.materialize_report_images",
+        "signaltrail.reports.materialize_report_images",
         unexpected_media,
     )
 
@@ -146,7 +146,7 @@ def test_save_report_keeps_local_truth_when_html_projection_fails(
     draft = write_json(tmp_path / "draft.json", report)
     index = write_report_index(report, tmp_path / "index.json")
     monkeypatch.setattr(
-        "daily_intelligence.reports.write_local_outputs",
+        "signaltrail.reports.write_local_outputs",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("disk projection error")),
     )
 

@@ -12,24 +12,24 @@ import jsonschema
 import pytest
 from PIL import Image
 
-from daily_intelligence import media as media_module
-from daily_intelligence.config import MediaConfig
-from daily_intelligence.local_output import render_report_html
-from daily_intelligence.media import (
+from signaltrail import media as media_module
+from signaltrail.config import MediaConfig
+from signaltrail.local_output import render_report_html
+from signaltrail.media import (
     DownloadedImage,
     ImageDownloadError,
     assert_public_image_url,
     download_image,
     materialize_report_images,
 )
-from daily_intelligence.notion import (
+from signaltrail.notion import (
     NotionPublisher,
     _prepare_image_uploads,
     backfill_report_images,
     report_to_blocks,
 )
-from daily_intelligence.reports import render_report_markdown
-from daily_intelligence.utils import read_json, write_json
+from signaltrail.reports import render_report_markdown
+from signaltrail.utils import read_json, write_json
 
 
 def _png_bytes() -> bytes:
@@ -923,9 +923,9 @@ def test_notion_image_backfill_is_in_place_and_idempotent(monkeypatch, tmp_path:
 
     monkeypatch.setenv("NOTION_TOKEN", "test-token")
     monkeypatch.setenv("NOTION_DATA_SOURCE_ID", "test-source")
-    monkeypatch.setattr("daily_intelligence.notion.NotionPublisher", FakePublisher)
+    monkeypatch.setattr("signaltrail.notion.NotionPublisher", FakePublisher)
     monkeypatch.setattr(
-        "daily_intelligence.notion.validate_report",
+        "signaltrail.notion.validate_report",
         lambda _path: ([], []),
     )
 

@@ -20,7 +20,8 @@ New-Item -ItemType Directory -Force -Path $targetDir | Out-Null
 $legacyRuntimeEntries = @(
     ".env", ".git", ".github", ".playwright-cli", ".pytest_cache", ".ruff_cache",
     "browser-profile", "browser-profiles", "build", "daily-intel-data",
-    "daily-intelligence", "daily_intelligence_skill.egg-info", "data", "dist",
+    "daily-intelligence", "src/daily_intelligence", "daily_intelligence_skill.egg-info",
+    "signaltrail_skill.egg-info", "data", "dist",
     "edge-profile", "raw_html", "screenshots", "skills", "tmp"
 )
 $sameDirectory = [String]::Equals(
@@ -48,7 +49,7 @@ $excludedDirs = @(
     "blob-report", "build", "dist", "data", "daily-intelligence", "daily-intel-data",
     "browser-profile", "browser-profiles", "edge-profile", "htmlcov", "output",
     "playwright-report", "raw_html", "screenshots", "test-results", "tmp",
-    "daily_intelligence_skill.egg-info", "skills"
+    "daily_intelligence_skill.egg-info", "signaltrail_skill.egg-info", "skills"
 )
 $excludedFiles = @(".env", "*.cookies.json", "*.har", "*.storage-state.json", "brief*.json")
 if (-not $sameDirectory) {

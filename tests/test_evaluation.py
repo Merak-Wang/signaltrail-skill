@@ -2,12 +2,12 @@ from pathlib import Path
 
 import pytest
 
-from daily_intelligence.evaluation import build_evaluation_dossier
-from daily_intelligence.reporting import (
+from signaltrail.evaluation import build_evaluation_dossier
+from signaltrail.reporting import (
     EVALUATION_DIMENSION_ORDER,
     report_content_hash,
 )
-from daily_intelligence.utils import read_json, write_json
+from signaltrail.utils import read_json, write_json
 
 
 def test_evaluation_dossier_is_immutable_hashed_and_allowlisted(tmp_path: Path):
@@ -73,7 +73,7 @@ def test_evaluation_dossier_is_immutable_hashed_and_allowlisted(tmp_path: Path):
 
 
 def test_featured_order_preserves_section_boundaries_and_old_dossier(monkeypatch, tmp_path):
-    monkeypatch.setattr('daily_intelligence.evaluation.validate_report_data',
+    monkeypatch.setattr('signaltrail.evaluation.validate_report_data',
                         lambda *args: ([], []))
     report = {"report_id": "report-1", "sections": [
         {"id": "section-a", "items": [

@@ -8,7 +8,7 @@ from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
-from daily_intelligence.llm_usage import UsageLedger, ingest_hook_from_env
+from signaltrail.llm_usage import UsageLedger, ingest_hook_from_env
 
 CommandHandler = Callable[[argparse.Namespace, Mapping[str, str]], dict[str, Any] | None]
 

@@ -8,8 +8,8 @@
 ## 安装
 
 在仓库运行 `python -m pip install -e .`，然后让智能体加载根目录的 `SKILL.md`。
-保留仓库目录：来源配置、Schema 和模板也是运行输入。从仓库外启动时，将
-`DAILY_INTEL_SKILL_DIR` 设为仓库绝对路径。
+Python 导入包为 `signaltrail`，模块入口为 `python -m signaltrail.cli`。保留仓库目录：来源配置、
+Schema 和模板也是运行输入。从仓库外启动时仍可用 `DAILY_INTEL_SKILL_DIR` 指定仓库绝对路径。
 
 仓库仅维护根目录的一份 `src/`。发布构建在 `dist/signaltrail/` 中生成完整安装包，包含
 `SKILL.md`、源码、配置、Schema、模板、参考资料和资源。从仓库或解压后的完整包根目录运行
@@ -17,8 +17,9 @@
 运行数据。开发时使用 `-Editable`（Windows）或 `--editable`（macOS/Linux），
 Python 安装则关联原始源码目录。
 
-主命令统一为 `signaltrail`，新安装不再提供 `daily-intel`。已有 Shell 脚本和定时命令需改用
-`signaltrail`，并重新安装项目以刷新命令入口。已有数据路径和 `DAILY_INTEL_*` 环境变量保持有效。
+Python 发行包现在为 `signaltrail-skill`，替代旧 `daily-intelligence-skill`。
+主命令统一为 `signaltrail`，新安装不再提供 `daily-intel`。已有 Shell 脚本和定时任务需改用新命令。
+旧 `DAILY_INTEL_*` 环境变量和已存报告 ID 继续兼容。
 
 Windows 可以使用系统 Edge。macOS 或 Linux 的浏览器采集需要在同一 Python 环境安装 Chromium：
 
@@ -30,12 +31,42 @@ python -m playwright install chromium
 该步骤可能需要管理员权限。README 中的 Hermes 安装脚本会把 Skill 同步到
 `skills/research/signaltrail`；Windows 细节见[安装参考](../../references/windows-setup.md)。
 
+## 从旧版升级
+
+移动数据或浏览器配置前，先停止 SignalTrail 与 Hermes 任务。卸载旧 Python 发行包，再安装完整的新仓库或发布包。
+Windows 示例：
+
+```powershell
+python -m pip uninstall daily-intelligence-skill
+Move-Item "$env:LOCALAPPDATA\hermes\daily-intelligence" "$env:LOCALAPPDATA\hermes\signaltrail"
+Move-Item "$env:LOCALAPPDATA\hermes\browser-profiles\daily-intelligence" "$env:LOCALAPPDATA\hermes\browser-profiles\signaltrail"
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install.ps1
+signaltrail --data-dir "$env:LOCALAPPDATA\hermes\signaltrail" data-root adopt
+signaltrail --data-dir "$env:LOCALAPPDATA\hermes\signaltrail" data-root status
+```
+
+macOS/Linux 示例（在仓库或完整解压包目录运行）：
+
+```sh
+python -m pip uninstall daily-intelligence-skill
+mv ~/.hermes/daily-intelligence ~/.hermes/signaltrail
+mv ~/.hermes/browser-profiles/daily-intelligence ~/.hermes/browser-profiles/signaltrail
+bash ./scripts/install.sh
+signaltrail --data-dir "$HOME/.hermes/signaltrail" data-root adopt
+signaltrail --data-dir "$HOME/.hermes/signaltrail" data-root status
+```
+
+仅在旧目录存在且新目标不存在时执行对应的 `Move-Item`／`mv`。若新旧目录同时存在，先停止并检查，不要自动合并两份历史。
+配置了 `HERMES_HOME` 时，将示例中的 Hermes 根目录换成该路径。目录改名会逐字节保留报告、运行、索引、缓存和用量历史。
+改名后运行 `data-root adopt`，在 `state/signaltrail-data-root.json` 写入新登记并记录旧根，再用 `status` 核对。
+旧登记表保留为只读回退。若采用复制迁移，可保留旧目录暂存：先完整复制数据根并自行核验，再 adopt 新路径。
+adopt 只切换绑定并记录旧根，不复制文件或验证完整性。还需更新已保存的 `--profile-dir` 和定时任务命令。
+
 ## 数据目录
 
-在子命令前传入 `--data-dir DATA_DIR`，或设置 `DAILY_INTEL_DATA_DIR`。升级时沿用现有目录。
-Hermes 在 Windows 默认使用 `%LOCALAPPDATA%\hermes\daily-intelligence`，
-macOS/Linux 默认使用 `~/.hermes/daily-intelligence`。
-配置了 `HERMES_HOME` 时使用其中的 `daily-intelligence/` 子目录。
+在子命令前传入 `--data-dir DATA_DIR`，或设置兼容的 `DAILY_INTEL_DATA_DIR`。
+Hermes 在 Windows 默认使用 `%LOCALAPPDATA%\hermes\signaltrail`，macOS/Linux 默认使用 `~/.hermes/signaltrail`。
+配置了 `HERMES_HOME` 时使用其中的 `signaltrail/` 子目录。专用浏览器 Profile 默认位于 Hermes 根目录下的 `browser-profiles/signaltrail/`。
 
 ```sh
 signaltrail --data-dir DATA_DIR data-root status

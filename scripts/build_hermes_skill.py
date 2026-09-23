@@ -40,7 +40,7 @@ PACKAGE_DIRECTORIES = (
     Path("docs"),
     Path("references"),
     Path("schemas"),
-    Path("src/daily_intelligence"),
+    Path("src/signaltrail"),
     Path("templates"),
 )
 REQUIRED_ROOT_FIELDS = {

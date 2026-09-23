@@ -4,15 +4,15 @@ from pathlib import Path
 
 import pytest
 
-from daily_intelligence.config import OutputConfig
-from daily_intelligence.notion import (
+from signaltrail.config import OutputConfig
+from signaltrail.notion import (
     evaluation_to_blocks,
 )
-from daily_intelligence.reporting import report_content_hash, validate_report_data
-from daily_intelligence.reports import save_evaluation, save_report
-from daily_intelligence.storage import exclusive_lock
-from daily_intelligence.utils import read_json, write_json
-from daily_intelligence.workflow import (
+from signaltrail.reporting import report_content_hash, validate_report_data
+from signaltrail.reports import save_evaluation, save_report
+from signaltrail.storage import exclusive_lock
+from signaltrail.utils import read_json, write_json
+from signaltrail.workflow import (
     RunStatus,
     evaluation_preflight,
     finalize_edition,
@@ -238,15 +238,15 @@ def test_post_publication_evaluation_uses_bounded_retries(monkeypatch, tmp_path:
         stderr = ""
 
     monkeypatch.setattr(
-        "daily_intelligence.workflow.subprocess.run",
+        "signaltrail.workflow.subprocess.run",
         lambda command, **kwargs: calls.append((command, kwargs)) or Completed(),
     )
-    monkeypatch.setattr("daily_intelligence.workflow.project_root", lambda: tmp_path)
+    monkeypatch.setattr("signaltrail.workflow.project_root", lambda: tmp_path)
     dossier_path = tmp_path / "data" / "evaluations" / "dossiers" / "report.json"
     dossier_path.parent.mkdir(parents=True)
     dossier_path.write_text("{}", encoding="utf-8")
     monkeypatch.setattr(
-        "daily_intelligence.workflow.build_evaluation_dossier",
+        "signaltrail.workflow.build_evaluation_dossier",
         lambda *_args: dossier_path,
     )
 
@@ -264,7 +264,7 @@ def test_post_publication_evaluation_uses_bounded_retries(monkeypatch, tmp_path:
     assert command[command.index("--repeat") + 1] == "1"
     assert command[command.index("--skill") + 1] == "signaltrail"
     assert "不得要求用户点击" in command[4]
-    assert "runpy.run_module('daily_intelligence.cli', run_name='__main__')" in command[4]
+    assert "runpy.run_module('signaltrail.cli', run_name='__main__')" in command[4]
     encoded_source = base64.urlsafe_b64encode(str(tmp_path / "src").encode("utf-8")).decode("ascii")
     assert encoded_source in command[4]
     assert str(dossier_path) in command[4]
@@ -339,7 +339,7 @@ def test_scheduler_reconciliation_is_read_only_and_sanitized(monkeypatch):
 
     calls = []
     monkeypatch.setattr(
-        "daily_intelligence.workflow.subprocess.run",
+        "signaltrail.workflow.subprocess.run",
         lambda command, **kwargs: calls.append((command, kwargs)) or Completed(),
     )
 
@@ -384,11 +384,11 @@ def test_finalize_publish_only_schedules_requested_evaluation(
         },
     )
     monkeypatch.setattr(
-        "daily_intelligence.workflow.publish_report",
+        "signaltrail.workflow.publish_report",
         lambda *_args, **_kwargs: ("notion-page", "published"),
     )
     monkeypatch.setattr(
-        "daily_intelligence.workflow.schedule_independent_evaluation",
+        "signaltrail.workflow.schedule_independent_evaluation",
         lambda *_args, **_kwargs: {"status": "scheduled", "detail": "job-1"},
     )
 
@@ -434,7 +434,7 @@ def test_finalize_retries_missing_evaluator_schedule_after_completed_publish(
         },
     )
     monkeypatch.setattr(
-        "daily_intelligence.workflow.schedule_independent_evaluation",
+        "signaltrail.workflow.schedule_independent_evaluation",
         lambda *_args, **_kwargs: {"status": "scheduled", "detail": "job-recovered"},
     )
 

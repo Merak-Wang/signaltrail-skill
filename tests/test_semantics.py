@@ -4,10 +4,10 @@ from pathlib import Path
 
 import pytest
 
-from daily_intelligence.config import load_config
-from daily_intelligence.context import build_context
-from daily_intelligence.reporting import compile_report_data
-from daily_intelligence.semantics import (
+from signaltrail.config import load_config
+from signaltrail.context import build_context
+from signaltrail.reporting import compile_report_data
+from signaltrail.semantics import (
     finalize_semantic_cache_evaluation,
     load_semantic_cache,
     reusable_semantic_brief,
@@ -15,7 +15,7 @@ from daily_intelligence.semantics import (
     tldr_quality_issue,
     update_semantic_cache_from_report,
 )
-from daily_intelligence.utils import read_json, write_json
+from signaltrail.utils import read_json, write_json
 
 
 def test_semantic_identity_reuses_same_evidence_across_storage_paths():

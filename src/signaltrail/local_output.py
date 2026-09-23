@@ -1245,7 +1245,7 @@ def _reportlab_pdf(
         )
     except ImportError as exc:
         raise RuntimeError(
-            "ReportLab is required for the PDF fallback; reinstall daily-intelligence-skill"
+            "ReportLab is required for the PDF fallback; reinstall signaltrail-skill"
         ) from exc
 
     font_name = "STSong-Light"

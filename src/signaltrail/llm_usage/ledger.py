@@ -16,8 +16,8 @@ from pathlib import Path
 from typing import Any, BinaryIO, TextIO
 from uuid import uuid4
 
-from daily_intelligence.storage import write_immutable_json
-from daily_intelligence.utils import read_json_object
+from signaltrail.storage import write_immutable_json
+from signaltrail.utils import read_json_object
 
 from .adapters import CodexAdapter, HermesAdapter, OpenClawAdapter, UsageAdapter
 from .adapters.base import canonical_digest, hash_identifier

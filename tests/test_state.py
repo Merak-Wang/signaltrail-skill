@@ -3,10 +3,10 @@ from pathlib import Path
 
 import pytest
 
-from daily_intelligence.authoring import _project_analysis_state
-from daily_intelligence.state import thesis_identity, update_continuity_state
-from daily_intelligence.storage import exclusive_lock
-from daily_intelligence.utils import read_json
+from signaltrail.authoring import _project_analysis_state
+from signaltrail.state import thesis_identity, update_continuity_state
+from signaltrail.storage import exclusive_lock
+from signaltrail.utils import read_json
 from tests.report_helpers import load_sample_report
 
 

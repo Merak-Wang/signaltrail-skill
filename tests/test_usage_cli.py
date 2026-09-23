@@ -6,8 +6,8 @@ from pathlib import Path
 
 import pytest
 
-from daily_intelligence.llm_usage import UsageLedger
-from daily_intelligence.usage_cli import build_parser, main
+from signaltrail.llm_usage import UsageLedger
+from signaltrail.usage_cli import build_parser, main
 
 
 def _start_task(data_dir: Path, task_id: str = "task-cli") -> UsageLedger:

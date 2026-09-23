@@ -6,6 +6,10 @@
 
 - Reorganized the bilingual README, task guides, architecture and developer documentation.
   Published a complete installable skill package and synchronized package/skill/runtime versions.
+- Renamed the Python distribution to `signaltrail-skill` and the public import package to `signaltrail`;
+  use `python -m signaltrail.cli` for the module entry point. Upgrading from the old distribution now
+  requires uninstalling it first and explicitly migrating Hermes data/profile directories. Legacy
+  `DAILY_INTEL_*` environment variables and report IDs remain supported.
 - Distinguish Hermes retry attempts with the host's per-attempt start time, retaining
   idempotent event replay. Reconcile successful calls with the host database while keeping
   missing failed-call usage unknown and coverage partial.
@@ -143,7 +147,7 @@
 - Added semantic Chinese logic/input/output docstrings to all 439 maintained Python functions and classes. Inputs name their provenance and consumed fields; outputs explain their downstream meaning. Critical safety/state/concurrency/compatibility decisions are documented inline and protected by an AST-based regression gate.
 - Audited the repository for readability and determinism: centralized typed JSON-object reads and CLI JSON output, unified collision-safe atomic writers, made immutable JSON creation no-overwrite under concurrency, and injected the monitor clock in time-sensitive tests.
 - Replaced the deleted developer Wiki/reading guide with a concise `AGENTS.md`, a top-level architecture map, indexed English engineering records, matching Chinese translations under `docs/zh-CN/`, a verification matrix, a technical-debt tracker, and mechanical documentation checks.
-- Renamed the public Hermes skill and reader-facing report brand to **迹简情报台 · SignalTrail** (`signaltrail`) while retaining the `daily-intel` CLI, `daily_intelligence` package, report identifiers, legacy data root, and legacy `merak-brief`/`daily-intelligence` install-path discovery for backward compatibility.
+- Renamed the public Hermes skill and reader-facing report brand to **迹简情报台 · SignalTrail** (`signaltrail`) while retaining the `daily-intel` CLI, `signaltrail` package, report identifiers, legacy data root, and legacy `merak-brief`/`daily-intelligence` install-path discovery for backward compatibility.
 - Reorganized `SKILL.md` to the Hermes/Agent Skills metadata layout, added a tracked-file-only community package builder, and documented an auditable GitHub publication workflow.
 - Made Simplified Chinese the default repository README, added full English README and example documentation, and reframed the report gallery around product outcomes and operating scale.
 - Filtered known placeholder image URLs during feed, page, and article extraction; added pixel-level rejection for uniform rasters, same-story fallback candidates, and cache-version invalidation so blank image cards are removed before publication.

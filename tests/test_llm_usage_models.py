@@ -5,8 +5,8 @@ from pathlib import Path
 
 import pytest
 
-from daily_intelligence.llm_usage import TokenRelation, TokenUsage, UsageLedger, exact
-from daily_intelligence.llm_usage.models import (
+from signaltrail.llm_usage import TokenRelation, TokenUsage, UsageLedger, exact
+from signaltrail.llm_usage.models import (
     CostMeasurement,
     Measurement,
     ObservationQuality,

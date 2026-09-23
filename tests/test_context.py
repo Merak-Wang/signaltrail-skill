@@ -4,10 +4,10 @@ from pathlib import Path
 
 import pytest
 
-import daily_intelligence.context as context_module
-from daily_intelligence.config import load_config
-from daily_intelligence.context import _continuity_entry, build_context
-from daily_intelligence.utils import read_json, write_json
+import signaltrail.context as context_module
+from signaltrail.config import load_config
+from signaltrail.context import _continuity_entry, build_context
+from signaltrail.utils import read_json, write_json
 
 
 def test_coordinator_bounds_history_while_authority_keeps_complete_state(tmp_path):

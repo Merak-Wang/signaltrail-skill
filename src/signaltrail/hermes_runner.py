@@ -11,9 +11,9 @@ import time
 from pathlib import Path
 from typing import Any
 
-from daily_intelligence.llm_usage import UsageLedger
-from daily_intelligence.storage import write_immutable_json
-from daily_intelligence.usage_cli import SafeArgumentParser
+from signaltrail.llm_usage import UsageLedger
+from signaltrail.storage import write_immutable_json
+from signaltrail.usage_cli import SafeArgumentParser
 
 
 def _write_receipt(path: Path, payload: dict[str, Any]) -> None:
@@ -54,7 +54,7 @@ def _host(args: argparse.Namespace) -> int:
     - ``args``：外层启动器限定的提示文件、工具集、模型、时间及轮次预算。
     输出：原生 Hermes 退出码和安全 observer 回执；提示与回答不进入 usage 账本。
     """
-    from daily_intelligence.hosts.hermes import HermesObserver, install_bridge
+    from signaltrail.hosts.hermes import HermesObserver, install_bridge
 
     observer = HermesObserver(os.environ)
     install_bridge(observer)
@@ -111,7 +111,7 @@ def run_metered(args: argparse.Namespace) -> dict[str, Any]:
     env.pop("SIGNALTRAIL_USAGE_EVALUATION_ATTEMPT", None)
     if args.evaluation_attempt:
         env["SIGNALTRAIL_USAGE_EVALUATION_ATTEMPT"] = str(args.evaluation_attempt)
-    command = [str(args.hermes_python), "-m", "daily_intelligence.hermes_runner", "_host",
+    command = [str(args.hermes_python), "-m", "signaltrail.hermes_runner", "_host",
                "--prompt-file", str(args.prompt_file), "--receipt-dir", str(receipt_dir),
                "--max-turns", str(args.max_turns), "--timeout", str(args.timeout),
                "--toolsets", args.toolsets]

@@ -647,7 +647,26 @@ def resolve_data_dir(explicit: Path | None = None, *, allow_conflict: bool = Fal
         return explicit.expanduser().resolve()
     if value:
         return Path(value).expanduser().resolve()
-    return (resolve_hermes_home() / "daily-intelligence").resolve()
+    hermes_home = resolve_hermes_home()
+    from .runtime import load_bound_data_root
+
+    bound = load_bound_data_root(hermes_home)
+    if bound is not None:
+        if not bound.is_dir():
+            raise FileNotFoundError(
+                f"Bound SignalTrail data directory is missing: {bound}. "
+                "Restore or migrate the existing data before running."
+            )
+        return bound
+
+    current = (hermes_home / "signaltrail").resolve()
+    legacy = (hermes_home / "daily-intelligence").resolve()
+    if legacy.is_dir() and current.exists():
+        raise ValueError(
+            f"Both legacy and SignalTrail data directories exist: {legacy}, {current}. "
+            "Select the intended data with --data-dir before continuing."
+        )
+    return legacy if legacy.is_dir() else current
 
 
 def resolve_profile_dir(config: AppConfig, explicit: Path | None = None) -> Path:
@@ -662,7 +681,15 @@ def resolve_profile_dir(config: AppConfig, explicit: Path | None = None) -> Path
     value = environment_value(config.browser.profile_dir_env)
     if value:
         return Path(value).expanduser().resolve()
-    return (resolve_hermes_home() / "browser-profiles" / "daily-intelligence").resolve()
+    profiles = resolve_hermes_home() / "browser-profiles"
+    current = (profiles / "signaltrail").resolve()
+    legacy = (profiles / "daily-intelligence").resolve()
+    if legacy.is_dir() and current.exists():
+        raise ValueError(
+            f"Both legacy and SignalTrail browser profiles exist: {legacy}, {current}. "
+            "Select the intended profile with --profile-dir before continuing."
+        )
+    return legacy if legacy.is_dir() and not current.exists() else current
 
 
 def resolve_browser_channel(

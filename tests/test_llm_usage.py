@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 from jsonschema import Draft202012Validator, FormatChecker
 
-from daily_intelligence.llm_usage import (
+from signaltrail.llm_usage import (
     ObservationQuality,
     TokenRelation,
     TokenUsage,

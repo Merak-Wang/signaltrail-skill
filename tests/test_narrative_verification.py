@@ -2,9 +2,9 @@ from copy import deepcopy
 
 import pytest
 
-from daily_intelligence.narrative import submit_script
-from daily_intelligence.narrative_store import load_artifact
-from daily_intelligence.narrative_verification import (
+from signaltrail.narrative import submit_script
+from signaltrail.narrative_store import load_artifact
+from signaltrail.narrative_verification import (
     explainer_status,
     prepare_bilingual,
     prepare_review,

@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from daily_intelligence.storage import next_revision, write_immutable_json
+from signaltrail.storage import next_revision, write_immutable_json
 
 
 def test_immutable_artifacts_and_revision_allocation(tmp_path: Path):

@@ -4,13 +4,13 @@ from pathlib import Path
 
 import pytest
 
-from daily_intelligence.config import MediaConfig
-from daily_intelligence.local_output import render_report_html
-from daily_intelligence.media import DownloadedImage, materialize_report_images
-from daily_intelligence.notion import (
+from signaltrail.config import MediaConfig
+from signaltrail.local_output import render_report_html
+from signaltrail.media import DownloadedImage, materialize_report_images
+from signaltrail.notion import (
     report_to_blocks,
 )
-from daily_intelligence.reporting import (
+from signaltrail.reporting import (
     compile_report_data,
     report_content_hash,
     split_narrative_paragraphs,
@@ -18,9 +18,9 @@ from daily_intelligence.reporting import (
     validate_report,
     validate_report_data,
 )
-from daily_intelligence.reports import render_report_markdown
-from daily_intelligence.taxonomy import section_titles
-from daily_intelligence.utils import read_json
+from signaltrail.reports import render_report_markdown
+from signaltrail.taxonomy import section_titles
+from signaltrail.utils import read_json
 from tests.report_helpers import load_sample_report, write_report_index
 
 _CJK = re.compile(r"[\u3400-\u9fff]")
@@ -92,11 +92,11 @@ def test_draft_validation_injects_identity_only_in_memory(
         return []
 
     monkeypatch.setattr(
-        "daily_intelligence.reporting.compile_report_data",
+        "signaltrail.reporting.compile_report_data",
         fake_compile,
     )
     monkeypatch.setattr(
-        "daily_intelligence.reporting.validate_report_data",
+        "signaltrail.reporting.validate_report_data",
         lambda *_args, **_kwargs: ([], []),
     )
 

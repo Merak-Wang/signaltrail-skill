@@ -1,6 +1,6 @@
 import pytest
 
-from daily_intelligence.image_policy import normalize_image_candidates, srcset_candidates
+from signaltrail.image_policy import normalize_image_candidates, srcset_candidates
 
 
 @pytest.mark.parametrize(("value", "expected"), [

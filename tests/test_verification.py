@@ -1,12 +1,12 @@
 from pathlib import Path
 
-from daily_intelligence.collector import (
+from signaltrail.collector import (
     detect_challenge,
 )
-from daily_intelligence.config import load_config
-from daily_intelligence.models import ArticleItem, SourceResult
-from daily_intelligence.utils import write_json
-from daily_intelligence.verification import (
+from signaltrail.config import load_config
+from signaltrail.models import ArticleItem, SourceResult
+from signaltrail.utils import write_json
+from signaltrail.verification import (
     capture_verified_page,
     run_pending_verification,
     update_verification_portal,
@@ -43,7 +43,7 @@ def test_visible_verification_wait_handles_success_and_timeout(monkeypatch):
 
     page = FakePage()
     monkeypatch.setattr(
-        "daily_intelligence.verification.detect_challenge",
+        "signaltrail.verification.detect_challenge",
         lambda _page, _status: {"required": False},
     )
     captured = []
@@ -57,7 +57,7 @@ def test_visible_verification_wait_handles_success_and_timeout(monkeypatch):
     assert captured == ["source"]
 
     monkeypatch.setattr(
-        "daily_intelligence.verification.detect_challenge",
+        "signaltrail.verification.detect_challenge",
         lambda _page, _status: {"required": True},
     )
     timeout = wait_for_visible_verification([("source", page, 200)], 0)
@@ -82,7 +82,7 @@ def test_visible_verification_stops_immediately_when_rate_limited(monkeypatch):
             return False
 
     monkeypatch.setattr(
-        "daily_intelligence.verification.detect_challenge",
+        "signaltrail.verification.detect_challenge",
         lambda _page, _status: {"required": True, "rate_limited": True},
     )
 
@@ -151,7 +151,7 @@ def test_verified_page_is_extracted_without_second_navigation(monkeypatch):
     )
     calls = []
     monkeypatch.setattr(
-        "daily_intelligence.verification.collect_loaded_page",
+        "signaltrail.verification.collect_loaded_page",
         lambda current, current_source, current_config, status: (
             calls.append((current, current_source, current_config, status)) or expected
         ),

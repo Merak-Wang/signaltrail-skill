@@ -8,9 +8,9 @@ from typing import Any
 
 import pytest
 
-import daily_intelligence.llm_usage.ledger as ledger_module
-from daily_intelligence.llm_usage import CallHandle, TaskHandle, UsageLedger
-from daily_intelligence.llm_usage.adapters.base import canonical_digest
+import signaltrail.llm_usage.ledger as ledger_module
+from signaltrail.llm_usage import CallHandle, TaskHandle, UsageLedger
+from signaltrail.llm_usage.adapters.base import canonical_digest
 
 
 def test_hook_reads_each_existing_event_once_but_revalidates_next_transaction(

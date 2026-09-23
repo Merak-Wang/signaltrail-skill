@@ -35,7 +35,7 @@ ignored = {
     "blob-report", "build", "dist", "data", "daily-intelligence", "daily-intel-data",
     "browser-profile", "browser-profiles", "edge-profile", "htmlcov", "output",
     "playwright-report", "raw_html", "screenshots", "test-results", "tmp",
-    "daily_intelligence_skill.egg-info", "skills",
+    "daily_intelligence_skill.egg-info", "signaltrail_skill.egg-info", "skills",
 }
 
 def ignore(_directory: str, names: list[str]) -> set[str]:
@@ -66,7 +66,7 @@ if [[ "${editable}" == true ]]; then
 fi
 python "${pip_args[@]}" "${package}"
 python -m playwright install chromium
-python -m daily_intelligence.cli --help >/dev/null
+python -m signaltrail.cli --help >/dev/null
 python - "${skill_dir}" "${target_dir}" <<'PY'
 from pathlib import Path
 import shutil
@@ -75,7 +75,10 @@ import sys
 source = Path(sys.argv[1]).resolve()
 target = Path(sys.argv[2]).resolve()
 if source != target:
-    for name in ("build", "dist", "daily_intelligence_skill.egg-info"):
+    for name in (
+        "build", "dist", "src/daily_intelligence",
+        "daily_intelligence_skill.egg-info", "signaltrail_skill.egg-info",
+    ):
         candidate = (target / name).resolve()
         try:
             candidate.relative_to(target)
