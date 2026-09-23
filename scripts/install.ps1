@@ -44,6 +44,7 @@ if (-not $sameDirectory) {
 $excludedDirs = @(
     ".agents", ".code-review-graph", ".codex", ".git", ".github", ".idea",
     ".playwright-cli", ".pytest_cache", ".ruff_cache", ".vscode", "__pycache__",
+    ".venv", "venv", "env",
     "blob-report", "build", "dist", "data", "daily-intelligence", "daily-intel-data",
     "browser-profile", "browser-profiles", "edge-profile", "htmlcov", "output",
     "playwright-report", "raw_html", "screenshots", "test-results", "tmp",
@@ -66,6 +67,9 @@ if ($Editable) {
 }
 $pipArgs += $package
 & python @pipArgs
+if ($LASTEXITCODE -ne 0) {
+    throw "Package installation failed with exit code $LASTEXITCODE"
+}
 if (-not $sameDirectory) {
     foreach ($entry in $legacyRuntimeEntries) {
         $candidate = [IO.Path]::GetFullPath((Join-Path $targetDir $entry))
@@ -79,4 +83,4 @@ if (-not $sameDirectory) {
 }
 Write-Host "Synchronized SignalTrail skill: $targetDir"
 Write-Host "Installed package. Windows collection uses system Microsoft Edge; no bundled browser download is required."
-Write-Host "Run: daily-intel --help"
+Write-Host "Run: signaltrail --help"

@@ -1,8 +1,62 @@
 # Changelog
 
-## Unreleased
+## 2.1.0 — 2026-09-23
+
+### 2026-09-23
+
+- Reorganized the bilingual README, task guides, architecture and developer documentation.
+  Published a complete installable skill package and synchronized package/skill/runtime versions.
+- Distinguish Hermes retry attempts with the host's per-attempt start time, retaining
+  idempotent event replay. Reconcile successful calls with the host database while keeping
+  missing failed-call usage unknown and coverage partial.
+- Let long source groups flow across printed pages and keep section headings with their
+  following content, removing near-empty separator pages without dropping report text or images.
+- Prefer a loaded image URL over a site-specific lazy path, preventing repeated article paths
+  in InfoQ illustrations. Preserve adjacent numbered figure captions without borrowing the
+  following image's caption.
+- Trim repeated delivery URLs and discovery timestamps from coordinator candidates while
+  preserving every candidate, its selection evidence, and the authoritative context.
+  Clarify brief-writing field guidance to reduce retries for workflow notes in summaries.
+- Reuse an unchanged data-root binding instead of rewriting its registry on every CLI command.
+  Cache local image encoding within each news-slide render to avoid repeated file reads for
+  images shared by several stories; a later render still reads updated image bytes.
+  Load the current and next story images eagerly while keeping distant stories lazy.
+- Added animated HTML news slides alongside saved daily reports, with keyboard navigation,
+  a story directory, fullscreen viewing, multiple source images and verbatim extracted captions.
+  The editorial template uses warm paper, ink-green serif headlines, fine rules, restrained
+  terracotta accents, and responsive images. The deck replaces the daily report's on-screen
+  summary in an embedded container, retains a standalone HTML button, and keeps the summary in print.
+- Combine original cover and explanatory images without a six-image display cap. Prefer explicit
+  high-resolution variants, preserve captions beside their own figures, and avoid reusing thumbnail
+  bytes for an upgraded URL. Image viewers support full-size viewing and original-image links;
+  embedded viewers expand over the report while gallery gestures stay inside the current story.
+- Added conversational narration guidance with selective geopolitics, markets and AI perspectives.
+  Representative stories have no overall count cap; bounded writing batches can resume from
+  accepted results. Rendering reuses fixed templates without model calls. Token limits are
+  payload estimates; unobserved provider usage and costs remain unknown. TTS and video are deferred.
 
 ### 2026-09-20
+
+- Removed the tracked nested skill snapshot; root `src/` is the only maintained implementation.
+  Complete release packages are generated in ignored `dist/signaltrail/`; installers exclude
+  development virtual environments and continue to install the complete project.
+- Removed the `daily-intel` CLI alias and standardized generated commands, runtime prompts,
+  installation guidance, and documentation on `signaltrail`. Existing integrations must update
+  their command name; Python imports, environment variables, and persisted data paths are unchanged.
+
+- Added report-independent research snapshots, Chinese/English block retrieval, question updates,
+  original-record deduplication and scoped research memos using the existing narrative store.
+- Added reviewed evidence tables, single-language story receipts and immutable late-bound composite
+  readings below the original analyses; current-news admission remains blocked. Added original
+  language style cards and a reproducible eight-case local retrieval comparison.
+
+- Expanded discovery with six locally probed regional/institutional sources; three unavailable
+  candidates remain disabled. Formal source quotas and model dispatch remain unchanged.
+- Preserved Feed long content, Atom XHTML, relative images and captions in content-addressed
+  records, loaded only for selected enrichment; retained the bounded list description.
+- Removed the all-source feed-discovery barrier and same-domain semaphore starvation, preserved
+  rate-limit cooldowns, bounded HTTP prefetch while streaming, and added a single-context async
+  browser page pool with readiness waits and stable source ordering.
 
 - Retained news-site captions on the selected report image, including candidate fallback and
   cached downloads. Missing captions stay empty; titles, alt text, and generated descriptions

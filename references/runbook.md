@@ -3,17 +3,18 @@
 **权威语言：** 中文（单语运行参考）
 **负责人：** 仓库维护者
 **状态：** 已验证运行参考
-**最后对照代码：** 2026-09-12
+**最后对照代码：** 2026-09-23
 **上级地图：** [`ARCHITECTURE.md`](../ARCHITECTURE.md)
 
 ## 调度与预算
 
 协调器读取运行清单中的 `artifacts.coordinator_path`。该投影保留选题证据和 Brief Plan，
-限制历史状态、移除 Python 专用校验摘要以及已接收摘要的重复正文；完整权威 Context
-仍由 Python 使用。旧运行没有该字段时才回退读取 `context_path`。
+限制历史状态、移除 Python 专用校验摘要以及已接收摘要的重复正文；候选中的 `url`、
+`image_url` 和 `discovered_at` 仅从协调器副本省略，完整权威 Context 仍由 Python 使用，
+作者 packet 也不受影响。旧运行没有该字段时才回退读取 `context_path`。
 
 正文富化必须在 `begin-authoring` 之前完成。若中断在 `extracting_content`，重试
-`daily-intel --data-dir DATA_DIR enrich-edition --run RUN.json` 即可恢复已绑定的选择；
+`signaltrail --data-dir DATA_DIR enrich-edition --run RUN.json` 即可恢复已绑定的选择；
 也可传原来的完整 ID 列表，但不能换一组条目。完成的提取结果先存入运行专属
 `content-checkpoints/`，再提交不可变索引，因此索引或 Context 写入失败不必重新抓取。
 抓取中途、尚未形成完整提取检查点时，中断的一轮最多仍需重做原有的 12 条授权请求；
@@ -23,16 +24,18 @@
 
 ```text
 最迟 05:00 启动满载候选/brief 分波与图片预取 -> 紧凑研判 -> 事实校验 -> 06:00 本地 HTML
-HTML 交付后 -> 后台 PDF/可选 Notion -> 最多两次总尝试的有界独立评估 -> 刷新 HTML
+HTML 交付后 -> 后台 PDF/可选 Notion -> 按用户要求执行的有界独立评估（最多两次总尝试） -> 刷新 HTML
 最迟 17:00 启动满载候选/brief 分波与图片预取 -> 紧凑研判 -> 事实校验 -> 18:00 本地 HTML
-HTML 交付后 -> 后台 PDF/可选 Notion -> 最多两次总尝试的有界独立评估 -> 刷新 HTML
+HTML 交付后 -> 后台 PDF/可选 Notion -> 按用户要求执行的有界独立评估（最多两次总尝试） -> 刷新 HTML
 ```
 
 每次正常运行最多 3600 秒，模型输入加输出最多 10,000,000 token。32 个正式来源满载时最多有 480 条普通 brief；需要准点交付时必须提前启动。采集脚本继续处理单源错误；brief/analysis authors 只消费计划内 packet 和影响研判的必要正文。开发/调试不受该预算限制。
 
-监控层独立于模型预算。按需运行 `daily-intel refresh-monitor`，或用 `daily-intel serve --open --refresh-minutes 30` 在本地情报台后台刷新；RSS/Atom、静态 HTML、时间解析、图片元数据、聚类和来源健康均不调用模型。51 个发现来源的 `report_target` 和 `report_max` 均为 0，只扩展发现面，不扩大日报篇幅、正文读取上限或研判任务。`run-edition` 优先复用默认 90 分钟内的新鲜零-token 快照；仅在快照缺失或过期时刷新，刷新失败则保留旧快照并继续原采集流程。可用 `monitor.snapshot_max_age_minutes` 和 `monitor.reuse_fresh_snapshot_before_edition` 调整这一策略。
+监控层独立于模型预算。按需运行 `signaltrail refresh-monitor`，或用 `signaltrail serve --open --refresh-minutes 30` 在本地情报台后台刷新；RSS/Atom、静态 HTML、时间解析、图片元数据、聚类和来源健康均不调用模型。51 个发现来源的 `report_target` 和 `report_max` 均为 0，只扩展发现面，不扩大日报篇幅、正文读取上限或研判任务。`run-edition` 优先复用默认 90 分钟内的新鲜零-token 快照；仅在快照缺失或过期时刷新，刷新失败则保留旧快照并继续原采集流程。可用 `monitor.snapshot_max_age_minutes` 和 `monitor.reuse_fresh_snapshot_before_edition` 调整这一策略。
 
 32 个正式来源的 `report_target` 和 `report_max` 均为 15。默认 `collection.item_order: source`，每来源候选充足时交付网页、榜单或 Feed 的原 Top1–15；切换为 `published_at` 时，采集层把有效发布时间从新到旧写入当前 index，缺失发布时间和时间并列的条目保持稳定输入顺序，日报再取前 15 条。单源覆盖使用同名 `item_order`。两种模式都保留原始 `source_rank`；context、普通 brief、Markdown、HTML、PDF 与 Notion 必须维持当前 index/`brief_plan` 顺序，不能按 `importance` 重排。Hugging Face Papers 的 `source` 模式以 Trending Top 为准，较早发表的论文仍可能出现在当前 Top15。
+
+质量评分默认关闭，仅当用户明确要求时在 `finalize-edition` 或 `complete-edition-tail` 加 `--evaluate`。请求写入本轮 `evaluation_requested` 并在恢复时沿用；未请求时不创建 evaluator、dossier 或评分用量任务，run 记为 `not_requested`。结构、引用和文件校验正常执行。以下评分调度与重试步骤仅适用于已明确请求的运行。
 
 写作与评估保持角色隔离。`finalize-edition --defer-tail` 在不可变 JSON/Markdown 和 HTML 就绪后返回；authoring coordinator 立即交付 `artifacts.html_path`，再把 run 中的 `tail.command` 放进启用完成通知的后台 terminal。`complete-edition-tail` 生成 PDF、按请求发布 Notion，并先用当前 report/hash 预检已完成评估。通过 `signaltrail-hermes` 运行时，评估由带独立用量任务的本地一次性进程执行；普通入口保留 Hermes Cron 调度。两条路径都先对账现有任务；只有既有 job 明确失败或超过停滞窗口时才允许第二次且最后一次尝试，unknown/对账失败不会重复调度。independent evaluator 的输入只有 Python 生成的不可变 hash-bound dossier，输出是供 `finalize-evaluation` 接收的独立 JSON；它禁止修改报告。评估完成后刷新 HTML、桌面副本和归档索引，但同一 report revision 已存在的 PDF 直接复用；PDF 缺失时才补建，不能为加入评分重复渲染整份图片密集文档。目标日报显式使用了 `--publish` 时，调度合同才给评估命令追加 `--publish`。旧 Cron 调度需要 Gateway 保持可用；本地计量入口及覆盖限制见 [用量说明](llm-usage.md)。其他 harness 必须自行调度同一 dossier 并调用 `finalize-evaluation`，否则 tail 会如实保留为 `partial`。tail 或调度失败只写入 run，不撤回本地日报。晚间生成读取当天晨报和已存在的晨报评估；晨报评估尚未完成时按未评估历史处理。
 
@@ -41,6 +44,26 @@ HTML 交付后 -> 后台 PDF/可选 Notion -> 最多两次总尝试的有界独�
 核心流程不要求特定 harness。宿主只需能运行本地命令、读取 packet、把结构化 JSON 写到 packet 指定路径，并把提交结果交给 authoring coordinator。所有宿主都应显式复用同一个 `--data-dir`；支持隔离 worker 时按最多 3 个并发 packet 分波，不支持时可以顺序执行。
 
 `signaltrail-usage` 只内置 `hermes`、`codex`、`openclaw` 三个 adapter。其他 harness 可以不绑定 usage task，此时工作流保持可运行，但预算回执必须显示 `coverage=unmetered` 且 observed/projected token 为 `null`；也可以在 Python 中实现 `UsageAdapter` 并注册固定字段白名单。不得把未知宿主格式冒充现有 adapter。Hermes 提供逐请求 Hook 和聚合补录；Codex 使用 rollout JSONL；OpenClaw 使用经审计的 per-agent SQLite v17 或旧 JSONL。完整接入与隐私边界见 [`llm-usage.md`](llm-usage.md)。
+
+## 图文幻灯片
+
+图文演示是完成日报后的独立 HTML 投影，不改变日报 JSON/Markdown。先用日报与对应索引准备批次，
+将每个 packet 的 `payload.model_input` 交给宿主写作，再提交各批草稿；全部批次通过后渲染：
+
+```text
+signaltrail slides prepare --report REPORT.json --index INDEX.json
+signaltrail slides submit --packet PACKET.json --input DRAFT.json
+signaltrail slides status --plan PLAN.json
+signaltrail slides render --plan PLAN.json
+```
+
+代表新闻没有每期总量上限，预算按批次输入/输出估算拆分。`prepare` 只读取给定日报和索引，
+不联网抓取；需要新的图片候选时，先用独立采集流程更新索引。`render` 生成独立放映 HTML，
+并更新日报 HTML 的嵌入容器及独立打开入口。更换图片和重新渲染不需要模型。完整恢复、图注、
+大图和打印行为见[新闻图文流参考](news-slides.md)。TTS 与视频合成尚未实现。
+
+并行研究与解释性故事属于实验流程，不是日报交付步骤。尤其研究组合页目前只支持 `preview`，
+正式 `current` 准入保持阻断，细节见[并行研究参考](research-workflow.md)。
 
 ## 交互式验证
 
@@ -85,7 +108,7 @@ run manifest 固定在 `DATA_DIR/runs/YYYY-MM-DD/<edition>.json`。不要手改�
 
 后台收尾检查：tail 为 `completed` 或有可操作的 `partial` 错误；PDF、`pdf_ready_at`、可选 Notion page ID/`notion_ready_at` 和独立评估调度彼此可重试，不影响前台 HTML 有效性。核对 `pdf_projection_seconds`、`pdf_bytes`、`pdf_size_budget_bytes` 和 `pdf_size_budget_status`；超预算是显式警告。PDF 必须在断开本地媒体目录与网络后仍能显示全部已物化图片；用页面栅格化抽查和 PDF image XObject 计数确认打印重采样后的图片已写入文件，且不含外链依赖。
 
-评估检查：九维完整、总分正确、被评 report ID/hash 匹配、独立 artifact 存在、HTML 评估区已刷新、同 revision PDF 已复用且字节与修改时间未变（缺失时才生成）、可选 Notion 已附加更新版 HTML 或可重试、长期连续状态按建议更新。
+已请求评分时检查：九维完整、总分正确、被评 report ID/hash 匹配、独立 artifact 存在、HTML 评估区已刷新、同 revision PDF 已复用且字节与修改时间未变（缺失时才生成）、可选 Notion 已附加更新版 HTML 或可重试、长期连续状态按建议更新。
 
 运行复盘中的计数只能来自 manifest 和根级 `items[]`；不得把 `verification_required`、`failed` 或 `metadata_only` 说成 `no_items`。
 

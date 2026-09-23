@@ -112,12 +112,11 @@ def data_root_registry_path(hermes_home: Path) -> Path:
     return hermes_home.expanduser().resolve() / "state" / "daily-intelligence-data-root.json"
 
 
-def load_bound_data_root(hermes_home: Path) -> Path | None:
-    """处理：读取并校验 Hermes 已绑定的 SignalTrail 数据根。
+def _load_data_root_registry(hermes_home: Path) -> dict[str, Any] | None:
+    """处理：读取 Hermes 的数据根登记，并拒绝缺少绑定信息的记录。
     输入：
-    - ``hermes_home``：Hermes 实例主目录；其登记表保存唯一 SignalTrail 数据根绑定。
-    输出：指向“读取并校验 Hermes 已绑定的 SignalTrail 数据根”所生成、定位或确认产物的本地路径；
-      条件不满足时返回 None。
+    - ``hermes_home``：Hermes 实例主目录；登记表位于其 state 子目录。
+    输出：登记表内容；文件尚不存在时返回 None。
     """
     registry_path = data_root_registry_path(hermes_home)
     if not registry_path.exists():
@@ -125,6 +124,19 @@ def load_bound_data_root(hermes_home: Path) -> Path | None:
     payload = read_json(registry_path)
     if not isinstance(payload, dict) or not payload.get("data_root"):
         raise ValueError(f"Invalid daily-intelligence data-root registry: {registry_path}")
+    return payload
+
+
+def load_bound_data_root(hermes_home: Path) -> Path | None:
+    """处理：读取并校验 Hermes 已绑定的 SignalTrail 数据根。
+    输入：
+    - ``hermes_home``：Hermes 实例主目录；其登记表保存唯一 SignalTrail 数据根绑定。
+    输出：指向“读取并校验 Hermes 已绑定的 SignalTrail 数据根”所生成、定位或确认产物的本地路径；
+      条件不满足时返回 None。
+    """
+    payload = _load_data_root_registry(hermes_home)
+    if payload is None:
+        return None
     return Path(str(payload["data_root"])).expanduser().resolve()
 
 
@@ -152,14 +164,19 @@ def bind_data_root(
         return {"status": "external_unbound", "data_root": str(root)}
 
     registry_path = data_root_registry_path(home)
-    previous = load_bound_data_root(home)
+    existing = _load_data_root_registry(home)
+    previous = (
+        Path(str(existing["data_root"])).expanduser().resolve() if existing else None
+    )
     if previous and previous != root and not adopt:
         # 更换记录系统必须显式 adopt，避免无意中把一段历史分裂到两个数据根。
         raise ValueError(
             "SignalTrail is already bound to another data root: "
-            f"{previous}. Refusing to use {root}. Use `daily-intel --data-dir \"{root}\" "
+            f"{previous}. Refusing to use {root}. Use `signaltrail --data-dir \"{root}\" "
             "data-root adopt` only after confirming the intended history."
         )
+    if previous == root:
+        return {"status": "bound", "registry_path": str(registry_path), **existing}
     payload = {
         "schema_version": DATA_ROOT_REGISTRY_SCHEMA,
         "data_root": str(root),

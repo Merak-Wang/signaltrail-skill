@@ -3,7 +3,7 @@
 **权威语言：** 中文（单语运行参考）
 **负责人：** 仓库维护者
 **Status:** Operational reference
-**Last code verification:** 2026-08-23
+**Last code verification:** 2026-09-23
 **Documentation catalog:** [`docs/README.md`](../docs/README.md)
 
 ## Hermes Home
@@ -72,8 +72,8 @@ recovery boundary.
 The first normal command binds one runtime root in `%LOCALAPPDATA%\hermes\state\daily-intelligence-data-root.json`. A later command using another root fails before it reads or writes run artifacts. Inspect or deliberately migrate the binding with:
 
 ```powershell
-daily-intel --data-dir "$env:LOCALAPPDATA\hermes\daily-intelligence" data-root status
-daily-intel --data-dir "$env:LOCALAPPDATA\hermes\daily-intelligence" data-root adopt
+signaltrail --data-dir "$env:LOCALAPPDATA\hermes\daily-intelligence" data-root status
+signaltrail --data-dir "$env:LOCALAPPDATA\hermes\daily-intelligence" data-root adopt
 ```
 
 Adoption does not merge or delete an old directory.
@@ -95,9 +95,9 @@ This does not require Notion credentials. Windows uses installed Edge to print a
 `run-edition` never opens the verification queue by default. Run collection first, then start manual verification only when ready:
 
 ```powershell
-daily-intel run-edition --edition morning --profile-dir "$env:LOCALAPPDATA\hermes\browser-profiles\daily-intelligence"
-daily-intel verify-source reuters --browser-channel msedge
-daily-intel verify-pending --index "C:\path\to\index.json" --browser-channel msedge --timeout-seconds 300
+signaltrail run-edition --edition morning --profile-dir "$env:LOCALAPPDATA\hermes\browser-profiles\daily-intelligence"
+signaltrail verify-source reuters --browser-channel msedge
+signaltrail verify-pending --index "C:\path\to\index.json" --browser-channel msedge --timeout-seconds 300
 ```
 
 After collection, failed, challenged, or rate-limited pages remain pending without opening Edge. `verify-pending` is the recommended manual path. Explicit `--open-verification` remains compatible but blocks until completion or timeout; `--unattended` remains a no-window compatibility flag and is already the default behavior.

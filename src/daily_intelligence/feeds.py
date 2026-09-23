@@ -19,7 +19,8 @@ from bs4 import BeautifulSoup
 from .access import classify_access_text
 from .adapters import is_eligible
 from .config import SourceConfig
-from .image_policy import normalize_image_candidates, srcset_candidates
+from .feed_content import entry_content, save_feed_content, xml_context
+from .image_policy import normalize_image_candidates
 from .models import ArticleItem, SourceStatus, order_source_items
 from .utils import canonicalize_url, clean_title, item_id, read_json, write_json
 
@@ -172,7 +173,8 @@ def _entry_link(node: ET.Element, feed_url: str) -> str:
         href = clean_title(str(link.attrib.get("href") or ""))
         rel = clean_title(str(link.attrib.get("rel") or "alternate")).lower()
         if href and rel in {"", "alternate"}:
-            return urljoin(feed_url, href)
+            base = link.get("{http://www.w3.org/XML/1998/namespace}base", "")
+            return urljoin(urljoin(feed_url, base), href)
     for link in links:
         value = _element_text(link)
         if value:
@@ -181,76 +183,30 @@ def _entry_link(node: ET.Element, feed_url: str) -> str:
     return guid if guid.startswith(("http://", "https://")) else ""
 
 
-def _description(node: ET.Element) -> str:
-    """处理：提取并清理 Feed 条目的摘要或正文片段。
-    输入：
-    - ``node``：Feed 解析器当前处理的 RSS/Atom XML 元素。
-    输出：“提取并清理 Feed 条目的摘要或正文片段”得到的规范字符串，供调用方存储、比较或展示。
-    """
-    values: list[str] = []
-    for child in list(node):
-        if _local_name(child.tag) not in {
-            "content",
-            "description",
-            "encoded",
-            "summary",
-        }:
-            continue
-        raw = "".join(child.itertext()).strip()
-        if not raw:
-            continue
-        plain = (
-            BeautifulSoup(raw, "html.parser").get_text(" ", strip=True)
-            if "<" in raw
-            else raw
-        )
-        values.append(clean_title(plain))
-    return max(values, key=len, default="")[:600]
-
-
 def _entry_image_candidates(
-    node: ET.Element,
-    description_html: str,
-    base_url: str,
+    node: ET.Element, contexts: dict[ET.Element, tuple[str, str]],
+    article_url: str, feed_url: str,
 ) -> list[str]:
-    """处理：从 Feed 媒体字段和 HTML 摘要收集图片候选。
-    输入：
-    - ``node``：Feed 解析器当前处理的 RSS/Atom XML 元素。
-    - ``description_html``：Feed 条目的摘要 HTML；仅解析图片标签，不执行脚本。
-    - ``base_url``：解析相对链接时使用的最终页面或 Feed 基准 URL。
-    输出：“从 Feed 媒体字段和 HTML 摘要收集图片候选”得到的字符串列表；
-      顺序保持确定并可供下一步骤逐项处理。
+    """处理：读取 Feed 媒体附件，按节点继承的 base 解析图片地址。
+    输入：条目 XML、继承上下文、文章与订阅地址；正文配图由内容结构器处理。
+    输出：按来源顺序去重的有效媒体图片地址。
     """
-    raw_candidates: list[str] = []
+    candidates = []
     for child in node.iter():
         name = _local_name(child.tag)
-        url = str(child.attrib.get("url") or child.attrib.get("href") or "").strip()
-        media_type = str(child.attrib.get("type") or "").lower()
-        medium = str(child.attrib.get("medium") or "").lower()
-        if not url:
-            continue
-        if (
+        url = str(child.get("url") or child.get("href") or "").strip()
+        media_type = child.get("type", "").lower()
+        medium = child.get("medium", "").lower()
+        if url and (
             name in {"thumbnail", "image"}
             or (name in {"content", "enclosure"} and (
-                media_type.startswith("image/")
-                or medium == "image"
+                media_type.startswith("image/") or medium == "image"
                 or url.lower().split("?", 1)[0].endswith(_IMAGE_EXTENSIONS)
             ))
         ):
-            raw_candidates.append(url)
-    if "<img" in description_html.lower():
-        for image in BeautifulSoup(description_html, "html.parser").find_all("img"):
-            raw_candidates.extend(srcset_candidates(image.get("srcset")))
-            raw_candidates.extend(
-                str(image.get(attribute) or "")
-                for attribute in (
-                    "src",
-                    "data-src",
-                    "data-original",
-                    "data-lazy-src",
-                )
-            )
-    return normalize_image_candidates(raw_candidates, base_url)
+            base = urljoin(feed_url, contexts[child][0]) if contexts[child][0] else article_url
+            candidates.append(urljoin(base, url))
+    return normalize_image_candidates(candidates, article_url)
 
 
 def _provider(node: ET.Element) -> tuple[str | None, str | None]:
@@ -300,6 +256,7 @@ def parse_feed_document(
     timezone: str,
     *,
     max_items: int,
+    data_dir: Path | None = None,
 ) -> list[ArticleItem]:
     """处理：把有界且不可信的 RSS/Atom XML 解析为规范文章模型。
     输入：
@@ -317,6 +274,7 @@ def parse_feed_document(
     root = ET.fromstring(raw)
     if _local_name(root.tag) not in _FEED_ROOTS:
         raise ValueError(f"Unsupported feed root element: {_local_name(root.tag)!r}")
+    contexts = xml_context(root)
     entry_nodes = [
         node for node in root.iter() if _local_name(node.tag) in {"entry", "item"}
     ]
@@ -326,9 +284,10 @@ def parse_feed_document(
 
     items: list[ArticleItem] = []
     seen: set[str] = set()
+    content_records: dict[str, dict[str, Any]] = {}
     for node in entry_nodes:
         title = _direct_text(node, "title")
-        url = _entry_link(node, feed_url)
+        url = _entry_link(node, urljoin(feed_url, contexts[node][0]))
         if not is_eligible(source, title, url):
             continue
         published_text = _direct_text(
@@ -345,19 +304,11 @@ def parse_feed_document(
         canonical = canonicalize_url(url)
         if canonical in seen:
             continue
-        description_nodes = _direct_elements(
-            node, "content", "description", "encoded", "summary"
-        )
-        description_html = max(
-            ("".join(child.itertext()).strip() for child in description_nodes),
-            key=len,
-            default="",
-        )
-        image_candidates = _entry_image_candidates(
-            node,
-            description_html,
-            url or feed_url,
-        )
+        content_record = entry_content(node, contexts, url, feed_url)
+        image_candidates = normalize_image_candidates([
+            *(image["url"] for image in (content_record or {}).get("images", [])),
+            *_entry_image_candidates(node, contexts, url, feed_url),
+        ], url)
         provider_name, provider_url = _provider(node)
         article = ArticleItem(
             item_id=item_id(source.id, canonical),
@@ -369,7 +320,7 @@ def parse_feed_document(
             discovered_at=collected_at,
             module=source.module,
             category=source.category,
-            description=_description(node),
+            description=clean_title(content_record["text"])[:600] if content_record else "",
             published_at=(
                 published.isoformat(timespec="seconds") if published is not None else None
             ),
@@ -381,6 +332,7 @@ def parse_feed_document(
                 "bundle": source.bundle,
                 "language": source.language,
                 "region": source.region,
+                **source.origin_metadata,
                 "acquisition_method": "feed",
                 "feed_url": feed_url,
                 "publication_time_missing": published is None,
@@ -392,13 +344,24 @@ def parse_feed_document(
                 ),
             },
         )
+        if content_record and content_record["text"] and data_dir is not None:
+            content_record["language"] = content_record["language"] or source.language
+            content_records[article.item_id] = content_record
         seen.add(canonical)
         items.append(article)
         if source.item_order != "published_at" and len(items) >= max_items:
             break
     for source_rank, item in enumerate(items, start=1):
         item.metadata["source_rank"] = source_rank
-    return order_source_items(items, source.item_order)[:max_items]
+    selected = order_source_items(items, source.item_order)[:max_items]
+    if data_dir is not None:
+        for article in selected:
+            if article.item_id in content_records:
+                article.metadata.update(save_feed_content(
+                    content_records[article.item_id], data_dir, source.id,
+                    article.item_id, article.url, feed_url,
+                ))
+    return selected
 
 
 def discover_feed_urls(html: str, base_url: str) -> list[str]:
@@ -574,11 +537,7 @@ async def fetch_feed(
                 source_id=source.id,
                 source_name=source.name,
                 feed_url=feed_url,
-                status=(
-                    SourceStatus.SUCCESS
-                    if cached
-                    else str(cache.get("status", SourceStatus.NO_ITEMS))
-                ),
+                status=str(cache.get("status", SourceStatus.NO_ITEMS)),
                 checked_at=checked_iso,
                 items=cached,
                 http_status=cache.get("http_status"),
@@ -586,7 +545,7 @@ async def fetch_feed(
                 etag=cache.get("etag"),
                 last_modified=cache.get("last_modified"),
                 cache_state="fresh",
-                stale=False,
+                stale=bool(cached) and bool(cache.get("consecutive_failures")),
                 next_refresh_at=next_refresh_raw,
             )
 
@@ -605,7 +564,7 @@ async def fetch_feed(
     try:
         async with client.stream("GET", feed_url, headers=headers) as response:
             status_code = response.status_code
-            if status_code == 304:
+            if status_code in {304, 401, 403, 429}:
                 content = b""
             else:
                 chunks: list[bytes] = []
@@ -672,6 +631,7 @@ async def fetch_feed(
                 "checked_at": checked_iso,
                 "next_refresh_at": next_refresh_at,
                 "consecutive_failures": 0,
+                "last_success_at": checked_iso,
             },
         )
         return FeedFetchResult(
@@ -726,6 +686,7 @@ async def fetch_feed(
                 checked_iso,
                 timezone,
                 max_items=max_items,
+                data_dir=data_dir,
             )
         except (ET.ParseError, ValueError) as exc:
             status = SourceStatus.FAILED

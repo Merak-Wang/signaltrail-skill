@@ -2,50 +2,50 @@
 
 [简体中文](README.md) | [English](README.en.md)
 
-SignalTrail collects news from configured public sources and produces Chinese or English
-morning and evening reports with links to the originals. Reports stay on your machine:
-read them as HTML, share a PDF, or optionally sync to Notion.
+SignalTrail is a local news workflow. It collects material from configured public sources, creates source-linked Chinese or English daily reports, and can turn a report into a navigable, animated HTML presentation. Reports can also be read as HTML, exported to PDF, or optionally sent to Notion.
 
-The project combines a Python CLI with an agent [skill](SKILL.md). Python collects,
-deduplicates, validates, and archives evidence; an agent writes the summaries and analysis.
-Hermes has install scripts and usage metering. Other agents can use the same workflow
-if they can run local commands and read and write JSON files.
+Python handles collection, evidence and state, validation, and versioned storage. An agent writes from bounded evidence packets. Slide narration uses a conversational, rhythmic presenter voice with light humor, and selects geopolitics, AI/technology, or markets perspectives only when relevant to the story. Chinese narration is 200–350 non-whitespace characters per story. There is no issue-wide cap on representative stories; work is split into batches with per-batch cost gates.
 
-[Quick start](#quick-start) · [Usage](docs/usage.md) ·
-[Contributing](docs/development.md) · [Documentation](docs/README.md)
+[Quick start](#quick-start) · [Animated HTML slides](#animated-html-slides) · [Local monitor](#local-monitor) · [Documentation](docs/README.md) · [Development](docs/development.md)
 
-![Morning report preview](assets/readme/morning-report-preview.png)
+## What you can do
 
-The updated reader has a three-column masthead, white pages, black text, and red rules.
-News runs continuously in source order, with each source heading identifying its section.
-The floating directory opens, collapses, and follows the reading position. Original headlines,
-translations, timestamps, images, and summary layouts remain intact.
+- **Create daily reports:** collect public sources, write summaries and analysis, save versioned JSON and Markdown, and render local HTML and PDF. The reader works on desktop and mobile.
+- **Browse a local news stream:** refresh RSS/Atom and configured static pages, cluster related stories, and inspect source health. Monitor refresh and clustering make no model calls.
+- **Build illustrated presentations:** select representative stories from a saved report, write narration in bounded batches, and render a standalone animated HTML deck. When available, the deck is also embedded in the report with a separate open link.
+- **Explore related work:** optional experimental explainers and parallel research are documented separately. They are not part of the stable daily news narration workflow.
 
-## Example report
+## Animated HTML slides
 
-A report contains news summaries grouped by source, selected events, and analysis from
-geopolitics, AI / technology, and markets. A synthesis connects the three perspectives;
-an independent evaluation records scores and evidence gaps. Each item retains its original
-headline, URL, and time; the original report retains access status and evidence limitations.
+![SignalTrail news slides preview](assets/readme/news-slides-preview.png)
 
-[Download the example HTML](https://github.com/Merak-Wang/signaltrail-skill/raw/refs/heads/main/examples/reports/2026-08-25-morning-r1.html)
-and open it locally. This historical example has 424 summaries, eight selected events,
-and a score of 37/45. It has output from 30 of 32 sources and took about 66 minutes,
-exceeding the one-hour budget. Some evidence contains only headlines and summaries;
-public image URLs need an internet connection. See the [example notes](https://github.com/Merak-Wang/signaltrail-skill/blob/main/examples/README.en.md).
+The image is a synthetic interface example, not a real news story.
 
-<details>
-<summary>Analysis, evaluation, and mobile screenshots</summary>
+Each story occupies one slide. The presenter-style narration appears with the daily summary, sources, and available cover and article images. The gallery prefers clearer image variants, keeps extracted publisher captions, and supports thumbnails, an expanded view, 100% original-size inspection, and a link to the original image. It displays collected material only: images and captions are never invented, and stories without usable images remain without one.
 
-![Cross-perspective synthesis](assets/readme/analysis-synthesis-preview.png)
-![Independent evaluation](assets/readme/quality-evaluation-preview.png)
-<img src="assets/readme/mobile-report-preview.png" width="390" alt="Mobile report">
+Slides can be navigated inside the report's “Today’s visual briefing” panel or opened as a standalone HTML page. Local templates render the layout and transitions without additional model calls. Text-to-speech and video generation are not implemented.
 
-</details>
+Representative stories are selected from report highlights and high-importance briefs by default, with no fixed issue-wide cap. A batch contains up to four stories by default and has estimated input and output token limits; larger editions continue in more batches. These are batch-size gates, not price quotes or guarantees of host-reported usage. Chinese narration is validated at 200–350 non-whitespace characters. Analysis perspectives are included only when supported by the story evidence.
+
+Start with a saved report and its matching index:
+
+```sh
+signaltrail slides prepare --report REPORT.json --index INDEX.json
+```
+
+Have the agent write each prepared batch to a JSON file, then submit the results, check progress, and render:
+
+```sh
+signaltrail slides submit --packet PACKET.json --input DRAFT.json
+signaltrail slides status --plan PLAN.json
+signaltrail slides render --plan PLAN.json
+```
+
+After all batches are ready, `render` creates the deck HTML and updates the matching report page with its embedded presentation. See the [news slides guide](docs/news-slides.md) for the full packet, budget, and recovery workflow.
 
 ## Quick start
 
-You need Git, Python 3.11+, and an agent with a configured model.
+You need Python 3.11+ and an agent host with a configured model; Git is needed when cloning the source. You can clone the repository or download the [SignalTrail 2.1.0 full install package](https://github.com/Merak-Wang/signaltrail-skill/releases/latest).
 
 ```sh
 git clone https://github.com/Merak-Wang/signaltrail-skill.git
@@ -54,17 +54,17 @@ python -m pip install -e .
 signaltrail --help
 ```
 
-Load the root `SKILL.md` in your agent, then ask:
+Load the repository root [`SKILL.md`](SKILL.md) in your agent, then ask for a report, for example:
 
 ```text
 Use SignalTrail to create today's English morning report as local HTML and PDF.
 ```
 
-`signaltrail` and the existing `daily-intel` command share the same entry point.
-The CLI runs the deterministic steps; the agent must author and submit the content.
-Running `run-edition` alone stops at the authoring handoff.
+`signaltrail` is the unified CLI. It prepares reproducible collection, validation, and storage steps; the agent writes from the evidence packets. Running `run-edition` alone stops at the authoring handoff and does not produce a complete report by itself.
 
-Hermes users can run an installer from the repository directory:
+### Install for Hermes
+
+Run the matching installer from the repository or extracted full-package root:
 
 ```powershell
 # Windows
@@ -76,45 +76,54 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install.ps1
 bash ./scripts/install.sh
 ```
 
-The scripts install the Python package and synchronize the skill. See [Usage](docs/usage.md)
-for browser dependencies, data directories, output language, and metered runs.
+The scripts synchronize the Skill to Hermes and install the Python command. Browser collection on Windows can use system Microsoft Edge. The macOS/Linux installer also installs Playwright Chromium in the same Python environment. For a manual install, run:
+
+```sh
+python -m playwright install chromium
+```
+
+See the [usage guide](docs/usage.md) for host setup, data directories, metered runs, and recovery.
 
 ## Local monitor
-
-Monitor refresh, deduplication, and clustering make no model calls. Browse news, source
-health, and pending verification pages on your machine:
 
 ```sh
 signaltrail refresh-monitor
 signaltrail serve --open --refresh-minutes 30
 ```
 
-The server listens on `127.0.0.1` by default and stops refreshing when the process exits.
-Edit [sources.yaml](configs/sources.yaml) for report sources and
-[discovery-sources.yaml](configs/discovery-sources.yaml) for discovery feeds.
-The defaults include 32 report sources and 51 discovery sources. Each report source
-contributes up to 15 summaries; discovery sources feed the monitor only.
+The monitor refreshes sources, organizes the news stream, and clusters related stories without model calls. The server listens on `127.0.0.1` by default and stops refreshing when the process exits. Configure report sources in [`configs/sources.yaml`](configs/sources.yaml) and monitor discovery sources in [`configs/discovery-sources.yaml`](configs/discovery-sources.yaml).
 
-## Data and limits
+## Data, cost, and boundaries
 
-Versioned JSON and Markdown are the original records. HTML, PDF, and Notion are reading
-copies. Existing report revisions are never overwritten. Network failures, rate limits,
-and pending verification keep their own status; missing usage is never counted as zero.
-Runtime data stays local by default. [Usage](docs/usage.md) covers paths and recovery.
+Versioned report JSON and Markdown are the original records; HTML and PDF are rebuildable reading views. Existing report revisions are not overwritten. Source access failures, rate limits, and verification challenges retain their actual status. Runtime data stays on the local machine by default; reuse the same data directory when upgrading. The [usage guide](docs/usage.md) explains paths and recovery.
 
-Source availability, model latency, and evidence quality affect delivery. The configured
-one-hour budget stops new work from being dispatched; it does not guarantee that all sources,
-PDF generation, and evaluation finish within an hour. The
-[technical-debt tracker](docs/exec-plans/tech-debt-tracker.md) records known gaps.
+Collection, monitoring, image handling, and HTML rendering make no model calls. The agent host performs report and slide writing. Batch token gates limit estimated input and output size; actual usage depends on what the host reports. Source availability, network access, evidence coverage, and model latency affect delivery and coverage.
 
-Experimental explainers support evidence binding, language reviews, and illustrated reading.
-Current-news publishing still awaits freshness adapters and formal acceptance. Speech and video
-have not shipped. See [Explainers](docs/explainers.md) and the [roadmap](docs/roadmap.md).
+Slides are a separate HTML projection and do not change the report's JSON or Markdown. Speech and video are not currently available. See the [documentation index](docs/README.md) and [roadmap](docs/roadmap.md) for the boundary between experimental explainers/research and the stable report and slides workflow.
 
-## Contributing
+## Documentation
 
-Start with the [development guide](docs/development.md). The [architecture](ARCHITECTURE.md)
-explains system boundaries, and [AGENTS.md](AGENTS.md) guides agents editing the repository.
-Release history is in [CHANGELOG.md](CHANGELOG.md).
+- [Usage](docs/usage.md): installation, host, runs, data directory, and recovery.
+- [News slides](docs/news-slides.md): narration, images, captions, batch budgets, and rendering.
+- [Experimental explainers](docs/explainers.md) and [parallel research](docs/research/2026-09-20-illustrated-workflow.md): experimental workflows and admission limits.
+- [Architecture](ARCHITECTURE.md), [development guide](docs/development.md), and [known issues](docs/exec-plans/tech-debt-tracker.md): design and maintenance.
+- [Changelog](CHANGELOG.md) · [MIT License](LICENSE)
 
-[MIT License](LICENSE) © Wang Mingfeng
+Earlier report screenshots show the historical reader design, not the current slide presentation:
+
+<details>
+<summary>Historical report example and reader screenshots</summary>
+
+[Open a historical HTML example](https://github.com/Merak-Wang/signaltrail-skill/raw/refs/heads/main/examples/reports/2026-08-25-morning-r1.html) in a browser (some images require internet access). See the [example notes](https://github.com/Merak-Wang/signaltrail-skill/blob/v2.1.0/examples/README.en.md).
+
+![Historical report reader](assets/readme/morning-report-preview.png)
+
+![Historical analysis synthesis](assets/readme/analysis-synthesis-preview.png)
+
+![Historical quality evaluation](assets/readme/quality-evaluation-preview.png)
+
+<img src="assets/readme/mobile-report-preview.png" width="390" alt="Historical mobile report reader">
+
+</details>
+
+[简体中文](README.md)

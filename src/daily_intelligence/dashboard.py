@@ -164,7 +164,7 @@ def _handler_factory(
                     self._send_json(
                         {
                             "error": "snapshot_not_found",
-                            "message": "请先运行 daily-intel refresh-monitor",
+                            "message": "请先运行 signaltrail refresh-monitor",
                         },
                         HTTPStatus.NOT_FOUND,
                     )

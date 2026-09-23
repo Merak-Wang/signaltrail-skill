@@ -24,6 +24,7 @@ venv/
 env/
 build/
 dist/
+/skills/signaltrail/
 *.egg-info/
 pip-wheel-metadata/
 

@@ -125,6 +125,16 @@ SCRIPT_SCHEMA = obj(
         "closing": SEGMENT,
     }
 )
+# 新增可选表格不改变旧脚本必填字段；每个表头、单元格和编辑图注参与原审核。
+TABLE_SCHEMA = obj({
+    "headers": array(SEGMENT, 2, 6),
+    "rows": array(array(SEGMENT, 2, 6), 1, 12),
+    "publisher_caption": {"type": "null"},
+    "editorial_caption": SEGMENT,
+})
+SCRIPT_SCHEMA["properties"]["chapters"]["items"]["properties"]["beats"]["items"][
+    "properties"
+]["table"] = TABLE_SCHEMA
 REVIEW_SCHEMA = obj(
     {
         "segment_reviews": array(

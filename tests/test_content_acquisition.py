@@ -20,6 +20,55 @@ from daily_intelligence.content_extraction import extract_document, extract_with
 from daily_intelligence.utils import read_json, write_json
 
 
+def test_selected_feed_content_survives_web_access_failure(monkeypatch, tmp_path):
+    from daily_intelligence.feeds import parse_feed_document
+
+    config = load_config()
+    source = config.source_by_id("bbc_world")
+    item = parse_feed_document("""<rss><channel><item>
+      <title>Service update provides detailed terms</title>
+      <link>https://www.bbc.com/news/articles/story</link>
+      <description><![CDATA[<p>The service remains restricted to trial participants.</p>
+        <figure><img src="https://www.bbc.com/photo.jpg">
+        <figcaption>Original test photo.</figcaption>
+        </figure>]]></description></item></channel></rss>""", source, "https://www.bbc.com/rss",
+        "2026-09-20T10:00:00+08:00", "Asia/Shanghai", max_items=1, data_dir=tmp_path,
+    )[0].to_dict()
+    assert item["content_path"] is None
+
+    async def http(targets, *_args):
+        for target in targets:
+            target["content_status"] = "failed"
+            target["metadata"]["content_error"] = "HTTP 503"
+        return []
+
+    monkeypatch.setattr("daily_intelligence.content._run_http_extraction", http)
+    metrics = asyncio.run(_extract_pipeline([item], config, tmp_path, False,
+                                           tmp_path / "profile", None))
+    assert metrics["successful"] == 1
+    assert metrics["complete"] == 0
+    assert item["content_status"] == "partial"
+    assert "restricted to trial participants" in Path(item["content_path"]).read_text("utf-8")
+    assert item["metadata"]["image_candidate_details"][0]["caption"] == "Original test photo."
+    assert item["metadata"]["content_completion"]["stop_reason"] == "access_failed"
+    assert item["metadata"]["content_quality"]["article_completeness"] == "unknown"
+
+
+def test_longer_web_body_replaces_feed_excerpt_with_equal_structural_gaps(tmp_path):
+    from daily_intelligence.content import _retain_better_content
+
+    config = load_config()
+    previous = _item()
+    _apply(previous, "<main><p>A short excerpt with some detail.</p></main>", config, tmp_path)
+    previous["metadata"]["content_acquisition"] = "feed"
+    current = _item()
+    html = "<main><p>" + "A longer report with many observations. " * 20 + "</p></main>"
+    _apply(current, html, config, tmp_path)
+    new_path = current["content_path"]
+    _retain_better_content(current, previous, tmp_path)
+    assert current["content_path"] == new_path
+
+
 def _item():
     return {"item_id": "story", "source_id": "bbc_world", "title": "Service update",
             "url": "https://www.bbc.com/news/articles/story", "metadata": {}}

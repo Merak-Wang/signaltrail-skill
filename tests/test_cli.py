@@ -14,6 +14,42 @@ from daily_intelligence.workflow import (
 )
 
 
+def test_slides_cli_prepares_bounded_batches(cli_data_root, monkeypatch, capsys):
+    prepare = Mock(return_value={"plan_path": "slides-plan.json", "news_count": 18})
+    monkeypatch.setattr("daily_intelligence.commands.slides.prepare_slides", prepare)
+    report, index = cli_data_root / "report.json", cli_data_root / "index.json"
+    assert main(["slides", "prepare", "--report", str(report), "--index", str(index),
+                 "--batch-size", "3", "--item-id", "news-1"]) == 0
+    prepare.assert_called_once_with(report, index, cli_data_root, min_importance=70,
+                                    item_ids=["news-1"], batch_size=3,
+                                    max_input_tokens=12000, max_output_tokens=4000)
+    assert json.loads(capsys.readouterr().out)["news_count"] == 18
+
+
+def test_slides_cli_reports_missing_plan(cli_data_root, capsys):
+    assert main(["slides", "status", "--plan", str(cli_data_root / "missing.json")]) == 1
+    assert json.loads(capsys.readouterr().out)["status"] == "rejected"
+
+
+def test_research_cli_prepares_before_a_report_with_explicit_approval(
+    cli_data_root, monkeypatch, capsys
+):
+    questions = write_json(cli_data_root / "questions.json", {"questions": []})
+    prepare = Mock(return_value=cli_data_root / "snapshot.json")
+    monkeypatch.setattr("daily_intelligence.commands.research.prepare_research_snapshot", prepare)
+    index = cli_data_root / "index.json"
+    assert main(["research", "prepare", "--index", str(index), "--item-id", "item-1",
+                 "--cutoff", "2026-09-20T09:00:00+08:00", "--questions", str(questions)]) == 0
+    prepare.assert_called_once_with(index, ["item-1"], "2026-09-20T09:00:00+08:00", [],
+                                     cli_data_root, previous_path=None, discovery_path=None)
+    assert "snapshot.json" in json.loads(capsys.readouterr().out)["artifact_path"]
+
+
+def test_research_cli_reports_unavailable_snapshot(cli_data_root, capsys):
+    assert main(["research", "evaluate", "--snapshot", str(cli_data_root / "missing.json")]) == 1
+    assert json.loads(capsys.readouterr().out)["status"] == "rejected"
+
+
 def test_explainer_cli_dispatches_explicit_parent_and_preview_flag(
     cli_data_root, monkeypatch, capsys
 ):
@@ -43,7 +79,7 @@ def cli_data_root(monkeypatch, tmp_path):
     return tmp_path / "data"
 
 
-def test_all_parser_commands_have_handlers_and_entrypoint_names_are_compatible():
+def test_all_parser_commands_have_handlers_and_signaltrail_entrypoints():
     parser = build_parser()
     commands = next(
         action.choices
@@ -55,7 +91,10 @@ def test_all_parser_commands_have_handlers_and_entrypoint_names_are_compatible()
         (Path(__file__).resolve().parents[1] / "pyproject.toml").read_text(encoding="utf-8")
     )
     entries = project["project"]["scripts"]
-    assert entries["signaltrail"] == entries["daily-intel"] == "daily_intelligence.cli:main"
+    assert entries["signaltrail"] == "daily_intelligence.cli:main"
+    assert "daily-intel" not in entries
+    assert all(name.startswith("signaltrail") for name in entries)
+    assert parser.prog == "signaltrail"
 
 
 @pytest.mark.parametrize("command", ["serve", "serve-monitor"])
@@ -76,7 +115,9 @@ def test_monitor_server_aliases_forward_the_same_options(cli_data_root, monkeypa
 
 def test_monitor_status_reports_absence_then_reads_saved_snapshot(cli_data_root, capsys):
     assert main(["monitor-status"]) == 1
-    assert json.loads(capsys.readouterr().out)["status"] == "not_initialized"
+    missing = json.loads(capsys.readouterr().out)
+    assert missing["status"] == "not_initialized"
+    assert missing["next_action"] == "signaltrail refresh-monitor"
     write_json(
         cli_data_root / "monitor/snapshot.json",
         {
@@ -162,6 +203,14 @@ def test_cli_exposes_two_stage_workflow():
     assert prepared.language == "en"
     assert verification.command == "verify-pending"
     assert evaluation.command == "finalize-evaluation"
+    assert finalized.evaluate is False
+    for command, required in (
+        ("finalize-edition", ["--report", "draft.json"]),
+        ("complete-edition-tail", []),
+    ):
+        arguments = [command, "--run", "run.json", *required]
+        assert parser.parse_args(arguments).evaluate is False
+        assert parser.parse_args([*arguments, "--evaluate"]).evaluate is True
     assert prepared.open_verification is False
     assert (
         parser.parse_args(

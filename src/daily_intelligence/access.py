@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
+import httpx
+
 CHALLENGE_TEXTS = (
     "verify you are human",
     "checking your browser",
@@ -19,6 +21,24 @@ RATE_LIMIT_TEXTS = (
     "too many requests",
     "rate limit exceeded",
 )
+
+
+async def read_bounded_response(
+    response: httpx.Response, max_bytes: int,
+) -> tuple[bytes, bool]:
+    """处理：流式读取响应，超出字节上限立即停止并标记截断。
+    输入：已打开的 HTTP 响应和允许保留的字节数。
+    输出：有界响应字节与截断标记，供索引和正文采集共用。
+    """
+    chunks: list[bytes] = []
+    total = 0
+    async for chunk in response.aiter_bytes():
+        remaining = max_bytes - total
+        chunks.append(chunk[:remaining])
+        total += len(chunk)
+        if total > max_bytes:
+            return b"".join(chunks), True
+    return b"".join(chunks), False
 
 
 def classify_access_text(

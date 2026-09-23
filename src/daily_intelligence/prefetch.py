@@ -9,7 +9,7 @@ from urllib.parse import urlsplit
 import httpx
 from bs4 import BeautifulSoup, Tag
 
-from .access import classify_access_text
+from .access import classify_access_text, read_bounded_response
 from .adapters import browser_items_from_rows
 from .config import AppConfig, SourceConfig, source_urls
 from .image_policy import is_placeholder_image_url, srcset_candidates
@@ -53,13 +53,15 @@ def html_index_rows(html: str) -> tuple[str, list[dict[str, Any]]]:
             )
         )
         time = parent.select_one("time") if isinstance(parent, Tag) else None
-        images = list(anchor.select("img"))
+        images = list(anchor.select("picture source, img"))
         if isinstance(parent, Tag):
-            images.extend(parent.select("img"))
+            images.extend(parent.select("picture source, img"))
         image_candidates: list[str] = []
         seen_images: set[str] = set()
         for image in images:
-            raw_candidates = srcset_candidates(image.get("srcset")) + [
+            raw_candidates = srcset_candidates(
+                image.get("srcset") or image.get("data-srcset")
+            ) + [
                 str(image.get(attribute) or "")
                 for attribute in (
                     "src",
@@ -125,9 +127,13 @@ async def _prefetch_one(
     """
     collected_at = now_iso(config.timezone)
     domain = urlsplit(url).netloc.lower()
-    async with global_limit, domain_limits[domain]:
+    async with domain_limits[domain], global_limit:
         try:
-            response = await client.get(url)
+            async with client.stream("GET", url) as response:
+                if response.status_code in {401, 403, 429}:
+                    content, truncated = b"", False
+                else:
+                    content, truncated = await read_bounded_response(response, _MAX_HTML_BYTES)
         except Exception as exc:
             return SourceResult(
                 source_id=source.id,
@@ -142,9 +148,11 @@ async def _prefetch_one(
             )
 
     encoding = response.encoding or "utf-8"
-    body = response.content[:_MAX_HTML_BYTES].decode(encoding, errors="replace")
+    body = content.decode(encoding, errors="replace")
     title, rows = html_index_rows(body)
     challenge = classify_access_text(response.status_code, title, body[:30000])
+    if truncated:
+        challenge["response_truncated"] = True
     if challenge["rate_limited"]:
         status = SourceStatus.RATE_LIMITED
         items = []
@@ -157,6 +165,8 @@ async def _prefetch_one(
     else:
         items = browser_items_from_rows(rows, source, collected_at, str(response.url))
         status = SourceStatus.SUCCESS if items else SourceStatus.NO_ITEMS
+        if truncated:
+            status = SourceStatus.PARTIAL if items else SourceStatus.FAILED
     return SourceResult(
         source_id=source.id,
         source_name=source.name,
@@ -168,7 +178,8 @@ async def _prefetch_one(
         page_title=title,
         final_url=str(response.url),
         http_status=response.status_code,
-        error=f"HTTP {response.status_code}" if response.status_code >= 400 else None,
+        error=(f"HTTP {response.status_code}" if response.status_code >= 400 else
+               f"Response truncated at {_MAX_HTML_BYTES} bytes" if truncated else None),
         challenge=challenge,
         items=items,
     )
@@ -252,7 +263,7 @@ def page_needs_browser(result: SourceResult | None) -> bool:
     if result is None:
         return True
     status = SourceStatus(result.status)
-    if status == SourceStatus.RATE_LIMITED:
+    if status == SourceStatus.RATE_LIMITED or result.challenge.get("response_truncated"):
         return False
     if status == SourceStatus.SUCCESS and result.items:
         return False

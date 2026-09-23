@@ -1,6 +1,6 @@
 # Architecture
 
-**Status:** Verified · **Owner:** Repository maintainers · **Last verified:** 2026-09-12
+**Status:** Verified · **Owner:** Repository maintainers · **Last verified:** 2026-09-23
 
 This is the code map for SignalTrail. [Runtime contracts](references/system-design.md)
 describe data fields and recovery rules; [AGENTS.md](AGENTS.md) covers repository changes.
@@ -11,7 +11,7 @@ describe data fields and recovery rules; [AGENTS.md](AGENTS.md) covers repositor
 ```text
 public sources → index → bounded evidence packets → model-authored drafts
 → Python compilation and validation → versioned JSON + Markdown → HTML
-→ retryable PDF, optional Notion, independent evaluation
+→ retryable PDF, optional Notion, explicitly requested independent evaluation
 ```
 
 Python owns identity, access status, revision allocation, validation, and persistence.
@@ -22,6 +22,14 @@ The monitor runs separately: RSS/Atom and static HTML → normalized items → l
 → snapshot, source health, and feed cache. It makes no model calls. Formal collection can
 proceed when the monitor fails.
 
+News slides are a separate projection of a saved report and its index. Bounded narration batches
+produce accepted story scripts; local rendering adds indexed sources, summaries, merged cover and
+article images, captions, and transitions. When present, the report HTML embeds the deck in place
+of its on-screen summary and keeps a separate open link; printing restores the summary. Report
+JSON/Markdown stays unchanged. Image updates can reuse accepted narration without another model
+call; `slides prepare` reads the supplied report and index and does not fetch webpages.
+See the [news slides workflow](docs/news-slides.md).
+
 ## Code map
 
 All modules below live in `src/daily_intelligence/`.
@@ -30,13 +38,15 @@ All modules below live in `src/daily_intelligence/`.
 | --- | --- | --- |
 | Shared types and I/O | `models`, `storage`, `utils`, `runtime`, `access`, `localization`, `taxonomy` | Paths, enums, atomic writes, data-root binding |
 | Configuration | `config` | Sources, limits, and runtime options |
-| Collection | `adapters`, `feeds`, `prefetch`, `collector`, `clustering` | Fetch, normalize, preserve source status and order |
+| Collection | `adapters`, `browser_collection`, `feeds`, `feed_content`, `prefetch`, `collector`, `clustering` | Fetch, normalize, preserve source status and order |
 | Collection diagnostics | `collection_diagnostics` | Configured-source coverage, bounded body-gap suggestions, local artifact integrity |
 | Evidence | `content`, `content_extraction`, `content_images`, `media`, `image_policy`, `monitor` | Structured article blocks, extraction quality, contextual image candidates, snapshots, evidence lineage |
 | Writing | `context`, `authoring`, `semantics`, `state` | Bounded packets, accepted batches, continuity and cache |
 | Report contract | `reporting` | Compile drafts, hydrate evidence, validate schema and cross-field rules |
 | Report storage | `reports` | Save reports and evaluations, render Markdown, update derived state |
+| News slides | `news_slides`, `slide_renderer` | Budgeted narration batches and standalone animated HTML projection of a saved report |
 | Experimental explainers | `narrative`, `narrative_contracts`, `narrative_store`, `narrative_verification`, `story_stream` | Immutable report children, language reviews, diagrams; current-news admission blocked |
+| Experimental research | `research`, `research_contracts`, `research_delivery` | Frozen blocks, local question retrieval, scoped memos and preview-only late report binding; current admission blocked |
 | Delivery | `local_output`, `notion`, `dashboard` | HTML/PDF, remote copies, read-only monitor UI |
 | Workflow | `workflow` | Run checkpoints, deadlines, recovery, evaluator scheduling |
 | Usage and budget | `llm_usage/`, `llm_budget`, `evaluation` | Immutable usage events, dispatch reserves, evaluation dossiers |
@@ -46,7 +56,7 @@ All modules below live in `src/daily_intelligence/`.
 Dependencies point from entry points through orchestration to domain code and shared I/O.
 Domain modules must not import `cli` or `commands`. In `commands/`, `parser.py` defines options,
 the registry maps names to handlers, and each handler family calls domain functions through
-a typed `CommandContext`. `daily-intel` and `signaltrail` invoke the same entry point.
+a typed `CommandContext`. `signaltrail` is the main CLI entry point.
 
 The names `daily_intelligence`, `DAILY_INTEL_*`, and existing report IDs remain for compatibility.
 The public product and new CLI name are SignalTrail. See [development](docs/development.md)

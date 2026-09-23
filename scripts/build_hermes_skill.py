@@ -34,6 +34,7 @@ PACKAGE_FILES = {
 }
 PACKAGE_DIRECTORIES = (
     Path("assets/monitor"),
+    Path("assets/news-slides"),
     Path("assets/readme"),
     Path("configs"),
     Path("docs"),

@@ -2,6 +2,7 @@ import asyncio
 from pathlib import Path
 
 import httpx
+import pytest
 
 from daily_intelligence.config import SourceConfig
 from daily_intelligence.feeds import (
@@ -10,6 +11,7 @@ from daily_intelligence.feeds import (
     looks_like_feed,
     parse_feed_document,
 )
+from daily_intelligence.utils import read_json
 
 
 def _source() -> SourceConfig:
@@ -208,3 +210,130 @@ def test_conditional_feed_cache_reuses_304_items(tmp_path: Path):
     assert len(second.items) == 1
     assert second.cache_state == "not_modified"
     assert requests[1].headers["if-none-match"] == '"feed-v1"'
+
+
+def _parse_saved(content, tmp_path):
+    return parse_feed_document(
+        content, _source(), "https://news.example/rss.xml", "2026-09-20T10:00:00+08:00",
+        "Asia/Shanghai", max_items=10, data_dir=tmp_path,
+    )[0]
+
+
+def test_long_feed_content_preserves_tail_without_expanding_candidates(tmp_path):
+    from daily_intelligence.context import _compact_candidates
+
+    prefix = "A public report provides observations and measurements. " * 30
+
+    def rss(tail):
+        return f"""<rss xmlns:content="http://purl.org/rss/1.0/modules/content/"><channel>
+          <item><title>A long report with an important final condition</title>
+          <link>https://news.example/report</link><description>Short summary.</description>
+          <content:encoded><![CDATA[<h2>Observations</h2><p>{prefix}</p>
+          <p>{tail}</p><table><tr><th>Year</th><th>Value</th></tr>
+          <tr><td>2026</td><td>10</td></tr></table>]]></content:encoded>
+          </item></channel></rss>"""
+
+    first = _parse_saved(rss("Only valid under controlled conditions."), tmp_path)
+    path = Path(first.metadata["feed_content_path"])
+    before = path.stat().st_mtime_ns
+    record = read_json(path)
+    assert "Only valid under controlled conditions." in record["text"]
+    assert {block["type"] for block in record["blocks"]} >= {"heading", "paragraph", "table"}
+    assert record["truncated"] is False
+    assert len(first.description) == 600
+    assert first.content_status == "not_fetched"
+    assert first.content_path is None
+    repeated = _parse_saved(rss("Only valid under controlled conditions."), tmp_path)
+    assert repeated.metadata == first.metadata
+    assert path.stat().st_mtime_ns == before
+    second = _parse_saved(rss("The condition was revised."), tmp_path)
+    assert second.item_id == first.item_id
+    assert second.metadata["feed_content_path"] != str(path)
+    assert "Only valid under controlled conditions." in read_json(path)["text"]
+    compact = _compact_candidates({"items": [first.to_dict()]}, 25, {_source().id: 15}, set())
+    assert compact[0]["description"] == first.description
+    assert "feed_content_path" not in compact[0]
+    assert "blocks" not in compact[0]
+
+
+def test_atom_xhtml_preserves_nested_images_caption_and_xml_base(tmp_path):
+    atom = """<feed xmlns="http://www.w3.org/2005/Atom"
+        xml:base="https://news.example/" xml:lang="en">
+      <entry xml:base="reports/"><title>An illustrated public research report</title>
+        <link xml:base="../articles/" href="one"/>
+        <content type="xhtml" xml:base="../assets/">
+          <div xmlns="http://www.w3.org/1999/xhtml">
+            <p>The result remains preliminary and needs independent replication.</p>
+            <figure xml:base="photos/">
+              <picture><source srcset="large.jpg 1600w, medium.jpg 800w"/>
+                <img src="small.jpg" alt="The research instrument"/></picture>
+              <figcaption>Instrument shown during the September test.</figcaption>
+            </figure>
+          </div>
+        </content>
+      </entry></feed>"""
+    item = _parse_saved(atom, tmp_path)
+    record = read_json(Path(item.metadata["feed_content_path"]))
+    assert item.url == "https://news.example/articles/one"
+    assert item.image_url == "https://news.example/assets/photos/large.jpg"
+    assert record["mime_type"] == "application/xhtml+xml"
+    assert record["language"] == "en"
+    assert record["images"][0]["caption"] == "Instrument shown during the September test."
+    assert record["quality"]["article_completeness"] == "unknown"
+
+
+@pytest.mark.parametrize("kind, value, expected", [
+    ("text", "Use &lt;limit&gt; literally in text.", "Use <limit> literally in text."),
+    ("html", "&lt;p&gt;An actual &lt;b&gt;HTML&lt;/b&gt; paragraph.&lt;/p&gt;",
+     "An actual HTML paragraph."),
+])
+def test_atom_text_and_html_have_distinct_semantics(tmp_path, kind, value, expected):
+    item = _parse_saved(f"""<feed xmlns="http://www.w3.org/2005/Atom"><entry>
+      <title>A report with typed Atom content</title><link href="https://news.example/story"/>
+      <content type="{kind}">{value}</content></entry></feed>""", tmp_path)
+    assert read_json(Path(item.metadata["feed_content_path"]))["text"] == expected
+
+
+def test_feed_preserves_declared_encoding_and_missing_body(tmp_path):
+    rss = '''<?xml version="1.0" encoding="iso-8859-1"?><rss><channel><item>
+      <title>Café publishes a detailed research update</title><link>https://news.example/cafe</link>
+      <description>Résumé of the café's observations.</description></item></channel></rss>'''
+    assert "Résumé" in _parse_saved(rss.encode("iso-8859-1"), tmp_path).description
+    empty = _parse_saved("""<rss><channel><item><title>Report without supplied body content</title>
+      <link>https://news.example/empty</link></item></channel></rss>""", tmp_path)
+    assert "feed_content_path" not in empty.metadata
+    assert empty.content_status == "not_fetched"
+
+
+def test_image_only_feed_keeps_picture_without_claiming_body(tmp_path):
+    item = _parse_saved("""<rss><channel><item><title>Report with only a supplied image</title>
+      <link>https://news.example/picture</link><description><![CDATA[
+      <picture><source data-srcset="/large.jpg 1600w"><img src="/small.jpg"></picture>
+      ]]></description></item></channel></rss>""", tmp_path)
+    assert item.image_url == "https://news.example/large.jpg"
+    assert not item.description
+    assert "feed_content_path" not in item.metadata
+
+
+def test_failed_refresh_remains_stale_during_backoff(tmp_path):
+    responses = iter([
+        httpx.Response(200, text="""<rss><channel><item>
+          <title>A valid cached public report</title><link>https://news.example/story</link>
+          </item></channel></rss>"""),
+        httpx.Response(429, headers={"Retry-After": "600"}),
+    ])
+
+    async def run():
+        transport = httpx.MockTransport(lambda _: next(responses))
+        async with httpx.AsyncClient(transport=transport) as client:
+            args = (client, _source(), "https://news.example/rss.xml", tmp_path, "Asia/Shanghai")
+            kwargs = dict(max_bytes=10000, max_items=10, refresh_interval_minutes=30)
+            await fetch_feed(*args, **kwargs, force=True)
+            failed = await fetch_feed(*args, **kwargs, force=True)
+            cached = await fetch_feed(*args, **kwargs)
+            return failed, cached
+
+    failed, cached = asyncio.run(run())
+    assert failed.status == cached.status == "partial"
+    assert failed.stale and cached.stale
+    assert cached.http_status == 429

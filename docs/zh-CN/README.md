@@ -1,6 +1,6 @@
 # 文档
 
-**状态：** 已验证 · **负责人：** 仓库维护者 · **最后验证：** 2026-09-11
+**状态：** 已验证 · **负责人：** 仓库维护者 · **最后验证：** 2026-09-23
 
 按当前任务选择入口。英文工程记录与本目录的中文译文一起维护。[English](../README.md)
 
@@ -11,10 +11,17 @@
 | [架构](ARCHITECTURE.md) | 模块归属、状态、文件和模型边界 |
 | [智能体说明](AGENTS.md) | 修改本仓库的规则 |
 | [讲解实验指南](explainers.md) | 已实现命令、双语审核、不可变图文与实时准入边界 |
-| [路线图](roadmap.md) | 双语讲解、核验与图文阅读；视频属于下一轮 |
+| [新闻幻灯片](news-slides.md) | 从已保存日报生成独立动态 HTML、有界讲解批次和单批成本门槛 |
+| [路线图](roadmap.md) | 实验性讲解与研究工作流；实时准入和验收缺口 |
 | [技术债](exec-plans/tech-debt-tracker.md) | 已知实现缺口和退出条件 |
 
 ## 研究与提案
+
+- [9 月 20 日研究与图文工作流](research/2026-09-20-illustrated-workflow.md)：
+  已实现的问题检索、研究底稿、表格、晚绑定与组件效果评估。
+
+- [9 月 20 日采集改进](research/2026-09-20-collection-improvements.md)：
+  地区发现源、Feed 长内容保留、并发调度和部署实测。
 
 - [报告 A 信息搜集来源核查与实现](research/2026-09-11-collection-evidence.md)：第三部分的引用核查、
   本地抽取、覆盖诊断和有界补全。
@@ -36,6 +43,8 @@ Schema 修复说明是英文历史兼容记录。按任务读取需要的那一�
 | [系统契约](../../references/system-design.md) | 数据字段、状态和产物约定 |
 | [编辑策略](../../references/editorial-policy.md) | 来源选择、证据、访问和排序 |
 | [讲解实验策略](../../references/explainer-policy.md) | 主张、审核与图文实验准入 |
+| [研究工作流](../../references/research-workflow.md) | 并行准备、研究证据范围与晚到组合阅读 |
+| [新闻幻灯片参考](../../references/news-slides.md) | 批次数据包、token 估算门槛和完整渲染要求 |
 | [叙事研判](../../references/narrative-analysis.md) | 修复分析内容 |
 | [报告契约](../../templates/report-contract.md)和 [Schema](../../schemas/report.schema.json) | 草稿结构和机器校验 |
 | [用量说明](../../references/llm-usage.md) | 宿主适配器、计量和覆盖限制 |
@@ -55,8 +64,9 @@ Schema 修复说明是英文历史兼容记录。按任务读取需要的那一�
 - [版本历史](../../CHANGELOG.md)和[发布说明](../../RELEASE_NOTES.md)
 - [示例报告](https://github.com/Merak-Wang/signaltrail-skill/blob/main/examples/README.md)：脱敏的历史输出
 
-`skills/signaltrail/`、`build/` 和 `dist/` 是生成的发布或安装快照，不参与当前文档检查，
-仅通过明确要求的重建更新。本地被忽略的审计笔记不属于公开工程记录。
+根目录的 `src/` 是唯一维护的实现，仓库不保留嵌套的 Skill 副本。
+`build/` 和 `dist/` 是被忽略的发布产物，不参与当前文档检查，仅在明确要求时生成。
+安装使用包含运行资源的完整 Skill 包。本地被忽略的审计笔记不属于公开工程记录。
 
 当前记录使用 Verified、Draft 或 Active，已完成记录使用 Historical，机械快照使用 Generated。
 维护中的文档说明目的、负责人和日期。维护约定与检查见[开发指南](development.md)。

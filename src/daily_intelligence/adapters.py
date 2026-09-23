@@ -27,6 +27,84 @@ _LOW_INFORMATION_TITLES = {
 }
 
 
+BROWSER_ROWS_JS = """anchors => anchors.map(a => ({
+            title: (
+                (a.querySelector('h1, h2, h3, h4') || {}).innerText ||
+                a.getAttribute('aria-label') || a.getAttribute('title') ||
+                a.innerText || ''
+            ).trim(),
+            href: a.href || '',
+            image_sources: (() => {
+                const card = a.closest('article, li, [class*="card"], [class*="story"]');
+                const root = card || a;
+                const images = Array.from(root.querySelectorAll('picture source, img'));
+                return images.map(image => ({
+                    srcset: image.getAttribute('srcset') || image.getAttribute('data-srcset') || '',
+                    current_src: image.currentSrc || '',
+                    natural_width: image.naturalWidth || null,
+                    natural_height: image.naturalHeight || null,
+                    src: image.getAttribute('src') || '',
+                    data_src: image.getAttribute('data-src') || '',
+                    data_original: image.getAttribute('data-original') || '',
+                    data_lazy_src: image.getAttribute('data-lazy-src') || ''
+                }));
+            })(),
+            context: (() => {
+                const card = a.closest('article, li, [class*="card"], [class*="story"]');
+                const time = card ? card.querySelector('time') : null;
+                return [
+                    time ? (time.getAttribute('datetime') || time.textContent || '') : '',
+                    card ? (card.textContent || '').slice(0, 500) : '',
+                    (a.innerText || '').slice(0, 500)
+                ].join(' ');
+            })()
+        }))"""
+
+
+ARXIV_ROWS_JS = """entries => entries.map(dt => {
+            const details = dt.nextElementSibling;
+            const link = dt.querySelector('a[href*="/abs/"]');
+            const titleNode = details ? details.querySelector('.list-title') : null;
+            const headings = Array.from(document.querySelectorAll('h3'));
+            const dateHeading = headings.reverse().find(
+                heading => Boolean(
+                    heading.compareDocumentPosition(dt) & Node.DOCUMENT_POSITION_FOLLOWING
+                )
+            );
+            const rawTitle = titleNode ? (titleNode.textContent || '') : '';
+            return {
+                title: rawTitle.replace(/^\\s*Title:\\s*/i, '').trim(),
+                href: link ? link.href : '',
+                date_text: dateHeading ? (dateHeading.textContent || '').trim() : ''
+            };
+        })"""
+
+
+YEAR_ROWS_JS = """anchors => anchors.map(a => ({
+            title: (a.innerText || a.getAttribute('title') || '').trim(),
+            href: a.href || ''
+        }))"""
+
+
+TWZ_ROWS_JS = """headings => headings.map(heading => {
+            const link = heading.closest('a[href]');
+            const card = heading.closest('.card-post') || heading.closest('article');
+            const descriptionNode = card ? card.querySelector('.card-post-dek') : null;
+            const timeNode = card ? card.querySelector(
+                'time, .byline-item-timestamp, [class*="timestamp"], [class*="date"]'
+            ) : null;
+            const timeText = timeNode
+                ? `${timeNode.getAttribute('datetime') || ''} ${timeNode.textContent || ''}`
+                : '';
+            return {
+                title: (heading.innerText || '').trim(),
+                href: link ? link.href : '',
+                card_text: timeText.trim(),
+                description: descriptionNode ? (descriptionNode.textContent || '').trim() : ''
+            };
+        })"""
+
+
 def is_eligible(source: SourceConfig, title: str, url: str) -> bool:
     """处理：按来源的域名、文章路径和排除规则判断候选是否可采集。
     输入：
@@ -89,6 +167,7 @@ def _article(source: SourceConfig, title: str, url: str, discovered_at: str) -> 
             "role": source.role,
             "language": source.language,
             "region": source.region,
+            **source.origin_metadata,
         },
     )
 
@@ -166,38 +245,7 @@ def collect_browser_index(
       并保持当前处理定义的筛选与排序语义。
     """
     rows = page.locator("a[href]").evaluate_all(
-        """anchors => anchors.map(a => ({
-            title: (
-                (a.querySelector('h1, h2, h3, h4') || {}).innerText ||
-                a.getAttribute('aria-label') || a.getAttribute('title') ||
-                a.innerText || ''
-            ).trim(),
-            href: a.href || '',
-            image_sources: (() => {
-                const card = a.closest('article, li, [class*="card"], [class*="story"]');
-                const root = card || a;
-                const images = Array.from(root.querySelectorAll('img'));
-                return images.map(image => ({
-                    srcset: image.getAttribute('srcset') || '',
-                    current_src: image.currentSrc || '',
-                    natural_width: image.naturalWidth || null,
-                    natural_height: image.naturalHeight || null,
-                    src: image.getAttribute('src') || '',
-                    data_src: image.getAttribute('data-src') || '',
-                    data_original: image.getAttribute('data-original') || '',
-                    data_lazy_src: image.getAttribute('data-lazy-src') || ''
-                }));
-            })(),
-            context: (() => {
-                const card = a.closest('article, li, [class*="card"], [class*="story"]');
-                const time = card ? card.querySelector('time') : null;
-                return [
-                    time ? (time.getAttribute('datetime') || time.textContent || '') : '',
-                    card ? (card.textContent || '').slice(0, 500) : '',
-                    (a.innerText || '').slice(0, 500)
-                ].join(' ');
-            })()
-        }))"""
+        BROWSER_ROWS_JS
     )
     return browser_items_from_rows(rows, source, discovered_at, page.url)
 
@@ -310,23 +358,7 @@ def collect_arxiv_index(
     输出：从页面提取并规范化的 arXiv 文章条目列表；直接供来源采集结果和根级索引使用。
     """
     rows = page.locator("dl#articles dt, dl dt").evaluate_all(
-        """entries => entries.map(dt => {
-            const details = dt.nextElementSibling;
-            const link = dt.querySelector('a[href*="/abs/"]');
-            const titleNode = details ? details.querySelector('.list-title') : null;
-            const headings = Array.from(document.querySelectorAll('h3'));
-            const dateHeading = headings.reverse().find(
-                heading => Boolean(
-                    heading.compareDocumentPosition(dt) & Node.DOCUMENT_POSITION_FOLLOWING
-                )
-            );
-            const rawTitle = titleNode ? (titleNode.textContent || '') : '';
-            return {
-                title: rawTitle.replace(/^\\s*Title:\\s*/i, '').trim(),
-                href: link ? link.href : '',
-                date_text: dateHeading ? (dateHeading.textContent || '').trim() : ''
-            };
-        })"""
+        ARXIV_ROWS_JS
     )
     return arxiv_items_from_rows(rows, source, discovered_at)
 
@@ -363,10 +395,7 @@ def collect_latest_year_index(
       并保持当前处理定义的筛选与排序语义。
     """
     rows = page.locator("a[href]").evaluate_all(
-        """anchors => anchors.map(a => ({
-            title: (a.innerText || a.getAttribute('title') || '').trim(),
-            href: a.href || ''
-        }))"""
+        YEAR_ROWS_JS
     )
     year_url = latest_year_url(rows)
     response = page.goto(year_url, wait_until="domcontentloaded", timeout=45_000)
@@ -433,23 +462,7 @@ def collect_twz_index(
       并保持当前处理定义的筛选与排序语义。
     """
     rows = page.locator("h3").evaluate_all(
-        """headings => headings.map(heading => {
-            const link = heading.closest('a[href]');
-            const card = heading.closest('.card-post') || heading.closest('article');
-            const descriptionNode = card ? card.querySelector('.card-post-dek') : null;
-            const timeNode = card ? card.querySelector(
-                'time, .byline-item-timestamp, [class*="timestamp"], [class*="date"]'
-            ) : null;
-            const timeText = timeNode
-                ? `${timeNode.getAttribute('datetime') || ''} ${timeNode.textContent || ''}`
-                : '';
-            return {
-                title: (heading.innerText || '').trim(),
-                href: link ? link.href : '',
-                card_text: timeText.trim(),
-                description: descriptionNode ? (descriptionNode.textContent || '').trim() : ''
-            };
-        })"""
+        TWZ_ROWS_JS
     )
     return twz_items_from_rows(rows, source, discovered_at)
 
@@ -470,6 +483,16 @@ def collect_weibo_api(
     """
     body = page.locator("body").inner_text(timeout=10000)
     payload = json.loads(body)
+    return weibo_items_from_payload(payload, source, discovered_at)
+
+
+def weibo_items_from_payload(
+    payload: dict, source: SourceConfig, discovered_at: str,
+) -> list[ArticleItem]:
+    """处理：将微博公开接口的词条转换为有序候选，保留热度和置顶信息。
+    输入：页面 JSON、来源配置和观察时间。
+    输出：去掉推广条目的热搜列表，供同步和异步浏览器入口共用。
+    """
     if payload.get("ok") != 1:
         raise RuntimeError(f"Weibo API returned ok={payload.get('ok')!r}")
     cards = payload.get("data", {}).get("cards", [])

@@ -3,6 +3,9 @@
 import argparse
 from pathlib import Path
 
+from .research import add_research_parser
+from .slides import add_slides_parser
+
 
 def _add_explainer_parser(sub: argparse._SubParsersAction) -> None:
     """处理：注册日报子产物的显式准备、写作、审核与预览命令。
@@ -34,6 +37,7 @@ def _add_explainer_parser(sub: argparse._SubParsersAction) -> None:
     story = stages.add_parser("story", help="Compose verbatim illustrated cards")
     story.add_argument("--script", type=Path, action="append", required=True)
     story.add_argument("--bilingual", type=Path)
+    story.add_argument("--review", type=Path)
     render = stages.add_parser("render", help="Render the exact story revision")
     render.add_argument("--story", type=Path, required=True)
     render.add_argument("--mode", choices=["preview", "current"], default="preview")
@@ -67,6 +71,8 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", required=True)
 
     _add_explainer_parser(sub)
+    add_research_parser(sub)
+    add_slides_parser(sub)
 
     data_root = sub.add_parser(
         "data-root",
@@ -327,16 +333,24 @@ def build_parser() -> argparse.ArgumentParser:
     finalize.add_argument(
         "--defer-tail",
         action="store_true",
-        help="Return after local HTML; generate PDF, publish Notion, and schedule evaluation later",
+        help="Return after local HTML; finish PDF and requested delivery/scoring later",
+    )
+    finalize.add_argument(
+        "--evaluate", action="store_true",
+        help="Explicitly request independent quality scoring (off by default)",
     )
 
     tail = sub.add_parser(
         "complete-edition-tail",
-        help="Finish deferred PDF/Notion work and schedule independent evaluation",
+        help="Finish deferred PDF/Notion work and any explicitly requested quality scoring",
     )
     tail.add_argument("--run", type=Path, required=True)
     tail.add_argument("--publish", action="store_true")
     tail.add_argument("--notion-config", type=Path)
+    tail.add_argument(
+        "--evaluate", action="store_true",
+        help="Explicitly request independent quality scoring (off by default)",
+    )
 
     save = sub.add_parser(
         "save-report", help="Persist JSON/Markdown and configured local reading formats"

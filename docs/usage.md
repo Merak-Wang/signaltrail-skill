@@ -1,6 +1,6 @@
 # Usage
 
-**Status:** Verified · **Owner:** Repository maintainers · **Last verified:** 2026-09-20
+**Status:** Verified · **Owner:** Repository maintainers · **Last verified:** 2026-09-23
 
 Use this guide after the [quick start](../README.en.md). It covers local configuration,
 host setup, and where to find a finished report. [中文](zh-CN/usage.md)
@@ -10,6 +10,17 @@ host setup, and where to find a finished report. [中文](zh-CN/usage.md)
 Install the checkout with `python -m pip install -e .`, then load its root `SKILL.md` in
 your agent. Keep the checkout: source configuration, schemas, and templates are runtime inputs.
 When launching outside it, set `DAILY_INTEL_SKILL_DIR` to the absolute checkout path.
+
+The checkout maintains one root `src/`. A release build places the complete installable skill
+in `dist/signaltrail/`, including `SKILL.md`, source, configuration, schemas, templates, references,
+and assets. Run the installer from the checkout or extracted package root; it synchronizes
+the complete skill into Hermes and installs the Python project from that directory. Virtual
+environments and runtime data are excluded. `-Editable` (Windows) or `--editable` (macOS/Linux)
+instead binds the Python installation to the original source directory for development.
+
+The main command is `signaltrail`; new installations no longer provide `daily-intel`.
+Update existing shell scripts and scheduled commands to use `signaltrail`, then reinstall
+the project to refresh its entry points. Existing data paths and `DAILY_INTEL_*` variables remain valid.
 
 Windows can use system Edge. For browser collection on macOS or Linux, install Chromium
 in the same Python environment:
@@ -63,6 +74,28 @@ and tied times retain their input order. A source can override `item_order` loca
 Both modes preserve `source_rank`; summaries are not re-sorted by importance.
 Hugging Face Papers uses Trending order, which can include older papers.
 
+The discovery catalog adds TASS, Bank of Russia, Xinhua English, China MFA remarks,
+MOFCOM press conferences and UN meeting coverage. Anadolu, IRNA and WAM remain disabled
+until this deployment can fetch usable items. ReliefWeb remains a documented candidate
+pending its approved API appname. See the [probe record](research/2026-09-20-collection-improvements.md).
+Source `origin_scope`, `coverage_regions` and `publisher_group` distinguish organization origin,
+coverage and publisher grouping; they do not certify independent evidence.
+
+Feed long content is saved separately while descriptions remain capped at 600 characters.
+Only selected enrichment items load those records as partial evidence. Browser fallback uses
+one persistent context with bounded concurrent pages; optional `ready_selector` replaces the
+generic readiness check, and explicit `wait_ms` takes precedence. No collection step calls a model.
+
+To fetch selected article bodies from an existing index, run `extract-content` with the exact
+item IDs. This creates a new enriched index revision under the same data root; it does not edit
+the input index. Use the returned path in later authoring steps. A visible browser and persistent
+profile can be supplied when a publisher requires interactive verification:
+
+```sh
+signaltrail --data-dir DATA_DIR extract-content --index INDEX.json --item-id ITEM_ID
+signaltrail --data-dir DATA_DIR extract-content --index INDEX.json --item-id ITEM_ID --headed --profile-dir PROFILE_DIR
+```
+
 ## Metered Hermes runs
 
 For the audited Hermes 0.21 integration, start the host through:
@@ -76,14 +109,21 @@ environment's Python with SignalTrail installed; `PROMPT.txt` contains the repor
 Optional `--provider` and `--model` select the route.
 
 This entry point starts metering before model work, includes workers and supported auxiliary
-calls, and launches an independent evaluator with a separate task. It checks host counters
+calls, and supports explicitly requested independent scoring in a separate task. It checks host counters
 before sealing. Missing observations remain partial. Direct Hermes CLI and legacy Cron
 do not automatically receive the same coverage. See [usage metering](../references/llm-usage.md)
 for exact limits and Codex/OpenClaw imports.
 
 Other agents can drive the same writing packets. Without an audited usage adapter, the run
 remains usable but has explicit `unmetered` coverage and null token totals. A host without
-automatic evaluator scheduling must dispatch the dossier itself and call `finalize-evaluation`.
+automatic evaluator scheduling dispatches the dossier itself and calls `finalize-evaluation`
+only when the user requests quality scoring.
+
+Quality scoring is off by default. To request it for one edition, add `--evaluate` to
+`finalize-edition` or `complete-edition-tail`. The run retains the request for tail recovery;
+ordinary finalization and PDF delivery create no evaluator task. Existing scores remain
+available. Unscored briefs stay outside the approved semantic cache, so future reports may
+need more fresh writing. Structural and evidence validation still run normally.
 
 ## Reports and recovery
 
@@ -96,7 +136,7 @@ automatic evaluator scheduling must dispatch the dossier itself and call `finali
 | `usage/` and `host-runs/` | Usage events and host launch receipts |
 
 The workflow also writes a portable desktop HTML copy with available validated images embedded.
-It returns HTML first, then finishes PDF, requested Notion delivery, and evaluation in a retryable
+It returns HTML first, then finishes PDF, requested Notion delivery, and requested scoring in a retryable
 tail. The default PDF soft size budget is 50 MiB; exceeding it records a warning.
 
 Images retain the news site's caption in its original language. The report's `image.caption`
@@ -105,9 +145,11 @@ are never used as substitutes. Image credits remain separate from captions.
 
 The HTML reader uses a three-column masthead with the report date, edition, and recorded
 generation time. White pages, black text, and red source rules frame a continuous news list.
-The original floating directory retains its expand/collapse and scroll tracking behavior;
-news order, bilingual headlines, image dimensions, and summary placement are unchanged.
-Search, archive/PDF links, and the sources/status entry remain available without reading-mode tabs.
+When an animated slide projection exists, the screen layout embeds it in the former “today's
+summary” area and keeps a button to open the standalone HTML; print hides the deck and restores
+the summary. Without a slide projection, the ordinary summary remains in place. The original
+floating directory retains its expand/collapse and scroll tracking behavior. Search, archive/PDF
+links, and the sources/status entry remain available. See the [slide guide](news-slides.md).
 
 Read the run manifest before retrying. Use its `tail.command` for pending delivery work.
 Never edit status JSON or delete a lock while its process is active. Detailed stage recovery

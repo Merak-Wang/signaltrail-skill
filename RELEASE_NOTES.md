@@ -1,46 +1,68 @@
-# Release notes
+# SignalTrail 2.1.0
 
-## Source update — 2026-09-11
+Released 2026-09-23. [中文说明](README.md) · [English overview](README.en.md) ·
+[Full changelog](CHANGELOG.md)
 
-- HTML reports use the approved three-column masthead, white/black/red palette, and ruled source
-  headings. News remains continuous, with its original image/text layout and floating directory.
-  The public historical example and README screenshots now show this layout.
-- Collection diagnostics and bounded extraction fallbacks expose evidence gaps, preserve access
-  failures, and retain image provenance. Continuity separates domain columns from thesis identity.
-- Experimental explainers provide immutable evidence-bound drafts, language reviews, and illustrated
-  reading. Current-news publishing still requires freshness adapters and formal acceptance;
-  speech and video remain planned.
+## Daily reports with animated news slides
 
-Sync the current checkout into the local Hermes skill and reinstall its Python package to use
-these changes. Existing versioned JSON/Markdown and runtime data remain unchanged.
+A saved report can now become a navigable HTML presentation, with one story per page,
+200–350-character Chinese narration, and selective analysis from the existing evidence.
+The daily report embeds the presentation where its on-screen summary appeared, while retaining
+an **open standalone HTML** button. Printing keeps the original summary. JSON and Markdown
+remain the authoritative report records.
 
-## Source update — 2026-09-08
+The editorial design uses warm paper, dark ink, serif headlines, fine rules and restrained
+terracotta accents. It supports a story directory, keyboard navigation, fullscreen, responsive
+layouts and reduced motion. Rendering uses fixed HTML/CSS/JavaScript and makes no model call.
 
-- `signaltrail` is now the preferred CLI name. `daily-intel`, Python imports, environment
-  variables, data directories, and stored report IDs remain compatible.
-- CLI handlers are separated by responsibility. Tests for workflow, context, verification,
-  storage, evaluation, and Notion now live beside tests of the same subsystem.
-- Documentation has one index, a shorter README, usage and development guides, and one Draft
-  roadmap. Historical records keep their original dates. English engineering records have
-  matching Chinese translations.
-- `signaltrail-hermes` starts usage tracking before the host and includes supported worker,
-  auxiliary, and independent-evaluation calls. Use this entry point for audited Hermes runs;
-  direct CLI/Cron entry points retain documented coverage limits. Missing observations remain
-  unknown. This update does not claim that end-to-end cost and latency targets have all passed.
-- The evaluator dossier now checks featured-event ordering within each section and uses a new
-  `-v2.json` path, preserving earlier immutable dossiers.
+Images combine available article covers and explanatory figures. Explicit high-resolution
+variants are preferred; thumbnails are not relabeled as original image bytes. Captions remain
+verbatim source text, and unavailable captions stay empty. The gallery includes thumbnails,
+a large-image viewer and original-image links. Images without publisher-accessible originals
+cannot be upgraded into higher-resolution evidence.
 
-Reinstall the editable package to expose the new command. This source update does not rebuild
-the checked-in release snapshot or replace an installed skill. See [Usage](docs/usage.md)
-and [usage metering](references/llm-usage.md).
+## Bounded writing and faster collection
 
-## Version 2.0.0
+- Representative stories have no overall count cap. All selected stories are completed in
+  resumable batches. The default batch contains at most four stories, with estimated input
+  and output token limits; these are payload budgets, not a guaranteed currency ceiling.
+- Feed content preserves full descriptions, Atom XHTML and captioned images for selected
+  enrichment. HTTP and browser work use bounded concurrency, retaining rate-limit cooldowns.
+- Coordinator inputs omit repeated fields. Report rendering reuses image encodings within a
+  render, and the current/next story loads before distant images.
+- Hermes usage records distinguish retry attempts and reconcile successful calls. Missing
+  failed-call observations remain unknown, with partial coverage explicitly reported.
+- PDF source groups flow across pages without nearly empty separator pages.
 
-Version 2.0 introduced the local monitor, 32 report sources and 51 discovery sources,
-cross-source clustering, Chinese/English output, and three-perspective analysis with synthesis.
-HTML is delivered first; PDF, requested Notion delivery, and independent evaluation follow.
-JSON and Markdown remain the versioned original records.
+## Installation and upgrading
 
-Older report schemas and source-index views remain readable. Source access failures stay
-explicit, and interactive verification is opt-in. See the [changelog](CHANGELOG.md) for the
-development history and [known gaps](docs/exec-plans/tech-debt-tracker.md) for current limits.
+Download the complete `signaltrail-v2.1.0.zip` from
+[GitHub Releases](https://github.com/Merak-Wang/signaltrail-skill/releases/tag/v2.1.0), or clone
+this repository. Follow the platform-specific steps in [Usage](docs/usage.md) or
+[中文使用指南](docs/zh-CN/usage.md). Keep the full `signaltrail/` directory: templates,
+schemas, configuration and assets are required alongside the Python package.
+
+Reinstall the package or run the installer to refresh the CLI entry points and an installed
+Hermes skill. This repository now maintains only root `src/`; release packages are generated
+under ignored `dist/`. There is no maintained `skills/signaltrail/` source copy.
+
+**Command migration:** replace `daily-intel` with `signaltrail` in scripts and scheduled jobs.
+The old command alias is no longer installed. Python imports, `DAILY_INTEL_*` environment
+variables, existing data directories and stored report IDs retain their names. Use the same
+data directory during an upgrade; do not copy private runtime files into the skill package.
+
+## Experimental features and scope
+
+Research can prepare immutable evidence snapshots alongside a report and later bind a reviewed
+reading to the completed daily edition. Research and explainer workflows remain experimental;
+current-news admission is blocked pending freshness adapters and acceptance. These paths have
+separate evidence/review contracts and do not gate the normal daily report.
+
+TTS and video generation are not included. Remote images require network access unless cached
+and embedded. Some publishers do not expose usable originals or captions; gaps remain visible.
+Provider usage and prices that were not observed are not reported as zero.
+
+The bilingual README, installation guide, presentation guide, architecture and development
+references have been reorganized around current commands. Historical design and execution
+records retain their original dates. See the [documentation index](docs/README.md) and
+[known gaps](docs/exec-plans/tech-debt-tracker.md).

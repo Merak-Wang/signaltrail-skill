@@ -209,3 +209,64 @@ def test_rate_limit_is_not_retried_in_edge_but_empty_public_html_is():
 
     assert page_needs_browser(rate_limited) is False
     assert page_needs_browser(empty) is True
+
+
+def test_picture_and_lazy_srcset_are_index_image_candidates():
+    _, rows = html_index_rows("""<article><a href='/articles/one'>A detailed headline</a>
+        <picture><source data-srcset='/large.webp 1600w, /medium.webp 800w'>
+        <img src='/small.jpg'></picture></article>""")
+    assert rows[0]["image_candidates"] == ["/large.webp", "/medium.webp", "/small.jpg"]
+
+
+def test_prefetch_stops_stream_at_limit_and_marks_partial(monkeypatch, tmp_path):
+    consumed = []
+    closed = []
+    page = b'<article><a href="/articles/one">A sufficiently long headline</a></article>'
+
+    class Stream(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            for part in [page, b"x" * 100, b"must not be downloaded"]:
+                consumed.append(part)
+                yield part
+
+        async def aclose(self):
+            closed.append(True)
+
+    monkeypatch.setattr("daily_intelligence.prefetch._MAX_HTML_BYTES", len(page) + 10)
+    config = AppConfig(timezone="UTC", browser=BrowserConfig(), sources=[])
+    results = asyncio.run(_prefetch_all(
+        [_source()], config, tmp_path,
+        transport=httpx.MockTransport(lambda _: httpx.Response(200, stream=Stream())),
+    ))
+    result = next(iter(results.values()))
+    assert len(consumed) == 2
+    assert closed == [True]
+    assert result.status == SourceStatus.PARTIAL
+    assert len(result.items) == 1
+    assert result.challenge["response_truncated"] is True
+    assert not page_needs_browser(result)
+
+
+def test_busy_domain_does_not_starve_other_domains(tmp_path):
+    async def run():
+        other_started = asyncio.Event()
+
+        async def handler(request):
+            if request.url.host == "busy.example":
+                await asyncio.wait_for(other_started.wait(), 1)
+            else:
+                other_started.set()
+            return httpx.Response(200, text='<a href="/articles/one">A detailed news headline</a>')
+
+        config = AppConfig(timezone="UTC", sources=[], browser=BrowserConfig(
+            collection_global_concurrency=2, collection_per_domain_concurrency=1,
+        ))
+        sources = [_source(str(i), "https://busy.example/news") for i in range(4)]
+        sources.append(_source("other", "https://other.example/news"))
+        return await _prefetch_all(
+            sources, config, tmp_path, transport=httpx.MockTransport(handler),
+        )
+
+    results = asyncio.run(run())
+    assert len(results) == 5
+    assert all(result.status == SourceStatus.SUCCESS for result in results.values())

@@ -1,3 +1,4 @@
+import asyncio
 import threading
 from dataclasses import replace
 from datetime import datetime
@@ -17,11 +18,74 @@ from daily_intelligence.config import (
 from daily_intelligence.dashboard import create_monitor_server
 from daily_intelligence.models import ArticleItem, SourceResult, SourceStatus
 from daily_intelligence.monitor import (
+    _feed_phase,
     fresh_monitor_snapshot_path,
     load_monitor_results,
     refresh_monitor,
 )
 from daily_intelligence.utils import read_json, write_json
+
+
+def test_known_feeds_run_while_unknown_source_is_discovering(tmp_path):
+    async def run():
+        fetched = asyncio.Event()
+        config = _config()
+        config.monitor.auto_discover_feeds = True
+        known = config.sources[0]
+        unknown = SourceConfig(id="unknown", name="Unknown", url="https://slow.example/")
+
+        async def handler(request):
+            if request.url.host == "slow.example":
+                await asyncio.wait_for(fetched.wait(), 1)
+                return httpx.Response(200, text="<html><p>No feed declared</p></html>")
+            fetched.set()
+            return httpx.Response(200, text="""<rss><channel><item>
+                <title>A public news report with useful details</title>
+                <link>https://news.example/report</link></item></channel></rss>""")
+
+        return await _feed_phase([unknown, known], config, tmp_path, force=True,
+                                 checked_at="2026-09-20T10:00:00+08:00",
+                                 transport=httpx.MockTransport(handler))
+
+    feeds, discovery, _ = asyncio.run(run())
+    assert list(feeds) == ["unknown", "monitor_example"]
+    assert feeds["monitor_example"][0].items
+    assert discovery["unknown"]["status"] == "unsupported"
+
+
+def test_feed_discovery_respects_rate_limit_and_retry_after(tmp_path):
+    config = _config()
+    config.sources[0].feed_urls = []
+    config.monitor.auto_discover_feeds = True
+    calls = []
+
+    def handler(request):
+        calls.append(str(request.url))
+        return httpx.Response(429, headers={"Retry-After": "600"})
+
+    for _ in range(2):
+        snapshot = read_json(refresh_monitor(
+            config, tmp_path, include_discovery=False, force=True,
+            transport=httpx.MockTransport(handler),
+        ))
+        assert snapshot["sources"][0]["status"] == "rate_limited"
+    assert len(calls) == 1
+    registry = read_json(tmp_path / "monitor/feed-registry.json")
+    record = registry["sources"][config.sources[0].id]
+    assert record["retry_after_seconds"] == 600
+    assert record["next_refresh_at"] > record["checked_at"]
+
+
+def test_discovery_access_failures_do_not_become_empty_sources(tmp_path):
+    config = _config()
+    config.sources[0].feed_urls = []
+    config.monitor.auto_discover_feeds = True
+    for code, expected in [(403, "verification_required"), (503, "failed")]:
+        snapshot = read_json(refresh_monitor(
+            config, tmp_path, include_discovery=False, force=True,
+            transport=httpx.MockTransport(lambda _, code=code: httpx.Response(code)),
+        ))
+        assert snapshot["sources"][0]["status"] == expected
 
 
 def _config() -> AppConfig:

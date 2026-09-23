@@ -1,9 +1,14 @@
 import importlib.util
+import json
 import shutil
 import subprocess
+import sys
+import tomllib
 from pathlib import Path
 
 import pytest
+
+from daily_intelligence import __version__
 
 ROOT = Path(__file__).resolve().parents[1]
 SPEC = importlib.util.spec_from_file_location(
@@ -23,7 +28,8 @@ def test_skill_metadata_matches_hermes_and_agent_skill_contract():
     assert metadata["name"] == "signaltrail"
     assert metadata["description"].startswith("Use when ")
     assert len(metadata["description"]) <= 1024
-    assert metadata["version"] == "2.0.0"
+    project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    assert metadata["version"] == project["project"]["version"] == __version__
     assert metadata["author"] == "Wang Mingfeng"
     assert metadata["license"] == "MIT"
     assert metadata["platforms"] == ["windows", "macos", "linux"]
@@ -74,6 +80,8 @@ def test_community_package_contains_runtime_and_excludes_repository_state(tmp_pa
     assert (output / "docs" / "README.md").is_file()
     assert (output / "docs" / "zh-CN" / "README.md").is_file()
     assert (output / "assets" / "readme" / "morning-report-preview.png").is_file()
+    assert (output / "assets" / "news-slides" / "template.html").is_file()
+    assert (output / "templates" / "news-slide-style" / "SKILL.md").is_file()
     assert (output / "RELEASE_NOTES.md").is_file()
     assert (output / "scripts" / "install.ps1").is_file()
     assert b"\r\n" not in (output / "README.md").read_bytes()
@@ -82,6 +90,79 @@ def test_community_package_contains_runtime_and_excludes_repository_state(tmp_pa
     assert not (output / "examples").exists()
     assert not (output / "wiki").exists()
     assert not (output / "data").exists()
+    assert not (output / "skills").exists()
+    for directory in ("src", "configs", "schemas", "templates", "references", "assets"):
+        originals = {
+            path.relative_to(source)
+            for path in (source / directory).rglob("*")
+            if path.is_file() and "__pycache__" not in path.parts
+        }
+        packaged = {
+            path.relative_to(output)
+            for path in (output / directory).rglob("*")
+            if path.is_file() and "__pycache__" not in path.parts
+        }
+        assert packaged == originals
+        for relative in originals:
+            expected = (source / relative).read_bytes()
+            if relative.suffix in BUILD.TEXT_SUFFIXES:
+                expected = expected.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+            assert (output / relative).read_bytes() == expected
+
+
+@pytest.mark.parametrize(
+    ("installer", "editable"), [("powershell", False), ("powershell", True), ("shell", False)],
+)
+def test_installer_copies_complete_project_and_excludes_local_environments(
+    tmp_path, monkeypatch, installer, editable,
+):
+    source = tmp_path / "source"
+    target = tmp_path / "hermes" / "skills" / "research" / "signaltrail"
+    resources = (
+        "SKILL.md", "pyproject.toml", "src/daily_intelligence/__init__.py",
+        "configs/sources.yaml", "schemas/report.schema.json", "templates/report-contract.md",
+        "references/runbook.md", "assets/monitor/index.html",
+    )
+    excluded = (".venv", "venv", "env", "skills", "data", ".git")
+    for relative in (*resources, *(f"{name}/sentinel" for name in excluded)):
+        path = source / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(relative, encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    if installer == "powershell":
+        if sys.platform != "win32":
+            pytest.skip("Windows installer requires robocopy")
+        shell = shutil.which("pwsh") or shutil.which("powershell")
+        assert shell
+        script = source / "scripts" / "install.ps1"
+        script.parent.mkdir()
+        shutil.copy2(ROOT / "scripts/install.ps1", script)
+        marker = tmp_path / "pip-arguments.json"
+        monkeypatch.setenv("SIGNALTRAIL_TEST_INSTALLER", str(script))
+        monkeypatch.setenv("SIGNALTRAIL_TEST_PIP_ARGUMENTS", str(marker))
+        command = (
+            "function python { ConvertTo-Json -InputObject @($args) -Compress | "
+            "Set-Content -LiteralPath $env:SIGNALTRAIL_TEST_PIP_ARGUMENTS; "
+            "$global:LASTEXITCODE = 0 }; "
+            "& $env:SIGNALTRAIL_TEST_INSTALLER" + (" -Editable" if editable else "")
+        )
+        subprocess.run(
+            [shell, "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", command],
+            check=True, capture_output=True,
+        )
+        arguments = json.loads(marker.read_text(encoding="utf-8-sig"))
+        expected = ["-m", "pip", "install", *(["-e"] if editable else [])]
+        assert arguments == [*expected, str(source if editable else target)]
+    else:
+        script = (ROOT / "scripts/install.sh").read_text(encoding="utf-8")
+        sync_code = script.split("<<'PY'\n", 1)[1].split("\nPY", 1)[0]
+        subprocess.run(
+            [sys.executable, "-c", sync_code, str(source), str(target.parents[1]), str(target)],
+            check=True, capture_output=True,
+        )
+    for relative in resources:
+        assert (target / relative).read_bytes() == (source / relative).read_bytes()
+    assert all(not (target / name).exists() for name in excluded)
 
 
 def test_windows_installer_excludes_nested_skill_snapshots():

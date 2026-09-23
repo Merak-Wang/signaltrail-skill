@@ -1,14 +1,16 @@
 from __future__ import annotations
 
+import asyncio
 import contextlib
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
-from playwright.sync_api import BrowserContext, Page, sync_playwright
+from playwright.sync_api import BrowserContext, Page
 
 from .access import CHALLENGE_TEXTS, classify_access_text
 from .adapters import collect_candidates, is_eligible
+from .browser_collection import collect_browser_pages
 from .config import (
     AppConfig,
     SourceConfig,
@@ -187,6 +189,7 @@ def collect_source(
     data_dir: Path,
     prefetched_pages: dict[tuple[str, str], SourceResult] | None = None,
     monitor_result: SourceResult | None = None,
+    browser_results: dict[tuple[str, str], SourceResult] | None = None,
 ) -> SourceResult:
     """处理：采集单个来源的主页和扩展页，并合并预取、监控或浏览器结果。
     输入：
@@ -213,6 +216,9 @@ def collect_source(
     page_results: list[SourceResult] = [monitor_result] if monitor_result else []
     urls = [] if monitor_sufficient else source_urls(source, data_dir)
     for url in urls:
+        if browser_results is not None and (source.id, url) in browser_results:
+            page_results.append(browser_results[(source.id, url)])
+            continue
         prefetched = prefetched_pages.get((source.id, url))
         if not page_needs_browser(prefetched):
             page_results.append(prefetched)
@@ -384,49 +390,22 @@ def collect_sources(
     prefetched_pages = (
         {} if headed else prefetch_browser_pages(html_sources, config, data_dir)
     )
-    requires_browser = any(
-        page_needs_browser(prefetched_pages.get((source.id, url)))
+    browser_sources = [
+        replace(source, url=url)
         for source in html_sources
         for url in source_urls(source, data_dir)
-    )
-    if requires_browser:
-        with sync_playwright() as playwright:
-            kwargs: dict[str, Any] = {
-                "user_data_dir": str(profile),
-                "headless": not headed,
-                "locale": "en-US",
-                "timezone_id": config.timezone,
-                "viewport": {"width": 1440, "height": 1000},
-            }
-            if channel:
-                kwargs["channel"] = channel
-            context = playwright.chromium.launch_persistent_context(**kwargs)
-            try:
-                results = [
-                    collect_source(
-                        context,
-                        source,
-                        config,
-                        data_dir,
-                        prefetched_pages,
-                        monitor_results.get(source.id),
-                    )
-                    for source in selected
-                ]
-            finally:
-                context.close()
-    else:
-        results = [
-            collect_source(
-                None,
-                source,
-                config,
-                data_dir,
-                prefetched_pages,
-                monitor_results.get(source.id),
-            )
-            for source in selected
-        ]
+        if page_needs_browser(prefetched_pages.get((source.id, url)))
+    ]
+    browser_results = asyncio.run(collect_browser_pages(
+        browser_sources, config, profile, channel, headed,
+    )) if browser_sources else {}
+    results = [
+        collect_source(
+            None, source, config, data_dir, prefetched_pages,
+            monitor_results.get(source.id), browser_results,
+        )
+        for source in selected
+    ]
 
     return write_results_index(
         results,
@@ -444,6 +423,7 @@ def collect_sources(
                 "item_order": source.item_order,
                 "language": source.language,
                 "region": source.region,
+                **source.origin_metadata,
                 "module": source.module,
                 "category": source.category,
             }

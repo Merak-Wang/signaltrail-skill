@@ -613,7 +613,7 @@ def _write_brief_authoring_packets(
             "draft_result_path": str(draft_result_path.resolve()),
             "accepted_result_path": str(accepted_result_path.resolve()),
             "submission_command": (
-                f'daily-intel --data-dir "{data_dir.resolve()}" '
+                f'signaltrail --data-dir "{data_dir.resolve()}" '
                 f'submit-authoring-batch --run "{run_path.resolve()}" '
                 f'--batch-id "{batch_id}" --result "{draft_result_path.resolve()}"'
             ),
@@ -1002,7 +1002,10 @@ def coordinator_context(bundle: dict[str, Any], context_path: Path) -> dict[str,
     # 校验摘要与授权 ID 的重复清单由 Python 消费，不占协调器的选题上下文。
     result["candidate_items"] = [
         {key: value for key, value in item.items()
-         if key not in {"semantic_fingerprint", "content_text_sha256"}}
+         if key not in {
+             "semantic_fingerprint", "content_text_sha256", "url", "image_url",
+             "discovered_at",
+         }}
         for item in bundle.get("candidate_items", [])
     ]
     result["brief_authoring_batches"] = [

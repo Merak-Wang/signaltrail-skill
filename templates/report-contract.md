@@ -19,7 +19,7 @@ Schema，也不能放宽下列安全和状态边界。
 1. 资讯：国际、国内新闻、军事、市场。
 2. 技术：技术新闻、值得阅读的论文、今日值得关注的开源项目。
 3. 研判。
-4. 质量评估与用户反馈（初次发布显示评估待补充）。
+4. 质量评估与用户反馈（无评分时显示尚未评分；仅按用户明确要求启动质量评分）。
 
 七个 section 由 Python 按输出语言补齐并排序。渲染器按 brief 来源形成三级标题。精选 `items[]` 在每个 section 内按 `importance` 降序，不要求跨 section 全局降序。所有正式来源的 `report_target` 与 `report_max` 都是 15；成功来源有至少 15 个真实候选时必须交付当前索引顺序的前 15 条，候选不足时使用实际可用条目，不得设置固定分数淘汰线。默认 `collection.item_order: source` 使当前索引与报告采用来源原 Top1–15；`published_at` 使当前索引按有效发布时间从新到旧排列，缺失发布时间和时间并列时保持稳定输入顺序，再采用其前 15 条。两种模式都保留原始 `source_rank` 作为来源 Top 标签。普通 `briefs[]` 必须保持当前 index/`brief_plan` 选择顺序，不得按内部 `importance` 二次重排；`importance` 仍可用于精选事件与研判选择。
 
@@ -222,12 +222,17 @@ schema 2.0 中每个精选事件的 `source_item_ids` 必须恰好包含一篇�
 保存或发布前先运行快速内存编译与校验；只有 `errors` 为 0 才调用 `finalize-edition`：
 
 ```text
-daily-intel --data-dir DATA_DIR validate-report DRAFT.json --run RUN.json
+signaltrail --data-dir DATA_DIR validate-report DRAFT.json --run RUN.json
 ```
 
 该命令从 run 读取规范索引与本版覆盖目标，不写报告、不分配 revision、不发布。schema 2.0 context 不允许用 1.5 草稿绕过跨视角综合；不要使用 `finalize-edition` 充当格式检查器。
 
 ## 发布后独立评估
+
+默认不启动质量评分。用户明确要求时使用 `finalize-edition --evaluate` 或
+`complete-edition-tail --evaluate`；该请求随本轮运行保存。报告中的 `evaluation_status=pending`
+仅表示尚无评分，实际调度请求由 run 的 `evaluation_requested` 表示；未请求时 run 记录
+`evaluation.status=not_requested`。结构和证据校验不依赖评分开关。
 
 报告草稿不要包含 `quality_evaluation`；即使误写，Python 也会移除。发布后的 independent evaluator 与 brief/analysis authors 隔离，其输入是 hash-bound dossier，输出是下列单独 JSON：
 

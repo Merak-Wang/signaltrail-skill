@@ -12,6 +12,9 @@ sources:
     category: international
     language: en
     region: global
+    origin_scope: international_organization
+    coverage_regions: [global]
+    publisher_group: united_nations
   - id: al_jazeera
     name: Al Jazeera
     url: https://www.aljazeera.com/
@@ -23,6 +26,146 @@ sources:
     category: international
     language: en
     region: global
+    origin_scope: qa
+    coverage_regions: [middle_east, global]
+    publisher_group: al_jazeera
+  # Public endpoints probed on 2026-09-20; discovery only, no brief quotas.
+  - id: tass_en
+    name: TASS English
+    url: https://tass.com/
+    feed_urls: [https://tass.com/rss/v2.xml]
+    include_domains: [tass.com]
+    article_patterns: ['^https://tass\.com/[a-z-]+/\d+$']
+    role: evidence
+    tier: 2
+    bundle: geopolitics
+    module: information
+    category: international
+    language: en
+    region: global
+    origin_scope: ru
+    coverage_regions: [ru, global]
+    publisher_group: tass
+  - id: cbr_en
+    name: Bank of Russia
+    url: https://www.cbr.ru/eng/about/rss/
+    feed_urls:
+      - https://www.cbr.ru/rss/EngRssPress
+      - https://www.cbr.ru/rss/EngRssNews
+    include_domains: [cbr.ru]
+    role: primary
+    tier: 1
+    bundle: markets
+    module: information
+    category: market
+    language: en
+    region: ru
+    origin_scope: ru
+    coverage_regions: [ru]
+    publisher_group: bank_of_russia
+    refresh_interval_minutes: 60
+  - id: xinhua_en
+    name: Xinhua English
+    url: https://english.news.cn/
+    include_domains: [english.news.cn]
+    article_patterns: ['^https://english\.news\.cn/(?:[a-z]+/)?\d{8}/[a-f0-9]+/c\.html$']
+    role: evidence
+    tier: 2
+    bundle: geopolitics
+    module: information
+    category: international
+    language: en
+    region: global
+    origin_scope: cn
+    coverage_regions: [cn, global]
+    publisher_group: xinhua
+  - id: china_mfa
+    name: China MFA Spokesperson Remarks
+    url: https://www.fmprc.gov.cn/eng/xw/fyrbt/
+    include_domains: [fmprc.gov.cn]
+    article_patterns: ['^https://www\.fmprc\.gov\.cn/eng/xw/fyrbt/(?:[^/]+/)?\d{6}/t\d{8}_\d+\.html$']
+    role: primary
+    tier: 1
+    bundle: geopolitics
+    module: information
+    category: international
+    language: en
+    region: cn
+    origin_scope: cn
+    coverage_regions: [cn, global]
+    publisher_group: china_mfa
+    refresh_interval_minutes: 60
+  - id: china_mofcom
+    name: 商务部例行新闻发布会
+    url: https://www.mofcom.gov.cn/xwfb/
+    include_domains: [mofcom.gov.cn]
+    article_patterns: ['^https://www\.mofcom\.gov\.cn/xwfbzt/\d{4}/swbzklxxwfbh[^/]+/index\.html$']
+    role: primary
+    tier: 1
+    bundle: markets
+    module: information
+    category: market
+    language: zh
+    region: cn
+    origin_scope: cn
+    coverage_regions: [cn, global]
+    publisher_group: china_mofcom
+    refresh_interval_minutes: 120
+  - id: un_press
+    name: UN Meetings Coverage and Press Releases
+    url: https://press.un.org/en
+    include_domains: [press.un.org]
+    article_patterns: ['^https://press\.un\.org/en/\d{4}/[a-z0-9]+\.doc\.htm$']
+    role: primary
+    tier: 1
+    bundle: geopolitics
+    module: information
+    category: international
+    language: en
+    region: global
+    origin_scope: international_organization
+    coverage_regions: [global]
+    publisher_group: united_nations
+  # Keep unavailable candidates disabled until this deployment can extract items.
+  - id: anadolu_en
+    name: Anadolu Agency
+    enabled: false
+    url: https://www.aa.com.tr/en
+    feed_urls: ['https://www.aa.com.tr/en/rss/default?cat=live']
+    include_domains: [aa.com.tr]
+    article_patterns: ['^https://www\.aa\.com\.tr/en/[^/]+/[^/]+/\d+$']
+    role: evidence
+    bundle: geopolitics
+    language: en
+    region: middle_east
+    origin_scope: tr
+    coverage_regions: [middle_east, global]
+    publisher_group: anadolu
+  - id: irna_en
+    name: IRNA English
+    enabled: false
+    url: https://en.irna.ir/
+    include_domains: [en.irna.ir]
+    article_patterns: ['^https://en\.irna\.ir/news/\d+/[^/?#]+/?$']
+    role: evidence
+    bundle: geopolitics
+    language: en
+    region: middle_east
+    origin_scope: ir
+    coverage_regions: [ir, middle_east, global]
+    publisher_group: irna
+  - id: wam_en
+    name: Emirates News Agency
+    enabled: false
+    url: https://www.wam.ae/en
+    include_domains: [wam.ae]
+    role: evidence
+    bundle: geopolitics
+    language: en
+    region: middle_east
+    origin_scope: ae
+    coverage_regions: [ae, middle_east]
+    publisher_group: wam
   - id: dw_world
     name: DW
     url: https://www.dw.com/en/top-stories/s-9097

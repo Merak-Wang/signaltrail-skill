@@ -1,6 +1,6 @@
 # Experimental bilingual explainers
 
-**Status:** Active · **Owner:** Repository maintainers · **Last verified:** 2026-09-08
+**Status:** Active · **Owner:** Repository maintainers · **Last verified:** 2026-09-23
 
 This guide describes the implemented report-derived explainer workflow and its limits.
 [中文](zh-CN/explainers.md)
@@ -10,12 +10,20 @@ Chinese and English scripts, prepares isolated semantic and bilingual reviews, a
 illustrated HTML reading stream. It runs after a saved edition and never modifies its report,
 index, or continuity state. The reading page combines explanation and conditional analysis.
 
-This is an experimental snapshot workflow. `render --mode current` deliberately fails:
+This is separate from the regular daily report and its animated HTML news slides. The slide workflow
+uses already saved report/index evidence, bounded narration batches, and a deterministic renderer;
+it does not depend on the experimental review receipts described here. This explainer/research
+workflow remains experimental and snapshot based. `render --mode current` deliberately fails:
 automated correction-chain retrieval, calibrated claim expiry, host-metered model dispatch,
 human comprehension tests, and the multi-host live acceptance sequence remain pending. A
 `verified_snapshot` means the exact script received a structurally complete supporting model
 review of its supplied evidence. It does not mean the underlying news was independently
 confirmed or remains current. There is no automatic publishing or model invocation.
+
+The [parallel research workflow](research/2026-09-20-illustrated-workflow.md) adds an earlier entry:
+freeze selected index blocks, retrieve and answer questions, compile a scoped memo, then reuse the
+script/review stages below. `research bind` connects the result to the actual completed report and
+`research render` adds it below the original analyses in a new composite reading revision.
 
 ## Run the workflow
 
@@ -62,6 +70,10 @@ Quality scores cannot compensate. Semantic correctness still depends on the revi
 
 Without a bilingual receipt, `story` can create a clearly labeled Draft preview with either
 language, supporting independent recovery. With a receipt it requires the exact reviewed pair.
+For single-language output, `story --script SCRIPT.json --review RECEIPT.json` accepts the exact
+supporting monolingual review. Optional `beat.table` fields register headers, cells and an editorial
+caption for the same full-text review. Constructed tables have no publisher caption; external-photo
+admission remains unavailable. Read only the requested language's style card in the research workflow.
 The renderer repeats script text verbatim, provides linked sources and expandable claim details,
 and builds original explanatory diagrams from registered visual labels. Parallel or narrative
 order is not rendered as an asserted causal arrow. No external photos are admitted in this

@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="{{LANG}}">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <link rel="icon" href="data:,">
+  <title>{{TITLE}}</title>
+  <style>{{CSS}}</style>
+</head>
+<body>
+  <header class="masthead">
+    <a class="brand" href="#top" aria-label="SignalTrail">SIGNALTRAIL<span class="brand-period"> / </span><span class="brand-caption">FIELD NOTES</span></a>
+    <div class="edition"><span>{{EDITION_LABEL}} <i> / </i> {{AS_OF}}</span><span class="edition-title">{{TITLE}}</span></div>
+    <div class="header-actions"><button data-fullscreen aria-label="{{FULLSCREEN}}">⛶</button><button class="menu-toggle" data-menu aria-controls="contents" aria-expanded="false"><span>{{TOC_LABEL}}</span><i aria-hidden="true"><b></b><b></b></i></button></div>
+  </header>
+  <button class="scrim" data-scrim aria-label="{{CLOSE}}" tabindex="-1"></button>
+  <aside class="contents" id="contents" aria-label="{{TOC_LABEL}}">
+    <div class="contents-heading"><p>{{TOC_LABEL}}<span>THE INDEX / {{COUNT}}</span></p><button data-close-menu aria-label="{{CLOSE}}">×</button></div>
+    <nav>{{TOC}}</nav>
+    <p class="contents-note">SIGNALTRAIL <span>{{REPORT_ID}}</span></p>
+  </aside>
+  <main id="top" class="stage">
+    <div class="issue-line"><span>{{EDITION_LABEL}} / {{TITLE}}</span><span>{{AS_OF}} <i>·</i> {{COUNT}} STORIES</span></div>
+    <div class="slide-track" aria-live="polite">{{SLIDES}}</div>
+    <noscript><p class="noscript">{{NO_SCRIPT}}</p></noscript>
+  </main>
+  <footer class="controls">
+    <div class="page-count"><b data-current>01</b><span>/ {{COUNT}}</span></div>
+    <div class="progress" role="presentation"><i></i></div>
+    <div class="up-next"><span>{{NEXT_LABEL}}</span><p data-next-title></p></div>
+    <span class="keyboard-hint">{{KEYBOARD_HINT}}</span>
+    <div class="navigation"><button data-prev aria-label="{{PREVIOUS}}">←</button><button data-next aria-label="{{NEXT}}"><span>{{NEXT}}</span><i aria-hidden="true">↗</i></button></div>
+  </footer>
+  <dialog class="image-viewer" aria-label="{{IMAGE_VIEWER}}">
+    <div class="viewer-toolbar">
+      <span data-viewer-count></span>
+      <span class="viewer-resolution" data-viewer-resolution></span>
+      <button data-viewer-prev aria-label="{{IMAGE_PREVIOUS}}">←</button>
+      <button data-viewer-next aria-label="{{IMAGE_NEXT}}">→</button>
+      <button data-viewer-zoom aria-pressed="false">100% <span>{{IMAGE_ZOOM}}</span></button>
+      <a data-viewer-original target="_blank" rel="noopener noreferrer">{{ORIGINAL_IMAGE}} ↗</a>
+      <button class="viewer-close" data-close-image aria-label="{{CLOSE_IMAGE}}">×</button>
+    </div>
+    <div class="viewer-canvas"><img data-viewer-image alt=""></div>
+    <p class="viewer-caption" data-viewer-caption></p>
+  </dialog>
+  <script>{{JS}}</script>
+</body>
+</html>

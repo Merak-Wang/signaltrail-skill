@@ -14,7 +14,7 @@ from time import perf_counter
 from typing import Any
 from urllib.parse import urlsplit
 
-from .config import OutputConfig, validate_output_config
+from .config import OutputConfig, load_config, validate_output_config
 from .localization import (
     is_chinese_output,
     localized,
@@ -121,8 +121,8 @@ UI_LABELS = {
         "report_toc": "报告目录",
         "toc_heading": "定位目录",
         "collapse": "收起",
-        "evaluation_pending": "独立评估处理中",
-        "evaluation_pending_detail": "日报已经交付，评估 Agent 将异步补充九维评分与修改意见。",
+        "evaluation_pending": "尚未评分",
+        "evaluation_pending_detail": "日报已经交付。质量评分默认关闭，仅在用户明确要求时补充。",
         "main_defects": "主要缺陷",
         "insufficient_evidence": "证据不足项",
         "improvements": "改进建议",
@@ -150,7 +150,7 @@ UI_LABELS = {
         "page": "第 {page} 页",
         "evaluation_and_feedback": "质量评估与用户反馈",
         "evaluation_total": "独立评估总分",
-        "delivery_without_score": "独立评估处理中，日报交付不等待评分。",
+        "delivery_without_score": "尚未评分；质量评分仅在用户明确要求时运行。",
         "image_source": "图片来源",
         "source_order": "原来源顺序",
         "source_status": "来源与状态",
@@ -197,8 +197,8 @@ UI_LABELS = {
         "report_toc": "Report contents",
         "toc_heading": "Navigate",
         "collapse": "Close",
-        "evaluation_pending": "Independent evaluation pending",
-        "evaluation_pending_detail": "The report is ready; a separate evaluator will add nine-dimension scores and recommendations.",
+        "evaluation_pending": "Not scored",
+        "evaluation_pending_detail": "The report is ready. Quality scoring is off by default and runs only when explicitly requested.",
         "main_defects": "Main Defects",
         "insufficient_evidence": "Insufficient Evidence",
         "improvements": "Recommended Improvements",
@@ -226,7 +226,7 @@ UI_LABELS = {
         "page": "Page {page}",
         "evaluation_and_feedback": "Quality Evaluation and Reader Feedback",
         "evaluation_total": "Independent evaluation score",
-        "delivery_without_score": "Independent evaluation is pending; report delivery does not wait for scoring.",
+        "delivery_without_score": "Not scored; quality scoring runs only when explicitly requested.",
         "image_source": "Image source",
         "source_order": "Original source order",
         "source_status": "Sources and status",
@@ -774,8 +774,8 @@ def _synthesis_html(
     )
 
 
-def _toc_html(report: dict[str, Any]) -> str:
-    """处理：根据实际栏目生成可折叠的报告目录。
+def _toc_html(report: dict[str, Any], *, slides_href: str | None = None) -> str:
+    """处理：根据实际栏目和可用演示生成可折叠的报告目录。
     输入：
     - ``report``：当前报告结构；包含栏目、简报或事件、来源引用及质量元数据。
     输出：“根据实际栏目生成可折叠的报告目录”得到的规范字符串，供调用方存储、比较或展示。
@@ -784,7 +784,11 @@ def _toc_html(report: dict[str, Any]) -> str:
     labels = _ui(language)
     modules = MODULE_LABELS if is_chinese_output(language) else MODULE_LABELS_EN
     analyses = ANALYSIS_LABELS if is_chinese_output(language) else ANALYSIS_LABELS_EN
-    entries: list[tuple[str, str, int]] = [("summary", labels["summary"], 0)]
+    first_entry = (
+        ("visual-briefing", localized(language, "今日图文演示", "Today’s visual briefing"))
+        if slides_href else ("summary", labels["summary"])
+    )
+    entries: list[tuple[str, str, int]] = [(*first_entry, 0)]
     for module in ("information", "technology"):
         entries.append((f"module-{module}", modules[module], 0))
         entries.extend(
@@ -939,6 +943,9 @@ def render_report_html(
     embedded_image_sources: dict[str, str] | None = None,
     archive_href: str | None = "../index.html",
     pdf_href: str | None = None,
+    illustrated_story: dict[str, Any] | None = None,
+    research_relations: list[dict[str, Any]] | None = None,
+    slides_href: str | None = None,
 ) -> str:
     """处理：把已验证报告、来源证据和本地图片投影为可离线阅读的完整 HTML。
     输入：
@@ -949,6 +956,7 @@ def render_report_html(
     - ``embedded_image_sources``：按图片哈希或路径索引的数据 URI；用于生成可独立打开的 HTML。
     - ``archive_href``：同日期报告归档页的受控相对链接；为空时不渲染。
     - ``pdf_href``：同版本 PDF 的受控相对链接；为空时不渲染。
+    - ``slides_href``：同版本图文放映 HTML 的相对路径或本地文件 URI；存在时嵌入演示并保留新标签入口。
     输出：“把已验证报告、来源证据和本地图片投影为可离线阅读的完整 HTML”得到的规范字符串，
       供调用方存储、比较或展示。
     """
@@ -1021,6 +1029,11 @@ def render_report_html(
     synthesis_block = _synthesis_html(
         report.get("cross_perspective_synthesis"), language
     )
+    research_block = ""
+    if illustrated_story is not None:
+        from .story_stream import render_research_section
+
+        research_block = render_research_section(illustrated_story, research_relations or [])
 
     changes = report.get("changes", [])
     changes_block = (
@@ -1049,12 +1062,40 @@ def render_report_html(
         pdf_link = (
             f'<a href="{_escape(resolved_pdf_href)}">PDF</a>'
         )
+    slides_link = (
+        f'<a class="news-slides-link" href="{_escape(slides_href)}" '
+        'target="_blank" rel="noopener noreferrer">'
+        f'{_escape(localized(language, "打开图文演示", "Open visual edition"))}</a>'
+        if slides_href
+        else ""
+    )
+    slides_embed_href = (
+        f'{slides_href}{"&" if "?" in slides_href else "?"}embed=1'
+        if slides_href
+        else ""
+    )
+    slides_embed = (
+        '<section class="slides-embed" id="visual-briefing" '
+        'aria-labelledby="slides-embed-title">'
+        f'<div class="slides-embed-heading"><h2 id="slides-embed-title">'
+        f'{_escape(localized(language, "今日图文演示", "Today’s visual briefing"))}'
+        f'</h2><a href="{_escape(slides_href)}" target="_blank" '
+        'rel="noopener noreferrer">'
+        f'{_escape(localized(language, "独立打开演示 ↗", "Open presentation ↗"))}'
+        '</a></div>'
+        f'<iframe src="{_escape(slides_embed_href)}" title="'
+        f'{_escape(localized(language, "今日新闻图文演示", "Today’s news presentation"))}'
+        '" allowfullscreen></iframe></section>'
+        if slides_href
+        else ""
+    )
+    summary_class = "summary summary-print-fallback" if slides_href else "summary"
     archive_link = (
         f'<a href="{_escape(archive_href)}">{_escape(labels["archive"])}</a>'
         if archive_href
         else ""
     )
-    toc_block = _toc_html(report)
+    toc_block = _toc_html(report, slides_href=slides_href)
     masthead_block = _masthead_html(report, language)
     feedback_fields = (
         (labels["relevance"], "relevance"),
@@ -1079,7 +1120,7 @@ def render_report_html(
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src https: data: file:; connect-src 'none'; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src https: data: file:; frame-src 'self' file:; connect-src 'none'; base-uri 'none'; form-action 'none'">
 <title>{_escape(report.get('title'))}</title>
 <style>
 
@@ -1092,6 +1133,8 @@ a{{color:var(--blue);text-decoration:none}}a:hover{{text-decoration:underline}}.
 @media(max-width:720px){{.toolbar-inner{{align-items:flex-start;flex-wrap:wrap}}.toolbar input{{order:3;margin:0;width:100%;min-width:0}}.tools{{margin-left:auto}}.summary,.module,.analysis-module,.evaluation,.feedback,.pending{{padding:20px}}.brief{{grid-template-columns:32px minmax(0,1fr);gap:10px 12px}}.brief-heading{{grid-column:1/-1;grid-template-columns:32px 1fr}}.badges{{grid-column:2;justify-content:flex-start}}.brief>figure{{grid-column:2;grid-row:2}}.brief.has-image>.tldr{{grid-column:2;grid-row:3}}.brief:not(.has-image)>.tldr{{grid-column:2;grid-row:2}}.feedback-grid{{grid-template-columns:1fr 1fr}}.toc-toggle{{left:auto;right:8px;top:auto;bottom:12px;width:38px;padding:10px 8px;transform:none}}.toc-toggle span:last-child{{display:none}}body.toc-open .toc-toggle{{transform:translateX(12px)}}.report-toc{{left:8px;top:72px;bottom:8px;width:min(300px,calc(100vw - 24px))}}}}
 @media print{{body{{background:#fff;font-size:10.5pt}}.masthead{{padding:28px 0;background:#fff!important;color:#ffffff;border-bottom:3px solid #b61f24}}.eyebrow{{color:#b61f24}}.metadata{{color:#626262}}.toolbar,.toc-toggle,.report-toc,.toc-scrim,.feedback button,.feedback-note,.feedback-grid,.feedback .comment{{display:none}}.feedback-print{{display:block}}.shell{{width:auto;margin:0 14mm}}main{{padding:12px 0}}.summary,.module,.analysis-module,.evaluation,.feedback,.pending{{box-shadow:none;border:0;border-radius:0;padding:10px 0;margin:0 0 12px}}.source-group,.brief,table,figure{{break-inside:avoid}}.analysis-domain>h3{{break-after:avoid}}.analysis-card{{break-inside:auto}}details.analysis-notebook:not([open])>.analysis-notebook-body{{display:block!important}}.analysis-notebook summary{{list-style:none}}a{{color:#111111}}.content-section{{break-before:auto}}}}
 
+.evaluation{{overflow-wrap:anywhere}}
+@media screen and (max-width:720px){{.evaluation table,.evaluation tbody{{display:block}}.evaluation thead{{display:none}}.evaluation tr{{display:grid;grid-template-columns:minmax(0,1fr) auto;padding:12px 0;border-bottom:1px solid var(--line)}}.evaluation td{{border:0;padding:4px 0}}.evaluation td:first-child{{font-weight:700}}.evaluation td:nth-child(3){{grid-column:1/-1}}}}
 .masthead{{color:#111111}}.masthead h1{{color:#111111}}
 
 .story-link,.source-heading h3 a,.summary h2,.module-label,.analysis-module>h2,.evaluation>h2,.feedback>h2{{color:#111111}}
@@ -1103,7 +1146,7 @@ a{{color:var(--blue);text-decoration:none}}a:hover{{text-decoration:underline}}.
 .edition-info{{display:flex;flex-direction:column;gap:5px;font-size:12px;line-height:1.6;color:#626262}}
 .edition-info-right{{text-align:right;align-items:flex-end}}
 @media(max-width:720px){{.masthead-grid{{grid-template-columns:minmax(0,1fr) auto;gap:10px;padding:16px 0 12px}}.report-brand{{grid-column:1;grid-row:1;align-items:flex-start;font-size:30px;letter-spacing:2px}}.edition-info{{grid-column:2;grid-row:1;text-align:right;font-size:11px}}.edition-info-right{{grid-column:1/-1;grid-row:2;align-items:flex-start;text-align:left}}.edition-info-right>span{{display:none}}}}
-@media print{{.masthead{{border-top:0}}.masthead-grid{{padding:12px 0}}}}
+@media print{{.masthead{{border-top:0}}.masthead-grid{{padding:12px 0}}.source-group{{break-inside:auto}}.module-label,.content-section>h2,.source-heading,.analysis-domain>h3{{break-after:avoid-page}}}}
 
 .toolbar nav{{order:3;margin-left:8px;font-size:13px;font-weight:400;white-space:nowrap}}
 .toolbar nav a{{color:#626262}}
@@ -1115,13 +1158,23 @@ a{{color:var(--blue);text-decoration:none}}a:hover{{text-decoration:underline}}.
 @media(max-width:720px){{.toolbar input{{order:3}}.toolbar nav{{order:1;margin-left:0}}.toolbar .tools{{order:2}}}}
 
 .masthead{{padding:0;border-bottom:0}}
+.slides-embed{{margin:0 0 24px;padding:clamp(16px,2.4vw,28px);border:1px solid #d7d7d7;border-radius:14px;background:#fff;box-shadow:0 8px 24px rgba(30,30,30,.05)}}
+.slides-embed-heading{{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:14px}}
+.slides-embed-heading h2{{margin:0;font:700 clamp(22px,3vw,30px)/1.25 Georgia,"Noto Serif CJK SC",serif;color:#1c2422}}
+.slides-embed-heading a{{flex:none;color:#b6472f;font-size:14px;font-weight:700}}
+.slides-embed iframe{{display:block;width:100%;height:clamp(620px,78vh,880px);border:1px solid #d7ddd6;border-radius:8px;background:#f3f4ef}}
+.summary-print-fallback{{display:none}}
+.slides-expanded{{overflow:hidden}}
+.slides-expanded .slides-embed iframe{{position:fixed;z-index:40;inset:3vh 3vw;width:94vw;height:94vh;min-height:0;box-shadow:0 0 0 100vmax #15201ec9}}
+@media(max-width:720px){{.slides-embed-heading{{align-items:flex-start;flex-direction:column}}.slides-embed iframe{{height:72vh;min-height:560px}}}}
+@media print{{.slides-embed{{display:none}}.summary-print-fallback{{display:block}}}}
 </style>
 </head>
 <body>
 {toc_block}
 {masthead_block}
-<div class="toolbar"><div class="shell toolbar-inner"><nav><a href="#evaluation">{_escape(labels["source_status"])}</a></nav><input id="search" type="search" placeholder="{_escape(labels["filter"])}"><div class="tools">{archive_link}{pdf_link}</div></div></div>
-<main class="shell"><section class="summary" id="summary"><h2>{_escape(labels["summary"])}</h2>{_list_html(report.get('executive_summary', []), language=language)}</section>{''.join(module_blocks)}{pending_block}<section class="analysis-module" id="analysis"><h2>{_escape(labels["analysis"])}</h2>{''.join(analysis_groups)}{synthesis_block}{changes_block}{watch_block}</section><section class="evaluation" id="evaluation"><h2>{_escape(labels["evaluation"])}</h2>{_evaluation_html(evaluation, language)}</section><section class="feedback" id="feedback"><h2>{_escape(labels["feedback"])}</h2><div class="feedback-grid">{feedback_controls}</div><label class="comment">{_escape(labels["comments"])}<textarea data-feedback="comment" placeholder="{_escape(labels["feedback_placeholder"])}"></textarea></label><div class="feedback-print">{_escape(feedback_print)}<br>{_escape(labels["comments"])}: ________________________________</div><button id="download-feedback" type="button">{_escape(labels["download_feedback"])}</button><p class="feedback-note">{_escape(labels["feedback_note"])}</p></section></main><footer class="shell">{_escape(labels["footer"])}</footer>
+<div class="toolbar"><div class="shell toolbar-inner"><nav><a href="#evaluation">{_escape(labels["source_status"])}</a></nav><input id="search" type="search" placeholder="{_escape(labels["filter"])}"><div class="tools">{archive_link}{pdf_link}{slides_link}</div></div></div>
+<main class="shell">{slides_embed}<section class="{summary_class}" id="summary"><h2>{_escape(labels["summary"])}</h2>{_list_html(report.get('executive_summary', []), language=language)}</section>{''.join(module_blocks)}{pending_block}<section class="analysis-module" id="analysis"><h2>{_escape(labels["analysis"])}</h2>{''.join(analysis_groups)}{synthesis_block}{research_block}{changes_block}{watch_block}</section><section class="evaluation" id="evaluation"><h2>{_escape(labels["evaluation"])}</h2>{_evaluation_html(evaluation, language)}</section><section class="feedback" id="feedback"><h2>{_escape(labels["feedback"])}</h2><div class="feedback-grid">{feedback_controls}</div><label class="comment">{_escape(labels["comments"])}<textarea data-feedback="comment" placeholder="{_escape(labels["feedback_placeholder"])}"></textarea></label><div class="feedback-print">{_escape(feedback_print)}<br>{_escape(labels["comments"])}: ________________________________</div><button id="download-feedback" type="button">{_escape(labels["download_feedback"])}</button><p class="feedback-note">{_escape(labels["feedback_note"])}</p></section></main><footer class="shell">{_escape(labels["footer"])}</footer>
 <script>
 const reportMeta={feedback_data};
 const tocToggle=document.getElementById('toc-toggle');
@@ -1145,6 +1198,8 @@ window.addEventListener('scroll',()=>{{if(!tocUpdatePending){{tocUpdatePending=t
 window.addEventListener('resize',updateActiveToc);
 updateActiveToc();
 const search=document.getElementById('search');
+const slideFrame=document.querySelector('.slides-embed iframe');
+window.addEventListener('message',event=>{{if(slideFrame&&event.source===slideFrame.contentWindow&&event.data?.type==='signaltrail-image-viewer')document.body.classList.toggle('slides-expanded',event.data.open===true);}});
 search.addEventListener('input',()=>{{const q=search.value.trim().toLowerCase();document.querySelectorAll('.source-group').forEach(group=>{{const groupMatch=!q||group.dataset.search.toLowerCase().includes(q);let any=groupMatch;group.querySelectorAll('.brief').forEach(brief=>{{const match=groupMatch||brief.dataset.search.toLowerCase().includes(q);brief.classList.toggle('hidden-by-search',!match);any=any||match;}});group.classList.toggle('hidden-by-search',!any);}});}});
 document.getElementById('download-feedback').addEventListener('click',()=>{{const feedback={{...reportMeta,created_at:new Date().toISOString()}};document.querySelectorAll('[data-feedback]').forEach(el=>feedback[el.dataset.feedback]=el.value);const blob=new Blob([JSON.stringify(feedback,null,2)],{{type:'application/json'}});const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=`feedback-${{reportMeta.report_id}}.json`;a.click();setTimeout(()=>URL.revokeObjectURL(a.href),1000);}});
 </script>
@@ -1724,7 +1779,7 @@ def render_archive_index(data_dir: Path) -> Path:
     read_html = localized(interface_language, "阅读 HTML", "Read HTML")
     open_pdf = localized(interface_language, "打开 PDF", "Open PDF")
     evaluation_label = localized(interface_language, "独立评估", "Evaluation")
-    evaluation_pending = localized(interface_language, "评估中", "Evaluation pending")
+    evaluation_pending = localized(interface_language, "尚未评分", "Not scored")
     cards = "".join(
         '<article><div><span class="date">'
         f'{_escape(row["date"])}</span><span class="edition">'
@@ -1785,14 +1840,14 @@ def write_desktop_html(
     evaluation: dict[str, Any] | None = None,
     embedded_image_sources: dict[str, str] | None = None,
 ) -> Path:
-    """处理：生成内嵌图片和绝对链接的独立桌面 HTML 副本。
+    """处理：生成内嵌图片、绝对链接和可嵌入演示的独立桌面 HTML 副本。
     输入：
     - ``report``：当前报告结构；包含栏目、简报或事件、来源引用及质量元数据。
     - ``data_dir``：当前运行的唯一数据根；所有状态和版本化产物都必须位于其中。
     - ``config``：已校验的应用配置；提供时区、来源策略、并发限制、预算和输出选项。
     - ``evaluation``：独立质量评估对象；包含评分、问题和改进建议。
     - ``embedded_image_sources``：按图片哈希或路径索引的数据 URI；用于生成可独立打开的 HTML。
-    输出：指向“生成内嵌图片和绝对链接的独立桌面 HTML 副本”所生成、定位或确认产物的本地路径。
+    输出：指向“生成内嵌图片、绝对链接和可嵌入演示的独立桌面 HTML 副本”所生成、定位或确认产物的本地路径。
     """
     desktop_dir = resolve_desktop_directory(config)
     stem = (
@@ -1802,6 +1857,7 @@ def write_desktop_html(
     destination = desktop_dir / f"{stem}.html"
     report_dir = data_dir / "reports" / str(report["date"])
     pdf_path = report_dir / f"{report['edition']}-r{report['revision']}.pdf"
+    slides_path = report_dir / f"{report['edition']}-r{report['revision']}-slides.html"
     return write_text_atomic(
         destination,
         render_report_html(
@@ -1815,8 +1871,39 @@ def write_desktop_html(
             ),
             archive_href=(data_dir / "reports" / "index.html").resolve().as_uri(),
             pdf_href=pdf_path.resolve().as_uri(),
+            slides_href=slides_path.resolve().as_uri() if slides_path.is_file() else None,
         ),
     )
+
+
+def refresh_report_slides_entry(report_path: Path, slides_path: Path, data_dir: Path) -> None:
+    """处理：在已发布图文放映后刷新日报中的嵌入演示和桌面副本入口。
+    输入：已保存日报 JSON、其图文 HTML 投影和唯一数据根；权威日报记录不写入。
+    输出：更新可重建的日报 HTML，让日报入口始终指向同版本放映页面。
+    """
+    report = read_json(report_path)
+    if not isinstance(report, dict):
+        raise ValueError(f"Report must be an object: {report_path}")
+    evaluation = _evaluation_map(data_dir).get(str(report.get("report_id", "")))
+    report_html = report_path.with_suffix(".html")
+    slides_href = os.path.relpath(slides_path, report_html.parent).replace(os.sep, "/")
+    write_text_atomic(
+        report_html,
+        render_report_html(
+            report,
+            evaluation,
+            include_pdf_link=(report_html.with_suffix(".pdf").is_file()),
+            media_path_prefix="../..",
+            slides_href=slides_href,
+        ),
+    )
+
+    config = load_config().output
+    desktop_path = resolve_desktop_directory(config) / (
+        f"daily-intelligence-{report['date']}-{report['edition']}-r{report['revision']}.html"
+    )
+    if config.copy_html_to_desktop and desktop_path.is_file():
+        write_desktop_html(report, data_dir, config, evaluation=evaluation)
 
 
 def write_local_outputs(
@@ -1868,6 +1955,11 @@ def write_local_outputs(
                 evaluation,
                 include_pdf_link="pdf" in config.formats,
                 media_path_prefix="../..",
+                slides_href=(
+                    f"{stem}-slides.html"
+                    if (report_dir / f"{stem}-slides.html").is_file()
+                    else None
+                ),
             ),
         )
         result["html_path"] = str(html_path)

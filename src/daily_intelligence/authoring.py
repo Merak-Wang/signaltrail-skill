@@ -138,8 +138,30 @@ def _brief_output_schema(output_language: str) -> dict[str, Any]:
                     "additionalProperties": False,
                     "properties": {
                         "item_id": {"type": "string", "minLength": 1},
-                        translation_field: {"type": "string", "minLength": 2},
-                        "tldr": {"type": "string", "minLength": 4},
+                        translation_field: {
+                            "type": "string",
+                            "minLength": 2,
+                            "description": localized(
+                                output_language,
+                                "译成自然的简体中文；专名（如 GitHub 项目名）可保留原文，"
+                                "其余标题文字须中文表达；只翻译源标题已有含义，不推测项目功能。",
+                                "Translate naturally into English. Preserve proper names "
+                                "(e.g., GitHub project names), but translate remaining "
+                                "headline text; do not infer project functionality.",
+                            ),
+                        },
+                        "tldr": {
+                            "type": "string",
+                            "minLength": 4,
+                            "description": localized(
+                                output_language,
+                                "只概括已观察到的新闻事实；不要追加抓取状态或正文缺失等流程说明，"
+                                "Python 会单独展示来源访问状态。",
+                                "Summarize observed news facts only. Do not append "
+                                "collection or missing-body notes; Python presents source "
+                                "access status separately.",
+                            ),
+                        },
                         "importance": {
                             "type": "integer",
                             "minimum": 0,

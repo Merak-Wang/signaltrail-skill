@@ -213,7 +213,7 @@ def write_verification_queue(
     markdown = [
         f"# {date} {edition} 待验证链接",
         "",
-        "请在 daily-intel 打开的 Edge 队列页中点击；成功加载并提取到条目后会自动写入新索引。",
+        "请在 signaltrail 打开的 Edge 队列页中点击；成功加载并提取到条目后会自动写入新索引。",
         "",
     ]
     rows = []
@@ -284,7 +284,7 @@ def write_verification_queue(
         "setConnected(value){this.connected=!!value;const el=document.getElementById('connection');"
         "el.className=value?'online':'offline';el.textContent=value?"
         "'采集器已连接：可以开始点击链接。':"
-        "'未连接采集器：请从 daily-intel 的交互式验证命令启动。';},"
+        "'未连接采集器：请从 signaltrail 的交互式验证命令启动。';},"
         "markOpened(key){this.setStatus(key,'opened','页面已打开，等待登录或加载…');},"
         "setStatus(key,status,detail){const row=[...document.querySelectorAll('li[data-key]')]"
         ".find(item=>item.dataset.key===key);if(!row)return;row.dataset.status=status;"

@@ -69,6 +69,34 @@ def test_missing_and_failed_observation_cannot_pass(tmp_path):
     assert observer.receipt()["failures"]
 
 
+def test_retry_attempts_use_started_at_and_replays_are_idempotent(tmp_path):
+    ledger = UsageLedger(tmp_path)
+    task = ledger.start_task("hermes")
+    observer = HermesObserver({"SIGNALTRAIL_USAGE_LEDGER": str(tmp_path),
+                               "SIGNALTRAIL_USAGE_TASK": task.task_id})
+    first = {"session_id": "session", "api_request_id": "logical-request",
+             "started_at": 10.0}
+    retry = {**first, "started_at": 11.0}
+    observer.observe("pre_api_request", first)
+    observer.observe("api_request_error", {**first, "ended_at": 10.5})
+    observer.observe("pre_api_request", retry)
+    completed = {**retry, "ended_at": 12.0,
+                 "usage": {"input_tokens": 3, "output_tokens": 2, "total_tokens": 5}}
+    observer.observe("post_api_request", completed)
+
+    # Exact hook redelivery must resolve to the same immutable attempt records.
+    observer.observe("pre_api_request", retry)
+    observer.observe("post_api_request", completed)
+
+    summary = ledger.summarize_task(task)
+    assert summary["call_lifecycle"]["attempted_call_count"] == 2
+    assert summary["call_lifecycle"]["finished_call_count"] == 2
+    assert summary["call_lifecycle"]["failed_call_count"] == 1
+    assert not summary["conflicts"]
+    assert summary["tokens"]["accounted_total"]["known_value"] == 5
+    assert not observer.receipt()["failures"]
+
+
 @pytest.mark.parametrize("command, expected", [
     ('C:/my dir/Scripts/signaltrail-usage.exe hook', False),
     ('"C:/my dir/Scripts/signaltrail-usage.exe" hook', True),
@@ -346,6 +374,38 @@ def test_host_database_reconciliation_scopes_sessions(tmp_path):
     with sqlite3.connect(db_path) as db:
         db.execute("UPDATE session_model_usage SET api_call_count=2 WHERE session_id='selected'")
     assert observer.reconcile_database(db_path)["status"] == "mismatch"
+
+
+def test_host_database_reconciliation_matches_successes_while_failed_tokens_stay_unknown(tmp_path):
+    ledger = UsageLedger(tmp_path)
+    task = ledger.start_task("hermes")
+    observer = HermesObserver({"SIGNALTRAIL_USAGE_LEDGER": str(tmp_path),
+                               "SIGNALTRAIL_USAGE_TASK": task.task_id})
+    success = {"session_id": "selected", "api_request_id": "success", "started_at": 1.0}
+    failed = {"session_id": "selected", "api_request_id": "failed", "started_at": 2.0}
+    observer.observe("pre_api_request", success)
+    observer.observe("post_api_request", {**success, "ended_at": 1.5,
+                     "usage": {"input_tokens": 3, "output_tokens": 2, "total_tokens": 5}})
+    observer.observe("pre_api_request", failed)
+    observer.observe("api_request_error", {**failed, "ended_at": 2.5})
+    db_path = tmp_path / "host.sqlite"
+    with sqlite3.connect(db_path) as db:
+        db.execute("CREATE TABLE session_model_usage (session_id TEXT, api_call_count INT, "
+                   "input_tokens INT, output_tokens INT, cache_read_tokens INT, "
+                   "cache_write_tokens INT)")
+        db.execute("INSERT INTO session_model_usage VALUES ('selected',1,3,2,0,0)")
+
+    summary = ledger.summarize_task(task)
+    assert summary["call_lifecycle"]["failed_call_count"] == 1
+    assert summary["tokens"]["accounted_total"]["value"] is None
+    assert summary["tokens"]["accounted_total"]["known_value"] == 5
+    reconciliation = observer.reconcile_database(db_path)
+    assert reconciliation == {
+        "status": "matched", "api_call_count": 1, "accounted_tokens": 5,
+    }
+    assert not coverage_complete(summary, {
+        **observer.receipt(), "database_reconciliation": reconciliation,
+    })
 
 
 def test_auxiliary_sync_async_failures_and_format_compatibility(monkeypatch, tmp_path):

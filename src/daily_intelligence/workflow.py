@@ -190,22 +190,24 @@ def _pending_evaluation(
     next_action: str,
     *,
     scheduler_status: str | None = None,
+    requested: bool = True,
 ) -> dict[str, Any]:
     """处理：创建与当前报告身份绑定的待评估状态。
     输入：
     - ``artifacts``：当前运行已生成的产物路径和状态映射。
     - ``next_action``：运行清单记录的下一条可恢复操作。
     - ``scheduler_status``：独立评估调度器最近一次返回的显式状态。
+    - ``requested``：用户是否要求质量评分；未要求时不登记待调度任务。
     输出：“创建与当前报告身份绑定的待评估状态”形成的结构化字典；
       典型键包括 content_hash、next_action、report_id、status。
     """
     evaluation = {
-        "status": "pending",
+        "status": "pending" if requested else "not_requested",
         "report_id": artifacts.get("report_id"),
         "content_hash": artifacts.get("content_hash"),
-        "next_action": next_action,
+        "next_action": next_action if requested else "Quality scoring was not requested.",
     }
-    if scheduler_status:
+    if scheduler_status and requested:
         evaluation["scheduler"] = {"status": scheduler_status}
     return evaluation
 
@@ -420,7 +422,7 @@ def schedule_independent_evaluation(
     cli_prefix = (
         'python -c "import base64,runpy,sys; '
         f"sys.path.insert(0, base64.urlsafe_b64decode('{encoded_source_root}').decode()); "
-        "sys.argv=['daily-intel']+sys.argv[1:]; "
+        "sys.argv=['signaltrail']+sys.argv[1:]; "
         "runpy.run_module('daily_intelligence.cli', run_name='__main__')\""
     )
     hermes_python = os.environ.get("SIGNALTRAIL_HERMES_PYTHON")
@@ -613,6 +615,7 @@ def _schedule_evaluation_attempt(
     if preflight["status"] == "already_completed":
         return evaluation
 
+    evaluation["status"] = "pending"
     scheduler = evaluation.get("scheduler")
     previous_attempt = 0
     if isinstance(scheduler, dict):
@@ -1877,6 +1880,7 @@ def finalize_edition(
     output_config: OutputConfig | None = None,
     media_config: MediaConfig | None = None,
     defer_tail: bool = False,
+    evaluate: bool = False,
 ) -> Path:
     """处理：编译并校验写作草稿，创建不可变报告及本地投影，再登记可恢复发布状态。
     输入：
@@ -1889,6 +1893,7 @@ def finalize_edition(
     - ``output_config``：本地 HTML、PDF、桌面交付和打开行为配置。
     - ``media_config``：图片下载、格式、安全、缓存和报告预算配置。
     - ``defer_tail``：是否把 PDF、Notion 和独立评估移到可恢复的后台尾阶段。
+    - ``evaluate``：仅在用户明确要求时开启质量评分；请求随本轮运行保留。
     输出：指向“编译并校验写作草稿，创建不可变报告及本地投影，
       再登记可恢复发布状态”所生成、定位或确认产物的本地路径。
     """
@@ -1902,6 +1907,9 @@ def finalize_edition(
     lock_timestamp = now_iso(timezone)
     with exclusive_lock(lock_path, _lock_payload(edition, lock_timestamp)):
         run = _reload_locked_run(run_path, run, data_dir)
+        if evaluate:
+            _update_run(run_path, run, RunStatus(run["status"]), evaluation_requested=True)
+        evaluation_requested = bool(run.get("evaluation_requested", False))
         if run.get("status") in {
             RunStatus.COMPLETED,
             RunStatus.COMPLETED_PARTIAL,
@@ -1915,7 +1923,8 @@ def finalize_edition(
                 return run_path
             evaluation = run.get("evaluation", {})
             if (
-                isinstance(evaluation, dict)
+                evaluation_requested
+                and isinstance(evaluation, dict)
                 and evaluation.get("status") != "completed"
             ):
                 evaluation = _schedule_evaluation_attempt(
@@ -2033,9 +2042,10 @@ def finalize_edition(
             requested_output = output_config or OutputConfig()
             final_status = _completion_status(run)
             tail_command = (
-                f'daily-intel --data-dir "{data_dir}" complete-edition-tail '
+                f'signaltrail --data-dir "{data_dir}" complete-edition-tail '
                 f'--run "{run_path}"'
                 + (" --publish" if publish else "")
+                + (" --evaluate" if evaluation_requested else "")
                 + (
                     f' --notion-config "{notion_config}"'
                     if notion_config is not None
@@ -2046,6 +2056,7 @@ def finalize_edition(
                 run["artifacts"],
                 "The isolated evaluator will be scheduled by complete-edition-tail.",
                 scheduler_status="deferred_until_tail",
+                requested=evaluation_requested,
             )
             tail = {
                 "status": "pending",
@@ -2108,6 +2119,7 @@ def finalize_edition(
                 "Wait for the isolated post-publication evaluator; evaluation advice never "
                 "blocks this report."
             ),
+            requested=evaluation_requested,
         )
         completed_at = now_iso(timezone)
         _update_run(
@@ -2121,8 +2133,10 @@ def finalize_edition(
             milestones=run.get("milestones", {}),
             metrics=_runtime_metrics(run, completed_at),
             error=None,
-            next_action="Independent evaluation is pending and will run asynchronously.",
+            next_action=evaluation_state["next_action"],
         )
+        if not evaluation_requested:
+            return run_path
         run["evaluation"] = evaluation_state
         evaluation_state = _schedule_evaluation_attempt(
             run,
@@ -2153,6 +2167,7 @@ def complete_edition_tail(
     publish: bool = False,
     notion_config: Path | None = None,
     output_config: OutputConfig | None = None,
+    evaluate: bool = False,
 ) -> Path:
     """处理：在本地报告完成后补做 PDF、Notion 和独立评估调度。
     输入：
@@ -2161,6 +2176,7 @@ def complete_edition_tail(
     - ``publish``：本地定稿后是否执行已配置的远程发布。
     - ``notion_config``：可选 Notion 映射配置路径；提供时覆盖默认 configs/notion.yaml。
     - ``output_config``：本地 HTML、PDF、桌面交付和打开行为配置。
+    - ``evaluate``：显式开启本轮质量评分；默认只完成交付，沿用已保存的评分请求。
     输出：指向“在本地报告完成后补做 PDF、Notion 和独立评估调度”所生成、定位或确认产物的本地路径
       。
     """
@@ -2180,8 +2196,13 @@ def complete_edition_tail(
     lock_path = data_dir / "locks" / f"{date}-{edition}.lock"
     with exclusive_lock(lock_path, _lock_payload(edition, now_iso(timezone))):
         run = _reload_locked_run(run_path, run, data_dir)
+        if evaluate:
+            _update_run(run_path, run, RunStatus(run["status"]), evaluation_requested=True)
+        evaluation_requested = bool(run.get("evaluation_requested", False))
         tail = dict(run.get("tail") or {})
-        if tail.get("status") == "completed":
+        if tail.get("status") == "completed" and not (
+            evaluation_requested and run.get("evaluation", {}).get("status") != "completed"
+        ):
             return run_path
         artifacts = run["artifacts"]
         report_path = require_data_root_path(
@@ -2268,8 +2289,10 @@ def complete_edition_tail(
             evaluation = _pending_evaluation(
                 artifacts,
                 "Independent evaluation is pending and will run asynchronously.",
+                requested=evaluation_requested,
             )
-        if evaluation.get("status") != "completed":
+        if evaluation_requested and evaluation.get("status") != "completed":
+            evaluation["status"] = "pending"
             run["evaluation"] = evaluation
             evaluation = _schedule_evaluation_attempt(
                 run,
@@ -2288,9 +2311,9 @@ def complete_edition_tail(
                     "Independent evaluator scheduling failed: "
                     + str(evaluation["scheduler"].get("error") or "unknown error")
                 )
-        evaluation["next_action"] = (
-            "Independent evaluation is pending and will run asynchronously."
-        )
+            evaluation["next_action"] = (
+                "Independent evaluation is pending and will run asynchronously."
+            )
 
         completed_at = now_iso(timezone)
         started = datetime.fromisoformat(tail_started_at)
@@ -2308,7 +2331,11 @@ def complete_edition_tail(
                 "next_action": (
                     "Retry complete-edition-tail; local HTML remains authoritative."
                     if errors
-                    else "Wait for the isolated evaluator."
+                    else (
+                        "Wait for the isolated evaluator."
+                        if evaluation_requested and evaluation.get("status") != "completed"
+                        else "Report delivery is complete."
+                    )
                 ),
             }
         )

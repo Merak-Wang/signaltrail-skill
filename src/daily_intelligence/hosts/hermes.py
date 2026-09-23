@@ -108,8 +108,14 @@ class HermesObserver:
             if payload.get("auxiliary_task"):
                 phase = "auxiliary"
             try:
+                request_payload = payload
+                request_id = payload.get("api_request_id")
+                started_at = payload.get("started_at")
+                if event in API_EVENTS and request_id and started_at is not None:
+                    # started_at 在同次重试的 pre/post/error 中一致，可区分重试并保持重放幂等。
+                    request_payload = {**payload, "api_request_id": f"{request_id}:{started_at}"}
                 self.ledger.ingest_hook(
-                    self.task, "hermes", {"hook_event_name": event, **payload},
+                    self.task, "hermes", {"hook_event_name": event, **request_payload},
                     phase=phase, parent_session_id=parent,
                     agent_role="worker" if parent else (
                         "independent-evaluator" if self.evaluation_attempt else "coordinator"
@@ -149,9 +155,12 @@ class HermesObserver:
                     totals[0] += row[0] or 0
                     totals[1] += row[1] or 0
             summary = self.ledger.summarize_task(self.task)
+            calls = summary["call_lifecycle"]
+            successful_calls = calls["finished_call_count"] - calls["failed_call_count"]
+            known_tokens = summary["tokens"]["accounted_total"]["known_value"]
             matches = (
-                totals[0] == summary["call_lifecycle"]["finished_call_count"]
-                and totals[1] == summary["tokens"]["accounted_total"]["value"]
+                totals[0] == successful_calls
+                and totals[1] == known_tokens
             )
             return {"status": "matched" if matches else "mismatch",
                     "api_call_count": totals[0], "accounted_tokens": totals[1]}

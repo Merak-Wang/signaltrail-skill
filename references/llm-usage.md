@@ -222,6 +222,10 @@ turn 可能包含多次 tool-loop provider request；只有宿主提供显式调
 
 ## 预算、修复与独立评估
 
+质量评分默认关闭。只有用户明确要求后，`finalize-edition --evaluate` 或
+`complete-edition-tail --evaluate` 才为本轮开启 evaluator 调度及其独立用量任务。
+以下评分调度、对账与重试说明均以该请求为前提。
+
 `run.llm_budget.checks[]` 保存每次派发前的安全回执。门禁从绑定 usage task 的不可变事件
 重建 `accounted_total`，再加版本化下游预留；brief/analysis 预留至少覆盖已测 independent evaluator
 基线 2,884,621 token、288,463 contingency 和阶段比例。没有绑定 task 时工作流保持兼容，

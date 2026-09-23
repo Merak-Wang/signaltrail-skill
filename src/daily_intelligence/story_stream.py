@@ -113,7 +113,12 @@ font-size:14px;line-height:1.65}.node-index{font:18px Georgia,serif;color:var(--
 margin-bottom:8px}.sources{display:flex;flex-wrap:wrap;gap:7px 15px;font-size:11px;margin:14px 0 0}
 .sources a{text-decoration-thickness:1px}details{font-size:12px;color:var(--muted);margin-top:18px}
 summary{cursor:pointer}.claim{padding:8px 0;border-top:1px dotted var(--line)}
-.claim code{font-size:10px}
+.claim code{font-size:10px}.evidence-table{margin:24px 0}.table-scroll{overflow-x:auto}
+.evidence-table table{width:100%;border-collapse:collapse;font-size:14px}
+.evidence-table th,.evidence-table td{text-align:left;padding:12px;
+border-bottom:1px solid var(--line);
+vertical-align:top;min-width:90px;overflow-wrap:anywhere}.evidence-table th{background:#e4e9df}
+.editorial-caption{font-size:12px;color:var(--muted);margin-top:10px}
 .closing{padding:20px 8px;max-width:850px}.closing p{white-space:pre-line}.footer{font-size:12px;
 color:var(--muted);border-top:1px solid var(--line);padding-top:24px;margin-top:28px}
 [hidden]{display:none!important}@media(max-width:700px){body{font-size:16px;line-height:1.9}
@@ -141,7 +146,8 @@ M226 73h31m-31 12h23"/></g><circle cx="238" cy="220" r="12" fill="#b17b38"/>
 
 
 def build_story_stream(
-    script_paths: list[Path], data_dir: Path, *, bilingual_path: Path | None = None
+    script_paths: list[Path], data_dir: Path, *, bilingual_path: Path | None = None,
+    review_path: Path | None = None,
 ) -> Path:
     """处理：原样编排语言脚本成顺序图文清单，不创作新标题或图注。
     输入：明确语言修订和可选双语回执；图仅使用脚本已登记的视觉文案。
@@ -158,6 +164,14 @@ def build_story_stream(
         raise ValueError("Duplicate story language")
     parents = {lang: path for lang, path in zip(languages, script_paths, strict=True)}
     status = Admission.DRAFT
+    if review_path:
+        if len(script_paths) != 1 or bilingual_path:
+            raise ValueError("A single-language review requires exactly one script")
+        review = load_artifact(review_path, data_dir, kind="verification")
+        if review["parents"]["script"] != file_ref(script_paths[0], data_dir):
+            raise ValueError("Review belongs to another script revision")
+        status = review["payload"]["status"]
+        parents["review"] = review_path
     if bilingual_path:
         bilingual = load_artifact(bilingual_path, data_dir, kind="bilingual")
         dossier = load_artifact(parent_path(bilingual, "packet", data_dir), data_dir)
@@ -190,6 +204,7 @@ def build_story_stream(
         },
         "metrics": [explainer_status(p, data_dir) for p in script_paths],
         "visual_review": "pending",
+        "scope": packet.get("scope", "report"),
     }
     return save_artifact(
         data_dir, scripts[0]["session"], "story", payload, parents, render_story_markdown(payload)
@@ -234,6 +249,19 @@ def _source_html(claim_ids: list[str], story: dict, labels: dict) -> str:
     return '<div class="sources">' + "".join(links) + "</div>" if links else ""
 
 
+def _beat_claims(beat: dict) -> list[str]:
+    """处理：汇总正文、图形和表格引用，避免图表独有的来源链接消失。
+    输入：脚本中已审核的完整 beat；只合并已有主张 ID。
+    输出：稳定去重的引用列表，供 HTML 来源区和 Markdown 共用。
+    """
+    segments = [beat, *beat["visual"]]
+    if "table" in beat:
+        table = beat["table"]
+        segments.extend([*table["headers"], *(c for row in table["rows"] for c in row),
+                         table["editorial_caption"]])
+    return list(dict.fromkeys(c for segment in segments for c in segment["claim_ids"]))
+
+
 def _chapter_html(chapter: dict, story: dict, language: str, position: int) -> str:
     """处理：将一个章节的原样文字和视觉节点排成可访问图文卡。
     输入：脚本已登记的标题、问题、正文及图标签；程序只负责布局。
@@ -265,9 +293,22 @@ def _chapter_html(chapter: dict, story: dict, language: str, position: int) -> s
                     f"{i:02}</span>{escape(node['text'])}</li>"
                 )
             parts.append("</ol></figure>")
-        parts.append(_source_html(beat["claim_ids"], story, labels))
+        if "table" in beat:
+            table = beat["table"]
+            parts.append('<figure class="evidence-table"><div class="table-scroll" '
+                         'role="region" tabindex="0" aria-label="Evidence table / 证据表格">'
+                         '<table><thead><tr>')
+            parts.extend(f'<th scope="col">{escape(c["text"])}</th>' for c in table["headers"])
+            parts.append('</tr></thead><tbody>')
+            for row in table["rows"]:
+                parts.append('<tr>' + ''.join(
+                    f'<td>{escape(c["text"])}</td>' for c in row
+                ) + '</tr>')
+            parts.append('</tbody></table></div><figcaption class="editorial-caption">'
+                         + escape(table["editorial_caption"]["text"]) + '</figcaption></figure>')
+        parts.append(_source_html(_beat_claims(beat), story, labels))
         parts.append("</div></div>")
-    ids = {c for b in chapter["beats"] for c in b["claim_ids"]}
+    ids = {c for b in chapter["beats"] for c in _beat_claims(b)}
     parts.append(f"<details><summary>{labels['evidence']}</summary>")
     for claim in story["claims"]:
         if claim["claim_id"] in ids:
@@ -307,7 +348,7 @@ def render_story_html(story: dict) -> str:
     parts.append("</nav></header><main>")
     for i, script in enumerate(story["scripts"]):
         lang = script["language"]
-        labels = LABELS[lang]
+        labels = story_labels(story, lang)
         parent_note = (
             labels["partial"] if story["metrics"][0]["parent_status"] == "completed_partial" else ""
         )
@@ -364,7 +405,7 @@ def render_story_markdown(story: dict) -> str:
     """
     lines = []
     for script in story["scripts"]:
-        labels = LABELS[script["language"]]
+        labels = story_labels(story, script["language"])
         lines.extend(
             [
                 f"# {script['title']['text']}",
@@ -380,12 +421,90 @@ def render_story_markdown(story: dict) -> str:
                 if beat["visual"]:
                     lines.append(labels[beat["visual_relation"]])
                     lines.extend(f"- {n['text']}" for n in beat["visual"])
-                for evidence in _sources(beat["claim_ids"], story):
+                if "table" in beat:
+                    table = beat["table"]
+                    rows = [table["headers"], *table["rows"]]
+                    rendered = ["| " + " | ".join(
+                        c["text"].replace("|", "\\|").replace("\n", "<br>") for c in row
+                    ) + " |" for row in rows]
+                    rendered.insert(1, "| " + " | ".join("---" for _ in table["headers"]) + " |")
+                    lines.append("\n".join(rendered))
+                    lines.append(table["editorial_caption"]["text"])
+                for evidence in _sources(_beat_claims(beat), story):
                     url = _safe_url(evidence["url"])
                     if url:
                         lines.append(f"[{evidence['source_name']}](<{url}>)")
         lines.extend([f"## {labels['closing']}", script["closing"]["text"]])
     return "\n\n".join(lines) + "\n"
+
+
+def story_labels(story: dict, language: str) -> dict:
+    """处理：按证据来源显示研究快照或日报快照说明。
+    输入：图文清单的研究范围与读者语言。
+    输出：准确的界面说明；未绑定研究不声称源自已保存晨报。
+    """
+    labels = dict(LABELS[language])
+    if story.get("scope") == "research":
+        labels["snapshot"] = ("研究解读 · 截止资料快照" if language == "zh-CN"
+                              else "Research reading · frozen evidence")
+        labels["disclosure"] = (
+            "基于下方截止时间冻结的资料进行研究解读，尚未复核来源更新与更正链。"
+            "图表为证据解释，不是新闻现场影像；不能据此认定事件当前状态。"
+            if language == "zh-CN" else
+            "Research based on evidence frozen at the cutoff below. Updates and correction "
+            "chains have not been rechecked. Tables and diagrams explain evidence; they are "
+            "not scene images or confirmation of the current state of events."
+        )
+    return labels
+
+
+def render_research_section(story: dict, relations: list[dict]) -> str:
+    """处理：将图文原文排成可插入日报分析区的连续阅读章节。
+    输入：绑定后的研究清单和与原分析的关系；样式仅影响新增章节。
+    输出：含图表、来源和截止说明的 HTML 片段，不改写原分析。
+    """
+    parts = ['<section class="research-reading" id="illustrated-research"><style>'
+             '.research-reading{margin-top:32px;border-top:3px solid #b61f24;padding-top:24px}'
+             '.research-reading .chapter{margin:24px 0;padding:16px 0;border-bottom:1px solid #ddd}'
+             '.research-reading .chapter-number{color:#b61f24;font:28px Georgia}'
+             '.research-reading .beat{display:block;margin:22px 0}'
+             '.research-reading .role{font-size:12px;color:#626262}'
+             '.research-reading .beat p{white-space:pre-line;font-size:17px;line-height:1.95}'
+             '.research-reading .nodes{list-style:none;padding:0;display:grid;'
+             'grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px}'
+             '.research-reading .node{padding:16px;background:#f6f6f6;border-top:2px solid #b61f24}'
+             '.research-reading .node-index{display:block;color:#b61f24}'
+             '.research-reading figure{margin:24px 0}'
+             '.research-reading .table-scroll{overflow-x:auto}'
+             '.research-reading table{font-size:14px}.research-reading th,.research-reading td'
+             '{min-width:100px;overflow-wrap:anywhere}.research-reading figcaption{font-size:13px}'
+             '.research-reading .sources{display:flex;flex-wrap:wrap;gap:12px;font-size:13px}'
+             '.research-reading details,.research-reading .disclosure{font-size:13px;color:#626262}'
+             '.research-reading .claim{margin:10px 0}'
+             '.research-reading .claim code{overflow-wrap:anywhere}'
+             '</style>']
+    for script in story["scripts"]:
+        language = script["language"]
+        labels = story_labels(story, language)
+        state = "snapshot" if story["status"] == Admission.VERIFIED else "draft"
+        heading = "深读图文" if language == "zh-CN" else "Illustrated research"
+        parts.extend([f'<section lang="{language}"><h2>{heading}</h2>',
+                      f'<h3>{escape(script["title"]["text"])}</h3>',
+                      f'<p class="disclosure">{labels[state]} · {labels["as_of"]}: '
+                      f'{escape(story["as_of"])}<br>{labels["disclosure"]}</p>',
+                      f'<p>{escape(script["introduction"]["text"])}</p>'])
+        relation_labels = ({"extends": "补充", "qualifies": "限定", "disputes": "提出异议"}
+                           if language == "zh-CN" else
+                           {"extends": "Extends", "qualifies": "Qualifies", "disputes": "Disputes"})
+        for r in relations:
+            parts.append(f'<p class="disclosure">{relation_labels[r["relation"]]} · '
+                         f'<a href="#analysis-{r["report_domain"]}">'
+                         f'{escape(r["report_domain"])}</a></p>')
+        parts.extend(_chapter_html(ch, story, language, n)
+                     for n, ch in enumerate(script["chapters"], 1))
+        parts.append(f'<p>{escape(script["closing"]["text"])}</p></section>')
+    parts.append('</section>')
+    return "".join(parts)
 
 
 def render_story(story_path: Path, data_dir: Path, *, mode: str = "preview") -> dict:

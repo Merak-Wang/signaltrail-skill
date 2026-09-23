@@ -100,3 +100,13 @@ def test_projection_failure_leaves_story_and_report_available(explainer_case, mo
         render_story(story, c["root"])
     assert load_artifact(story, c["root"])["kind"] == "story"
     assert c["report"].is_file()
+
+
+def test_visual_only_source_links_remain_visible(explainer_case):
+    c = explainer_case
+    path = build_story_stream([c["script"]], c["root"])
+    story = load_artifact(path, c["root"])["payload"]
+    beat = story["scripts"][0]["chapters"][0]["beats"][0]
+    beat["claim_ids"] = []
+    html = BeautifulSoup(render_story_html(story), "html.parser")
+    assert html.select_one(".sources a")["href"] == story["evidence"][0]["url"]

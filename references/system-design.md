@@ -3,7 +3,7 @@
 **权威语言：** 中文（单语运行参考）
 **负责人：** 仓库维护者
 **状态：** 已验证详细设计
-**最后对照代码：** 2026-09-12
+**最后对照代码：** 2026-09-23
 **上级地图：** [`ARCHITECTURE.md`](../ARCHITECTURE.md)
 
 ## 边界
@@ -30,9 +30,14 @@ RSS/Atom 条件请求 + 静态 HTML -> 零 token 监控快照 -> 事件聚类/�
 -> Python 合并 brief -> 紧凑事件 dossier -> analysis author 只写一次研判
 -> Python schema 2.0 装配/校验 -> 不可变 JSON/Markdown -> 立即交付 HTML
 -> 后台：PDF | 可重试 Notion（可选远程投影）
--> independent evaluator 只评分 -> 独立评估 artifact
+-> 用户明确要求后，independent evaluator 只评分 -> 独立评估 artifact
 -> 刷新 HTML 评估区、复用同修订 PDF -> 可选追加 Notion -> 受评估约束的长期连续状态
 ```
+
+图文幻灯片从已保存日报和索引单独生成，不在日报发布关键路径内。`slides prepare` 只读取
+传入文件并按单批输入/输出估算分组；每期代表新闻没有总量上限。宿主完成批次写作后，
+本地渲染生成带来源、摘要、封面及正文配图、原始 caption 和动效的 HTML。日报页面可嵌入放映，
+同时保留独立打开入口；打印时回退到摘要。图片更新和重新渲染可复用讲稿，不触发模型请求。
 
 Python 拥有状态迁移、revision、访问等级映射、限额、验证和发布；brief authors 只产出 packet 约束的标题翻译与摘要，analysis author 只产出紧凑 analysis packet 约束的精选与研判；independent evaluator 只审查已经保存的不可变报告。事实身份校验在发布前完成，主报告不等待主观质量评分；后置评估只给修改和连续性建议，不修改报告。
 
@@ -42,7 +47,7 @@ Python 拥有状态迁移、revision、访问等级映射、限额、验证和�
 
 `briefs[]` 是显示和覆盖单位，负责标题、TL;DR、内部重要性、原始来源排名、链接和可选的确定性 `image` 记录；`items[]` 是精选事件与连续性单位，只承载需要完整证据链或支撑研判的少量事件。这样增加新闻数量不会按比例放大评分、全文读取和研判引用成本。所有正式来源的 `report_target` 与 `report_max` 都是 15；有至少 15 个真实候选时，普通 brief 使用当前索引顺序的前 15 条，不设重要性入选门槛。报告 JSON、Markdown、HTML、PDF 与 Notion 投影都保留这一 canonical 顺序，不再按 `importance` 重排；`source_rank` 只负责显示原始来源 TopN。数值评分和正文访问状态留在 JSON，不进入读者版。
 
-研判固定分为“地缘政治专家视角”“AI 研究/开发工程师视角”“股票分析师视角”。schema 2.0 要求三个视角读取同一份 6—10 个精选事件 dossier，分别输出因果链、假设、时间跨度、证据缺口、相对上一版变化和失效条件；最后用跨视角综合显式记录共识、分歧来源、“地缘政治 → 技术 → 市场”传导链与共同观察信号。独立评估控制下一次连续性可接受、选择性排除或完全拒绝的范围。
+研判固定分为“地缘政治专家视角”“AI 研究/开发工程师视角”“股票分析师视角”。schema 2.0 要求三个视角读取同一份 6—10 个精选事件 dossier，分别输出因果链、假设、时间跨度、证据缺口、相对上一版变化和失效条件；最后用跨视角综合显式记录共识、分歧来源、“地缘政治 → 技术 → 市场”传导链与共同观察信号。独立评估仅按用户明确要求运行，运行清单用 `evaluation_requested` 保存本轮选择；未评分历史仍按原有 selective 规则处理，未评分摘要不提升为 approved。已有独立评估控制下一次连续性可接受、选择性排除或完全拒绝的范围。
 
 ## 来源发现与验证
 
@@ -52,9 +57,25 @@ Python 拥有状态迁移、revision、访问等级映射、限额、验证和�
 
 监控先读取 RSS/Atom，使用 `ETag`、`Last-Modified`、304、本地解析结果缓存、失败退避与 `Retry-After`。响应必须通过 XML/HTML 嗅探；验证码或 HTML 中间页不得按 feed 解析。来源没有 feed 或 feed 失败时，可自动发现页面声明的 feed，再回退到无脚本 HTML。发布时间缺失的条目保留并标记，只能以采集时间显示，不能参与 NEW/新鲜度。标题词法特征哈希与余弦相似度完成零模型 token 的事件聚类；上一快照的 item 身份用于稳定 story ID。
 
+已知 Feed 立即入队；未知来源各自完成发现后抓取，不等待全体发现结束。同域许可先于全局许可取得，
+避免等待同域的任务占满全局名额。发现阶段先分类 429 与验证状态；Retry-After 冷却写入现有登记表，
+冷却期内不重查首页或切换 HTML 通道。Feed 失败后复用缓存仍保留 partial/feed_stale。
+HTTP 索引和正文共用流式字节上限；截断索引带 response_truncated，已有条目时为 partial，否则 failed。
+
+Feed 的 description 仍最多 600 字符。源实际提供的长字段单独保存为
+content/<source>/<item>/feed-<sha256>.json，metadata.feed_content_path/sha256/characters 指向该记录。
+记录含 RSS/Atom 格式、字段名、MIME、语言、base URL、全文字段的结构块、图片、原图注和链接。
+Atom text/html/xhtml 分别处理，嵌套 xml:base 在节点序列化前解析；完整保留 Feed 字段不等于文章全文。
+相同内容复用路径，同 URL 内容变化产生新文件。只有被选中富化的条目才加载此记录为 partial 正文；
+网页补全失败时保留这份证据。长文不嵌入索引或写作列表，未选条目的 content_status 保持 not_fetched。
+
+来源可以声明 origin_scope、coverage_regions、publisher_group，分别记录机构来源、报道范围和出版组。
+它们进入来源健康记录和条目 metadata，不是立场/可靠性评分，也不增加独立佐证数。缺失值不猜测。
+本轮新增源与接入实测见[采集改进记录](../docs/research/2026-09-20-collection-improvements.md)。
+
 来源 YAML 声明基础页和静态探索页。operator 或 authoring coordinator 可以通过 CLI 写入 `state/source-pages.json` 增加同域名、高价值的动态栏目页；每来源最多 5 个。动态页是可撤销配置，不改变适配器代码。
 
-一次来源采集可以访问多个栏目页并去重。通用公开索引先用 httpx/Beautiful Soup 做无脚本预取，受全局与同域 semaphore 约束；无条目、登录/挑战、401/403、JavaScript 页面和专用 adapter 才进入顺序 Edge 回退，避免并发操作同一个持久化 profile。正文读取同样使用共享 `httpx.AsyncClient` 并发提取静态正文和元数据，将仍可能补足的壳页或部分正文交给一次 Edge 尝试；明确拒绝、限流、不支持类型、已知截断或带不完整提示的部分正文停止升级。完整且通过本地路径/可用哈希复核的正文才直接复用。正文没有独立的 rate_limited 枚举，沿用 verification_required 并在 challenge 与 completion 中标明限流；来源层仍保留 rate_limited。多页结果按轮询合并，避免 BBC/Guardian 的第一个栏目占满上限而饿死后续栏目。部分栏目成功、部分失败时，来源状态是 partial，且 page_results 保存每页状态和链接。访问失败永远不能静默变成 no_items。
+一次来源采集可以访问多个栏目页并去重。通用公开索引先用 httpx/Beautiful Soup 做无脚本预取，受全局与同域 semaphore 约束；无条目、登录/挑战、401/403、JavaScript 页面和专用 adapter 才进入异步 Edge 页面池；一个持久化 context 统一拥有 profile，页面受 browser.global_concurrency 与 per_domain_concurrency 限制。就绪检查使用来源 ready_selector 或适配器候选结构，显式 wait_ms（含 0）优先。并发完成后仍按来源、页面和原始排名合并。正文读取同样使用共享 `httpx.AsyncClient` 并发提取静态正文和元数据，将仍可能补足的壳页或部分正文交给一次 Edge 尝试；明确拒绝、限流、不支持类型、已知截断或带不完整提示的部分正文停止升级。完整且通过本地路径/可用哈希复核的正文才直接复用。正文没有独立的 rate_limited 枚举，沿用 verification_required 并在 challenge 与 completion 中标明限流；来源层仍保留 rate_limited。多页结果按轮询合并，避免 BBC/Guardian 的第一个栏目占满上限而饿死后续栏目。部分栏目成功、部分失败时，来源状态是 partial，且 page_results 保存每页状态和链接。访问失败永远不能静默变成 no_items。
 
 `run-edition` 默认不调用手工验证，避免 GUI 等待阻塞生成流程。用户显式运行 `verify-pending` 或传 `--open-verification` 时才启动本地 Edge 队列。队列汇总失败和待验证页面，用户点击链接后，采集器监听新标签并复用当前已登录页面立即提取；只有成功提取到条目才算完成。结果被原子合并到新索引；失败页面继续保留。已发布 run 会进入待修订状态，原报告保持不变，补充内容进入新 revision。同一日期与 edition 的后续 revision 可以复用自身上一 revision 的事件 ID 和来源条目；跨 edition、跨日期或换用另一事件 ID 时仍执行 `NEW` 重复拦截。`--unattended` 保留为默认非交互行为的兼容参数。
 
@@ -113,7 +134,8 @@ created -> collecting -> building_context -> awaiting_selection
 tail.pending -> tail.running -> tail.completed | tail.partial
 tail.partial -> tail.running（只续跑未完成投影）
 
-completed[_partial] -> evaluation pending
+completed[_partial] -> evaluation not_requested（默认）
+completed[_partial] + 显式 --evaluate -> evaluation pending
 -> 独立评估 artifact -> HTML/PDF refresh / [Notion append] / 长期连续状态
 
 机械异常 -> failed；本地 finalization 失败 -> awaiting_authoring
@@ -154,7 +176,7 @@ authoring session 绑定 run attempt、context 绝对路径与 SHA-256，分发�
 
 ## 宿主集成边界
 
-核心流水线只要求宿主能够执行本地命令、读取自包含 packet、把一个结构化 JSON 写到指定路径，并把确定性提交命令的结果交回 authoring coordinator；它不依赖 Hermes 的会话或任务对象。`daily-intel` 的显式 `--config`、`--data-dir` 与 `--profile-dir` 可由任意 harness 使用。缺少并发 worker 时可以顺序执行 packet，安全、覆盖和最多一次修复不变量保持不变。
+核心流水线只要求宿主能够执行本地命令、读取自包含 packet、把一个结构化 JSON 写到指定路径，并把确定性提交命令的结果交回 authoring coordinator；它不依赖 Hermes 的会话或任务对象。`signaltrail` 的显式 `--config`、`--data-dir` 与 `--profile-dir` 可由任意 harness 使用。缺少并发 worker 时可以顺序执行 packet，安全、覆盖和最多一次修复不变量保持不变。
 
 用量 sidecar 当前只内置 `hermes`、`codex`、`openclaw` 三个 adapter。其他 harness 可以不绑定 usage task，使预算回执明确保持 `coverage=unmetered` 且 token 为 `null`，也可以通过 Python `UsageAdapter` 协议实现并注册白名单解析器；不得把未知宿主回执交给近似 adapter 或保存 raw receipt。自动 independent evaluator 调度和任务对账支持 `signaltrail-hermes` 的本地计量进程，以及保留兼容的 Hermes Cron 路径；覆盖区别见 [用量说明](llm-usage.md)。其他宿主仍可只读同一 hash-bound dossier、在外部调度 independent evaluator 并调用 `finalize-evaluation`，但不能把手工或外部调度声称为内置自动调度。
 

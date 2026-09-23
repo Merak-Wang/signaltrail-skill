@@ -780,9 +780,9 @@ def render_report_markdown(
                 "",
                 localized(
                     language,
-                    "独立评估将在日报发布后异步补充；评估意见不阻塞本版发布。",
-                    "An independent evaluation will be added asynchronously after publication; "
-                    "it does not block this edition.",
+                    "尚未评分。质量评分默认关闭，仅在用户明确要求时补充。",
+                    "Not scored. Quality scoring is off by default and runs only "
+                    "when explicitly requested.",
                 ),
                 "",
                 f"### {localized(language, '用户反馈', 'Reader Feedback')}",

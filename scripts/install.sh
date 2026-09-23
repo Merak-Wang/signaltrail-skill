@@ -31,6 +31,7 @@ except ValueError as exc:
 ignored = {
     ".agents", ".code-review-graph", ".codex", ".git", ".github", ".idea",
     ".playwright-cli", ".pytest_cache", ".ruff_cache", ".vscode", "__pycache__",
+    ".venv", "venv", "env",
     "blob-report", "build", "dist", "data", "daily-intelligence", "daily-intel-data",
     "browser-profile", "browser-profiles", "edge-profile", "htmlcov", "output",
     "playwright-report", "raw_html", "screenshots", "test-results", "tmp",
@@ -86,4 +87,4 @@ if source != target:
             candidate.unlink()
 PY
 printf 'Synchronized SignalTrail skill: %s\n' "${target_dir}"
-printf 'Installed SignalTrail; the compatible CLI remains daily-intel.\n'
+printf 'Installed SignalTrail. Run: signaltrail --help\n'

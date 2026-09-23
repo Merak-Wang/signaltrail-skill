@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 from typing import Any
+from urllib.parse import urlsplit
 
 from bs4 import Tag
 
@@ -10,11 +11,13 @@ from .image_policy import normalize_image_candidates, srcset_candidates
 
 
 def _image_caption(node: Tag, root: Tag) -> str:
-    """处理：从图片所在的单图容器读取网站图注，不借用相邻图片说明。
+    """处理：从单图容器或紧邻编号段落读取图注，不借用相邻图片说明。
     输入：正文图片节点及选中的正文边界。
     输出：清理空白后的原文图注；正文范围内没有对应图注时返回空串。
     """
     for container in node.parents:
+        if container is root or container.name in {"article", "main", "body"}:
+            break
         # 单图容器内的 caption 才属于当前图片，避免借用相邻配图的说明。
         if len(container.find_all("img", limit=2)) != 1:
             break
@@ -22,10 +25,15 @@ def _image_caption(node: Tag, root: Tag) -> str:
             'figcaption, .wp-caption-text, .image-caption, .photo-caption, '
             '.caption, [itemprop="caption"]'
         )
-        if caption is not None:
+        if (caption is not None
+                and caption.find_parent("blockquote") is node.find_parent("blockquote")):
             return re.sub(r"\s+", " ", _inline_text(caption)).strip()
-        if container is root:
-            break
+    # 遇到下一张图片即停止，避免将它的编号图注借给当前图片。
+    adjacent = node.find_next(["img", "p"])
+    if adjacent is not None and adjacent.name == "p" and root in adjacent.parents:
+        text = re.sub(r"\s+", " ", _inline_text(adjacent)).strip()
+        if re.match(r"(?:figure|fig\.?|图)\s*\d+\s*[.:、)]", text, re.I):
+            return text
     return ""
 
 
@@ -65,10 +73,21 @@ def article_image_candidates(
             if adjacent is not None and root in adjacent.parents else ""
         )
         overlap = len(title_terms & _terms(f"{alt} {caption}"))
+        picture = node.find_parent("picture")
+        picture_urls = [
+            url for source in picture.select("source")
+            for url in srcset_candidates(source.get("srcset") or source.get("data-srcset"))
+        ] if picture else []
+        anchor = node.find_parent("a", href=True)
+        full_image = str(anchor.get("href")) if anchor else ""
+        if not re.search(r"\.(?:jpe?g|png|webp|gif|avif)$", urlsplit(full_image).path, re.I):
+            full_image = ""
         urls = normalize_image_candidates([
+            full_image,
+            *picture_urls,
             *srcset_candidates(node.get("srcset") or node.get("data-srcset")),
-            node.get("data-original"), node.get("data-src"), node.get("data-lazy-src"),
-            node.get("src"),
+            node.get("data-original"), node.get("src"),
+            node.get("data-src"), node.get("data-lazy-src"),
         ], base_url)
         for variant, url in enumerate(urls):
             candidates.append({

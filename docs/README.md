@@ -1,6 +1,6 @@
 # Documentation
 
-**Status:** Verified · **Owner:** Repository maintainers · **Last verified:** 2026-09-11
+**Status:** Verified · **Owner:** Repository maintainers · **Last verified:** 2026-09-23
 
 Start with the guide for the work you are doing. English engineering records have Chinese
 mirrors under [zh-CN/](zh-CN/README.md).
@@ -12,10 +12,17 @@ mirrors under [zh-CN/](zh-CN/README.md).
 | [Architecture](../ARCHITECTURE.md) | Module ownership, state, files, model boundaries |
 | [Agent instructions](../AGENTS.md) | Rules for changing this repository |
 | [Experimental explainers](explainers.md) | Implemented commands, bilingual reviews, immutable stories and current-admission limits |
-| [Roadmap](roadmap.md) | Bilingual explainers, verification and illustrated reading; video in the next upgrade |
+| [News slides](news-slides.md) | Standalone animated HTML from a saved report, bounded narration batches and per-batch cost gates |
+| [Roadmap](roadmap.md) | Experimental explainer and research workflow; current-news admission and acceptance gaps |
 | [Technical debt](exec-plans/tech-debt-tracker.md) | Known implementation gaps and exit conditions |
 
 ## Research and proposals
+
+- [September 20 illustrated research workflow](research/2026-09-20-illustrated-workflow.md):
+  implemented question retrieval, research memos, tables, late binding and component evaluation.
+
+- [September 20 collection improvements](research/2026-09-20-collection-improvements.md):
+  regional discovery sources, Feed content preservation, scheduling and deployment probes.
 
 - [Report A collection research and implementation](research/2026-09-11-collection-evidence.md):
   section 3 source verification, local extraction, coverage diagnostics and bounded completion.
@@ -40,6 +47,8 @@ Read only the reference needed for the task.
 | [System contracts](../references/system-design.md) | Data fields, state and artifact contracts |
 | [Editorial policy](../references/editorial-policy.md) | Source selection, evidence, access and ordering |
 | [Explainer policy](../references/explainer-policy.md) | Experimental claim, review and story admission |
+| [Research workflow](../references/research-workflow.md) | Parallel preparation, scoped research evidence and late composite reading |
+| [News slides reference](../references/news-slides.md) | Batch payloads, token estimate gates and complete rendering requirements |
 | [Narrative analysis](../references/narrative-analysis.md) | Repairing analysis content |
 | [Report contract](../templates/report-contract.md) and [schema](../schemas/report.schema.json) | Draft shape and machine validation |
 | [Usage metering](../references/llm-usage.md) | Host adapters, accounting and coverage limits |
@@ -59,8 +68,9 @@ not current operating instructions. Their original verification dates do not exp
 - [Release history](../CHANGELOG.md) and [release notes](../RELEASE_NOTES.md)
 - [Example reports](https://github.com/Merak-Wang/signaltrail-skill/blob/main/examples/README.en.md): sanitized historical outputs
 
-`skills/signaltrail/`, `build/`, and `dist/` are generated release/install snapshots.
-They are excluded from current-document checks and updated only through an explicit rebuild.
+Root `src/` is the only maintained implementation; the repository has no nested skill copy.
+`build/` and `dist/` are ignored release artifacts, excluded from current-document checks
+and generated only through an explicit build. Install the complete skill package with its resources.
 Local ignored audit notes are not public engineering records.
 
 Maintained records use Verified, Draft, or Active; completed records use Historical, and

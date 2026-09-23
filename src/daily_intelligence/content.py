@@ -16,7 +16,7 @@ import httpx
 from bs4 import BeautifulSoup
 from playwright.async_api import BrowserContext, Page, async_playwright
 
-from .access import classify_access_text
+from .access import classify_access_text, read_bounded_response
 from .collection_diagnostics import content_gaps, has_local_content
 from .config import AppConfig, SourceConfig, resolve_browser_channel, resolve_profile_dir
 from .content_extraction import (
@@ -439,17 +439,7 @@ async def _read_bounded_html(
     - ``max_bytes``：允许读取或下载的最大字节数；达到上限后停止或报错。
     输出：受字节上限约束的正文和截断标记，防止截断响应被称为完整正文。
     """
-    chunks: list[bytes] = []
-    total = 0
-    async for chunk in response.aiter_bytes():
-        total += len(chunk)
-        if total > max_bytes:
-            allowed = len(chunk) - (total - max_bytes)
-            if allowed > 0:
-                chunks.append(chunk[:allowed])
-            return b"".join(chunks), True
-        chunks.append(chunk)
-    return b"".join(chunks), False
+    return await read_bounded_response(response, max_bytes)
 
 
 async def _extract_http_one(
@@ -832,6 +822,8 @@ async def _extract_pipeline(
       tp_successful、selected、successful、total_seconds。
     """
     started = time.perf_counter()
+    for item in targets:
+        _reuse_feed_content(item, config, data_dir)
     reusable = [item for item in targets if _has_reusable_content(item, data_dir)]
     for item in reusable:
         metadata = item.setdefault("metadata", {})
@@ -916,6 +908,33 @@ async def _extract_pipeline(
     }
 
 
+def _reuse_feed_content(item: dict[str, Any], config: AppConfig, data_dir: Path) -> None:
+    """处理：只为已选正文条目加载 Feed 长内容，作为网页补全失败时的证据底稿。
+    输入：已选条目、来源配置与数据根中的 Feed 内容路径。
+    输出：条目获得部分正文和原图注；未选候选保持短摘要，Feed 不升格全文。
+    """
+    metadata = item.setdefault("metadata", {})
+    raw_path = metadata.get("feed_content_path")
+    if not raw_path or has_local_content(item, data_dir):
+        return
+    path = require_data_root_path(Path(raw_path), data_dir, "Feed content")
+    if not path.exists():
+        return
+    record = read_json(path)
+    document = ExtractedDocument(
+        text=record["text"], selector="feed_content", blocks=record["blocks"],
+        status=ContentStatus.PARTIAL, quality=record["quality"],
+        provenance={"kind": "feed_field", "sha256": metadata["feed_content_sha256"],
+                    "truncated": record["truncated"]},
+        source_metadata={"feed_url": record["feed_url"], "language": record["language"],
+                         "mime_type": record["mime_type"], "source_field": record["source_field"]},
+    )
+    source = config.source_by_id(str(item["source_id"]))
+    metadata["content_acquisition"] = "feed"
+    _apply_image_candidates(item, [], record["url"], details=record["images"])
+    _save_document(item, document, source, config, data_dir)
+
+
 def _clear_content_attempt(item: dict[str, Any]) -> None:
     """处理：清除上次采集字段，避免新访问失败被错误绑定到旧输入。
     输入：已由流水线另存快照的当前条目。
@@ -953,6 +972,11 @@ def _retain_better_content(
     输入：当前尝试与此前条目的独立快照；比较文件有效性和显式结构缺口。
     输出：就地保留较可用的条目，失败尝试由流水线另行记录。
     """
+    # Feed 仅是源提供的片段；网页取得更多正文时，不能因结构缺口相同而退回短片段。
+    if ((previous.get("metadata") or {}).get("content_acquisition") == "feed"
+            and has_local_content(item, data_dir)
+            and item.get("content_characters", 0) > previous.get("content_characters", 0)):
+        return
     if has_local_content(previous, data_dir) and (
         not has_local_content(item, data_dir)
         or len(content_gaps(item, data_dir)) >= len(content_gaps(previous, data_dir))

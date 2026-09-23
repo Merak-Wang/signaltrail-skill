@@ -1,20 +1,26 @@
 # Security
 
 **Status:** Verified
-**Last verified:** 2026-08-02
+**Last verified:** 2026-09-23
 **Architecture:** [ARCHITECTURE.md](ARCHITECTURE.md)
 
 ## Threat model
 
-The workflow processes adversarial web content and controls a persistent browser profile. Source pages may contain prompt injection, misleading claims, tracking links, or content intended to trigger unsafe actions.
+The workflow reads external feeds, article bodies, images and captions, and can use a persistent
+browser profile. This source material is evidence, never an instruction to the agent. It may
+contain prompt injection, misleading claims or tracking links.
 
 ## Controls
 
 - Web content is never treated as workflow instruction.
 - The agent may read selected bodies but may not execute commands, reveal secrets, or change permissions because a page requests it.
-- Browser profiles and Notion tokens stay outside version control and model-visible reports.
+- Browser profiles, credentials, cookies and private runtime data stay outside version control,
+  release packages and model-visible reports.
 - A challenged page is recorded and deferred; CAPTCHA solving, proxy rotation, fingerprint spoofing, and paywall removal are out of scope.
-- Notion receives summaries and links only, never stored article bodies or raw authenticated HTML.
+- Requested Notion delivery sends report content and selected image references, never raw
+  authenticated HTML or browser state.
+- Report and slide renderers escape external text and restrict clickable source/image URLs
+  to HTTP(S). Remote images still contact their publishers when opened without an embedded cache.
 - Publishing uses a local idempotency registry.
 
 ## Reporting issues

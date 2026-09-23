@@ -115,11 +115,62 @@ def test_html_projection_is_atomically_delivered_to_configured_desktop(
     assert html.index('class="brief-heading"') < html.index("<figure>")
     assert ".analysis-domain>h3{break-after:avoid}" in html
     assert ".analysis-card{break-inside:auto}" in html
+    assert "尚未评分" in html
+    assert "评估 Agent 将异步" not in html
     reader = PdfReader(outputs["pdf_path"])
     assert sum(len(page.images) for page in reader.pages) >= 1
     assert outputs["pdf_projection_seconds"] >= 0
     assert outputs["pdf_bytes"] == Path(outputs["pdf_path"]).stat().st_size
     assert outputs["pdf_size_budget_status"] == "within_budget"
+
+
+def test_daily_report_links_to_rendered_visual_edition(tmp_path: Path):
+    data_dir = tmp_path / "data"
+    report = _report()
+    report_dir = data_dir / "reports" / report["date"]
+    report_dir.mkdir(parents=True)
+    slides_path = report_dir / "morning-r1-slides.html"
+    slides_path.write_text("<!doctype html>", encoding="utf-8")
+
+    outputs = write_local_outputs(
+        report,
+        data_dir,
+        OutputConfig(formats=["html"], copy_html_to_desktop=False),
+    )
+
+    html = Path(outputs["html_path"]).read_text(encoding="utf-8")
+    soup = BeautifulSoup(html, "html.parser")
+    slides_link = soup.select_one(".news-slides-link")
+    assert slides_link["href"] == "morning-r1-slides.html"
+    assert slides_link["target"] == "_blank"
+    assert slides_link.get("rel") == ["noopener", "noreferrer"]
+    toc_first = soup.select_one(".toc-link")
+    assert toc_first["href"] == "#visual-briefing"
+    assert toc_first.get_text() == "今日图文演示"
+    frame = soup.select_one(".slides-embed iframe")
+    assert frame["src"] == "morning-r1-slides.html?embed=1"
+    assert frame.has_attr("allowfullscreen")
+    assert "frame-src 'self' file:" in html
+    assert ".slides-embed{display:none}" in html
+    assert ".summary-print-fallback{display:block}" in html
+    assert "打开图文演示" in html
+
+
+def test_embedded_slides_support_desktop_file_uri_and_leave_summary_without_deck():
+    report = _report()
+    slides_uri = "file:///C:/Users/example/Desktop/morning-r1-slides.html"
+
+    rendered = render_report_html(report, slides_href=slides_uri)
+    soup = BeautifulSoup(rendered, "html.parser")
+
+    assert soup.select_one(".slides-embed iframe")["src"] == f"{slides_uri}?embed=1"
+    assert soup.select_one(".news-slides-link")["target"] == "_blank"
+
+    without_slides = BeautifulSoup(render_report_html(report), "html.parser")
+    assert without_slides.select_one(".slides-embed") is None
+    assert without_slides.select_one("#summary") is not None
+    assert without_slides.select_one(".toc-link")["href"] == "#summary"
+    assert without_slides.select_one(".toc-link").get_text() == "今日摘要"
 
 
 def test_edge_pdf_receives_embedded_images_instead_of_relative_media(

@@ -57,7 +57,8 @@ def handle_explainer(args: argparse.Namespace, context: CommandContext) -> int:
                     reviewer_context=args.reviewer_context,
                 )
             case "story":
-                result = build_story_stream(args.script, data_dir, bilingual_path=args.bilingual)
+                result = build_story_stream(args.script, data_dir, bilingual_path=args.bilingual,
+                                            review_path=args.review)
             case "render":
                 print_json(render_story(args.story, data_dir, mode=args.mode))
                 return 0

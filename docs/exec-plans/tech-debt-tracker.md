@@ -4,7 +4,7 @@
 impact, and measurable exit conditions.
 **Status:** Verified
 **Owner:** Repository maintainers
-**Last verified:** 2026-09-12
+**Last verified:** 2026-09-20
 
 ## Open Items
 
@@ -35,7 +35,16 @@ impact, and measurable exit conditions.
 | TD-038 | High | Experimental explainers do not yet support current-news admission or formal acceptance. | Bound scripts, model reviews and diagrams support snapshot previews; correction/update-chain retrieval, claim expiry, host-metered dispatch and human comprehension remain unavailable. Context-label checks do not enforce host isolation. | A trusted freshness adapter records exact checked evidence and correction chains, enforces claim-specific/edition deadlines, routes changed facts upstream, and passes frozen model/reader plus three-edition multi-host acceptance. |
 | TD-039 | Medium | Thesis and watch continuation lacks validated structured identities across wording or evidence changes. | State now preserves separate claim/evidence identities and never closes omitted watchers, but paraphrases and new evidence can create parallel records. | Bounded prior-thesis references and structured trigger conditions support validated continuation and explicit resolution, with ambiguous migration and forged-reference tests. |
 | TD-040 | Medium | Extraction and image relevance remain deterministic heuristics. | Structural quality and caption overlap fix local counterexamples; complex layouts, ambiguous captions, crop variants and target-specific image suitability have no corpus acceptance evidence. | A frozen multilingual page/image corpus measures extraction contamination, completeness and actual-pixel/crop suitability; uncertain cases retain explicit quality limits. |
-| TD-041 | Medium | Claim-driven collection and stakeholder blind-spot search are not implemented. | Report A section 3 adds configured region/topic/source-role diagnostics, local body-gap suggestions and bounded extraction, but no validated claim/source relationships, stakeholder inventory, search providers or calibrated utility/cost policy. | A bounded research channel records original/reprint lineage and support/refute/background roles per claim, audits unconfigured coverage against explicit targets, and stops search with measured budget/benefit and unresolved evidence. |
+| TD-041 | Medium | Automated targeted research and calibrated source diversity remain incomplete. | September 20 adds frozen research scopes, original-record/content deduplication, question-driven block retrieval and scoped claims. Original-source attribution is supplied metadata, not independently verified; no search provider, stakeholder inventory or calibrated utility/cost policy is implemented. | Measured targeted retrieval and verified origin/support/refute relationships cover explicit stakeholder gaps, with bounded cost and frozen reader/quality acceptance. |
+
+September 20 evening trial evidence for TD-031/032/040: 422 briefs were delivered, but
+three first-wave tasks used stale pre-enrichment packet paths, only 1 full-text and 1 partial
+item reached the 18-item analysis packet, and navigation/advertising pages entered source lists.
+The optional evaluator dossier was about 843 KB and its known usage exceeded 5.2 million
+tokens including cached input, with incomplete accounting. Quality scoring is now explicit
+opt-in; compacting requested evaluations, aligning extraction with analysis, and filtering
+non-story candidates remain open. Old papers in current source-ranked Top15 are permitted;
+publication age and a real update must still be distinguished.
 
 ## Resolved Items
 
@@ -68,7 +77,9 @@ audited bridge; they must fail exact acceptance until fixtures and reconciliatio
 Resolved during the 2026-08-28 documentation and release cleanup:
 
 - TD-001: the tracked `skills/signaltrail/` snapshot was rebuilt from the allowlisted canonical
-  sources. Package validation and the repository gate verify the synchronized release copy.
+  sources. On 2026-09-20, the tracked copy was removed entirely; root `src/` is the only maintained
+  implementation, and complete release packages are generated in ignored `dist/signaltrail/`.
+  Packaging tests verify source/resource coverage and installer synchronization.
 
 Resolved in the 2026-08-02 audit:
 

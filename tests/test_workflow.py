@@ -298,7 +298,8 @@ def test_two_stage_run_reaches_completed(monkeypatch, tmp_path: Path):
     assert completed["artifacts"]["collection_metrics"]["candidate_count"] == 1
     assert "phase_durations_seconds" in completed["metrics"]
     assert completed["metrics"]["phase_durations_seconds"]["collection"] >= 0
-    assert completed["evaluation"]["scheduler"]["status"] == "scheduled"
+    assert completed["evaluation"]["status"] == "not_requested"
+    assert "scheduler" not in completed["evaluation"]
     assert completed["publication"] is None
     assert [row["status"] for row in completed["stage_history"]].count(RunStatus.COMPLETED) == 1
 
@@ -483,8 +484,9 @@ def test_verified_index_reopens_published_run_as_a_report_revision(monkeypatch, 
     assert "evaluation" not in run
 
 
-def test_deferred_tail_returns_after_html_then_finishes_pdf_notion_and_evaluation(
-    monkeypatch, tmp_path: Path
+@pytest.mark.parametrize("evaluate", [False, True])
+def test_deferred_tail_returns_after_html_then_finishes_requested_work(
+    monkeypatch, tmp_path: Path, evaluate
 ):
     data_dir = tmp_path / "data"
     date = "2026-07-25"
@@ -557,6 +559,7 @@ def test_deferred_tail_returns_after_html_then_finishes_pdf_notion_and_evaluatio
         data_dir,
         publish=True,
         defer_tail=True,
+        evaluate=evaluate,
         output_config=OutputConfig(formats=["html", "pdf"]),
     )
 
@@ -564,9 +567,14 @@ def test_deferred_tail_returns_after_html_then_finishes_pdf_notion_and_evaluatio
     assert run["status"] == RunStatus.COMPLETED
     assert run["tail"]["status"] == "pending"
     assert run["tail"]["publish_requested"] is True
-    assert run["evaluation"]["scheduler"]["status"] == "deferred_until_tail"
+    if evaluate:
+        assert run["evaluation"]["scheduler"]["status"] == "deferred_until_tail"
+    else:
+        assert run["evaluation"]["status"] == "not_requested"
+    assert ("--evaluate" in run["tail"]["command"]) is evaluate
     assert run["artifacts"]["requested_formats"] == ["html"]
     assert "--publish" in run["tail"]["command"]
+    assert run["tail"]["command"].startswith("signaltrail --data-dir ")
 
     monkeypatch.setattr(
         "daily_intelligence.workflow.write_local_outputs",
@@ -597,7 +605,15 @@ def test_deferred_tail_returns_after_html_then_finishes_pdf_notion_and_evaluatio
     run = read_json(run_path)
     assert run["tail"]["status"] == "completed"
     assert run["publication"]["page_id"] == "notion-page"
-    assert run["evaluation"]["scheduler"]["status"] == "scheduled"
+    if evaluate:
+        assert run["evaluation"]["scheduler"]["status"] == "scheduled"
+    else:
+        assert run["evaluation"]["status"] == "not_requested"
+        assert "scheduler" not in run["evaluation"]
+        assert not (data_dir / "usage").exists()
+        complete_edition_tail(run_path, data_dir, evaluate=True)
+        assert read_json(run_path)["evaluation"]["status"] == "pending"
+        assert read_json(run_path)["evaluation"]["scheduler"]["status"] == "scheduled"
     assert run["artifacts"]["pdf_engine"] == "reportlab"
     assert run["metrics"]["pdf_projection_seconds"] >= 0
 
@@ -691,6 +707,7 @@ def test_deferred_tail_records_projection_failure_without_retracting_html(
                 "status": "pending",
                 "scheduler": {"status": "deferred_until_tail"},
             },
+            "evaluation_requested": True,
         },
     )
     monkeypatch.setattr(

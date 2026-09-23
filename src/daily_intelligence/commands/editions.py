@@ -216,6 +216,7 @@ def handle_finalize_edition(args: argparse.Namespace, context: CommandContext) -
         output_config=config.output,
         media_config=config.media,
         defer_tail=args.defer_tail,
+        evaluate=args.evaluate,
     )
     print_json_file(output)
     return 0
@@ -236,6 +237,7 @@ def handle_complete_edition_tail(args: argparse.Namespace, context: CommandConte
         publish=args.publish,
         notion_config=args.notion_config,
         output_config=config.output,
+        evaluate=args.evaluate,
     )
     print_json_file(output)
     return 0

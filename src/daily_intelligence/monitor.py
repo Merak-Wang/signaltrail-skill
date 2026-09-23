@@ -11,12 +11,13 @@ from zoneinfo import ZoneInfo
 
 import httpx
 
-from .access import classify_access_text
+from .access import classify_access_text, read_bounded_response
 from .clustering import cluster_articles
 from .collection_diagnostics import source_coverage
 from .config import AppConfig, SourceConfig
 from .feeds import (
     FeedFetchResult,
+    _retry_after_seconds,
     article_from_dict,
     discover_feed_urls,
     fetch_feed,
@@ -103,14 +104,10 @@ async def _read_bounded_response(response: httpx.Response, max_bytes: int) -> by
     - ``max_bytes``：允许读取或下载的最大字节数；达到上限后停止或报错。
     输出：受大小边界约束的字节内容，可直接写入文件或 HTTP 响应。
     """
-    chunks: list[bytes] = []
-    total = 0
-    async for chunk in response.aiter_bytes():
-        total += len(chunk)
-        if total > max_bytes:
-            raise ValueError(f"Response exceeds configured {max_bytes}-byte safety limit")
-        chunks.append(chunk)
-    return b"".join(chunks)
+    content, truncated = await read_bounded_response(response, max_bytes)
+    if truncated:
+        raise ValueError(f"Response exceeds configured {max_bytes}-byte safety limit")
+    return content
 
 
 async def _discover_one(
@@ -119,23 +116,16 @@ async def _discover_one(
     config: AppConfig,
     global_limit: asyncio.Semaphore,
     domain_limits: defaultdict[str, asyncio.Semaphore],
-) -> tuple[list[str], str, str | None]:
-    """处理：访问来源首页，识别挑战并发现声明或直接返回的 Feed URL。
-    输入：
-    - ``client``：已配置超时、重定向和连接池策略的 HTTP 客户端。
-    - ``source``：来源配置；包含来源 ID、名称、入口 URL、分类、过滤规则、限额和可信层级。
-    - ``config``：已校验的应用配置；提供时区、来源策略、并发限制、预算和输出选项。
-    - ``global_limit``：当前网络阶段共享的全局异步信号量。
-    - ``domain_limits``：按主机名懒创建的异步信号量；限制同域并发请求数。
-    输出：“访问来源首页，识别挑战并发现声明或直接返回的 Feed URL”得到的固定结构结果；
-      返回位置依次对应 feeds、SourceStatus.SUCCESS if feeds el、None if feeds else 'No RSS or At
-      。
+) -> tuple[list[str], str, str | None, int | None]:
+    """处理：访问首页并发现 RSS/Atom，先分类限流与验证再处理一般错误。
+    输入：来源、HTTP 客户端、字节上限和共享并发许可。
+    输出：Feed 地址、访问状态、错误和 Retry-After 秒数，供逐来源调度使用。
     """
     domain = urlsplit(source.url).netloc.lower()
     try:
         async with (
-            global_limit,
             domain_limits[domain],
+            global_limit,
             client.stream(
                 "GET",
                 source.url,
@@ -148,29 +138,39 @@ async def _discover_one(
                 },
             ) as response,
         ):
+            if response.status_code == 429:
+                return (
+                    [], SourceStatus.RATE_LIMITED, "Feed discovery was rate limited",
+                    _retry_after_seconds(response.headers.get("retry-after")),
+                )
+            if response.status_code in {401, 403}:
+                return [], SourceStatus.VERIFICATION_REQUIRED, f"HTTP {response.status_code}", None
             content = await _read_bounded_response(
                 response, config.monitor.max_feed_bytes
             )
-        if response.status_code >= 400:
-            return [], SourceStatus.FAILED, f"HTTP {response.status_code}"
         text = content.decode(response.encoding or "utf-8", errors="replace")
         challenge = classify_access_text(response.status_code, "", text[:30000])
         if challenge.get("rate_limited"):
-            return [], SourceStatus.RATE_LIMITED, "Feed discovery was rate limited"
+            return (
+                [], SourceStatus.RATE_LIMITED, "Feed discovery was rate limited",
+                _retry_after_seconds(response.headers.get("retry-after")),
+            )
         if challenge.get("required"):
             return (
                 [],
                 SourceStatus.VERIFICATION_REQUIRED,
-                "Feed discovery reached a verification page",
+                "Feed discovery reached a verification page", None,
             )
+        if response.status_code >= 400:
+            return [], SourceStatus.FAILED, f"HTTP {response.status_code}", None
         if looks_like_feed(content, response.headers.get("content-type", "")):
-            return [str(response.url)], SourceStatus.SUCCESS, None
+            return [str(response.url)], SourceStatus.SUCCESS, None, None
         feeds = discover_feed_urls(text, str(response.url))
         return feeds, SourceStatus.SUCCESS if feeds else "unsupported", (
             None if feeds else "No RSS or Atom feed was declared or discovered"
-        )
+        ), None
     except Exception as exc:
-        return [], SourceStatus.FAILED, f"{type(exc).__name__}: {exc}"
+        return [], SourceStatus.FAILED, f"{type(exc).__name__}: {exc}", None
 
 
 async def _feed_phase(
@@ -212,178 +212,88 @@ async def _feed_phase(
         max_keepalive_connections=config.monitor.global_concurrency,
     )
     discovery_statuses: dict[str, dict[str, Any]] = {}
-    source_feed_urls: dict[str, list[str]] = {}
     async with httpx.AsyncClient(
-        timeout=timeout,
-        follow_redirects=True,
-        limits=limits,
-        transport=transport,
+        timeout=timeout, follow_redirects=True, limits=limits, transport=transport,
     ) as client:
-        discovery_jobs: list[SourceConfig] = []
-        for source in sources:
-            configured = list(dict.fromkeys(source.feed_urls))
-            if configured:
-                # 配置 Feed 是主入口；登记表中的历史发现结果只作为补充并保持稳定顺序。
-                cached = registry_sources.get(source.id, {})
-                cached_feeds = (
-                    cached.get("feed_urls", []) if isinstance(cached, dict) else []
-                )
-                source_feed_urls[source.id] = list(
-                    dict.fromkeys(
-                        [
-                            *configured,
-                            *(
-                                str(url)
-                                for url in cached_feeds
-                                if isinstance(url, str)
-                            ),
-                        ]
-                    )
-                )
-                continue
-            cached = registry_sources.get(source.id, {})
-            cached_feeds = (
-                cached.get("feed_urls", []) if isinstance(cached, dict) else []
-            )
-            if cached_feeds and not force:
-                # 非强制刷新复用已验证的发现结果，减少对来源首页的额外请求。
-                source_feed_urls[source.id] = [
-                    str(url) for url in cached_feeds if isinstance(url, str)
-                ]
-            elif config.monitor.auto_discover_feeds:
-                discovery_jobs.append(source)
-            else:
-                source_feed_urls[source.id] = []
-
-        discovered = await asyncio.gather(
-            *(
-                _discover_one(
-                    client,
-                    source,
-                    config,
-                    global_limit,
-                    domain_limits,
-                )
-                for source in discovery_jobs
-            )
-        )
-        for source, (feed_urls, status, error) in zip(
-            discovery_jobs, discovered, strict=True
-        ):
-            source_feed_urls[source.id] = feed_urls
-            discovery_statuses[source.id] = {
-                "status": status,
-                "error": error,
-                "checked_at": checked_at,
-                "feed_urls": feed_urls,
-            }
-            registry_sources[source.id] = {
-                "source_url": source.url,
-                "feed_urls": feed_urls,
-                "checked_at": checked_at,
-                "status": status,
-                "error": error,
-            }
-
-        async def bounded_feed(
-            source: SourceConfig, feed_url: str
-        ) -> FeedFetchResult:
-            """处理：在全局与同域配额内抓取单个 Feed。
-            输入：
-            - ``source``：来源配置；包含来源 ID、名称、入口 URL、分类、过滤规则、限额和可信层级
-              。
-            - ``feed_url``：正在解析或抓取的 RSS/Atom 地址；同时作为缓存和来源追踪键。
-            输出：单个 Feed 的抓取结果；包含访问状态、缓存信息、错误、刷新时间和规范文章条目。
+        async def bounded_feed(source: SourceConfig, feed_url: str) -> FeedFetchResult:
+            """处理：先等同域空位，再占全局名额抓取 Feed。
+            输入：来源配置、Feed 地址及外层共用的客户端与信号量。
+            输出：含缓存状态的单个 Feed 结果；取消时自动释放两个名额。
             """
             domain = urlsplit(feed_url).netloc.lower()
-            async with global_limit, domain_limits[domain]:
+            async with domain_limits[domain], global_limit:
                 return await fetch_feed(
-                    client,
-                    source,
-                    feed_url,
-                    data_dir,
-                    config.timezone,
+                    client, source, feed_url, data_dir, config.timezone,
                     max_bytes=config.monitor.max_feed_bytes,
-                    max_items=(
-                        source.feed_item_limit or config.monitor.max_items_per_feed
-                    ),
-                    refresh_interval_minutes=(
-                        source.refresh_interval_minutes
-                        or config.monitor.default_refresh_interval_minutes
-                    ),
+                    max_items=source.feed_item_limit or config.monitor.max_items_per_feed,
+                    refresh_interval_minutes=(source.refresh_interval_minutes
+                        or config.monitor.default_refresh_interval_minutes),
                     force=force,
                 )
 
-        jobs = [
-            (source, feed_url)
-            for source in sources
-            for feed_url in source_feed_urls.get(source.id, [])
-        ]
-        results = await asyncio.gather(
-            *(bounded_feed(source, feed_url) for source, feed_url in jobs)
-        )
-        initial_by_source: defaultdict[str, list[FeedFetchResult]] = defaultdict(list)
-        for (source, _feed_url), result in zip(jobs, results, strict=True):
-            initial_by_source[source.id].append(result)
-        fallback_discovery_sources = [
-            source
-            for source in sources
-            if config.monitor.auto_discover_feeds
-            and source.feed_urls
-            and not any(
-                result.items for result in initial_by_source.get(source.id, [])
+        async def discover(source: SourceConfig, *, fallback: bool = False) -> list[str]:
+            """处理：独立发现一个来源的 Feed，并记录限流冷却时间。
+            输入：待发现来源及是否由已配置 Feed 失败触发。
+            输出：发现的地址列表；健康记录保留真实访问状态和下次允许时间。
+            """
+            urls, status, error, retry_after = await _discover_one(
+                client, source, config, global_limit, domain_limits,
             )
-        ]
-        # 显式配置的 Feed 可能已迁移；只有全部未产出条目时才回退发现替代地址。
-        fallback_discovered = await asyncio.gather(
-            *(
-                _discover_one(
-                    client,
-                    source,
-                    config,
-                    global_limit,
-                    domain_limits,
-                )
-                for source in fallback_discovery_sources
-            )
-        )
-        additional_jobs: list[tuple[SourceConfig, str]] = []
-        for source, (discovered_urls, status, error) in zip(
-            fallback_discovery_sources,
-            fallback_discovered,
-            strict=True,
-        ):
-            existing_urls = set(source_feed_urls.get(source.id, []))
-            alternatives = [
-                url for url in discovered_urls if url not in existing_urls
-            ]
-            additional_jobs.extend((source, url) for url in alternatives)
-            discovery_statuses[source.id] = {
-                "status": status,
-                "error": error,
-                "checked_at": checked_at,
-                "feed_urls": discovered_urls,
-                "fallback_after_configured_feed": True,
+            record = {
+                "source_url": source.url, "feed_urls": urls,
+                "checked_at": checked_at, "status": status, "error": error,
             }
-            registry_sources[source.id] = {
-                "source_url": source.url,
-                "feed_urls": discovered_urls,
-                "checked_at": checked_at,
-                "status": status,
-                "error": error,
-            }
-        if additional_jobs:
-            additional_results = await asyncio.gather(
-                *(
-                    bounded_feed(source, feed_url)
-                    for source, feed_url in additional_jobs
+            if status == SourceStatus.RATE_LIMITED:
+                delay = retry_after if retry_after is not None else (
+                    config.monitor.default_refresh_interval_minutes * 60
                 )
-            )
-            jobs.extend(additional_jobs)
-            results.extend(additional_results)
-    by_source: defaultdict[str, list[FeedFetchResult]] = defaultdict(list)
-    for (source, _feed_url), result in zip(jobs, results, strict=True):
-        by_source[source.id].append(result)
+                record["retry_after_seconds"] = retry_after
+                record["next_refresh_at"] = (
+                    _current_time(config.timezone) + timedelta(seconds=max(1, delay))
+                ).isoformat(timespec="seconds")
+            if fallback:
+                record["fallback_after_configured_feed"] = True
+            registry_sources[source.id] = record
+            discovery_statuses[source.id] = record
+            return urls
+
+        async def collect_feeds(source: SourceConfig) -> list[FeedFetchResult]:
+            """处理：逐来源推进已知 Feed、发现和替代入口，无全局发现屏障。
+            输入：来源配置与登记表历史；不同来源同时推进。
+            输出：按配置和发现顺序排列的 Feed 结果，不受完成顺序影响。
+            """
+            cached = registry_sources.get(source.id, {})
+            cached_urls = cached.get("feed_urls", [])
+            next_refresh = _parse_time(cached.get("next_refresh_at"), config.timezone)
+            if (cached.get("status") == SourceStatus.RATE_LIMITED and next_refresh
+                    and _current_time(config.timezone) < next_refresh):
+                discovery_statuses[source.id] = cached
+                return []
+            if source.feed_urls:
+                urls = list(dict.fromkeys([*source.feed_urls, *cached_urls]))
+            elif cached_urls and not force:
+                urls = cached_urls
+            elif config.monitor.auto_discover_feeds:
+                urls = await discover(source)
+            else:
+                urls = []
+            results = list(await asyncio.gather(*(bounded_feed(source, url) for url in urls)))
+            # 只有没有条目且未遇限流/验证时才找替代入口，避免换通道重撞同一限制。
+            if (source.feed_urls and config.monitor.auto_discover_feeds
+                    and not any(result.items for result in results)
+                    and not any(result.status in {
+                        SourceStatus.RATE_LIMITED, SourceStatus.VERIFICATION_REQUIRED,
+                    } for result in results)):
+                alternatives = await discover(source, fallback=True)
+                results.extend(await asyncio.gather(*(
+                    bounded_feed(source, url) for url in alternatives if url not in urls
+                )))
+            return results
+
+        results_by_source = await asyncio.gather(*(collect_feeds(source) for source in sources))
+    by_source = {
+        source.id: results for source, results in zip(sources, results_by_source, strict=True)
+    }
     registry_payload = {
         "schema_version": "1.0",
         "updated_at": checked_at,
@@ -427,6 +337,10 @@ def _source_status(
             }
             for status in statuses
         ) else SourceStatus.SUCCESS
+    if discovery and discovery.get("status") in {
+        SourceStatus.FAILED, SourceStatus.RATE_LIMITED, SourceStatus.VERIFICATION_REQUIRED,
+    }:
+        statuses.add(str(discovery["status"]))
     if SourceStatus.RATE_LIMITED in statuses:
         # 没有条目时优先保留访问失败语义，绝不能降级为 no_items。
         return SourceStatus.RATE_LIMITED
@@ -473,6 +387,7 @@ def _merge_source_items(
                         "bundle": source.bundle,
                         "language": source.language,
                         "region": source.region,
+                        **source.origin_metadata,
                         "acquisition_method": "html",
                     }
                 )
@@ -531,6 +446,7 @@ def _source_record(
         "module": source.module,
         "category": source.category,
         "region": source.region,
+        **source.origin_metadata,
         "language": source.language,
         "item_order": source.item_order,
         "methods": methods,
@@ -725,6 +641,12 @@ def refresh_monitor(
         for source in sources
         if fallback_enabled
         and source.adapter_name == "browser_index"
+        and discovery_statuses.get(source.id, {}).get("status") not in {
+            SourceStatus.RATE_LIMITED, SourceStatus.VERIFICATION_REQUIRED,
+        }
+        and not any(result.status in {
+            SourceStatus.RATE_LIMITED, SourceStatus.VERIFICATION_REQUIRED,
+        } for result in feed_results.get(source.id, []))
         and not any(result.items for result in feed_results.get(source.id, []))
     ]
     # 浏览器只兜底支持该采集方式且 Feed 无结果的来源，避免默认扩大昂贵路径。

@@ -235,6 +235,41 @@ def test_image_selection_uses_article_caption_before_unrelated_metadata(tmp_path
     assert not any(entry["url"].endswith(("/brand.jpg", "/unrelated.jpg")) for entry in details)
 
 
+def test_loaded_image_src_precedes_relative_lazy_path_and_figure_caption_is_kept(tmp_path):
+    config = load_config()
+    item = _item()
+    markup = (
+        "<article><p>A sufficiently detailed article body about a public announcement.</p>"
+        "<p><img data-src='articles/example/en/resources/figure.jpg' "
+        "src='https://imgopt.example/fit/figure.jpg'></p>"
+        "<p><small><strong>Figure 1. Architecture overview (Source: author).</strong>"
+        "</small></p>"
+        "<p><img src='/image/transparent.png' data-src='/real-image.jpg'></p>"
+        "<p>This nearby paragraph explains the article and is not a figure caption.</p>"
+        "<p><img src='/first-unlabeled.jpg'></p>"
+        "<p><img src='/second-figure.jpg'></p>"
+        "<p>Figure 2. The second image only.</p>"
+        "</article>"
+    )
+    _apply_http_document(
+        item, config.source_by_id(item["source_id"]), markup, item["url"], 200,
+        config, tmp_path,
+    )
+
+    details = item["metadata"]["image_candidate_details"]
+    first = next(row for row in details if row.get("position") == 0)
+    second = next(row for row in details if row.get("position") == 1)
+    assert first["url"] == "https://imgopt.example/fit/figure.jpg"
+    assert first["caption"] == "Figure 1. Architecture overview (Source: author)."
+    assert second["url"] == "https://www.bbc.com/real-image.jpg"
+    assert second["caption"] == ""
+    later = [row for row in details if row.get("position") in (2, 3)]
+    assert next(row for row in later if row["position"] == 2)["caption"] == ""
+    assert next(row for row in later if row["position"] == 3)["caption"] == (
+        "Figure 2. The second image only."
+    )
+
+
 @pytest.mark.parametrize("figure", [
     "<figure><img src='/photo.jpg'><figcaption>{caption}</figcaption></figure>",
     "<div class='wp-caption'><a><img src='/photo.jpg'></a>"
@@ -284,6 +319,43 @@ def test_missing_caption_never_uses_alt_title_or_a_neighboring_figure(tmp_path):
         "https://www.bbc.com/first.jpg": "First photo only.",
         "https://www.bbc.com/second.jpg": "",
     }
+
+
+def test_single_article_image_never_borrows_quote_attribution(tmp_path):
+    config = load_config()
+    item = _item()
+    markup = (
+        "<article><p>The publisher describes the new cache performance dashboard.</p>"
+        "<div><div><img src='/dashboard.png'></div>"
+        "<blockquote><p>Our costs have fallen significantly with prompt caching.</p>"
+        "<span class='caption'>—Mario Rodriguez, Chief Product Officer</span>"
+        "</blockquote></div></article>"
+    )
+    _apply_http_document(
+        item, config.source_by_id(item['source_id']), markup, item['url'], 200,
+        config, tmp_path,
+    )
+    assert item['metadata']['image_candidate_details'][0]['caption'] == ''
+
+
+def test_article_images_prefer_explicit_full_size_link(tmp_path):
+    config = load_config()
+    item = _item()
+    markup = (
+        "<article><p>The official report shows the latest aircraft test flight.</p>"
+        "<figure><a href='/full-aircraft.jpg'><img src='/aircraft-706x400.jpg'></a>"
+        "<figcaption>Aircraft during its flight test.</figcaption></figure>"
+        "<a href='/another-story'><img src='/second.jpg'></a></article>"
+    )
+    _apply_http_document(
+        item, config.source_by_id(item['source_id']), markup, item['url'], 200,
+        config, tmp_path,
+    )
+    details = item['metadata']['image_candidate_details']
+    first = next(row for row in details if row.get('position') == 0)
+    assert first['url'] == 'https://www.bbc.com/full-aircraft.jpg'
+    assert first['caption'] == 'Aircraft during its flight test.'
+    assert not any(row['url'].endswith('/another-story') for row in details)
 
 
 def test_repeated_extraction_never_overwrites_prior_body_or_blocks(tmp_path):

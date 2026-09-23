@@ -273,6 +273,7 @@ def test_post_publication_evaluation_uses_bounded_retries(monkeypatch, tmp_path:
     assert "$env:PYTHONPATH" not in command[4]
     assert "PYTHONPATH=" not in command[4]
     assert "daily-intel --data-dir" not in command[4]
+    assert "sys.argv=['signaltrail']" in command[4]
     assert "--publish" not in command[4]
     assert result["job_id"] == "eval-1"
     assert result["attempts"] == 1
@@ -353,7 +354,10 @@ def test_scheduler_reconciliation_is_read_only_and_sanitized(monkeypatch):
     assert "private evaluator instructions" not in str(receipt)
 
 
-def test_finalize_publish_records_automatic_evaluator_schedule(monkeypatch, tmp_path: Path):
+@pytest.mark.parametrize("evaluate", [False, True])
+def test_finalize_publish_only_schedules_requested_evaluation(
+    monkeypatch, tmp_path: Path, evaluate
+):
     data_dir = tmp_path / "data"
     report_path = write_json(
         data_dir / "reports" / "2026-07-15" / "morning-r1.json",
@@ -388,10 +392,17 @@ def test_finalize_publish_records_automatic_evaluator_schedule(monkeypatch, tmp_
         lambda *_args, **_kwargs: {"status": "scheduled", "detail": "job-1"},
     )
 
-    finalize_edition(run_path, report_path, data_dir, publish=True)
+    finalize_edition(run_path, report_path, data_dir, publish=True, evaluate=evaluate)
 
     run = read_json(run_path)
     assert run["status"] == RunStatus.COMPLETED
+    if not evaluate:
+        assert run["evaluation"]["status"] == "not_requested"
+        assert "scheduler" not in run["evaluation"]
+        assert not (data_dir / "usage").exists()
+        finalize_edition(run_path, report_path, data_dir)
+        assert read_json(run_path)["evaluation"]["status"] == "not_requested"
+        return
     assert run["evaluation"]["scheduler"]["status"] == "scheduled"
     assert run["evaluation"]["scheduler"]["detail"] == "job-1"
     assert run["evaluation"]["scheduler"]["attempt"] == 1
@@ -427,7 +438,7 @@ def test_finalize_retries_missing_evaluator_schedule_after_completed_publish(
         lambda *_args, **_kwargs: {"status": "scheduled", "detail": "job-recovered"},
     )
 
-    finalize_edition(run_path, report_path, data_dir, publish=True)
+    finalize_edition(run_path, report_path, data_dir, publish=True, evaluate=True)
 
     run = read_json(run_path)
     assert run["evaluation"]["scheduler"]["detail"] == "job-recovered"

@@ -38,6 +38,68 @@ def test_coordinator_bounds_history_while_authority_keeps_complete_state(tmp_pat
     assert "reusable_briefs" not in coordinator
 
 
+def test_coordinator_omits_delivery_fields_without_changing_authority_or_packets(tmp_path):
+    item = {
+        "item_id": "bbc-1",
+        "source_id": "bbc_world",
+        "source_name": "BBC",
+        "title": "A sufficiently detailed headline",
+        "url": "https://bbc.example/story/1",
+        "image_url": "https://bbc.example/image.jpg",
+        "description": "A public abstract with enough evidence to guide selection.",
+        "published_at": "2026-09-12T08:30:00+08:00",
+        "discovered_at": "2026-09-12T09:00:00+08:00",
+        "module": "international",
+        "category": "geopolitics",
+        "content_status": "not_fetched",
+        "metadata": {"source_rank": 3},
+    }
+    items = [item, {
+        **item,
+        "item_id": "bbc-2",
+        "title": "A second headline in source order",
+        "url": "https://bbc.example/story/2",
+        "image_url": "https://bbc.example/image-2.jpg",
+        "discovered_at": "2026-09-12T09:01:00+08:00",
+        "metadata": {"source_rank": 4},
+    }]
+    index_path = write_json(tmp_path / "indexes" / "2026-09-12" / "morning-r1.json", {
+        "date": "2026-09-12", "edition": "morning", "items": items,
+    })
+
+    context_path = build_context(index_path, load_config(), tmp_path, "morning")
+    authority = read_json(context_path)
+    coordinator = read_json(Path(authority["coordinator_path"]))
+    batch = authority["brief_authoring_batches"][0]
+    packet = read_json(Path(batch["packet_path"]))
+    omitted = {"url", "image_url", "discovered_at"}
+
+    assert authority["candidate_items"][0]["url"] == item["url"]
+    assert authority["candidate_items"][0]["image_url"] == item["image_url"]
+    assert authority["candidate_items"][0]["discovered_at"] == item["discovered_at"]
+    assert coordinator["candidate_items"] == [
+        {key: value for key, value in candidate.items()
+         if key not in omitted | {"semantic_fingerprint", "content_text_sha256"}}
+        for candidate in authority["candidate_items"]
+    ]
+    assert [candidate["item_id"] for candidate in coordinator["candidate_items"]] == [
+        "bbc-1", "bbc-2",
+    ]
+    projected = coordinator["candidate_items"][0]
+    assert projected["title"] == item["title"]
+    assert projected["description"] == item["description"]
+    assert projected["published_at"] == item["published_at"]
+    assert projected["source_name"] == item["source_name"]
+    assert projected["source_rank"] == 3
+    assert projected["content_status"] == item["content_status"]
+    assert packet["candidates"][0]["description"] == item["description"]
+    assert packet["candidates"][0]["source_rank"] == 3
+    assert packet["candidates"][0]["content_status"] == item["content_status"]
+    assert [candidate["item_id"] for candidate in packet["candidates"]] == [
+        "bbc-1", "bbc-2",
+    ]
+
+
 def test_enriched_rank_below_prefix_is_retained_without_changing_top_plan(tmp_path):
     items = [{
         "item_id": f"bbc-{n}", "source_id": "bbc_world", "title": f"Public headline {n}",
@@ -272,6 +334,7 @@ def test_context_keeps_index_top_order_even_when_a_lower_item_is_enriched(tmp_pa
     assert "short receipt" not in context["brief_authoring_rule"].lower()
     batch = context["brief_authoring_batches"][0]
     packet = read_json(Path(batch["packet_path"]))
+    assert packet["submission_command"].startswith("signaltrail --data-dir ")
     assert batch["author_item_count"] == len(packet["author_item_ids"])
     assert packet["task"].startswith("Author exactly one structured Chinese brief")
     assert "Do not browse the web" in packet["tool_policy"]

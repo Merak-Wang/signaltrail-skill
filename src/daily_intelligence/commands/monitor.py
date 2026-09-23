@@ -53,7 +53,7 @@ def handle_monitor_status(args: argparse.Namespace, context: CommandContext) -> 
         print_json(
             {
                 "status": "not_initialized",
-                "next_action": "daily-intel refresh-monitor",
+                "next_action": "signaltrail refresh-monitor",
             }
         )
         return 1

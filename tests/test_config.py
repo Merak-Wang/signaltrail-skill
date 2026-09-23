@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import pytest
 
 from daily_intelligence.cli import load_hermes_environment
@@ -28,6 +30,33 @@ def test_windows_defaults_to_edge_without_overrides(monkeypatch):
 
     assert resolve_browser_channel(config, platform="nt") == "msedge"
     assert resolve_browser_channel(config, platform="posix") is None
+
+
+def test_new_regional_sources_are_discovery_only_and_filter_navigation():
+    from daily_intelligence.adapters import is_eligible
+
+    config = load_config()
+    expected = {
+        "tass_en": "https://tass.com/world/2190083",
+        "cbr_en": "https://www.cbr.ru/eng/press/PR/?file=release.htm",
+        "xinhua_en": "https://english.news.cn/20260920/60052fca027b47b9b462f128950857ae/c.html",
+        "china_mfa": "https://www.fmprc.gov.cn/eng/xw/fyrbt/lxjzh/202609/t20260918_12026026.html",
+        "china_mofcom": "https://www.mofcom.gov.cn/xwfbzt/2026/swbzklxxwfbh2026n9y17r/index.html",
+        "un_press": "https://press.un.org/en/2026/sc16457.doc.htm",
+    }
+    assert len(config.sources) == 32
+    assert all(source.report_target == source.report_max == 15 for source in config.sources)
+    for source_id, url in expected.items():
+        source = config.source_by_id(source_id)
+        assert source in config.monitor_sources
+        assert source.enabled
+        assert source.report_target == source.report_max == 0
+        assert source.origin_scope and source.coverage_regions and source.publisher_group
+        assert is_eligible(source, "A sufficiently detailed public headline", url)
+        if source.article_patterns:
+            assert not is_eligible(source, "A sufficiently detailed navigation label", source.url)
+    for source_id in ["anadolu_en", "irna_en", "wam_en"]:
+        assert not config.source_by_id(source_id).enabled
 
 
 def test_local_html_and_pdf_are_default_reading_outputs():
@@ -123,8 +152,9 @@ def test_monitor_expands_sources_without_changing_newspaper_quotas():
     assert len(config.sources) == 32
     assert all(source.report_target == 15 for source in config.sources)
     assert all(source.report_max == 15 for source in config.sources)
-    assert len(config.monitor_sources) == 51
-    assert len(config.all_monitor_sources) == 83
+    assert len(config.monitor_sources) == 60
+    assert sum(source.enabled for source in config.monitor_sources) == 57
+    assert len(config.all_monitor_sources) == 92
     assert all(source.report_target == 0 for source in config.monitor_sources)
     assert config.budget.max_agent_tokens == 10_000_000
     assert config.budget.max_fulltext_per_run == 12
@@ -295,6 +325,23 @@ def test_live_hermes_data_root_is_bound_once(tmp_path):
     adopted = bind_data_root(second, hermes_home, adopt=True)
     assert adopted["status"] == "adopted"
     assert adopted["previous_data_root"] == str(first.resolve())
+
+
+def test_binding_existing_data_root_does_not_rewrite_registry(tmp_path, monkeypatch):
+    hermes_home = tmp_path / "hermes"
+    data_root = hermes_home / "daily-intelligence"
+    initial = bind_data_root(data_root, hermes_home)
+    registry_path = Path(initial["registry_path"])
+
+    def reject_rewrite(*args, **kwargs):
+        raise AssertionError("an unchanged data-root binding must not be rewritten")
+
+    monkeypatch.setattr("daily_intelligence.runtime.write_json", reject_rewrite)
+    repeated = bind_data_root(data_root, hermes_home)
+
+    assert repeated["status"] == "bound"
+    assert repeated["updated_at"] == initial["updated_at"]
+    assert registry_path.is_file()
 
 
 @pytest.mark.parametrize("artifact", ["index_path", "context_path", "coordinator_path"])

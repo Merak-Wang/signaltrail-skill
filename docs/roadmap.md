@@ -1,17 +1,23 @@
 # Roadmap: news explainers and illustrated reading
 
-**Status:** Active · **Owner:** Repository maintainers · **Last verified:** 2026-09-08
+**Status:** Active · **Owner:** Repository maintainers · **Last verified:** 2026-09-23
 
-This upgrade extends a completed report into a verified explainer and an illustrated reading
-stream. The 2026-09-08 research and experimental prompts are complete; the runtime features below
-now include an implemented experimental N1–N3 snapshot path; current-news admission and N4 remain pending. Speech, subtitles, and video are the next upgrade. This is the single
-implementation scope and acceptance record. [中文](zh-CN/roadmap.md)
+This roadmap tracks the experimental report-derived explainer and illustrated research workflow.
+The regular daily report and animated HTML news slides are separate, implemented user-facing
+features documented in [usage](usage.md) and [news slides](news-slides.md). Snapshot explainers
+and research are not part of the regular daily publication path; real-time admission and N4
+acceptance remain pending. Audio, timed captions, and video are not implemented. This is the
+canonical engineering scope and acceptance record for the experimental workflow. [中文](zh-CN/roadmap.md)
 
 The [research](research/2026-09-08-news-explainer-workflows.md) covers source evidence, alternatives,
 access limits, and a historical example. The [Chinese prompt pack](../templates/news-explainer-prompts.md)
 defines seven editing stages; it is experimental, not an executable runtime contract.
 
 Implemented scope is deliberately narrower than the intended current-news contract: snapshots only, no external photos, no model dispatch, and no current receipts. See [the implementation guide](explainers.md) and TD-038. The remaining requirements below still govern promotion.
+
+The September 20 [research workflow](research/2026-09-20-illustrated-workflow.md) now supports
+report-independent frozen evidence, question retrieval, scoped memos, evidence tables and late binding.
+It reuses N1–N3 review/storage and remains a snapshot path; it does not complete N4 or add model dispatch.
 
 ## Intended result
 
@@ -127,8 +133,8 @@ metering and optimization are in the [2026-08-23 implementation history](exec-pl
 | Reading composition | `reports.py`, `local_output.py`, `workflow.py` | `test_narrative_delivery.py`: child binding, equivalent meaning, report unaffected by failure |
 | Cards and assets | `media.py`, `image_policy.py`, local renderers | `test_story_stream.py`: qualifiers, caption/diagram claims, rights fallback, recovery |
 
-These filenames and possible new `narrative`/`story_stream` modules are proposals, not current
-commands. Existing `verification.py` handles browser access challenges; keep semantic review
+The `narrative` and `story_stream` modules are implemented; the explainer guide records their
+current commands. Existing `verification.py` handles browser access challenges; keep semantic review
 separate and avoid adding it to the large report validator.
 
 Before N1 integration, address or explicitly isolate TD-007 packet binding and TD-025 mutation

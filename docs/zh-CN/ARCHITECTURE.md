@@ -1,6 +1,6 @@
 # 架构
 
-**状态：** 已验证 · **负责人：** 仓库维护者 · **最后验证：** 2026-09-12
+**状态：** 已验证 · **负责人：** 仓库维护者 · **最后验证：** 2026-09-23
 
 本文说明 SignalTrail 的代码分工。[运行契约](../../references/system-design.md)解释数据字段
 和恢复规则，[AGENTS.md](AGENTS.md)说明修改仓库时的约束。[English](../../ARCHITECTURE.md)
@@ -10,7 +10,7 @@
 ```text
 公开来源 → 索引 → 有界证据包 → 模型草稿
 → Python 编译与校验 → 版本化 JSON + Markdown → HTML
-→ 可重试的 PDF、可选 Notion、独立评估
+→ 可重试的 PDF、可选 Notion、用户明确要求的独立评估
 ```
 
 Python 负责身份、访问状态、修订分配、校验和持久化。模型只在指定证据范围内选择和写作。
@@ -18,6 +18,12 @@ Python 负责身份、访问状态、修订分配、校验和持久化。模型�
 
 监控单独运行：RSS/Atom 和静态 HTML → 规范条目 → 词汇聚类 → 快照、来源健康和 Feed 缓存。
 监控不调用模型；监控失败时正式采集仍可继续。
+
+新闻幻灯片从已保存日报及其索引独立派生。讲解写作分成有界批次并接收后，由本地渲染
+附加索引来源、摘要、合并后的封面与正文图片、caption 和转场。有放映时，日报 HTML
+在屏幕端以演示替代摘要并保留独立打开入口，打印时恢复摘要。日报 JSON/Markdown 保持不变。
+更新图片可复用已接受讲稿而不增加模型调用；`slides prepare` 只读传入的日报和索引，不会抓取网页。
+详见[新闻幻灯片工作流](news-slides.md)。
 
 ## 代码地图
 
@@ -27,13 +33,15 @@ Python 负责身份、访问状态、修订分配、校验和持久化。模型�
 | --- | --- | --- |
 | 类型与 I/O | `models`、`storage`、`utils`、`runtime`、`access`、`localization`、`taxonomy` | 路径、枚举、原子写入、数据根绑定 |
 | 配置 | `config` | 来源、限额和运行选项 |
-| 采集 | `adapters`、`feeds`、`prefetch`、`collector`、`clustering` | 抓取、规范化、保留来源状态和顺序 |
+| 采集 | `adapters`、`browser_collection`、`feeds`、`feed_content`、`prefetch`、`collector`、`clustering` | 抓取、规范化、保留来源状态和顺序 |
 | 采集诊断 | `collection_diagnostics` | 已配置来源覆盖、有界正文缺口建议和本地产物完整性 |
 | 证据 | `content`、`content_extraction`、`content_images`、`media`、`image_policy`、`monitor` | 结构化正文块、抽取质量、含上下文的配图候选、快照和证据关联 |
 | 写作 | `context`、`authoring`、`semantics`、`state` | 有界数据包、已接收批次、连续状态和缓存 |
 | 报告契约 | `reporting` | 编译草稿、补齐证据、校验 Schema 及跨字段规则 |
 | 报告存储 | `reports` | 保存报告和评估、渲染 Markdown、更新派生状态 |
+| 新闻图文流 | `news_slides`、`slide_renderer` | 有界讲解批次，以及从已保存日报生成独立动态 HTML 放映 |
 | 实验讲解 | `narrative`、`narrative_contracts`、`narrative_store`、`narrative_verification`、`story_stream` | 不可变日报子产物、语言审核和解释图；实时新闻准入保持阻断 |
+| 实验研究 | `research`、`research_contracts`、`research_delivery` | 冻结正文块、本地问题检索、研究底稿和仅供预览的日报晚绑定；当前准入仍阻断 |
 | 交付 | `local_output`、`notion`、`dashboard` | HTML/PDF、远程副本和只读监控界面 |
 | 工作流 | `workflow` | 检查点、期限、恢复和评估调度 |
 | 用量与预算 | `llm_usage/`、`llm_budget`、`evaluation` | 不可变用量事件、派发预留和评估数据包 |
@@ -42,7 +50,7 @@ Python 负责身份、访问状态、修订分配、校验和持久化。模型�
 
 依赖从入口经过编排流向领域代码和公共 I/O。领域模块不得导入 `cli` 或 `commands`。
 `commands/parser.py` 定义参数，注册表把命令映射到处理函数，各命令组通过类型化
-`CommandContext` 调用领域代码。`daily-intel` 和 `signaltrail` 使用同一入口。
+`CommandContext` 调用领域代码。`signaltrail` 是统一的主 CLI 入口。
 
 `daily_intelligence`、`DAILY_INTEL_*` 和现有报告 ID 因兼容性继续保留。
 产品和新 CLI 名称为 SignalTrail。新增别名或包前请看[开发指南](development.md)。

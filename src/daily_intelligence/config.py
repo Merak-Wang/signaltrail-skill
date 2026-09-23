@@ -39,6 +39,8 @@ class SourceConfig:
     - ``category``：报告栏目 ID；必须与 module 和当前 taxonomy 契约一致。
     - ``language``：规范语言标识；用于本地化选择或语言一致性判断。
     - ``region``：来源主要覆盖地区；用于元数据和后续筛选。
+    - ``origin_scope``、``coverage_regions``、``publisher_group``：机构来源、报道范围和出版组。
+    - ``ready_selector``：索引就绪元素；未配置时使用适配器默认检查。
     - ``feed_urls``：显式配置的 RSS/Atom 地址，按优先级尝试并与发现缓存合并。
     - ``monitor_enabled``：是否允许零模型监控器刷新该来源。
     - ``refresh_interval_minutes``：来源或 Feed 的最小刷新间隔；未到期时可复用缓存。
@@ -52,7 +54,7 @@ class SourceConfig:
     - ``max_items``：本步骤允许处理或返回的最大条目数；同时受全局预算限制。
     - ``report_target``：正常报告希望从该来源选入的条目数。
     - ``report_max``：该来源在单份报告中允许出现的最大条目数。
-    - ``wait_ms``：页面初次加载后等待动态内容稳定的毫秒数；为空时使用全局默认值。
+    - ``wait_ms``：显式固定等待毫秒数（含 0）；为空时按就绪条件等待。
     - ``item_order``：可选来源级排序覆盖；为空时继承全局采集配置。
     输出：构造后的 ``SourceConfig`` 实例或枚举定义；其字段和方法共同承担上述职责。
     """
@@ -69,6 +71,9 @@ class SourceConfig:
     category: str = "international"
     language: str = "en"
     region: str = "global"
+    origin_scope: str | None = None
+    coverage_regions: list[str] = field(default_factory=list)
+    publisher_group: str | None = None
     feed_urls: list[str] = field(default_factory=list)
     monitor_enabled: bool = True
     refresh_interval_minutes: int | None = None
@@ -83,7 +88,19 @@ class SourceConfig:
     report_target: int = 15
     report_max: int = 15
     wait_ms: int | None = None
+    ready_selector: str | None = None
     item_order: str | None = None
+
+    @property
+    def origin_metadata(self) -> dict[str, Any]:
+        """处理：分开记录机构来源与报道范围，不把国别当可靠性评分。
+        输入：来源配置中显式填写的机构、地区和出版组。
+        输出：紧凑来源元数据；未配置字段保持缺失，兼容旧配置。
+        """
+        return {key: value for key, value in {
+            "origin_scope": self.origin_scope, "coverage_regions": self.coverage_regions,
+            "publisher_group": self.publisher_group,
+        }.items() if value}
 
     @property
     def adapter_name(self) -> str:
@@ -110,7 +127,7 @@ class BrowserConfig:
     - ``collection_per_domain_concurrency``：无脚本正文 HTTP 提取的同域并发上限。
     - ``http_prefetch_timeout_ms``：无脚本 HTTP 预取单次等待上限，单位为毫秒。
     - ``navigation_timeout_ms``：浏览器页面导航等待上限，单位为毫秒。
-    - ``default_wait_ms``：来源未单独配置时的页面稳定等待时间，单位为毫秒。
+    - ``default_wait_ms``：来源未指定固定等待时，就绪检查的最长等待毫秒数。
     输出：构造后的 ``BrowserConfig`` 实例或枚举定义；其字段和方法共同承担上述职责。
     """
     profile_dir_env: str = "DAILY_INTEL_PROFILE_DIR"

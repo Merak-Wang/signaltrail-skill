@@ -26,10 +26,12 @@ def parse_time(value: str) -> datetime:
     return parsed
 
 
-def prepare_explainer(run_path: Path, data_dir: Path, *, experimental: bool = False) -> Path:
-    """处理：从明确完成的日报抽取有界证据，不修改上游状态。
-    输入：运行清单绑定的报告和索引；部分完成只允许显式实验预览。
-    输出：不可变 packet，保存来源片段、时间、研判依赖和写作契约。
+def load_completed_report(
+    run_path: Path, data_dir: Path, *, experimental: bool = False
+) -> tuple[dict, dict, dict, dict]:
+    """处理：核对运行实际绑定的最终日报和索引。
+    输入：运行路径和数据根；部分完成仅允许显式实验预览。
+    输出：运行、报告、索引与父文件引用，供讲解准备和研究晚绑定共用。
     """
     run_path = require_data_root_path(run_path, data_dir, "Explainer run")
     run = json.loads(run_path.read_text(encoding="utf-8"))
@@ -53,6 +55,17 @@ def prepare_explainer(run_path: Path, data_dir: Path, *, experimental: bool = Fa
     )
     if errors:
         raise ValueError("Parent report validation failed: " + "; ".join(errors[:8]))
+    return run, report, index, refs
+
+
+def prepare_explainer(run_path: Path, data_dir: Path, *, experimental: bool = False) -> Path:
+    """处理：从明确完成的日报抽取有界证据，不修改上游状态。
+    输入：运行清单绑定的报告和索引；部分完成只允许显式实验预览。
+    输出：不可变 packet，保存来源片段、时间、研判依赖和写作契约。
+    """
+    run, report, index, refs = load_completed_report(
+        run_path, data_dir, experimental=experimental
+    )
     cutoff = parse_time(report["generated_at"])
     timezone = index.get("timezone", "Asia/Shanghai")
     ZoneInfo(timezone)
@@ -255,9 +268,15 @@ def script_segments(script: dict) -> list[dict]:
         result.extend([chapter["title"], chapter["question"]])
         for beat in chapter["beats"]:
             result.append(
-                {k: v for k, v in beat.items() if k not in {"visual", "visual_relation", "role"}}
+                {k: v for k, v in beat.items()
+                 if k not in {"visual", "visual_relation", "role", "table"}}
             )
             result.extend(beat["visual"])
+            if "table" in beat:
+                table = beat["table"]
+                result.extend(table["headers"])
+                result.extend(cell for row in table["rows"] for cell in row)
+                result.append(table["editorial_caption"])
     result.append(script["closing"])
     return result
 
@@ -280,6 +299,15 @@ def _compile_script(draft: dict, ledger: dict) -> dict:
             beat["segment_id"] = f"chapter-{i}-beat-{j}"
             for n, node in enumerate(beat["visual"], 1):
                 node["segment_id"] = f"chapter-{i}-beat-{j}-visual-{n}"
+            if "table" in beat:
+                table = beat["table"]
+                width = len(table["headers"])
+                if any(len(row) != width for row in table["rows"]):
+                    raise ValueError("Evidence table rows must match its headers")
+                cells = [*table["headers"], *(c for row in table["rows"] for c in row),
+                         table["editorial_caption"]]
+                for n, cell in enumerate(cells, 1):
+                    cell["segment_id"] = f"chapter-{i}-beat-{j}-table-{n}"
     segments = script_segments(script)
     allowed = {c["claim_id"] for c in ledger["claims"]}
     used = {c for s in segments for c in s["claim_ids"]}

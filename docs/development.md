@@ -1,6 +1,6 @@
 # Development
 
-**Status:** Verified · **Owner:** Repository maintainers · **Last verified:** 2026-09-08
+**Status:** Verified · **Owner:** Repository maintainers · **Last verified:** 2026-09-23
 
 This guide covers local changes and test selection. Read [architecture](../ARCHITECTURE.md)
 for code ownership and [AGENTS.md](../AGENTS.md) for invariants. [中文](zh-CN/development.md)
@@ -23,6 +23,14 @@ Unit tests use temporary data roots and fake network/host responses. They need n
 data, browser login, Notion credentials, or model calls. CI runs on Windows and Ubuntu with
 Python 3.11 and 3.12. Run a focused group while editing, then the full gate before submitting.
 
+The coordinator context projection keeps candidate order and selection evidence while omitting
+`url`, `image_url`, and `discovered_at`. The authoritative context remains complete, and brief
+packets are built from it independently.
+
+Hermes can reuse a request ID across retries. The observer pairs each attempt's hooks using
+the request ID and host start time, then reconciles successful calls and known tokens with
+the host database. A matching database total does not make missing failed-call usage exact.
+
 | Change | Focused tests |
 | --- | --- |
 | CLI options, aliases, dispatch | `tests/test_cli.py` |
@@ -33,6 +41,8 @@ Python 3.11 and 3.12. Run a focused group while editing, then the full gate befo
 | Run lifecycle and evaluation | `tests/test_workflow.py`, `tests/test_evaluation_workflow.py`, `tests/test_evaluation.py` |
 | Browser verification and Notion | `tests/test_verification.py`, `tests/test_notion.py` |
 | Local output and media | `tests/test_desktop_delivery.py`, `tests/test_content.py`, `tests/test_media.py` |
+| News slides | `tests/test_news_slides.py`, `tests/test_slide_renderer.py` |
+| Experimental research and explainers | `tests/test_research.py`, `tests/test_story_stream.py`, `tests/test_narrative.py`, `tests/test_narrative_store.py`, `tests/test_narrative_verification.py` |
 | Usage and host integration | `tests/test_llm_usage*.py`, `tests/test_usage_cli.py`, `tests/test_hermes_runner.py` |
 | Packaging and documentation | `tests/test_hermes_package.py`, `tests/test_docs.py`, `tests/test_code_comments.py` |
 
@@ -45,8 +55,7 @@ or delete regression coverage merely to reduce the test count.
 
 | Name | Use |
 | --- | --- |
-| SignalTrail / `signaltrail` | Product, skill ID, preferred CLI |
-| `daily-intel` | Supported CLI alias; generated commands and old integrations may still use it |
+| SignalTrail / `signaltrail` | Product, skill ID, main CLI; `daily-intel` is no longer installed |
 | `daily_intelligence` | Existing Python import package |
 | `daily-intelligence-skill` | Existing Python distribution name |
 | `DAILY_INTEL_*`, data directories, report IDs | Persisted compatibility surface; change only with a tested migration |
@@ -82,9 +91,16 @@ The documentation checker verifies local links, images, translation pairs, metad
 record dates. Historical dates remain historical; they do not expire after six months.
 The comment checker covers the maintained source modules and maintenance scripts.
 
-Edit canonical sources. Only rebuild `skills/signaltrail/`, `dist/`, or `build/` for an explicit
-release request, using `scripts/build_hermes_skill.py`. Its Git-tracked allowlist excludes runtime
-data and credentials. A repository refactor does not update an installed skill automatically.
+Maintain one implementation under root `src/`; do not commit a nested skill copy.
+For an explicit release request, run `python scripts/build_hermes_skill.py` to generate the
+complete skill package in ignored `dist/signaltrail/`. Its Git-tracked allowlist includes
+`SKILL.md`, Python source, configuration, schemas, templates, references, and assets, excluding
+runtime data and credentials. The generated package is a release artifact; keep the implementation
+and documentation at the repository root, with no nested `skills/signaltrail/` copy. For a GitHub
+release, update the version and release notes, run the package build and repository checks, then
+publish the reviewed tag and generated artifact through the project release process. Install from
+the complete checkout or generated package root, never from `src/` alone. A repository refactor
+does not update an installed skill automatically.
 
 Unresolved issues belong in the [technical-debt tracker](exec-plans/tech-debt-tracker.md), with
 evidence and an exit condition. Record released changes in [CHANGELOG.md](../CHANGELOG.md).
