@@ -8,6 +8,16 @@ The visual reference is [Frontend Design example site 02](https://mimo.xiaomi.co
 
 Story imagery combines cover and article-body candidates from the index. Candidates are deduplicated by image identity, preferring the higher-resolution variant; the renderer does not impose a six-image cap. The gallery provides thumbnails, a larger view, 100% original-size inspection, and a direct link to the original image. Extracted captions remain attached to their images. The current and next story images load eagerly; images in distant stories stay lazy until needed. Shared local images are encoded once per render.
 
+## Default daily flow: prepare, write, render
+
+Finalizing a daily report automatically prepares a slide plan and bounded writing packets from
+the saved report and matching index. The run manifest records them at
+`artifacts.slides.plan_path` and `artifacts.slides.packet_paths`; no model call is made during
+preparation. The writing host completes every packet, submits the result, then renders the plan
+before treating the default edition as finished. If preparation fails, the report remains saved
+and `artifacts.slides.error` records the reason; retry preparation from the saved report and index.
+Calling `slides prepare` directly remains the recovery path.
+
 ## Prepare, write, render
 
 Collection also reads an image's explicit full-size link when present. Known CDN size variants are merged without inventing URLs, and a higher-resolution remote image never inherits a thumbnail's local cache file. Captions stay within the image container; quotation attributions elsewhere in the article are excluded. Opening a larger image from the embedded deck expands its viewport above the report toolbar, then restores the container on close.

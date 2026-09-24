@@ -147,6 +147,8 @@ signaltrail --data-dir DATA_DIR finalize-edition --run RUN.json --report DRAFT.j
 
 Finalize only with zero validation errors. Add `--publish` only for requested Notion
 delivery. Return `artifacts.html_path` and `artifacts.desktop_html_path` immediately.
+Finalization also prepares default news-slide packets from the saved report and index;
+return `artifacts.slides.plan_path` and every `artifacts.slides.packet_paths` entry.
 Local JSON/Markdown is authoritative; HTML/PDF is rebuildable.
 
 ## 6. Finish the tail
@@ -165,8 +167,16 @@ At most two evaluation attempts are allowed. Tail failures stay `partial` withou
 
 Check that the run is `completed` or `completed_partial`, the HTML copies open, and
 schema, source order, counts, evidence, language, tail/PDF receipts and any requested evaluation validate.
-For metered runs, wait for workers/imports and seal foreground/evaluator tasks, including failures;
-retain unknown coverage and do not claim exact acceptance from partial observations.
+Complete each prepared news-slide packet with the writing host, submit its result, and render
+the plan before sealing metered tasks. Slide writing calls belong to the same metered run;
+wait for workers/imports and seal foreground/evaluator tasks, including failures, only after
+they finish. Retain unknown coverage and do not claim exact acceptance from partial observations.
+Use the usage task summary for whole-run totals; Hermes delegation `input_tokens` includes
+cache and covers only child writing calls. Report uncached input, cache reads, output, and
+the host-reported total separately. Missing cost stays unknown. The launcher seals the task
+after the host returns; label any still-open task summary as provisional.
+Finalization never makes a model call for slides. If preparation failed, inspect
+`artifacts.slides.error` and retry `slides prepare`; the saved report remains valid.
 
 ## Experimental explainers after a saved report
 
@@ -186,9 +196,11 @@ completes. New evidence creates a new snapshot. Current-news admission is blocke
 not a quality or reader-understanding measure. Use the requested [Chinese](templates/research-style-zh.md)
 or [English](templates/research-style-en.md) style card.
 
-## Animated news slides from a saved report
+## Animated news slides in the default daily edition
 
-From a saved report and index, run `signaltrail --data-dir DATA_DIR slides prepare --report REPORT.json --index INDEX.json`.
+Finalization prepares the plan and packets from the saved report and index. Complete these batches
+before sealing their metered usage task. For recovery, run
+`signaltrail --data-dir DATA_DIR slides prepare --report REPORT.json --index INDEX.json`.
 Read only each `packet.payload.model_input` and follow its schema plus the embedded
 [writing style](templates/news-slide-style/SKILL.md). Chinese narration is 200–350 characters; use relevant,
 evidence-backed perspectives. Finish all bounded batches, submit drafts, check status, then render.

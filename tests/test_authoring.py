@@ -990,7 +990,8 @@ def test_authoring_metrics_keep_only_bounded_delegate_observability(tmp_path: Pa
                     "duration_seconds": 12.5,
                     "model": "fast-model",
                     "exit_reason": "completed",
-                    "tokens": {"input": 1200, "output": 340},
+                    "tokens": {"input": 9200, "output": 340},
+                    "total_tokens": 9540,
                 }
             ],
             "total_duration_seconds": 12.8,
@@ -1003,7 +1004,7 @@ def test_authoring_metrics_keep_only_bounded_delegate_observability(tmp_path: Pa
     assert accepted["totals"]["wall_seconds"] == 12.8
     assert accepted["totals"]["child_compute_seconds"] == 12.5
     assert accepted["totals"]["api_calls"] == 4
-    assert accepted["totals"]["input_tokens"] == 1200
+    assert accepted["totals"]["input_tokens"] == 9200
     assert accepted["totals"]["output_tokens"] == 340
     assert accepted["totals"]["reasoning_tokens"] is None
     assert accepted["coverage"]["reasoning_tokens"] == {
@@ -1017,6 +1018,20 @@ def test_authoring_metrics_keep_only_bounded_delegate_observability(tmp_path: Pa
     status = get_authoring_status(run_path, data_dir)
     assert status["batches"][0]["duration_source"] == "delegate_result"
     assert status["batches"][0]["output_tokens"] == 340
+    assert status["batches"][0]["prompt_tokens_including_cache"] == 9200
+    assert status["batches"][0]["reported_total_tokens"] == 9540
+    assert status["delegation_token_usage"] == {
+        "scope": "delegated_authoring_batches",
+        "prompt_tokens_including_cache": 9200,
+        "uncached_input_tokens": None,
+        "output_tokens": 340,
+        "reported_total_tokens": 9540,
+        "quality": "exact",
+        "known_total_tokens": 9540,
+        "covered_batches": 1,
+        "expected_batches": 1,
+        "source": "delegation metrics; excludes coordinator, auxiliary and evaluator calls",
+    }
 
 
 def test_authoring_metrics_never_turn_unknown_usage_into_zero(tmp_path: Path):
@@ -1056,6 +1071,37 @@ def test_authoring_metrics_never_turn_unknown_usage_into_zero(tmp_path: Path):
     assert accepted["totals"]["output_tokens"] == 8
     assert accepted["coverage"]["input_tokens"]["missing_batches"] == 1
     assert accepted["batch_metrics"][0]["api_calls"] is None
+    status = get_authoring_status(run_path, data_dir)
+    assert status["delegation_token_usage"]["quality"] == "unobservable"
+    assert status["delegation_token_usage"]["reported_total_tokens"] is None
+
+
+def test_authoring_status_marks_known_total_with_unmeasured_batch_partial(tmp_path: Path):
+    data_dir, run_path = _authoring_run(tmp_path)
+    begin_authoring(run_path, data_dir)
+    run = read_json(run_path)
+    session_path = Path(run["artifacts"]["authoring"]["session_path"])
+    session = read_json(session_path)
+    session["batches"].append({
+        **session["batches"][0],
+        "batch_id": "brief-batch-2",
+        "result_path": str(data_dir / "missing-result.json"),
+    })
+    write_json(session_path, session)
+    metrics_draft = write_json(
+        Path(session["paths"]["delegation_metrics_draft"]),
+        {"results": [{"task_index": 0, "input_tokens": 10, "output_tokens": 2,
+                      "total_tokens": 12}]},
+    )
+    accept_authoring_metrics(run_path, metrics_draft, data_dir)
+
+    status = get_authoring_status(run_path, data_dir)
+
+    assert status["delegation_token_usage"]["reported_total_tokens"] is None
+    assert status["delegation_token_usage"]["known_total_tokens"] == 12
+    assert status["delegation_token_usage"]["quality"] == "partial"
+    assert status["delegation_token_usage"]["covered_batches"] == 1
+    assert status["delegation_token_usage"]["expected_batches"] == 2
 
 
 def test_authoring_metrics_count_unsubmitted_session_batches_as_unobserved(

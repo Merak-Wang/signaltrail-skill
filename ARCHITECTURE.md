@@ -22,8 +22,8 @@ The monitor runs separately: RSS/Atom and static HTML → normalized items → l
 → snapshot, source health, and feed cache. It makes no model calls. Formal collection can
 proceed when the monitor fails.
 
-News slides are a separate projection of a saved report and its index. Bounded narration batches
-produce accepted story scripts; local rendering adds indexed sources, summaries, merged cover and
+News slides are a report projection prepared by finalization from the saved report and index.
+Bounded narration batches produce accepted story scripts; local rendering adds indexed sources, summaries, merged cover and
 article images, captions, and transitions. When present, the report HTML embeds the deck in place
 of its on-screen summary and keeps a separate open link; printing restores the summary. Report
 JSON/Markdown stays unchanged. Image updates can reuse accepted narration without another model
@@ -73,8 +73,8 @@ created → collecting → building_context → awaiting_selection
 → completed | completed_partial | failed
 ```
 
-`completed_partial` means a local report exists with recorded gaps. PDF, Notion, and evaluation
-have separate retryable state; their failure cannot revoke a saved local report.
+`completed_partial` means a local report exists with recorded gaps. PDF, Notion, evaluation, and
+slide writing/rendering have separate retryable work; their failure cannot revoke a saved local report.
 
 | Files under the data root | Ownership |
 | --- | --- |
