@@ -151,6 +151,12 @@ before sealing. Missing observations remain partial. Direct Hermes CLI and legac
 do not automatically receive the same coverage. See [usage metering](../references/llm-usage.md)
 for exact limits and Codex/OpenClaw imports.
 
+Authoring status also shows bounded delegation metrics for its child batches. Hermes reports the
+prompt token count with cache tokens included, while this callback does not expose the uncached
+input and cache buckets separately. The host-reported total may also be absent, so the view marks
+coverage `exact`, `partial`, or `unobservable` from reported totals. It excludes coordinator,
+auxiliary, and evaluator calls; use the sealed usage task summary for the whole run.
+
 Other agents can drive the same writing packets. Without an audited usage adapter, the run
 remains usable but has explicit `unmetered` coverage and null token totals. A host without
 automatic evaluator scheduling dispatches the dossier itself and calls `finalize-evaluation`

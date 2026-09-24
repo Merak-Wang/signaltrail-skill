@@ -262,6 +262,12 @@ Hermes Cron，也不得声称已获得内置自动重试或逐请求用量覆盖
   已经包含这些 token。若连 `output` 都未暴露，则相关总量也必须 unknown。
 - `reported_total` 保留宿主总量；`accounted_total` 按已声明的包含关系计算。两者冲突
   时应调查，不能强制改成相等。
+- Hermes `authoring status` 的 `delegation_token_usage` 是写作子任务的局部遥测，按批次覆盖给出
+  `exact`、`partial` 或 `unobservable`；它不含 coordinator、辅助请求和 evaluator。整次运行只看封存
+  usage task 的 summary。委派回调把 `session_prompt_tokens` 暴露为 `input_tokens`；这是 Hermes
+  canonical `prompt_tokens`，包含 cache read/write，回调不提供未缓存 input 与 cache 桶的拆分，
+  所以状态改称 `prompt_tokens_including_cache`，并将 `uncached_input_tokens` 留为 unknown。
+  canonical usage task 会单独记录不含缓存的 `input`、缓存桶及宿主 `reported_total`；不要混用两种口径。
 - 成本只接受宿主明确报告的金额与币种；本库不依据当前价格表反推成本。
 - task `timing.wall_ms` 由 `task.started` 到 `task.finalized` 的有效 UTC 时间确定；开放
   task 保持 `unobservable`，不会用读取 summary 的当前时刻伪造结束时间。

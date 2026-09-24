@@ -1662,7 +1662,9 @@ def authoring_status(run: dict[str, Any], data_dir: Path) -> dict[str, Any]:
                 ),
                 "api_calls": measured.get("api_calls"),
                 "input_tokens": measured.get("input_tokens"),
+                "prompt_tokens_including_cache": measured.get("input_tokens"),
                 "output_tokens": measured.get("output_tokens"),
+                "reported_total_tokens": measured.get("total_tokens"),
                 "brief_count": (
                     receipt.get("brief_count") if isinstance(receipt, dict) else 0
                 ),
@@ -1671,6 +1673,22 @@ def authoring_status(run: dict[str, Any], data_dir: Path) -> dict[str, Any]:
         )
     remaining = (
         max(0, int((deadline - now).total_seconds())) if deadline is not None else None
+    )
+    totals = session.get("delegation_metrics") or {}
+    metrics_path = session.get("delegation_metrics_path")
+    metrics = (
+        read_json(require_data_root_path(
+            Path(str(metrics_path)), data_dir, "Accepted authoring delegation metrics"
+        )) if metrics_path else {}
+    )
+    coverage = metrics.get("coverage") if isinstance(metrics, dict) else {}
+    coverage = coverage or {}
+    total_coverage = coverage.get("total_tokens") or {}
+    known_total = total_coverage.get("known_subtotal")
+    token_quality = (
+        "unobservable" if known_total is None
+        else "exact" if total_coverage.get("missing_batches") == 0 and rows
+        else "partial"
     )
     return {
         "status": session.get("status"),
@@ -1681,6 +1699,18 @@ def authoring_status(run: dict[str, Any], data_dir: Path) -> dict[str, Any]:
         "completed_batches": completed,
         "expected_batches": len(rows),
         "batches": rows,
+        "delegation_token_usage": {
+            "scope": "delegated_authoring_batches",
+            "prompt_tokens_including_cache": totals.get("input_tokens"),
+            "uncached_input_tokens": None,
+            "output_tokens": totals.get("output_tokens"),
+            "reported_total_tokens": totals.get("total_tokens"),
+            "quality": token_quality,
+            "known_total_tokens": known_total,
+            "covered_batches": total_coverage.get("known_batches", 0),
+            "expected_batches": len(rows),
+            "source": "delegation metrics; excludes coordinator, auxiliary and evaluator calls",
+        },
     }
 
 
