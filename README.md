@@ -19,7 +19,9 @@ Python 程序负责采集、证据和状态管理、校验及版本化存档；�
 
 ![SignalTrail 新闻幻灯片预览](assets/readme/news-slides-preview.png)
 
-图中为界面示例，并非真实新闻。
+实际生成的演示：2026-09-23 晨报中的 41 条新闻。
+
+[下载 2026-09-23 晨报图文演示 HTML](https://github.com/Merak-Wang/signaltrail-skill/raw/refs/heads/main/examples/reports/2026-09-23-morning-r1-slides.html)（下载后用浏览器打开；远程原图可能需要联网）。
 
 每条新闻占一页，使用风格化的主播讲解，同时呈现日报摘要、来源和可用的封面／正文图片。程序优先合并清晰图片、保留原站 caption，并提供缩略图、放大查看、100% 原始尺寸和原图链接。图片只展示采集到的内容，不生成或猜测图片和图注；来源没有可用配图时会如实留空。
 
@@ -116,7 +118,7 @@ signaltrail serve --open --refresh-minutes 30
 <details>
 <summary>查看历史日报示例与旧版阅读器截图</summary>
 
-[打开历史 HTML 示例](https://github.com/Merak-Wang/signaltrail-skill/raw/refs/heads/main/examples/reports/2026-08-25-morning-r1.html)（需浏览器本地打开；部分图片需要联网）。更多背景见[示例说明](https://github.com/Merak-Wang/signaltrail-skill/blob/v2.1.0/examples/README.md)。
+[打开历史 HTML 示例](https://github.com/Merak-Wang/signaltrail-skill/raw/refs/heads/main/examples/reports/2026-08-25-morning-r1.html)（下载后用浏览器打开；部分图片需要联网）。更多背景见[示例说明](https://github.com/Merak-Wang/signaltrail-skill/blob/main/examples/README.md)。
 
 ![历史阅读器样式](assets/readme/morning-report-preview.png)
 

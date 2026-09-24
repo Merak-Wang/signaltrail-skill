@@ -19,7 +19,9 @@ Python handles collection, evidence and state, validation, and versioned storage
 
 ![SignalTrail news slides preview](assets/readme/news-slides-preview.png)
 
-The image is a synthetic interface example, not a real news story.
+Actual generated presentation: 41 stories from the September 23, 2026 morning report.
+
+[Download the September 23 morning slides HTML](https://github.com/Merak-Wang/signaltrail-skill/raw/refs/heads/main/examples/reports/2026-09-23-morning-r1-slides.html) (open it in a browser after downloading; remote original images may require an internet connection).
 
 Each story occupies one slide. The presenter-style narration appears with the daily summary, sources, and available cover and article images. The gallery prefers clearer image variants, keeps extracted publisher captions, and supports thumbnails, an expanded view, 100% original-size inspection, and a link to the original image. It displays collected material only: images and captions are never invented, and stories without usable images remain without one.
 
@@ -116,7 +118,7 @@ Earlier report screenshots show the historical reader design, not the current sl
 <details>
 <summary>Historical report example and reader screenshots</summary>
 
-[Open a historical HTML example](https://github.com/Merak-Wang/signaltrail-skill/raw/refs/heads/main/examples/reports/2026-08-25-morning-r1.html) in a browser (some images require internet access). See the [example notes](https://github.com/Merak-Wang/signaltrail-skill/blob/v2.1.0/examples/README.en.md).
+[Open a historical HTML example](https://github.com/Merak-Wang/signaltrail-skill/raw/refs/heads/main/examples/reports/2026-08-25-morning-r1.html) in a browser after downloading (some images require internet access). See the [example notes](https://github.com/Merak-Wang/signaltrail-skill/blob/main/examples/README.en.md).
 
 ![Historical report reader](assets/readme/morning-report-preview.png)
 
