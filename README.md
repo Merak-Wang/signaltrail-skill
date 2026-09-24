@@ -6,7 +6,7 @@ SignalTrail 是一个在本机运行的新闻工作流：从配置的公开来�
 
 Python 程序负责采集、证据和状态管理、校验及版本化存档；智能体按有界证据包撰写内容。日报讲解使用口语化、有节奏、轻幽默的主播风格，并按新闻需要选择地缘政治、AI／技术、市场等分析视角。每条中文讲解为 200–350 个非空白字符；代表新闻不设整期篇数上限，按每批成本上限拆分处理。
 
-[快速开始](#快速开始) · [图文演示](#动态-html-图文演示) · [本地监控](#本地监控) · [文档索引](docs/README.md) · [开发指南](docs/development.md)
+[日报示例](#日报示例) · [快速开始](#快速开始) · [图文演示](#动态-html-图文演示) · [本地监控](#本地监控) · [文档索引](docs/README.md) · [开发指南](docs/development.md)
 
 ## 你可以用它做什么
 
@@ -14,6 +14,14 @@ Python 程序负责采集、证据和状态管理、校验及版本化存档；�
 - **浏览本地新闻流：** 刷新 RSS／Atom 与配置的静态网页来源，按故事聚类并查看来源状态。监控刷新和聚类不调用模型。
 - **制作图文演示：** 从已保存日报选取代表新闻，按批次写讲解，渲染为独立动态 HTML；有演示文件时也会嵌入日报页面，保留独立打开入口。
 - **拓展阅读：** 可选实验性 explainer 和并行研究流程，详见各自文档。它们不属于当前新闻讲解演示的稳定日报路径。
+
+## 日报示例
+
+![2026-09-23 晨报正文预览](assets/readme/daily-report-preview.png)
+
+这是实际生成的 2026-09-23 晨报，包含 415 条新闻、30 个来源分组、三视角研判与跨视角综合，页面内嵌 41 条新闻的图文演示。推荐下载 ZIP，解压后用浏览器打开 `morning-r1.html`，即可阅读完整日报并切换图文演示。也可单独下载日报 HTML。
+
+[下载日报与嵌入式图文演示 ZIP](https://github.com/Merak-Wang/signaltrail-skill/raw/refs/heads/main/examples/reports/2026-09-23-morning-r1.zip) · [下载单日报 HTML](https://github.com/Merak-Wang/signaltrail-skill/raw/refs/heads/main/examples/reports/2026-09-23-morning-r1.html)
 
 ## 动态 HTML 图文演示
 

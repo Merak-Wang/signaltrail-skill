@@ -1,6 +1,9 @@
 import importlib.util
+import posixpath
+import zipfile
 from datetime import date
 from pathlib import Path
+from urllib.parse import unquote, urlsplit
 
 import pytest
 from bs4 import BeautifulSoup
@@ -173,3 +176,59 @@ def test_readme_showcase_assets_match_the_current_schema_v20_gallery():
     assert "file://" not in gallery
     assert "C:\\Users" not in gallery
     assert "AppData" not in gallery
+
+
+def test_september_23_daily_report_archive_and_embedded_slides_are_complete():
+    report_path = ROOT / "examples" / "reports" / "2026-09-23-morning-r1.html"
+    slides_path = ROOT / "examples" / "reports" / "2026-09-23-morning-r1-slides.html"
+    archive_path = report_path.with_suffix(".zip")
+    report_bytes = report_path.read_bytes()
+    slides_bytes = slides_path.read_bytes()
+    report = BeautifulSoup(report_bytes, "html.parser")
+
+    assert len(report.select("article.brief")) == 415
+    assert len(report.select("section.source-group")) == 30
+    assert len(report.select("article.analysis-card:not(.synthesis-card)")) == 3
+    assert len(report.select("article.analysis-card.synthesis-card")) == 1
+
+    slides_member = "2026-09-23-morning-r1-slides.html"
+    iframe = report.find("iframe")
+    independent_link = report.find("a", href=slides_member)
+    assert iframe is not None
+    assert urlsplit(iframe["src"]).path == slides_member
+    assert independent_link is not None
+    assert "window.print()" in report_bytes.decode("utf-8")
+    repo_link = next(
+        (
+            link
+            for link in report.find_all("a", href=True)
+            if "github.com" in urlsplit(link["href"]).netloc.lower()
+            and "日报中心" in link.get_text(" ", strip=True)
+        ),
+        None,
+    )
+    assert repo_link is not None
+
+    with zipfile.ZipFile(archive_path) as archive:
+        names = set(archive.namelist())
+        assert "morning-r1.html" in names
+        assert slides_member in names
+        assert archive.read("morning-r1.html") == report_bytes
+        assert archive.read(slides_member) == slides_bytes
+
+        for member in ("morning-r1.html", slides_member):
+            document = BeautifulSoup(archive.read(member), "html.parser")
+            for node in document.find_all(
+                ("a", "img", "iframe", "script", "link")
+            ):
+                attribute = "href" if node.name in ("a", "link") else "src"
+                value = node.get(attribute)
+                if not value:
+                    continue
+                parsed = urlsplit(value)
+                if parsed.scheme or parsed.netloc or not parsed.path:
+                    continue
+                target = posixpath.normpath(
+                    posixpath.join(posixpath.dirname(member), unquote(parsed.path))
+                )
+                assert target in names, f"{member} has unresolved local {attribute}: {value}"

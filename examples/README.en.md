@@ -5,7 +5,13 @@
 
 [简体中文](README.md) | [English](README.en.md)
 
-This directory provides an actually generated illustrated presentation, a historical daily report, and synthetic test data.
+This directory provides a generated daily report and its illustrated presentation, a historical daily report, and synthetic test data.
+
+## Current complete daily report: September 23, 2026 morning report
+
+[Download the report and embedded presentation ZIP](https://github.com/Merak-Wang/signaltrail-skill/raw/refs/heads/main/examples/reports/2026-09-23-morning-r1.zip), extract it, and open `morning-r1.html` in a browser. The ZIP includes all news items, sources, three-perspective analysis and synthesis, plus the companion presentation HTML so the embedded view works.
+
+[Download the report HTML only](https://github.com/Merak-Wang/signaltrail-skill/raw/refs/heads/main/examples/reports/2026-09-23-morning-r1.html) (the standalone file may not load the companion embedded presentation).
 
 ## Current illustrated presentation: September 23, 2026 morning report
 

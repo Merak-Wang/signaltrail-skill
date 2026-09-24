@@ -5,7 +5,13 @@
 
 [简体中文](README.md) | [English](README.en.md)
 
-本目录提供实际生成的图文演示、历史日报和合成测试数据。
+本目录提供实际生成的完整日报与图文演示、历史日报和合成测试数据。
+
+## 当前完整日报：2026-09-23 晨报
+
+[下载日报与嵌入式图文演示 ZIP](https://github.com/Merak-Wang/signaltrail-skill/raw/refs/heads/main/examples/reports/2026-09-23-morning-r1.zip)，解压后用浏览器打开 `morning-r1.html`。ZIP 内包含完整新闻条目、来源、三视角研判与综合，以及配套图文演示 HTML，保留日报内嵌入口。
+
+[单独下载日报 HTML](https://github.com/Merak-Wang/signaltrail-skill/raw/refs/heads/main/examples/reports/2026-09-23-morning-r1.html)（单文件可能无法加载配套的嵌入式图文演示）。
 
 ## 当前图文演示：2026-09-23 晨报
 

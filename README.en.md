@@ -6,7 +6,7 @@ SignalTrail is a local news workflow. It collects material from configured publi
 
 Python handles collection, evidence and state, validation, and versioned storage. An agent writes from bounded evidence packets. Slide narration uses a conversational, rhythmic presenter voice with light humor, and selects geopolitics, AI/technology, or markets perspectives only when relevant to the story. Chinese narration is 200–350 non-whitespace characters per story. There is no issue-wide cap on representative stories; work is split into batches with per-batch cost gates.
 
-[Quick start](#quick-start) · [Animated HTML slides](#animated-html-slides) · [Local monitor](#local-monitor) · [Documentation](docs/README.md) · [Development](docs/development.md)
+[Daily report example](#daily-report-example) · [Quick start](#quick-start) · [Animated HTML slides](#animated-html-slides) · [Local monitor](#local-monitor) · [Documentation](docs/README.md) · [Development](docs/development.md)
 
 ## What you can do
 
@@ -14,6 +14,14 @@ Python handles collection, evidence and state, validation, and versioned storage
 - **Browse a local news stream:** refresh RSS/Atom and configured static pages, cluster related stories, and inspect source health. Monitor refresh and clustering make no model calls.
 - **Build illustrated presentations:** select representative stories from a saved report, write narration in bounded batches, and render a standalone animated HTML deck. When available, the deck is also embedded in the report with a separate open link.
 - **Explore related work:** optional experimental explainers and parallel research are documented separately. They are not part of the stable daily news narration workflow.
+
+## Daily report example
+
+![September 23, 2026 morning report preview](assets/readme/daily-report-preview.png)
+
+The September 23, 2026 morning report contains 415 news items across 30 source groups, three-perspective analysis and cross-perspective synthesis, and an embedded presentation of 41 stories. Download the ZIP, extract it, and open `morning-r1.html` in a browser to read the full report and navigate the presentation. The report HTML is also available separately.
+
+[Download the report and embedded presentation ZIP](https://github.com/Merak-Wang/signaltrail-skill/raw/refs/heads/main/examples/reports/2026-09-23-morning-r1.zip) · [Download the report HTML only](https://github.com/Merak-Wang/signaltrail-skill/raw/refs/heads/main/examples/reports/2026-09-23-morning-r1.html)
 
 ## Animated HTML slides
 

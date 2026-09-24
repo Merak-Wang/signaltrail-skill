@@ -1,2 +1,5 @@
 # Auto detect text files and perform LF normalization
 * text=auto
+
+# 示例 HTML 固定 LF，使不同系统检出的文件与下载包一致。
+examples/reports/*.html text eol=lf
