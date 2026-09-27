@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 from dataclasses import dataclass, field
 from importlib.metadata import version
@@ -322,18 +323,70 @@ def extract_with_fallback(
 
 
 def observed_source_metadata(soup: BeautifulSoup) -> dict[str, Any]:
-    """处理：记录页面自行声明的作者、发布者与语言，保留未知归属。
-    输入：清洗之前的页面 DOM；元信息仅为发布者声明。
-    输出：供出处审计使用的有限字段，不从域名推断作者或独立转载关系。
+    """处理：记录页面明确声明的作者、发布者、发布日期与语言。
+    输入：清洗之前的页面 DOM；只接受发布语义元数据，不把更新时间当发布日期。
+    输出：供出处和当天新闻筛选使用的有限字段；没有明确发布日期时保留未知。
     """
     values: dict[str, Any] = {}
     for key, selector in (
         ("author", 'meta[name="author"], meta[property="article:author"]'),
         ("publisher", 'meta[property="og:site_name"]'),
-        ("published_at", 'meta[property="article:published_time"]'),
     ):
         node = soup.select_one(selector)
         values[key] = str(node.get("content") or "").strip()[:500] or None if node else None
+    published_at = None
+    for node in soup.select(
+        'meta[property="article:published_time"], meta[name="article:published_time"]'
+    ):
+        published_at = str(node.get("content") or "").strip()
+        if published_at:
+            break
+    if not published_at:
+        for node in soup.select('[itemprop="datePublished"]'):
+            published_at = str(
+                node.get("content") or node.get("datetime") or node.get_text(" ", strip=True)
+            ).strip()
+            if published_at:
+                break
+    if not published_at:
+        article_types = {"article", "newsarticle", "blogposting", "scholarlyarticle"}
+
+        def article_dates(value: Any) -> list[str]:
+            """处理：遍历 JSON-LD 数据图并提取指定文章类型的原始发布日期。
+            输入：解析后的 JSON-LD 列表或对象。
+            输出：仅包含明确文章类型 datePublished 的原始时间字符串。
+            """
+            if isinstance(value, list):
+                return [date for entry in value for date in article_dates(entry)]
+            if not isinstance(value, dict):
+                return []
+            types = value.get("@type", [])
+            if isinstance(types, str):
+                types = [types]
+            dates = []
+            if any(str(kind).rsplit("/", 1)[-1].casefold() in article_types for kind in types):
+                date = value.get("datePublished")
+                if isinstance(date, str) and date.strip():
+                    dates.append(date.strip())
+            return dates + [date for entry in value.values() for date in article_dates(entry)]
+
+        for script in soup.select('script[type="application/ld+json"]'):
+            try:
+                payload = json.loads(script.string or script.get_text())
+            except (json.JSONDecodeError, TypeError):
+                continue
+            dates = article_dates(payload)
+            if dates:
+                published_at = dates[0]
+                break
+    if not published_at:
+        for node in soup.select(
+            'meta[name="citation_publication_date"], meta[name="citation_date"]'
+        ):
+            published_at = str(node.get("content") or "").strip()
+            if published_at:
+                break
+    values["published_at"] = published_at[:500] if published_at else None
     values["language"] = str(soup.html.get("lang") or "")[:80] or None if soup.html else None
     values.update(basis="page_declared", independent_origin=None)
     return values

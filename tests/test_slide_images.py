@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import threading
+import time
 from pathlib import Path
 
 import httpx
@@ -160,6 +162,52 @@ def test_duplicate_source_pages_fetch_once_and_new_images_download_in_one_batch(
     assert calls == [page_url]
     assert batches == [3]
     assert len(result[0]["images"]) == 3
+
+
+def test_article_fetches_reuse_connection_client_and_limit_each_domain(
+    monkeypatch, tmp_path: Path,
+):
+    news = _news()
+    news[0]["images"] = []
+    urls = [
+        "https://one.example/a", "https://one.example/b", "https://one.example/c",
+        "https://one.example/d", "https://one.example/e", "https://one.example/f",
+        "https://two.example/g",
+    ]
+    news[0]["sources"] = [{"name": "Example", "title": url, "url": url} for url in urls]
+    lock = threading.Lock()
+    clients = set()
+    active: dict[str, int] = {}
+    max_active: dict[str, int] = {}
+    other_domain_started = threading.Event()
+    first_request_shared_slot = []
+
+    def read_page(url, _title, _config, client):
+        host = url.split("/", 3)[2]
+        if host == "two.example":
+            other_domain_started.set()
+        elif url == urls[0]:
+            first_request_shared_slot.append(other_domain_started.wait(timeout=1))
+        with lock:
+            clients.add(id(client))
+            active[host] = active.get(host, 0) + 1
+            max_active[host] = max(max_active.get(host, 0), active[host])
+        time.sleep(0.02)
+        with lock:
+            active[host] -= 1
+        return [], url
+
+    monkeypatch.setattr("signaltrail.slide_images._read_page", read_page)
+    result, metrics = enrich_slide_images(
+        news, tmp_path, MediaConfig(global_concurrency=4, per_domain_concurrency=1),
+    )
+
+    assert len(clients) == 1
+    assert first_request_shared_slot == [True]
+    assert max_active["one.example"] == 1
+    assert max_active["two.example"] == 1
+    assert metrics["sources_fetched"] == 7
+    assert result[0]["images"] == []
 
 
 def test_source_failure_keeps_previous_images(monkeypatch, tmp_path: Path):

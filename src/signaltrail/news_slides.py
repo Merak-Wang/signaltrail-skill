@@ -241,14 +241,11 @@ def _news_images(event: dict, briefs: dict, indexed: dict) -> list[dict]:
                     url_height = int(params.get("height") or params.get("h") or 0)
                 except ValueError:
                     url_width = url_height = 0
-                width = max(
-                    dimension("declared_width"),
-                    url_width * density,
-                )
-                height = max(
-                    dimension("declared_height"),
-                    url_height * density,
-                )
+                url_width = url_width or _declared_path_dimension(candidate["url"], ("width",))
+                url_height = url_height or _declared_path_dimension(candidate["url"], ("height",))
+                # img 展示尺寸会被所有 srcset 变体继承；CDN 明确声明的输出尺寸优先。
+                width = url_width * density if url_width else dimension("declared_width")
+                height = url_height * density if url_height else dimension("declared_height")
             area = width * height
             try:
                 variant = int(candidate.get("variant", 0))
@@ -358,10 +355,13 @@ def _next_image_original_url(url: str) -> str:
 
 def _declared_path_dimension(url: str, keys: tuple[str, ...]) -> int:
     """处理：读取发布方 CDN 在图片路径变换段声明的边长。
-    输入：图片 URL 与候选尺寸字段名；只解析页面已出现的 w_/h_ 声明。
+    输入：图片 URL 与候选尺寸字段名；解析 BBC 尺寸路径和 w_/h_ 变换声明。
     输出：变换段声明的像素边长；其他主机或未声明时返回零，不构造新地址。
     """
     parsed = urlsplit(url)
+    if (parsed.hostname or "").casefold() == "ichef.bbci.co.uk":
+        size = re.search(r"/(?:standard|branded_news)/(\d+)/", parsed.path)
+        return int(size.group(1)) if size and any("width" in k or k == "w" for k in keys) else 0
     if (parsed.hostname or "").casefold() not in _CLOUDINARY_STYLE_HOSTS:
         return 0
     declared = {

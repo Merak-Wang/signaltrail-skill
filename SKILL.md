@@ -99,11 +99,20 @@ Completed extraction is reused across index/context commit failures. Read the up
 
 ```text
 signaltrail --data-dir DATA_DIR begin-authoring --run RUN.json
+```
+
+After `begin-authoring`, start this command in a background terminal with the same data root; keep its
+process handle and exit status:
+
+```text
 signaltrail --data-dir DATA_DIR prefetch-media --run RUN.json
 ```
 
-Process all `brief_authoring_batches` in order, using at most three concurrent workers (or serially).
-Wait for each wave; workers share the foreground usage correlation in their packets.
+While it runs, dispatch `brief_authoring_batches` in waves of at most three workers;
+wait for every worker in a wave before starting the next. The media task reads the saved index and
+context and writes its own receipt, so it can overlap batch writing. Wait for it to exit before
+`prepare-analysis` or finalization, and inspect its receipt and warnings. Workers share the foreground
+usage correlation in their packets.
 
 Each worker reads only its packet and listed evidence, writes exactly its `output_schema` to
 `draft_result_path`, then runs `submission_command`. No browsing, other batches or long references.
@@ -159,6 +168,10 @@ Run the manifest's `tail.command` in the background:
 signaltrail --data-dir DATA_DIR complete-edition-tail --run RUN.json
 ```
 
+While the tail runs, write slides in waves of at most three workers; wait for each wave before the next.
+Wait for all submissions and the tail to exit before `slides render`, since both update projections.
+Inspect the tail's exit status and receipt; a running process is not complete.
+
 The tail creates PDF and retries requested Notion delivery. Quality scoring is off by default.
 Only for an explicit scoring/results-evaluation request, add `--evaluate` to `finalize-edition`
 or `complete-edition-tail`; recovery retains the request. Ordinary generation never implies scoring.
@@ -167,10 +180,9 @@ At most two evaluation attempts are allowed. Tail failures stay `partial` withou
 
 Check that the run is `completed` or `completed_partial`, the HTML copies open, and
 schema, source order, counts, evidence, language, tail/PDF receipts and any requested evaluation validate.
-Complete each prepared news-slide packet with the writing host, submit its result, and render
-the plan before sealing metered tasks. Slide writing calls belong to the same metered run;
-wait for workers/imports and seal foreground/evaluator tasks, including failures, only after
-they finish. Retain unknown coverage and do not claim exact acceptance from partial observations.
+Complete and render every slide batch before sealing its metered run. Wait for workers/imports and
+seal foreground/evaluator tasks, including failures, only after they finish. Retain unknown coverage;
+partial observations cannot establish exact acceptance.
 Use the usage task summary for whole-run totals; Hermes delegation `input_tokens` includes
 cache and covers only child writing calls. Report uncached input, cache reads, output, and
 the host-reported total separately. Missing cost stays unknown. The launcher seals the task
@@ -207,6 +219,8 @@ evidence-backed perspectives. Finish all bounded batches, submit drafts, check s
 The deck includes only stories published on `report.date`, using authoritative `index.items[].published_at`
 converted with `report.timezone`, then `index.timezone`, then `Asia/Shanghai`. Missing or invalid publication
 times are excluded, including for manually selected items; this does not filter the main report.
+Hacker News/Lobsters use the platform submission date in `published_at`; an older original can qualify.
+Original-page metadata must not overwrite it. Direct publishers use the article publication date.
 Default rendering reads selected public article pages to supplement image candidates and original captions,
 chooses among explicitly declared `srcset`/URL size/DPR variants, and caches successful downloads within the
 configured media budget. Availability and resolution depend on publisher candidates and successful downloads.

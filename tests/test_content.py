@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from collections import defaultdict
 from pathlib import Path
 
@@ -19,9 +20,76 @@ from signaltrail.content import (
     extract_visible_text,
     synchronize_nested_items,
 )
-from signaltrail.content_extraction import extract_document
+from signaltrail.content_extraction import extract_document, observed_source_metadata
 from signaltrail.models import ContentStatus
 from signaltrail.utils import read_json, write_json
+
+
+@pytest.mark.parametrize("attribute", ["property", "name"])
+def test_source_publication_date_uses_article_published_meta(attribute):
+    soup = BeautifulSoup(
+        f'<html><head><meta {attribute}="article:published_time" '
+        'content="2026-09-27T02:22:41Z"></head></html>',
+        "html.parser",
+    )
+
+    assert observed_source_metadata(soup)["published_at"] == "2026-09-27T02:22:41Z"
+
+
+@pytest.mark.parametrize("markup", [
+    '<time itemprop="datePublished" datetime="2026-09-27T01:00:00Z"></time>',
+    '<meta itemprop="datePublished" content="2026-09-27">',
+])
+def test_source_publication_date_uses_date_published_itemprop(markup):
+    soup = BeautifulSoup(f"<html><head>{markup}</head></html>", "html.parser")
+
+    assert observed_source_metadata(soup)["published_at"] == (
+        "2026-09-27T01:00:00Z" if "datetime" in markup else "2026-09-27"
+    )
+
+
+@pytest.mark.parametrize("article_type", [
+    "Article", "NewsArticle", "BlogPosting", "ScholarlyArticle",
+])
+def test_source_publication_date_uses_typed_json_ld_graph(article_type):
+    payload = {
+        "@graph": [
+            {"@type": "WebPage", "datePublished": "2026-09-25"},
+            {"@type": ["Thing", article_type], "datePublished": "2026-09-27"},
+        ]
+    }
+    soup = BeautifulSoup(
+        '<html><head><script type="application/ld+json">'
+        + json.dumps(payload)
+        + "</script></head></html>",
+        "html.parser",
+    )
+
+    assert observed_source_metadata(soup)["published_at"] == "2026-09-27"
+
+
+@pytest.mark.parametrize("name", ["citation_publication_date", "citation_date"])
+def test_source_publication_date_uses_citation_meta(name):
+    soup = BeautifulSoup(
+        f'<html><head><meta name="{name}" content="2026-09-19"></head></html>',
+        "html.parser",
+    )
+
+    assert observed_source_metadata(soup)["published_at"] == "2026-09-19"
+
+
+def test_source_publication_date_ignores_modified_generic_time_and_url_date():
+    soup = BeautifulSoup(
+        '<html><head><meta property="article:modified_time" '
+        'content="2026-09-27"><meta property="og:updated_time" content="2026-09-27">'
+        '<meta itemprop="dateModified" content="2026-09-27">'
+        '<time datetime="2026-09-27T08:00:00Z"></time>'
+        '<script type="application/ld+json">{"@type":"WebPage",'
+        '"datePublished":"2026-09-27"}</script></head></html>',
+        "html.parser",
+    )
+
+    assert observed_source_metadata(soup)["published_at"] is None
 
 
 @pytest.mark.parametrize("after_index_write", [False, True])
@@ -542,6 +610,55 @@ def test_http_first_content_extraction_avoids_browser_for_static_article(
     assert item["published_at"] == "2026-07-24T08:00:00Z"
     assert item["image_url"] == "https://www.bbc.com/image/story.png"
     assert Path(item["content_path"]).is_file()
+
+
+@pytest.mark.parametrize(("role", "expected_index_date"), [
+    ("discovery", "2026-09-27T02:22:41+08:00"),
+    (None, "2026-09-19T12:20:26Z"),
+])
+def test_original_page_date_does_not_replace_discovery_posted_date(
+    tmp_path: Path, role: str | None, expected_index_date: str,
+):
+    config = load_config()
+    item = _item("hacker-news-post")
+    item["published_at"] = "2026-09-27T02:22:41+08:00"
+    if role:
+        item["metadata"]["role"] = role
+    article_text = " ".join(["The paper describes its original systems research"] * 40)
+    markup = (
+        '<html><head><meta property="article:published_time" '
+        'content="2026-09-19T12:20:26Z"></head><body><article>'
+        f"<p>{article_text}</p></article></body></html>"
+    )
+
+    _apply_http_document(
+        item, config.source_by_id(item["source_id"]), markup, item["url"], 200,
+        config, tmp_path,
+    )
+
+    assert item["published_at"] == expected_index_date
+    assert item["metadata"]["content_source"]["published_at"] == (
+        "2026-09-19T12:20:26Z"
+    )
+
+
+def test_generic_page_time_does_not_replace_direct_source_publication_date(tmp_path: Path):
+    config = load_config()
+    item = _item("direct-source")
+    item["published_at"] = "2026-09-27T08:00:00Z"
+    article_text = " ".join(["The source article has useful public details"] * 40)
+    markup = (
+        "<html><body><time datetime='2026-09-28T08:00:00Z'>Updated</time>"
+        f"<article><p>{article_text}</p></article></body></html>"
+    )
+
+    _apply_http_document(
+        item, config.source_by_id(item["source_id"]), markup, item["url"], 200,
+        config, tmp_path,
+    )
+
+    assert item["published_at"] == "2026-09-27T08:00:00Z"
+    assert item["metadata"]["content_source"]["published_at"] is None
 
 
 def test_http_first_content_extraction_uses_browser_only_for_javascript_shell(

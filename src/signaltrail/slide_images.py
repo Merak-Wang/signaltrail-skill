@@ -4,7 +4,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import ExitStack
 from pathlib import Path
 from typing import Any
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlsplit
 
 import httpx
 from bs4 import BeautifulSoup
@@ -29,17 +29,22 @@ from .media import (
 _MAX_PAGE_BYTES = 2 * 1024 * 1024
 
 
-def _read_page(url: str, title: str, config: MediaConfig) -> tuple[list[dict[str, Any]], str]:
-    """处理：限时读取公开新闻页并提取正文图与发布者主图。
-    输入：图文流来源 URL、新闻标题和媒体网络配置；HTML最多读取2 MiB。
-    输出：带原文图注的正文候选及页面元数据主图；访问失败返回错误说明。
+def fetch_article_page(
+    url: str, config: MediaConfig, client: httpx.Client | None = None,
+) -> tuple[BeautifulSoup, str]:
+    """处理：限时读取并解析公开新闻页，供图片与发布日期提取共用。
+    输入：公开文章 URL、媒体网络配置及可选共享连接池客户端；HTML最多读取 2 MiB。
+    输出：解析后的页面与最终文章 URL；访问失败抛出请求或读取异常。
     """
-    current = url
-    with httpx.Client(timeout=config.request_timeout_seconds, follow_redirects=False,
-                      trust_env=False, headers={"User-Agent": "SignalTrail/1.0"}) as client:
+    def fetch(session: httpx.Client) -> tuple[BeautifulSoup, str]:
+        """处理：用共享客户端跟随逐跳校验的公开页面重定向并读取限长 HTML。
+        输入：已配置的 HTTP 客户端；每个跳转地址都重新检查公网可访问性。
+        输出：BeautifulSoup 页面与最后响应对应的 URL。
+        """
+        current = url
         for _ in range(config.max_redirects + 1):
             assert_public_image_url(current)
-            with client.stream("GET", current) as response:
+            with session.stream("GET", current) as response:
                 if response.is_redirect:
                     if not response.headers.get("location"):
                         raise ImageDownloadError("article redirect has no location")
@@ -56,8 +61,25 @@ def _read_page(url: str, title: str, config: MediaConfig) -> tuple[list[dict[str
                 break
         else:
             raise ImageDownloadError("article redirect limit was exceeded")
+        return BeautifulSoup(b"".join(chunks), "html.parser"), current
 
-    soup = BeautifulSoup(b"".join(chunks), "html.parser")
+    if client is not None:
+        return fetch(client)
+    with httpx.Client(
+        timeout=config.request_timeout_seconds, follow_redirects=False, trust_env=False,
+        headers={"User-Agent": "SignalTrail/1.0"},
+    ) as session:
+        return fetch(session)
+
+
+def _read_page(
+    url: str, title: str, config: MediaConfig, client: httpx.Client | None = None,
+) -> tuple[list[dict[str, Any]], str]:
+    """处理：从已解析文章页提取正文图与发布者主图。
+    输入：图文流来源 URL、新闻标题和媒体网络配置。
+    输出：带原文图注的正文候选及页面元数据主图。
+    """
+    soup, current = fetch_article_page(url, config, client)
     # 正文抽取器负责选取具体正文区域并清理相关推荐等噪声；只取图片，不保存正文。
     document = extract_document(soup, [], expected_title=title)
     candidates = article_image_candidates(document, title, current)
@@ -115,17 +137,62 @@ def enrich_slide_images(
                 source_rows.setdefault(url, (item, source))
     page_results: dict[str, tuple[list[dict[str, Any]], str]] = {}
     source_failures: list[dict[str, str]] = []
-    with ThreadPoolExecutor(max_workers=config.global_concurrency) as pool:
-        futures = {
-            pool.submit(_read_page, url, str(item.get("title") or ""), config): url
-            for url, (item, _source) in source_rows.items()
-        }
-        for future in as_completed(futures):
-            url = futures[future]
-            try:
-                page_results[url] = future.result()
-            except (httpx.HTTPError, ImageDownloadError, OSError, ValueError) as exc:
-                source_failures.append({"url": url, "reason": f"{type(exc).__name__}: {exc}"})
+    if source_rows:
+        domain_queues: dict[str, list[tuple[str, dict]]] = {}
+        for url, (item, _source) in source_rows.items():
+            domain = (urlsplit(url).hostname or "unknown").casefold()
+            domain_queues.setdefault(domain, []).append((url, item))
+        domains = list(domain_queues)
+        domain_active = dict.fromkeys(domains, 0)
+        domain_cursor = dict.fromkeys(domains, 0)
+        domain_index = 0
+        with httpx.Client(
+            timeout=config.request_timeout_seconds, follow_redirects=False, trust_env=False,
+            headers={"User-Agent": "SignalTrail/1.0"},
+        ) as client, ThreadPoolExecutor(max_workers=config.global_concurrency) as pool:
+            def submit_ready(pending: dict) -> None:
+                """处理：从有空位的域名队列提交请求，保持线程只运行可执行任务。
+                输入：未完成 Future 映射及各域待抓文章；域内活动数受媒体配置限制。
+                输出：补足全局并发槽位，不把等待同域限额的任务塞进线程池。
+                """
+                nonlocal domain_index
+                while len(pending) < config.global_concurrency:
+                    submitted = False
+                    for _ in domains:
+                        domain = domains[domain_index]
+                        domain_index = (domain_index + 1) % len(domains)
+                        cursor = domain_cursor[domain]
+                        queue = domain_queues[domain]
+                        if (cursor < len(queue)
+                                and domain_active[domain] < config.per_domain_concurrency):
+                            url, item = queue[cursor]
+                            domain_cursor[domain] = cursor + 1
+                            domain_active[domain] += 1
+                            future = pool.submit(read_source, url, item)
+                            pending[future] = (url, domain)
+                            submitted = True
+                            break
+                    if not submitted:
+                        break
+
+            def read_source(url: str, item: dict) -> tuple[list[dict[str, Any]], str]:
+                """处理：通过本轮共享 HTTP 客户端读取一篇来源文章的图片。
+                输入：来源 URL、标题与共享客户端；任务提交前已取得对应域名并发名额。
+                输出：正文图片候选与重定向后的文章 URL，供同一新闻合并使用。
+                """
+                return _read_page(url, str(item.get("title") or ""), config, client)
+
+            pending: dict = {}
+            submit_ready(pending)
+            while pending:
+                future = next(as_completed(tuple(pending)))
+                url, domain = pending.pop(future)
+                domain_active[domain] -= 1
+                try:
+                    page_results[url] = future.result()
+                except (httpx.HTTPError, ImageDownloadError, OSError, ValueError) as exc:
+                    source_failures.append({"url": url, "reason": f"{type(exc).__name__}: {exc}"})
+                submit_ready(pending)
 
     # 用现有合并规则折叠原图、已缓存图与刚抽出的高清变体。
     all_urls: dict[str, tuple[dict[str, Any], str]] = {}

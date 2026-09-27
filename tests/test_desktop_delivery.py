@@ -371,6 +371,15 @@ def test_local_html_escapes_untrusted_report_text_and_urls():
     assert "Content-Security-Policy" in rendered
 
 
+def test_report_image_csp_allows_same_origin_without_broadening_other_sources():
+    soup = BeautifulSoup(render_report_html(_report()), "html.parser")
+    policy = soup.select_one('meta[http-equiv="Content-Security-Policy"]')["content"]
+
+    assert "img-src 'self' https: data: file:" in policy
+    assert "img-src 'self' https: data: file: http:" not in policy
+    assert "img-src *" not in policy
+
+
 @pytest.mark.parametrize(
     ("language", "date_label", "edition", "source_order"),
     [

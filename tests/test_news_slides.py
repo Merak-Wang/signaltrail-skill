@@ -100,6 +100,29 @@ def test_old_featured_events_do_not_hide_todays_briefs(slide_case):
     assert all(ref["item_id"] != "item-0" for e in selected for ref in e["source_refs"])
 
 
+def test_discovery_uses_submission_day_even_when_original_article_is_older(slide_case):
+    root, report_path, index_path, report, index = slide_case
+    for item, published in zip(
+        index["items"][:3], ["2026-09-19", None, "2026-09-23"], strict=True,
+    ):
+        item["metadata"] = {"role": "discovery", "content_source": {"published_at": published}}
+    index["items"][2]["published_at"] = "2026-09-22T23:00:00+08:00"
+    selected = select_news(report, index)
+    assert {"event-0", "brief-item-1"} <= {e["event_id"] for e in selected}
+    assert "brief-item-2" not in {e["event_id"] for e in selected}
+    with pytest.raises(ValueError, match="not published on the report date"):
+        select_news(report, index, item_ids=["item-2"])
+    # 聚合条目按转发日期展示和筛选，原文元信息不覆盖它。
+    write_json(index_path, index)
+    prepared = prepare_slides(report_path, index_path, root, item_ids=["item-0"])
+    plan = load_artifact(Path(prepared["plan_path"]), root)["payload"]
+    assert plan["news"][0]["sources"][0]["published_at"] == "2026-09-23T08:00:00+08:00"
+    for packet in prepared["packet_paths"]:
+        submit_slides(Path(packet), author_packet(packet, root), root)
+    output = render_slides(Path(prepared["plan_path"]), root, refresh_images=False)
+    assert output["news_count"] == 1
+
+
 def test_prepare_batches_by_size_and_budget_and_reuses_inputs(slide_case):
     root, report, index, _, _ = slide_case
     before = report.read_bytes(), index.read_bytes()
@@ -539,6 +562,29 @@ def test_page_metadata_cannot_replace_measured_cache_or_body_caption():
     assert images[0]["width"] == 1400 and images[0]["height"] == 933
     assert images[0]["caption"] == "正文原图注"
     assert images[0]["provenance"] == "article_body" and images[0]["position"] == 0
+
+
+@pytest.mark.parametrize("small,large", [
+    ("https://ichef.bbci.co.uk/ace/standard/624/cpsprodpb/123/live/photo.jpg.webp",
+     "https://ichef.bbci.co.uk/ace/standard/745/cpsprodpb/123/live/photo.jpg"),
+    ("https://i.guim.co.uk/img/media/photo.jpg?w=320",
+     "https://i.guim.co.uk/img/media/photo.jpg?w=1400"),
+])
+def test_explicit_variant_size_outweighs_shared_html_display_size(small, large):
+    from signaltrail.news_slides import _news_images
+
+    event = {"source_refs": [{"item_id": "item", "url": "https://example.com/story"}]}
+    details = [{
+        "url": url, "provenance": "article_body", "position": 0, "variant": variant,
+        "declared_width": "745", "declared_height": "418", "caption": "原图注",
+    } for variant, url in enumerate([small, large])]
+    indexed = {"item": {"url": "https://example.com/story",
+                        "metadata": {"image_candidate_details": details}}}
+
+    images = _news_images(event, {}, indexed)
+
+    assert [image["url"] for image in images] == [large]
+    assert images[0]["caption"] == "原图注"
 
 
 def test_images_collapse_same_asset_variants_and_prefer_the_clearer_one(slide_case):
