@@ -18,7 +18,7 @@ from .image_policy import normalize_image_candidates
 from .localization import translated_title
 from .narrative_store import digest, file_ref, load_artifact, parent_path, save_artifact
 from .storage import exclusive_lock
-from .utils import read_json_object, write_text_atomic
+from .utils import TRACKING_QUERY_PREFIXES, read_json_object, write_text_atomic
 
 DOMAINS = ("geopolitics", "markets", "ai_technology")
 # 同一图片的响应式变体只差路径变换段的发布方 CDN。
@@ -64,10 +64,27 @@ def _published_on(value: str | None, day: str, timezone: str) -> bool:
     return published.astimezone(zone).date().isoformat() == day
 
 
-def select_news(report: dict, index: dict, *, min_importance: int = 70,
+def _source_story_identity(url: str) -> tuple | None:
+    """处理：规范化单篇文章 URL，忽略协议、www、片段和已知跟踪参数。
+    输入：来源引用中的绝对 HTTP(S) 原文 URL；有意义的路径与查询值保持不变。
+    输出：可用于跨转载来源合并的文章身份；非 HTTP(S) 或相对 URL 不参与合并。
+    """
+    parts = urlsplit(url.strip())
+    scheme = parts.scheme.casefold()
+    if scheme not in {"http", "https"} or not parts.netloc:
+        return None
+    host = parts.netloc.casefold().removeprefix("www.")
+    query = tuple(
+        (key, value) for key, value in parse_qsl(parts.query, keep_blank_values=True)
+        if not key.casefold().startswith(TRACKING_QUERY_PREFIXES)
+    )
+    return host, parts.path, query
+
+
+def select_news(report: dict, index: dict, *, min_importance: int = 0,
                 item_ids: list[str] | None = None) -> list[dict]:
-    """处理：只合并日报当天发布的精选事件与高分简报，同源条目去重。
-    输入：已存日报、权威索引及可选手选 ID；手选仍须满足当天发布。
+    """处理：合并日报当天的全部精选事件与简报，去重并按重要性排序。
+    输入：已存日报、权威索引及可选分数门槛或手选 ID；默认不设分数门槛。
     输出：按重要性排序的当天新闻，仅保留当天来源，未知日期不入选。
     """
     if not 0 <= min_importance <= 100:
@@ -106,9 +123,28 @@ def select_news(report: dict, index: dict, *, min_importance: int = 70,
             or brief["title"], "source_refs": [brief["source_ref"]],
         })
         covered.add(item_id)
-    # 精选事件本身已经聚合故事；这里消除相同事件 ID 的重复栏目投影。
-    unique = {e["event_id"]: e for e in events}
-    return sorted(unique.values(), key=lambda e: -e.get("importance", 0))
+    # 先按事件 ID 消除重复栏目投影，再合并单来源引用中的同一原文。
+    unique = list({e["event_id"]: e for e in events}.values())
+    merged: list[dict] = []
+    single_source_positions: dict[tuple, int] = {}
+    for event in unique:
+        refs = event.get("source_refs", [])
+        identity = (_source_story_identity(str(refs[0].get("url") or ""))
+                    if len(refs) == 1 else None)
+        if identity is None or identity not in single_source_positions:
+            if identity is not None:
+                single_source_positions[identity] = len(merged)
+            merged.append(event)
+            continue
+        position = single_source_positions[identity]
+        previous = merged[position]
+        winner, other = ((previous, event)
+                         if previous.get("importance", 0) >= event.get("importance", 0)
+                         else (event, previous))
+        refs_by_item = {ref["item_id"]: ref for ref in winner.get("source_refs", [])}
+        refs_by_item.update({ref["item_id"]: ref for ref in other.get("source_refs", [])})
+        merged[position] = {**winner, "source_refs": list(refs_by_item.values())}
+    return sorted(merged, key=lambda e: -e.get("importance", 0))
 
 
 def _merge_image_detail(known: dict, new: dict) -> dict:
@@ -461,11 +497,11 @@ def _model_input(candidates: list[dict], style: str, language: str) -> dict:
 
 
 def prepare_slides(report_path: Path, index_path: Path, data_dir: Path, *,
-                   min_importance: int = 70, item_ids: list[str] | None = None,
+                   min_importance: int = 0, item_ids: list[str] | None = None,
                    batch_size: int = 4, max_input_tokens: int = 12000,
                    max_output_tokens: int = 4000) -> dict:
-    """处理：按每批输入与输出预留切分全部代表新闻，复用相同准备结果。
-    输入：明确日报/索引修订、代表性阈值或手选 ID、每批成本约束。
+    """处理：按每批输入与输出预留切分全部当天新闻，复用相同准备结果。
+    输入：明确日报/索引修订、可选分数门槛或手选 ID、每批成本约束。
     输出：不可变计划及各批写作包；不调用模型，不修改日报和索引。
     """
     if batch_size < 1 or max_input_tokens < 1 or max_output_tokens < 1:
@@ -476,8 +512,7 @@ def prepare_slides(report_path: Path, index_path: Path, data_dir: Path, *,
         raise ValueError("Report and index must belong to the same edition")
     events = select_news(report, index, min_importance=min_importance, item_ids=item_ids)
     if not events:
-        raise ValueError("No representative news published on the report date; "
-                         "lower --min-importance or select same-day items")
+        raise ValueError("No news published on the report date matches the selection")
     indexed = {i["item_id"]: i for i in index["items"]}
     missing = {r["item_id"] for e in events for r in e["source_refs"]} - indexed.keys()
     if missing:

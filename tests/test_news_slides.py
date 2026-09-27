@@ -63,6 +63,65 @@ def test_selection_includes_more_than_twelve_and_manual_ids_override(slide_case)
         select_news(report, index, item_ids=["unknown"])
 
 
+def test_selection_merges_single_source_reposts_by_original_url(slide_case):
+    _, _, _, report, index = slide_case
+    lower, higher = report["sections"][0]["briefs"][1:3]
+    lower_url = "http://www.righto.com/2026/09/story.html?id=1&utm_source=lobsters#comments"
+    higher_url = "https://righto.com/2026/09/story.html?id=1&ref=frontpage"
+    lower["source_ref"].update({"url": lower_url, "published_at": "2026-09-23T02:00:00+08:00"})
+    higher["source_ref"].update({"url": higher_url, "published_at": "2026-09-23T03:00:00+08:00"})
+    lower.update({"title": "较低分标题", "tldr": "较低分摘要。", "importance": 60})
+    higher.update({"title": "较高分标题", "tldr": "较高分摘要。", "importance": 90})
+
+    selected = select_news(report, index, item_ids=[lower["item_id"], higher["item_id"]])
+
+    assert len(selected) == 1
+    assert selected[0]["event_id"] == f"brief-{higher['item_id']}"
+    assert selected[0]["title"] == "较高分标题"
+    assert selected[0]["tldr"] == "较高分摘要。"
+    assert [ref["item_id"] for ref in selected[0]["source_refs"]] == [
+        higher["item_id"], lower["item_id"],
+    ]
+    assert {ref["published_at"] for ref in selected[0]["source_refs"]} == {
+        "2026-09-23T02:00:00+08:00", "2026-09-23T03:00:00+08:00",
+    }
+
+
+def test_selection_keeps_distinct_article_query_ids_separate(slide_case):
+    _, _, _, report, index = slide_case
+    first, second = report["sections"][0]["briefs"][3:5]
+    first["source_ref"]["url"] = "https://righto.com/story?id=1"
+    second["source_ref"]["url"] = "http://www.righto.com/story?id=2"
+
+    selected = select_news(report, index, item_ids=[first["item_id"], second["item_id"]])
+
+    assert {event["event_id"] for event in selected} == {
+        f"brief-{first['item_id']}", f"brief-{second['item_id']}",
+    }
+
+
+def test_selection_does_not_merge_multi_source_event_with_single_source_story(slide_case):
+    _, _, _, report, index = slide_case
+    sections = report["sections"][0]
+    event = sections["items"][0]
+    first_ref = deepcopy(sections["briefs"][1]["source_ref"])
+    second_ref = deepcopy(sections["briefs"][2]["source_ref"])
+    first_ref["url"] = "https://righto.com/story?id=1"
+    second_ref["url"] = "https://example.org/other-story"
+    event["source_refs"] = [first_ref, second_ref]
+    brief = sections["briefs"][3]
+    brief["source_ref"]["url"] = "http://www.righto.com/story?id=1"
+
+    selected = select_news(
+        report, index, item_ids=[first_ref["item_id"], second_ref["item_id"], brief["item_id"]],
+    )
+
+    assert len(selected) == 2
+    assert selected[0]["event_id"] == event["event_id"]
+    assert len(selected[0]["source_refs"]) == 2
+    assert selected[1]["event_id"] == f"brief-{brief['item_id']}"
+
+
 def test_selection_requires_publication_on_report_day_in_local_timezone(slide_case):
     _, _, _, report, index = slide_case
     before = deepcopy(report)
@@ -85,6 +144,28 @@ def test_selection_requires_publication_on_report_day_in_local_timezone(slide_ca
     with pytest.raises(ValueError, match="not published on the report date"):
         select_news(report, index, item_ids=["item-1"])
     assert report["sections"][0]["items"] == before["sections"][0]["items"]
+
+
+def test_default_plan_includes_low_score_and_imageless_news_in_score_order(slide_case):
+    root, report_path, index_path, report, index = slide_case
+    briefs = report["sections"][0]["briefs"]
+    briefs[1]["importance"], briefs[2]["importance"] = 15, 0
+    index["items"][3]["published_at"] = "2026-09-22"
+    write_json(report_path, report)
+    write_json(index_path, index)
+
+    selected = select_news(report, index)
+    assert [e["event_id"] for e in selected][-2:] == ["brief-item-1", "brief-item-2"]
+    assert "brief-item-3" not in {e["event_id"] for e in selected}
+    assert len(select_news(report, index, min_importance=70)) == 13
+    assert sum(ref["item_id"] == "item-0" for e in selected for ref in e["source_refs"]) == 1
+
+    prepared = prepare_slides(report_path, index_path, root)
+    plan = load_artifact(Path(prepared["plan_path"]), root)["payload"]
+    assert prepared["news_count"] == 15
+    assert [n["event_id"] for n in plan["news"]] == [e["event_id"] for e in selected]
+    assert all(n["images"] == [] for n in plan["news"])
+    assert len(prepared["packet_paths"]) == 4
 
 
 def test_old_featured_events_do_not_hide_todays_briefs(slide_case):

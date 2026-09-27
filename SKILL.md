@@ -216,16 +216,15 @@ before sealing their metered usage task. For recovery, run
 Read only each `packet.payload.model_input` and follow its schema plus the embedded
 [writing style](templates/news-slide-style/SKILL.md). Chinese narration is 200–350 characters; use relevant,
 evidence-backed perspectives. Finish all bounded batches, submit drafts, check status, then render.
-The deck includes only stories published on `report.date`, using authoritative `index.items[].published_at`
-converted with `report.timezone`, then `index.timezone`, then `Asia/Shanghai`. Missing or invalid publication
-times are excluded, including for manually selected items; this does not filter the main report.
-Hacker News/Lobsters use the platform submission date in `published_at`; an older original can qualify.
-Original-page metadata must not overwrite it. Direct publishers use the article publication date.
-Default rendering reads selected public article pages to supplement image candidates and original captions,
-chooses among explicitly declared `srcset`/URL size/DPR variants, and caches successful downloads within the
-configured media budget. Availability and resolution depend on publisher candidates and successful downloads.
-This does not change body evidence or access status and makes no model call. Use `slides render --offline`
-to rebuild from the existing deck and local images without network access for layout-only changes.
+The deck includes all selected events and briefs published on `report.date`, deduplicated by original story;
+same-story source references are retained, and missing images do not exclude a story. Importance only sorts
+candidates: default `--min-importance` is 0, and an explicit threshold narrows selection. Dates use
+`index.items[].published_at` with `report.timezone`, then `index.timezone`, then `Asia/Shanghai`; missing or
+invalid times are excluded. This does not filter the main report.
+Hacker News/Lobsters use the platform submission date in `published_at`; an older original can qualify. Keep original-page dates in metadata, and use the article publication date for direct publishers.
+Default rendering reads selected public pages for image candidates and captions, chooses declared
+`srcset`/URL size/DPR variants, and caches successful downloads within the media budget. It does not change
+body evidence or access status and makes no model call. `slides render --offline` rebuilds from local images.
 The deck replaces the on-screen summary inside the report and retains an independent HTML button; print
 keeps the summary. Keep captions verbatim or empty; never substitute alt text for a missing caption.
 TTS/video are not implemented. See the [guide](docs/news-slides.md).

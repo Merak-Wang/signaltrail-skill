@@ -18,12 +18,13 @@ def add_slides_parser(sub: argparse._SubParsersAction) -> None:
     parser = sub.add_parser("slides", help="Build animated HTML news slides from a saved report")
     stages = parser.add_subparsers(dest="action", required=True)
     prepare = stages.add_parser(
-        "prepare", help="Select representative news and split bounded batches"
+        "prepare", help="Include all same-day news and split bounded batches"
     )
     prepare.add_argument("--report", type=Path, required=True)
     prepare.add_argument("--index", type=Path, required=True)
     prepare.add_argument("--item-id", action="append")
-    prepare.add_argument("--min-importance", type=int, default=70)
+    prepare.add_argument("--min-importance", type=int, default=0,
+                         help="Optional brief score cutoff; default includes all same-day news")
     prepare.add_argument("--batch-size", type=int, default=4)
     prepare.add_argument("--max-input-tokens", type=int, default=12000)
     prepare.add_argument("--max-output-tokens", type=int, default=4000)

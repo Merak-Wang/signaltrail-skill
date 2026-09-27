@@ -23,8 +23,10 @@ The monitor runs separately: RSS/Atom and static HTML → normalized items → l
 proceed when the monitor fails.
 
 News slides are a report projection prepared by finalization from the saved report and index.
-Preparation admits only items published on `report.date`, based on indexed publication time and
-the report/index timezone. Bounded narration batches produce accepted story scripts; online rendering
+Preparation admits all selected events and briefs published on `report.date`, merging duplicate original
+stories while retaining source references; missing images do not exclude stories. Importance ranks candidates
+with a default minimum of 0 and optional explicit narrowing. Dates use indexed publication time and the
+report/index timezone. Bounded narration batches produce accepted story scripts; online rendering
 adds indexed sources, summaries, and publisher-provided image candidates and captions from public article
 pages within configured media budgets. When present, the report HTML embeds the deck in place of its
 on-screen summary and keeps a separate open link; printing restores the summary. Report JSON/Markdown

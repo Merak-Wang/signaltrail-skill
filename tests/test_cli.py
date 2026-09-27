@@ -14,13 +14,15 @@ from signaltrail.workflow import (
 )
 
 
-def test_slides_cli_prepares_bounded_batches(cli_data_root, monkeypatch, capsys):
+@pytest.mark.parametrize("score_args,expected_score", [([], 0), (["--min-importance", "70"], 70)])
+def test_slides_cli_prepares_bounded_batches(cli_data_root, monkeypatch, capsys,
+                                           score_args, expected_score):
     prepare = Mock(return_value={"plan_path": "slides-plan.json", "news_count": 18})
     monkeypatch.setattr("signaltrail.commands.slides.prepare_slides", prepare)
     report, index = cli_data_root / "report.json", cli_data_root / "index.json"
     assert main(["slides", "prepare", "--report", str(report), "--index", str(index),
-                 "--batch-size", "3", "--item-id", "news-1"]) == 0
-    prepare.assert_called_once_with(report, index, cli_data_root, min_importance=70,
+                 "--batch-size", "3", "--item-id", "news-1", *score_args]) == 0
+    prepare.assert_called_once_with(report, index, cli_data_root, min_importance=expected_score,
                                     item_ids=["news-1"], batch_size=3,
                                     max_input_tokens=12000, max_output_tokens=4000)
     assert json.loads(capsys.readouterr().out)["news_count"] == 18
