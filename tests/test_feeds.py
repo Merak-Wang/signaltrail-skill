@@ -99,6 +99,27 @@ def test_atom_parser_drops_future_dated_entry_and_keeps_provider():
     assert items[0].metadata["original_provider_url"] == "https://lab.example/"
 
 
+def test_feed_update_does_not_replace_or_invent_publication_time():
+    atom = b"""<feed xmlns="http://www.w3.org/2005/Atom">
+      <entry><title>Older news with a recent editorial update</title>
+        <link href="https://news.example/old-story"/>
+        <updated>2026-09-27T01:00:00Z</updated>
+        <published>2026-09-24T01:00:00Z</published>
+      </entry>
+      <entry><title>News with only an update timestamp provided</title>
+        <link href="https://news.example/unknown-publication"/>
+        <updated>2026-09-27T01:00:00Z</updated>
+      </entry>
+    </feed>"""
+    items = parse_feed_document(
+        atom, _source(), "https://news.example/atom.xml", "2026-09-27T10:00:00+08:00",
+        "Asia/Shanghai", max_items=10,
+    )
+    assert items[0].published_at == "2026-09-24T09:00:00+08:00"
+    assert items[1].published_at is None
+    assert items[1].metadata["publication_time_missing"] is True
+
+
 def test_feed_parser_can_choose_publication_order_without_losing_top_rank():
     rss = b"""<rss><channel>
       <item>

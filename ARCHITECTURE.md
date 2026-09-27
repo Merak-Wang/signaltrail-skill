@@ -23,11 +23,14 @@ The monitor runs separately: RSS/Atom and static HTML → normalized items → l
 proceed when the monitor fails.
 
 News slides are a report projection prepared by finalization from the saved report and index.
-Bounded narration batches produce accepted story scripts; local rendering adds indexed sources, summaries, merged cover and
-article images, captions, and transitions. When present, the report HTML embeds the deck in place
-of its on-screen summary and keeps a separate open link; printing restores the summary. Report
-JSON/Markdown stays unchanged. Image updates can reuse accepted narration without another model
-call; `slides prepare` reads the supplied report and index and does not fetch webpages.
+Preparation admits only items published on `report.date`, based on indexed publication time and
+the report/index timezone. Bounded narration batches produce accepted story scripts; online rendering
+adds indexed sources, summaries, and publisher-provided image candidates and captions from public article
+pages within configured media budgets. When present, the report HTML embeds the deck in place of its
+on-screen summary and keeps a separate open link; printing restores the summary. Report JSON/Markdown
+stays unchanged. Image updates can reuse accepted narration without another model call; `slides prepare`
+reads the supplied report and index and does not fetch webpages. Offline rendering reuses existing deck
+images without network access.
 See the [news slides workflow](docs/news-slides.md).
 
 ## Code map
@@ -44,7 +47,7 @@ All modules below live in `src/signaltrail/`.
 | Writing | `context`, `authoring`, `semantics`, `state` | Bounded packets, accepted batches, continuity and cache |
 | Report contract | `reporting` | Compile drafts, hydrate evidence, validate schema and cross-field rules |
 | Report storage | `reports` | Save reports and evaluations, render Markdown, update derived state |
-| News slides | `news_slides`, `slide_renderer` | Budgeted narration batches and standalone animated HTML projection of a saved report |
+| News slides | `news_slides`, `slide_images`, `slide_renderer` | Day-filtered narration batches, public-page image refresh, and standalone animated HTML projection of a saved report |
 | Experimental explainers | `narrative`, `narrative_contracts`, `narrative_store`, `narrative_verification`, `story_stream` | Immutable report children, language reviews, diagrams; current-news admission blocked |
 | Experimental research | `research`, `research_contracts`, `research_delivery` | Frozen blocks, local question retrieval, scoped memos and preview-only late report binding; current admission blocked |
 | Delivery | `local_output`, `notion`, `dashboard` | HTML/PDF, remote copies, read-only monitor UI |

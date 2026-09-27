@@ -33,6 +33,9 @@ def add_slides_parser(sub: argparse._SubParsersAction) -> None:
     for name in ("status", "render"):
         command = stages.add_parser(name)
         command.add_argument("--plan", type=Path, required=True)
+        if name == "render":
+            command.add_argument("--offline", action="store_true",
+                                 help="Reuse saved images without fetching article pages")
 
 
 def handle_slides(args: argparse.Namespace, context: CommandContext) -> int:
@@ -55,7 +58,9 @@ def handle_slides(args: argparse.Namespace, context: CommandContext) -> int:
             case "status":
                 result = slides_status(args.plan, context.data_dir)
             case "render":
-                result = render_slides(args.plan, context.data_dir)
+                result = render_slides(args.plan, context.data_dir,
+                                       refresh_images=not args.offline,
+                                       media_config=context.config.media)
         print_json({"artifact_path": str(result)} if isinstance(result, Path) else result)
         return 0
     except (ValueError, KeyError, OSError, RuntimeError) as exc:

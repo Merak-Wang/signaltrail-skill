@@ -5,13 +5,15 @@ from __future__ import annotations
 import json
 import re
 from copy import deepcopy
+from datetime import datetime
 from math import ceil
 from pathlib import Path
 from urllib.parse import parse_qs, parse_qsl, urlsplit
+from zoneinfo import ZoneInfo
 
 from jsonschema import Draft202012Validator
 
-from .config import project_root
+from .config import MediaConfig, project_root
 from .image_policy import normalize_image_candidates
 from .localization import translated_title
 from .narrative_store import digest, file_ref, load_artifact, parent_path, save_artifact
@@ -19,6 +21,8 @@ from .storage import exclusive_lock
 from .utils import read_json_object, write_text_atomic
 
 DOMAINS = ("geopolitics", "markets", "ai_technology")
+# 同一图片的响应式变体只差路径变换段的发布方 CDN。
+_CLOUDINARY_STYLE_HOSTS = {"dam.mediacorp.sg"}
 OUTPUT_SCHEMA = {
     "type": "object", "additionalProperties": False, "required": ["slides"],
     "properties": {"slides": {"type": "array", "minItems": 1, "items": {
@@ -43,11 +47,28 @@ def estimate_tokens(value: object) -> int:
     return ceil(len(text.encode("utf-8")) / 2)
 
 
-def select_news(report: dict, *, min_importance: int = 70,
+def _published_on(value: str | None, day: str, timezone: str) -> bool:
+    """处理：把来源发布时间转换到日报时区，判断是否属于本期当天。
+    输入：索引中的发布时间、日报日期和时区；日期缺失或无效时不推算。
+    输出：当天发布返回真，采集时间和更新日期不参与判断。
+    """
+    if not value:
+        return False
+    try:
+        published = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    zone = ZoneInfo(timezone)
+    if published.tzinfo is None:
+        published = published.replace(tzinfo=zone)
+    return published.astimezone(zone).date().isoformat() == day
+
+
+def select_news(report: dict, index: dict, *, min_importance: int = 70,
                 item_ids: list[str] | None = None) -> list[dict]:
-    """处理：合并精选事件与高分简报，同源条目只进入一个新闻版面。
-    输入：已存日报及可选手选 item IDs；手选覆盖默认的重要性筛选。
-    输出：按重要性排序的代表新闻，无总篇数上限，保留原始来源引用。
+    """处理：只合并日报当天发布的精选事件与高分简报，同源条目去重。
+    输入：已存日报、权威索引及可选手选 ID；手选仍须满足当天发布。
+    输出：按重要性排序的当天新闻，仅保留当天来源，未知日期不入选。
     """
     if not 0 <= min_importance <= 100:
         raise ValueError("min_importance must be between 0 and 100")
@@ -59,13 +80,23 @@ def select_news(report: dict, *, min_importance: int = 70,
     }
     if selected - known:
         raise ValueError("Items are not in this report: " + ", ".join(sorted(selected - known)))
+    timezone = report.get("timezone") or index.get("timezone") or "Asia/Shanghai"
+    today_ids = {item["item_id"] for item in index["items"]
+                 if _published_on(item.get("published_at"), report["date"], timezone)}
+    if selected - today_ids:
+        raise ValueError("Items are not published on the report date: "
+                         + ", ".join(sorted(selected - today_ids)))
+    # 跨日聚合摘要不可只删旧引用后沿用；回退到下方当天条目的独立简报。
+    events = [event for event in events if event["source_refs"] and all(
+        ref["item_id"] in today_ids for ref in event["source_refs"]
+    )]
     events = [e for e in events if not selected or any(
         ref["item_id"] in selected for ref in e["source_refs"]
     )]
     covered = {ref["item_id"] for e in events for ref in e["source_refs"]}
     for brief in sorted(briefs, key=lambda b: -b.get("importance", 0)):
         item_id = brief["item_id"]
-        if item_id in covered or (
+        if item_id not in today_ids or item_id in covered or (
             item_id not in selected if selected else brief.get("importance", 0) < min_importance
         ):
             continue
@@ -80,6 +111,35 @@ def select_news(report: dict, *, min_importance: int = 70,
     return sorted(unique.values(), key=lambda e: -e.get("importance", 0))
 
 
+def _merge_image_detail(known: dict, new: dict) -> dict:
+    """处理：合并索引缓存与当前页面中同一 URL 的图片细节。
+    输入：先前候选与后续候选；实测文件属性来自成功下载，声明属性来自页面。
+    输出：保留可用实测缓存，采用正文非空图注并由新候选补齐其他字段。
+    """
+    merged = dict(known)
+    for key, value in new.items():
+        if value not in (None, ""):
+            merged[key] = value
+    # 同 URL 页面声明尺寸不能覆盖下载器实测值；正文图注优先于空 OG 元数据。
+    for key in ("local_path", "sha256", "width", "height", "content_type", "byte_size"):
+        if known.get(key) not in (None, ""):
+            merged[key] = known[key]
+    if known.get("provenance") == "article_body" and new.get("provenance") != "article_body":
+        for key in ("provenance", "position", "surrounding_text", "relevance_score",
+                    "relevance_basis"):
+            if known.get(key) not in (None, ""):
+                merged[key] = known[key]
+    old_caption = known.get("caption")
+    new_caption = new.get("caption")
+    if ((known.get("provenance") == "article_body" and old_caption)
+            or new_caption in (None, "")):
+        merged["caption"] = old_caption
+    # 索引旧缓存的正文图注应胜过当前页没有图注的元数据候选。
+    if not merged.get("caption"):
+        merged.pop("caption", None)
+    return merged
+
+
 def _news_images(event: dict, briefs: dict, indexed: dict) -> list[dict]:
     """处理：合并新闻封面、页面元数据和正文图片并优先保留清晰版本。
     输入：事件来源、报告缓存图片和索引记录的原图注、尺寸及正文位置。
@@ -92,11 +152,14 @@ def _news_images(event: dict, briefs: dict, indexed: dict) -> list[dict]:
         metadata = item.get("metadata") or {}
         details = metadata.get("image_candidate_details", [])
         cached = briefs.get(item_id, {}).get("image") or {}
-        detail_by_url = {
-            str(detail.get("url")): detail
-            for detail in details
-            if isinstance(detail, dict) and detail.get("url")
-        }
+        detail_by_url: dict[str, dict] = {}
+        for detail in details:
+            if not isinstance(detail, dict) or not detail.get("url"):
+                continue
+            url = str(detail["url"])
+            # 同一 URL 可能同时有旧缓存细节和新页面细节；先出现的实测值优先，只用后项补齐空字段。
+            detail_by_url[url] = (_merge_image_detail(detail_by_url[url], detail)
+                                  if url in detail_by_url else detail)
         cached_urls = {
             str(value) for value in (cached.get("source_url"), cached.get("resolved_url"))
             if value
@@ -115,10 +178,10 @@ def _news_images(event: dict, briefs: dict, indexed: dict) -> list[dict]:
         )
         candidates.extend(details)
 
-        def quality(candidate: dict) -> tuple[int, int, int, int]:
-            """处理：按像素面积、变体序号和同源缓存排序图片清晰度。
-            输入：索引尺寸、变体及当前 URL 可复用的本地缓存标记。
-            输出：可比较的排序键，值越大表示优先级越高。
+        def quality(candidate: dict) -> tuple[float, float, int, int]:
+            """处理：按可用的实测或声明像素边长、面积及变体排序清晰度。
+            输入：缓存实测尺寸、索引声明尺寸、URL 宽高及设备像素比。
+            输出：优先保留较长像素边，避免缺高的高清候选被低清缓存压过。
             """
             def dimension(*keys: str) -> int:
                 """处理：读取图片实测、声明或 URL 尺寸中的首个正整数。
@@ -140,6 +203,9 @@ def _news_images(event: dict, briefs: dict, indexed: dict) -> list[dict]:
                 bbc_size = re.search(r"/(?:standard|branded_news)/(\d+)/", url_path)
                 if bbc_size:
                     return int(bbc_size.group(1))
+                path_declared = _declared_path_dimension(candidate.get("url", ""), keys)
+                if path_declared:
+                    return path_declared
                 for key in keys:
                     aliases = ((key, "w") if key == "width" else
                                (key, "h") if key == "height" else (key,))
@@ -149,13 +215,47 @@ def _news_images(event: dict, briefs: dict, indexed: dict) -> list[dict]:
                             return int(value)
                 return 0
 
-            area = dimension("width", "declared_width") * dimension("height", "declared_height")
+            def stored_dimension(key: str) -> int:
+                """处理：读取下载缓存的实测边长，不再乘设备像素比。
+                输入：候选中的宽度或高度字段名。
+                输出：有效像素数；没有实测值时返回零。
+                """
+                try:
+                    value = int(float(str(candidate.get(key) or "")))
+                except ValueError:
+                    return 0
+                return value if value > 0 else 0
+
+            actual_width = stored_dimension("width")
+            actual_height = stored_dimension("height")
+            if actual_width and actual_height:
+                width, height = actual_width, actual_height
+            else:
+                params = dict(parse_qsl(urlsplit(candidate.get("url", "")).query))
+                try:
+                    density = float(params.get("dpr", "1"))
+                except ValueError:
+                    density = 1.0
+                try:
+                    url_width = int(params.get("width") or params.get("w") or 0)
+                    url_height = int(params.get("height") or params.get("h") or 0)
+                except ValueError:
+                    url_width = url_height = 0
+                width = max(
+                    dimension("declared_width"),
+                    url_width * density,
+                )
+                height = max(
+                    dimension("declared_height"),
+                    url_height * density,
+                )
+            area = width * height
             try:
                 variant = int(candidate.get("variant", 0))
             except (TypeError, ValueError):
                 variant = 0
-            max_side = dimension("width", "declared_width", "height", "declared_height")
-            return area, max_side, -variant, int(bool(candidate.get("local_path")))
+            max_side = max(width, height)
+            return max_side, area, -variant, int(bool(candidate.get("local_path")))
 
         by_url = {}
         for raw in candidates:
@@ -256,6 +356,26 @@ def _next_image_original_url(url: str) -> str:
     return original if target.scheme in {"http", "https"} and target.netloc else url
 
 
+def _declared_path_dimension(url: str, keys: tuple[str, ...]) -> int:
+    """处理：读取发布方 CDN 在图片路径变换段声明的边长。
+    输入：图片 URL 与候选尺寸字段名；只解析页面已出现的 w_/h_ 声明。
+    输出：变换段声明的像素边长；其他主机或未声明时返回零，不构造新地址。
+    """
+    parsed = urlsplit(url)
+    if (parsed.hostname or "").casefold() not in _CLOUDINARY_STYLE_HOSTS:
+        return 0
+    declared = {
+        letter: int(value) for letter, value
+        in re.findall(r"(?:^|[,_])([wh])_(\d+)(?=[,_/]|$)", parsed.path)
+    }
+    for key in keys:
+        if "width" in key or key == "w":
+            return declared.get("w", 0)
+        if "height" in key or key == "h":
+            return declared.get("h", 0)
+    return 0
+
+
 def _image_identity(url: str) -> tuple:
     """处理：合并已知图片 CDN 同路径的尺寸、质量及签名变体。
     输入：展示候选的原始 URL。
@@ -267,7 +387,16 @@ def _image_identity(url: str) -> tuple:
     if (host in {"ichef.bbci.co.uk", "www.bbc.com", "www.bbc.co.uk", "bbc.com", "bbc.co.uk"}
             and "/cpsprodpb/" in parsed.path):
         suffix = parsed.path.split("/cpsprodpb/", 1)[1]
+        # 同一资产的响应式变体以 .jpg 与 .jpg.webp 结尾；折叠扩展名链以合并清晰度变体。
+        while (folded := re.sub(
+            r"\.(?:jpe?g|png|webp|gif|avif)$", "", suffix, flags=re.I,
+        )) != suffix:
+            suffix = folded
         return host, "cpsprodpb", suffix
+    if host in _CLOUDINARY_STYLE_HOSTS:
+        # 同一资产只差变换段和签名；按已出现的 v<版本> 之后路径归一，不构造新地址。
+        version = re.search(r"/v\d+/", parsed.path)
+        return (host, "asset", parsed.path[version.end():]) if version else (url,)
     if (host in {"theaviationist.com", "www.theaviationist.com"}
             and "/wp-content/uploads/" in parsed.path):
         basename = re.sub(r"-\d+x\d+(?=\.(?:jpg|jpeg|webp)$)", "", basename, flags=re.IGNORECASE)
@@ -345,9 +474,10 @@ def prepare_slides(report_path: Path, index_path: Path, data_dir: Path, *,
     index = read_json_object(index_path, "Index")
     if any(report[key] != index[key] for key in ("date", "edition")):
         raise ValueError("Report and index must belong to the same edition")
-    events = select_news(report, min_importance=min_importance, item_ids=item_ids)
+    events = select_news(report, index, min_importance=min_importance, item_ids=item_ids)
     if not events:
-        raise ValueError("No representative news selected; lower --min-importance or select items")
+        raise ValueError("No representative news published on the report date; "
+                         "lower --min-importance or select same-day items")
     indexed = {i["item_id"]: i for i in index["items"]}
     missing = {r["item_id"] for e in events for r in e["source_refs"]} - indexed.keys()
     if missing:
@@ -374,6 +504,8 @@ def prepare_slides(report_path: Path, index_path: Path, data_dir: Path, *,
     payload = {
         "title": report["title"], "report_id": report["report_id"], "language": language,
         "as_of": report["generated_at"], "news": candidates,
+        "publication_date": report["date"],
+        "timezone": report.get("timezone") or index.get("timezone") or "Asia/Shanghai",
         "batches": [[c["event_id"] for c in batch] for batch in batches],
         "budget": {"max_input_tokens": max_input_tokens, "max_output_tokens": max_output_tokens,
                    "batch_size": batch_size, "max_model_calls_per_batch": 1,
@@ -481,12 +613,14 @@ def _deck_markdown(deck: dict) -> str:
     return "\n".join(lines)
 
 
-def render_slides(plan_path: Path, data_dir: Path) -> dict:
-    """处理：按计划顺序合并全部批次，保存清单并生成动态 HTML。
-    输入：每批均已完成的计划；任何缺稿会阻止整期交付。
+def render_slides(plan_path: Path, data_dir: Path, *, refresh_images: bool = True,
+                  media_config: MediaConfig | None = None) -> dict:
+    """处理：合并全部讲稿，筛选当天来源并补取公开配图，生成动态 HTML。
+    输入：已完成计划和媒体配置；离线模式复用本计划最近保存的图片。
     输出：独立 HTML 与不可变 JSON/Markdown 路径，重排样式不需要模型。
     """
     from .local_output import refresh_report_slides_entry
+    from .slide_images import enrich_slide_images
     from .slide_renderer import render_slides_html
 
     status = slides_status(plan_path, data_dir)
@@ -499,16 +633,45 @@ def render_slides(plan_path: Path, data_dir: Path) -> dict:
         authored.update({s["event_id"]: s for s in result["payload"]["draft"]["slides"]})
         parents[f"batch-{number}"] = Path(path)
     payload = plan["payload"]
+    report_path = parent_path(plan, "report", data_dir)
+    report = read_json_object(report_path, "Report")
+    index = read_json_object(parent_path(plan, "index", data_dir), "Index")
+    timezone = report.get("timezone") or index.get("timezone") or "Asia/Shanghai"
+    today_urls = {i["url"] for i in index["items"]
+                  if _published_on(i.get("published_at"), report["date"], timezone)}
+    news = deepcopy(payload["news"])
+    news = [item for item in news if item["sources"] and all(
+        source["url"] in today_urls for source in item["sources"]
+    )]
+    for item in news:
+        item["images"] = [i for i in item["images"] if i.get("source_url") in today_urls]
+    if not news:
+        raise ValueError("No news published on the report date in this slide plan")
+    image_metrics = None
+    if refresh_images:
+        news, image_metrics = enrich_slide_images(news, data_dir, media_config or MediaConfig())
+    else:
+        # 离线改版复用上次已保存的图片，不重新抓网页或请求模型。
+        previous = sorted(plan_path.parent.glob("slides-deck-r*.json"),
+                          key=lambda p: int(p.stem.rsplit("-r", 1)[1]), reverse=True)
+        if previous:
+            saved = load_artifact(previous[0], data_dir, kind="slides-deck")["payload"]
+            images = {s["event_id"]: s["images"] for s in saved["slides"]}
+            for item in news:
+                item["images"] = [i for i in images.get(item["event_id"], item["images"])
+                                  if i.get("source_url") in today_urls]
+            image_metrics = saved.get("image_enrichment")
     deck = {k: payload[k] for k in ("title", "report_id", "language", "as_of")}
+    deck.update(publication_date=report["date"], timezone=timezone)
     deck["slides"] = [{k: c[k] for k in ("event_id", "title", "summary", "sources", "images")}
-                      | authored[c["event_id"]] for c in payload["news"]]
+                      | authored[c["event_id"]] for c in news]
+    if image_metrics is not None:
+        deck["image_enrichment"] = image_metrics
     deck["usage"] = status["usage"]
     artifact = save_artifact(data_dir, plan["session"], "slides-deck", deck,
                              parents, _deck_markdown(deck))
     html_path = artifact.with_suffix(".html")
     write_text_atomic(html_path, render_slides_html(deck, data_dir))
-    report_path = parent_path(plan, "report", data_dir)
-    report = read_json_object(report_path, "Report")
     report_slides_path = report_path.with_name(
         f"{report['edition']}-r{report['revision']}-slides.html"
     )

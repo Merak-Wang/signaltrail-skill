@@ -235,6 +235,94 @@ def test_image_selection_uses_article_caption_before_unrelated_metadata(tmp_path
     assert not any(entry["url"].endswith(("/brand.jpg", "/unrelated.jpg")) for entry in details)
 
 
+def test_picture_sources_choose_highest_effective_pixel_width_first(tmp_path):
+    config = load_config()
+    item = _item()
+    markup = (
+        "<article><p>The leaders arrived for a bilateral summit on Wednesday.</p>"
+        "<figure><picture>"
+        "<source srcset='/img/master.jpg?width=620&amp;dpr=2' media='large-retina'>"
+        "<source srcset='/img/master.jpg?width=700&amp;dpr=2' media='tablet-retina'>"
+        "<source srcset='/img/master.jpg?width=465&amp;dpr=1' media='mobile'>"
+        "<img src='/img/master.jpg?width=465&amp;dpr=1' alt='Summit arrival'>"
+        "</picture><figcaption>Leaders arrive for the summit.</figcaption></figure></article>"
+    )
+    _apply_http_document(
+        item, config.source_by_id(item["source_id"]), markup, item["url"], 200,
+        config, tmp_path,
+    )
+
+    details = item["metadata"]["image_candidate_details"]
+    assert details[0]["url"] == "https://www.bbc.com/img/master.jpg?width=700&dpr=2"
+    assert details[0]["variant"] == 0
+    assert details[0]["caption"] == "Leaders arrive for the summit."
+
+
+def test_article_images_exclude_games_promotions_and_recommended_cards(tmp_path):
+    config = load_config()
+    item = _item()
+    markup = (
+        "<article class='node node--article-content'>"
+        "<section class='block detail-hero-media'><figure class='figure block'>"
+        "<img src='/hero.jpg' alt='Australia says OpenAI agent hacked into a government website'>"
+        "<figcaption>Prime Minister Anthony Albanese speaks to reporters.</figcaption>"
+        "</figure></section>"
+        "<div class='text-long'>"
+        "<p>Australia said an OpenAI agent reached a public government portal.</p>"
+        "<div class='in-article-games trimmed-content'><div class='game-list'>"
+        "<a class='game-tile'><div class='game-img'>"
+        "<img src='/game-wordrow.png' alt='Guess Word' width='100' height='100'>"
+        "</div></a></div></div>"
+        "<div class='referenced-card'><div class='media-object'>"
+        "<div class='media-object__figure'><a class='link'>"
+        "<img src='/recommended.jpg' alt='' width='747' height='598'>"
+        "</a></div></div></div>"
+        "<section class='block-type--subscription_cta_block widget-subscription'>"
+        "<div class='widget-subscription__cta'>"
+        "<img src='/inbox-large.png' alt='Inbox'></div></section>"
+        "<section class='block-type--subscription_cta_block get-app'>"
+        "<div class='get-app__cta'><img src='/get-app.png' alt='App-get'></div></section>"
+        "<section class='block-type--subscription_cta_block whatsapp-group'>"
+        "<div class='whatsapp-group__cta'><img src='/whatsapp.png' alt='Whatsapp'></div></section>"
+        "<figure class='game-analysis'><img src='/game-analysis.jpg' "
+        "alt='The game analysis in the article'></figure>"
+        "<p>Officials said no restricted files were published.</p>"
+        "</div></article>"
+    )
+    _apply_http_document(
+        item, config.source_by_id(item["source_id"]), markup, item["url"], 200,
+        config, tmp_path,
+    )
+
+    details = item["metadata"]["image_candidate_details"]
+    assert [entry["url"] for entry in details] == [
+        "https://www.bbc.com/hero.jpg",
+        "https://www.bbc.com/game-analysis.jpg",
+    ]
+    assert details[0]["caption"] == "Prime Minister Anthony Albanese speaks to reporters."
+
+
+def test_article_image_scan_continues_past_early_promotions(tmp_path):
+    config = load_config()
+    item = _item()
+    games = "".join(f"<img src='/game-{index}.png'>" for index in range(26))
+    markup = (
+        "<article><p>The report describes a security incident at a government portal.</p>"
+        f"<div class='in-article-games'>{games}</div>"
+        "<figure><img src='/late-article-photo.jpg' alt='Government portal'>"
+        "<figcaption>Officials discuss the portal.</figcaption></figure></article>"
+    )
+    _apply_http_document(
+        item, config.source_by_id(item["source_id"]), markup, item["url"], 200,
+        config, tmp_path,
+    )
+
+    details = item["metadata"]["image_candidate_details"]
+    assert [entry["url"] for entry in details] == [
+        "https://www.bbc.com/late-article-photo.jpg",
+    ]
+
+
 def test_loaded_image_src_precedes_relative_lazy_path_and_figure_caption_is_kept(tmp_path):
     config = load_config()
     item = _item()

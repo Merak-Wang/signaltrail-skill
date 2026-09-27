@@ -204,8 +204,17 @@ before sealing their metered usage task. For recovery, run
 Read only each `packet.payload.model_input` and follow its schema plus the embedded
 [writing style](templates/news-slide-style/SKILL.md). Chinese narration is 200–350 characters; use relevant,
 evidence-backed perspectives. Finish all bounded batches, submit drafts, check status, then render.
+The deck includes only stories published on `report.date`, using authoritative `index.items[].published_at`
+converted with `report.timezone`, then `index.timezone`, then `Asia/Shanghai`. Missing or invalid publication
+times are excluded, including for manually selected items; this does not filter the main report.
+Default rendering reads selected public article pages to supplement image candidates and original captions,
+chooses among explicitly declared `srcset`/URL size/DPR variants, and caches successful downloads within the
+configured media budget. Availability and resolution depend on publisher candidates and successful downloads.
+This does not change body evidence or access status and makes no model call. Use `slides render --offline`
+to rebuild from the existing deck and local images without network access for layout-only changes.
 The deck replaces the on-screen summary inside the report and retains an independent HTML button; print
-keeps the summary. Keep captions verbatim or empty. TTS/video are not implemented. See the [guide](docs/news-slides.md).
+keeps the summary. Keep captions verbatim or empty; never substitute alt text for a missing caption.
+TTS/video are not implemented. See the [guide](docs/news-slides.md).
 
 ## Monitor
 

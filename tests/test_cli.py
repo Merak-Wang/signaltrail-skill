@@ -31,6 +31,18 @@ def test_slides_cli_reports_missing_plan(cli_data_root, capsys):
     assert json.loads(capsys.readouterr().out)["status"] == "rejected"
 
 
+@pytest.mark.parametrize("offline", [False, True])
+def test_slides_render_explicitly_controls_image_fetching(cli_data_root, monkeypatch, offline):
+    render = Mock(return_value={"news_count": 1})
+    monkeypatch.setattr("signaltrail.commands.slides.render_slides", render)
+    plan = cli_data_root / "plan.json"
+    args = ["slides", "render", "--plan", str(plan)] + (["--offline"] if offline else [])
+    assert main(args) == 0
+    assert render.call_args.args == (plan, cli_data_root)
+    assert render.call_args.kwargs["refresh_images"] is not offline
+    assert render.call_args.kwargs["media_config"].enabled is True
+
+
 def test_research_cli_prepares_before_a_report_with_explicit_approval(
     cli_data_root, monkeypatch, capsys
 ):
