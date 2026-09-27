@@ -290,14 +290,9 @@ def parse_feed_document(
         url = _entry_link(node, urljoin(feed_url, contexts[node][0]))
         if not is_eligible(source, title, url):
             continue
-        published_text = _direct_text(
-            node,
-            "pubdate",
-            "published",
-            "issued",
-            "date",
-            "updated",
-        )
+        # 按发布时间字段优先级读取；更新时间不能使旧文重新成为当天新闻。
+        published_text = next((value for name in ("pubdate", "published", "issued", "date")
+                               if (value := _direct_text(node, name))), "")
         published = _parse_datetime(published_text, timezone)
         if published is not None and published > observed + timedelta(hours=1):
             continue

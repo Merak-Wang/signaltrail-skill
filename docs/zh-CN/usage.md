@@ -130,6 +130,10 @@ signaltrail-hermes run --ledger DATA_DIR --hermes-python HERMES_PYTHON --prompt-
 
 此入口在模型启动前接通计量，包含工作线程及支持的辅助调用，并支持用单独任务执行用户要求的质量评分。
 封账前核对宿主计数，缺失观测保持 partial。直接 Hermes CLI 和旧 Cron 不会自动获得同等覆盖。
+写作状态也会展示子批次的委派计量。Hermes 在该回调中报告的 prompt token 数包含缓存 token，
+而回调没有分别提供未缓存输入和缓存桶。宿主报告总量也可能缺失，因此状态按批次总量覆盖标为
+`exact`、`partial` 或 `unobservable`。这组数据只覆盖写作子任务，不包括 coordinator、辅助请求和
+评估器调用；整次运行应以封存的 usage task 摘要为准。
 具体限制及 Codex/OpenClaw 导入见[用量说明](../../references/llm-usage.md)。
 
 其他智能体也可以处理相同写作包。没有已审计适配器时，运行仍可使用，但明确标为

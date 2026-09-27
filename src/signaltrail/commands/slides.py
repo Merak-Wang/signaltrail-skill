@@ -18,12 +18,13 @@ def add_slides_parser(sub: argparse._SubParsersAction) -> None:
     parser = sub.add_parser("slides", help="Build animated HTML news slides from a saved report")
     stages = parser.add_subparsers(dest="action", required=True)
     prepare = stages.add_parser(
-        "prepare", help="Select representative news and split bounded batches"
+        "prepare", help="Include all same-day news and split bounded batches"
     )
     prepare.add_argument("--report", type=Path, required=True)
     prepare.add_argument("--index", type=Path, required=True)
     prepare.add_argument("--item-id", action="append")
-    prepare.add_argument("--min-importance", type=int, default=70)
+    prepare.add_argument("--min-importance", type=int, default=0,
+                         help="Optional brief score cutoff; default includes all same-day news")
     prepare.add_argument("--batch-size", type=int, default=4)
     prepare.add_argument("--max-input-tokens", type=int, default=12000)
     prepare.add_argument("--max-output-tokens", type=int, default=4000)
@@ -33,6 +34,9 @@ def add_slides_parser(sub: argparse._SubParsersAction) -> None:
     for name in ("status", "render"):
         command = stages.add_parser(name)
         command.add_argument("--plan", type=Path, required=True)
+        if name == "render":
+            command.add_argument("--offline", action="store_true",
+                                 help="Reuse saved images without fetching article pages")
 
 
 def handle_slides(args: argparse.Namespace, context: CommandContext) -> int:
@@ -55,7 +59,9 @@ def handle_slides(args: argparse.Namespace, context: CommandContext) -> int:
             case "status":
                 result = slides_status(args.plan, context.data_dir)
             case "render":
-                result = render_slides(args.plan, context.data_dir)
+                result = render_slides(args.plan, context.data_dir,
+                                       refresh_images=not args.offline,
+                                       media_config=context.config.media)
         print_json({"artifact_path": str(result)} if isinstance(result, Path) else result)
         return 0
     except (ValueError, KeyError, OSError, RuntimeError) as exc:

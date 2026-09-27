@@ -1870,6 +1870,58 @@ def _require_current_context_schema(
         )
 
 
+def _prepare_edition_slides(run: dict, run_path: Path, data_dir: Path) -> None:
+    """处理：从已保存报告和本轮索引准备默认图文流写作包。
+    输入：运行清单、清单路径和数据根目录；已有计划时直接复用。
+    输出：将计划与 packet 路径或准备错误写入运行产物，不调用模型。
+    """
+    artifacts = run.setdefault("artifacts", {})
+    if artifacts.get("slides", {}).get("plan_path"):
+        return
+    try:
+        from .news_slides import prepare_slides
+
+        result = prepare_slides(
+            Path(str(artifacts["json_path"])),
+            Path(str(artifacts["index_path"])),
+            data_dir,
+        )
+        artifacts["slides"] = {**result, "status": "prepared"}
+    except Exception as exc:
+        artifacts["slides"] = {
+            "status": "failed",
+            "error": f"{type(exc).__name__}: {exc}",
+        }
+    _update_run(
+        run_path,
+        run,
+        RunStatus(run["status"]),
+        artifacts=artifacts,
+    )
+
+
+def _slides_next_action(run: dict) -> str:
+    """处理：依据计划及最终 HTML sidecar 判断图文流是否已渲染。
+    输入：运行清单和数据根目录；sidecar 是完成状态的现有产物证据。
+    输出：要求重试准备、完成写作渲染或确认已完成的下一步提示。
+    """
+    slides = run.get("artifacts", {}).get("slides", {})
+    if slides.get("status") == "failed":
+        return "News slides preparation failed; inspect artifacts.slides.error and retry " \
+            "slides prepare from the saved report and index."
+    plan = slides.get("plan_path")
+    if not plan:
+        return "News slides are not prepared; retry slides prepare from the saved report and index."
+    report = read_json_object(Path(str(run["artifacts"]["json_path"])), "Saved report")
+    rendered = Path(str(run["artifacts"]["json_path"])).with_name(
+        f"{report['edition']}-r{report['revision']}-slides.html"
+    )
+    if rendered.exists():
+        return "News slides are rendered."
+    return "Complete all artifacts.slides.packet_paths with the host, then run " \
+        "slides render --plan artifacts.slides.plan_path."
+
+
 def finalize_edition(
     run_path: Path,
     report_path: Path,
@@ -1914,6 +1966,8 @@ def finalize_edition(
             RunStatus.COMPLETED,
             RunStatus.COMPLETED_PARTIAL,
         }:
+            if run.get("artifacts", {}).get("json_path"):
+                _prepare_edition_slides(run, run_path, data_dir)
             tail = run.get("tail", {})
             if isinstance(tail, dict) and tail.get("status") in {
                 "pending",
@@ -1943,7 +1997,14 @@ def finalize_edition(
                         if evaluation["scheduler"]["status"]
                         in {"scheduled", "unknown", "reconciliation_failed"}
                         else "Automatic evaluator scheduling failed; retry finalize-edition."
-                    ),
+                    ) + " Then " + _slides_next_action(run),
+                )
+            elif not (isinstance(tail, dict) and tail.get("status") in {
+                "pending", "running", "partial",
+            }):
+                _update_run(
+                    run_path, run, RunStatus(run["status"]),
+                    next_action=_slides_next_action(run),
                 )
             return run_path
         recoverable = {
@@ -2032,7 +2093,9 @@ def finalize_edition(
                 artifacts=artifacts,
                 milestones=milestones,
             )
-
+        if artifacts.get("json_path"):
+            _prepare_edition_slides(run, run_path, data_dir)
+            artifacts = run["artifacts"]
         if defer_tail:
             # HTML 是前台交付物；PDF、Notion 与独立评估作为可重试尾部工作延后。
             local_ready_at = str(
@@ -2083,7 +2146,8 @@ def finalize_edition(
                 milestones=milestones,
                 metrics=_runtime_metrics(run, local_ready_at),
                 error=None,
-                next_action=tail["next_action"],
+                next_action=(tail["next_action"] + " Then "
+                             + _slides_next_action(run)),
             )
             return run_path
 
@@ -2133,7 +2197,8 @@ def finalize_edition(
             milestones=run.get("milestones", {}),
             metrics=_runtime_metrics(run, completed_at),
             error=None,
-            next_action=evaluation_state["next_action"],
+            next_action=(evaluation_state["next_action"] + " Then "
+                         + _slides_next_action(run)),
         )
         if not evaluation_requested:
             return run_path
@@ -2155,7 +2220,8 @@ def finalize_edition(
             final_status,
             updated_at=now_iso(timezone),
             evaluation=evaluation_state,
-            next_action=evaluation_state["next_action"],
+            next_action=(evaluation_state["next_action"] + " Then "
+                         + _slides_next_action(run)),
         )
         return run_path
 
@@ -2329,12 +2395,15 @@ def complete_edition_tail(
                 "warnings": warnings,
                 "errors": errors,
                 "next_action": (
-                    "Retry complete-edition-tail; local HTML remains authoritative."
+                    "Retry complete-edition-tail; local HTML remains authoritative. Then "
+                    + _slides_next_action(run)
                     if errors
                     else (
-                        "Wait for the isolated evaluator."
+                        "Wait for the isolated evaluator, then "
+                        + _slides_next_action(run)
                         if evaluation_requested and evaluation.get("status") != "completed"
-                        else "Report delivery is complete."
+                        else "Report projections are complete. "
+                        + _slides_next_action(run)
                     )
                 ),
             }

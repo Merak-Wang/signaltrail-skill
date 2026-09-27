@@ -81,6 +81,16 @@ async def meta_content(page: Page, selectors: list[str]) -> str:
     return ""
 
 
+def _apply_page_publication_time(item: dict[str, Any], published: str) -> None:
+    """处理：把原网页日期写入直接来源，同时保留发现平台的发布时间。
+    输入：规范索引条目和从原网页元数据读出的发布日期。
+    输出：直接来源条目采用原网页日期；discovery 条目继续保留平台发布时间。
+    """
+    # discovery 的索引时间描述平台首次发布该链接；原文日期另存于 content_source。
+    if published and (item.get("metadata") or {}).get("role") != "discovery":
+        item["published_at"] = published
+
+
 async def meta_contents(page: Page, selectors: list[str]) -> list[str]:
     """处理：按选择器收集并去重全部非空页面元数据值。
     输入：
@@ -394,16 +404,6 @@ def _apply_http_document(
     )
     if description:
         item["description"] = html.unescape(description)
-    published = _html_meta(
-        soup,
-        [
-            'meta[property="article:published_time"]',
-            'meta[name="article:published_time"]',
-            "time[datetime]",
-        ],
-    )
-    if published:
-        item["published_at"] = published
     image_candidates = _html_meta_values(
         soup,
         ['meta[property="og:image"]', 'meta[name="twitter:image"]'],
@@ -413,6 +413,9 @@ def _apply_http_document(
         soup, source.content_selectors, truncated=truncated,
         expected_title=str(metadata.get("discovered_title") or ""),
         fallback=config.collection.fallback_extractor,
+    )
+    _apply_page_publication_time(
+        item, str(document.source_metadata.get("published_at") or "")
     )
     document.provenance = input_fingerprint(
         input_bytes, "decoded_html_utf8" if raw_content is None else "http_response_body",
@@ -661,16 +664,6 @@ async def _extract_one(
         )
         if description:
             item["description"] = html.unescape(description)
-        published = await meta_content(
-            page,
-            [
-                'meta[property="article:published_time"]',
-                'meta[name="article:published_time"]',
-                "time[datetime]",
-            ],
-        )
-        if published:
-            item["published_at"] = published
         image_candidates = await meta_contents(
             page,
             ['meta[property="og:image"]', 'meta[name="twitter:image"]'],
@@ -679,6 +672,9 @@ async def _extract_one(
             page, source.content_selectors,
             expected_title=str(metadata.get("discovered_title") or ""),
             fallback=config.collection.fallback_extractor,
+        )
+        _apply_page_publication_time(
+            item, str(document.source_metadata.get("published_at") or "")
         )
         _apply_image_candidates(
             item, image_candidates, page.url,

@@ -50,15 +50,158 @@ def author_packet(path, root):
 
 
 def test_selection_includes_more_than_twelve_and_manual_ids_override(slide_case):
-    _, _, _, report, _ = slide_case
-    events = select_news(report)
+    _, _, _, report, index = slide_case
+    events = select_news(report, index)
     assert len(events) == 16
     assert events[0]["event_id"] == "event-0"
     assert sum(r["item_id"] == "item-0" for e in events for r in e["source_refs"]) == 1
-    assert [e["event_id"] for e in select_news(report, item_ids=["item-15"])] == ["brief-item-15"]
-    assert len(select_news(report, min_importance=90)) == 1
+    assert [e["event_id"] for e in select_news(report, index, item_ids=["item-15"])] == [
+        "brief-item-15"
+    ]
+    assert len(select_news(report, index, min_importance=90)) == 1
     with pytest.raises(ValueError, match="not in this report"):
-        select_news(report, item_ids=["unknown"])
+        select_news(report, index, item_ids=["unknown"])
+
+
+def test_selection_merges_single_source_reposts_by_original_url(slide_case):
+    _, _, _, report, index = slide_case
+    lower, higher = report["sections"][0]["briefs"][1:3]
+    lower_url = "http://www.righto.com/2026/09/story.html?id=1&utm_source=lobsters#comments"
+    higher_url = "https://righto.com/2026/09/story.html?id=1&ref=frontpage"
+    lower["source_ref"].update({"url": lower_url, "published_at": "2026-09-23T02:00:00+08:00"})
+    higher["source_ref"].update({"url": higher_url, "published_at": "2026-09-23T03:00:00+08:00"})
+    lower.update({"title": "较低分标题", "tldr": "较低分摘要。", "importance": 60})
+    higher.update({"title": "较高分标题", "tldr": "较高分摘要。", "importance": 90})
+
+    selected = select_news(report, index, item_ids=[lower["item_id"], higher["item_id"]])
+
+    assert len(selected) == 1
+    assert selected[0]["event_id"] == f"brief-{higher['item_id']}"
+    assert selected[0]["title"] == "较高分标题"
+    assert selected[0]["tldr"] == "较高分摘要。"
+    assert [ref["item_id"] for ref in selected[0]["source_refs"]] == [
+        higher["item_id"], lower["item_id"],
+    ]
+    assert {ref["published_at"] for ref in selected[0]["source_refs"]} == {
+        "2026-09-23T02:00:00+08:00", "2026-09-23T03:00:00+08:00",
+    }
+
+
+def test_selection_keeps_distinct_article_query_ids_separate(slide_case):
+    _, _, _, report, index = slide_case
+    first, second = report["sections"][0]["briefs"][3:5]
+    first["source_ref"]["url"] = "https://righto.com/story?id=1"
+    second["source_ref"]["url"] = "http://www.righto.com/story?id=2"
+
+    selected = select_news(report, index, item_ids=[first["item_id"], second["item_id"]])
+
+    assert {event["event_id"] for event in selected} == {
+        f"brief-{first['item_id']}", f"brief-{second['item_id']}",
+    }
+
+
+def test_selection_does_not_merge_multi_source_event_with_single_source_story(slide_case):
+    _, _, _, report, index = slide_case
+    sections = report["sections"][0]
+    event = sections["items"][0]
+    first_ref = deepcopy(sections["briefs"][1]["source_ref"])
+    second_ref = deepcopy(sections["briefs"][2]["source_ref"])
+    first_ref["url"] = "https://righto.com/story?id=1"
+    second_ref["url"] = "https://example.org/other-story"
+    event["source_refs"] = [first_ref, second_ref]
+    brief = sections["briefs"][3]
+    brief["source_ref"]["url"] = "http://www.righto.com/story?id=1"
+
+    selected = select_news(
+        report, index, item_ids=[first_ref["item_id"], second_ref["item_id"], brief["item_id"]],
+    )
+
+    assert len(selected) == 2
+    assert selected[0]["event_id"] == event["event_id"]
+    assert len(selected[0]["source_refs"]) == 2
+    assert selected[1]["event_id"] == f"brief-{brief['item_id']}"
+
+
+def test_selection_requires_publication_on_report_day_in_local_timezone(slide_case):
+    _, _, _, report, index = slide_case
+    before = deepcopy(report)
+    values = [
+        "2026-09-22T16:00:00Z",  # 北京时间当天零点，保留精选。
+        "2026-09-22T15:59:59Z",  # 当天前一秒，即使高分也排除。
+        "2026-09-23T15:59:59Z",  # 北京时间当天最后一秒。
+        "2026-09-23T16:00:00Z",  # 下一天，排除。
+        None, "bad-date", "2026-09-23", "2026-09-22",
+    ]
+    index["items"] = index["items"][:len(values)]
+    for item, published in zip(index["items"], values, strict=True):
+        item["published_at"] = published
+        item["collected_at"] = "2026-09-23T09:00:00+08:00"
+    # 报告引用的日期不能覆盖 canonical index 中未知的发布日期。
+    report["sections"][0]["briefs"][4]["source_ref"]["published_at"] = "2026-09-23"
+    assert [e["event_id"] for e in select_news(report, index)] == [
+        "event-0", "brief-item-2", "brief-item-6",
+    ]
+    with pytest.raises(ValueError, match="not published on the report date"):
+        select_news(report, index, item_ids=["item-1"])
+    assert report["sections"][0]["items"] == before["sections"][0]["items"]
+
+
+def test_default_plan_includes_low_score_and_imageless_news_in_score_order(slide_case):
+    root, report_path, index_path, report, index = slide_case
+    briefs = report["sections"][0]["briefs"]
+    briefs[1]["importance"], briefs[2]["importance"] = 15, 0
+    index["items"][3]["published_at"] = "2026-09-22"
+    write_json(report_path, report)
+    write_json(index_path, index)
+
+    selected = select_news(report, index)
+    assert [e["event_id"] for e in selected][-2:] == ["brief-item-1", "brief-item-2"]
+    assert "brief-item-3" not in {e["event_id"] for e in selected}
+    assert len(select_news(report, index, min_importance=70)) == 13
+    assert sum(ref["item_id"] == "item-0" for e in selected for ref in e["source_refs"]) == 1
+
+    prepared = prepare_slides(report_path, index_path, root)
+    plan = load_artifact(Path(prepared["plan_path"]), root)["payload"]
+    assert prepared["news_count"] == 15
+    assert [n["event_id"] for n in plan["news"]] == [e["event_id"] for e in selected]
+    assert all(n["images"] == [] for n in plan["news"])
+    assert len(prepared["packet_paths"]) == 4
+
+
+def test_old_featured_events_do_not_hide_todays_briefs(slide_case):
+    _, _, _, report, index = slide_case
+    index["items"][0]["published_at"] = "2026-09-22"
+    index["items"][1]["published_at"] = "2026-09-23"
+    report["sections"][0]["items"][0]["source_refs"].append(
+        report["sections"][0]["briefs"][1]["source_ref"]
+    )
+    selected = select_news(report, index)
+    assert selected[0]["event_id"] == "brief-item-1"
+    assert [ref["item_id"] for ref in selected[0]["source_refs"]] == ["item-1"]
+    assert all(ref["item_id"] != "item-0" for e in selected for ref in e["source_refs"])
+
+
+def test_discovery_uses_submission_day_even_when_original_article_is_older(slide_case):
+    root, report_path, index_path, report, index = slide_case
+    for item, published in zip(
+        index["items"][:3], ["2026-09-19", None, "2026-09-23"], strict=True,
+    ):
+        item["metadata"] = {"role": "discovery", "content_source": {"published_at": published}}
+    index["items"][2]["published_at"] = "2026-09-22T23:00:00+08:00"
+    selected = select_news(report, index)
+    assert {"event-0", "brief-item-1"} <= {e["event_id"] for e in selected}
+    assert "brief-item-2" not in {e["event_id"] for e in selected}
+    with pytest.raises(ValueError, match="not published on the report date"):
+        select_news(report, index, item_ids=["item-2"])
+    # 聚合条目按转发日期展示和筛选，原文元信息不覆盖它。
+    write_json(index_path, index)
+    prepared = prepare_slides(report_path, index_path, root, item_ids=["item-0"])
+    plan = load_artifact(Path(prepared["plan_path"]), root)["payload"]
+    assert plan["news"][0]["sources"][0]["published_at"] == "2026-09-23T08:00:00+08:00"
+    for packet in prepared["packet_paths"]:
+        submit_slides(Path(packet), author_packet(packet, root), root)
+    output = render_slides(Path(prepared["plan_path"]), root, refresh_images=False)
+    assert output["news_count"] == 1
 
 
 def test_prepare_batches_by_size_and_budget_and_reuses_inputs(slide_case):
@@ -125,8 +268,8 @@ def test_all_batches_required_then_render_preserves_original_report(slide_case):
     for packet_path in result["packet_paths"][1:]:
         packet = Path(packet_path)
         submit_slides(packet, author_packet(packet, root), root)
-    output = render_slides(plan, root)
-    assert render_slides(plan, root) == output
+    output = render_slides(plan, root, refresh_images=False)
+    assert render_slides(plan, root, refresh_images=False) == output
     assert output["news_count"] == 16
     deck = load_artifact(Path(output["json_path"]), root)["payload"]
     assert len(deck["slides"]) == 16
@@ -137,6 +280,54 @@ def test_all_batches_required_then_render_preserves_original_report(slide_case):
     assert Path(output["html_path"]).name == "morning-r1-slides.html"
     assert "示例报" in Path(output["markdown_path"]).read_text(encoding="utf-8")
     assert report.read_bytes() == before
+
+
+def test_render_fetches_images_once_and_offline_reuses_them(slide_case, monkeypatch):
+    root, report, index, _, _ = slide_case
+    result = prepare_slides(report, index, root, item_ids=["item-0"])
+    for packet in result["packet_paths"]:
+        submit_slides(Path(packet), author_packet(packet, root), root)
+    calls = []
+
+    def enrich(news, data_dir, config):
+        calls.append([n["event_id"] for n in news])
+        news[0]["images"] = [{"url": "https://example.com/high.jpg", "caption": "原始图注",
+                              "source_url": "https://example.com/0", "width": 1400}]
+        return news, {"sources_fetched": 1}
+
+    monkeypatch.setattr("signaltrail.slide_images.enrich_slide_images", enrich)
+    plan = Path(result["plan_path"])
+    output = render_slides(plan, root)
+    replay = render_slides(plan, root, refresh_images=False)
+    assert replay == output
+    assert calls == [["event-0"]]
+    deck = load_artifact(Path(output["json_path"]), root)["payload"]
+    assert deck["slides"][0]["images"][0]["width"] == 1400
+    assert deck["image_enrichment"] == {"sources_fetched": 1}
+
+
+def test_render_legacy_plan_still_excludes_old_and_unknown_sources(slide_case, monkeypatch):
+    from signaltrail.narrative_store import save_artifact
+
+    root, report, index_path, _, index = slide_case
+    result = prepare_slides(report, index_path, root)
+    plan = load_artifact(Path(result["plan_path"]), root)
+    index["items"][0]["published_at"] = "2026-09-22"
+    index["items"][1]["published_at"] = None
+    legacy_index = write_json(root / "indexes/legacy.json", index)
+    legacy_plan = save_artifact(root, "legacy-slides", "slides-plan", plan["payload"],
+                               {"report": report, "index": legacy_index})
+    # 重建旧计划的已接受讲稿，避免通过新 prepare 筛选掩盖渲染端回归。
+    completed = []
+    for packet in result["packet_paths"]:
+        completed.append(str(submit_slides(Path(packet), author_packet(packet, root), root)))
+    monkeypatch.setattr("signaltrail.news_slides.slides_status", lambda *args: {
+        "pending_batches": [], "completed_paths": completed, "usage": {},
+    })
+    output = render_slides(legacy_plan, root, refresh_images=False)
+    deck = load_artifact(Path(output["json_path"]), root)["payload"]
+    assert len(deck["slides"]) == 14
+    assert {s["event_id"] for s in deck["slides"]}.isdisjoint({"event-0", "brief-item-1"})
 
 
 def test_images_keep_original_caption_and_collapse_responsive_versions(slide_case):
@@ -360,3 +551,197 @@ def test_legacy_saved_report_can_prepare_without_briefs(tmp_path):
     assert news["sources"][0]["access"] == "metadata_only"
     assert news["images"] == []
     assert news["analyses"][0]["domain"] == "ai_technology"
+
+
+def test_guardian_high_density_variant_beats_cached_140px_thumbnail(slide_case):
+    root, report_path, index_path, report, index = slide_case
+    article_url = (
+        "https://www.theguardian.com/us-news/2026/sep/23/"
+        "trump-xi-jinping-china-us-state-visit"
+    )
+    thumbnail = (
+        "https://i.guim.co.uk/img/media/example/master/2935.jpg?width=140&dpr=1"
+    )
+    medium = (
+        "https://i.guim.co.uk/img/media/example/master/2935.jpg?width=460&dpr=1"
+    )
+    high_density = (
+        "https://i.guim.co.uk/img/media/example/master/2935.jpg?width=700&dpr=2"
+    )
+    brief = report["sections"][0]["briefs"][0]
+    brief["source_ref"]["url"] = article_url
+    brief["image"] = {
+        "source_url": thumbnail, "resolved_url": thumbnail,
+        "local_path": "media/images/old-thumbnail.webp", "width": 140, "height": 112,
+        "content_type": "image/webp", "caption": "原图注",
+    }
+    indexed = index["items"][0]
+    indexed["url"] = article_url
+    indexed["image_url"] = thumbnail
+    indexed["metadata"] = {
+        "image_candidates": [thumbnail, medium, high_density],
+        "image_candidate_details": [{
+            "url": high_density, "provenance": "page_metadata",
+            "declared_width": "465", "declared_height": "372",
+        }],
+    }
+    write_json(report_path, report)
+    write_json(index_path, index)
+
+    result = prepare_slides(report_path, index_path, root, item_ids=["item-0"])
+    plan = load_artifact(Path(result["plan_path"]), root)["payload"]
+    images = plan["news"][0]["images"]
+
+    guardian_image = next(image for image in images if "guim.co.uk" in image["url"])
+    assert guardian_image["url"] == high_density
+    assert "local_path" not in guardian_image
+
+
+def test_duplicate_image_details_keep_cached_file_size_and_caption():
+    from signaltrail.news_slides import _news_images
+
+    url = "https://example.com/photo.jpg?width=1400"
+    event = {"source_refs": [{"item_id": "item-0", "url": "https://example.com/story"}]}
+
+    def indexed(details):
+        return {"item-0": {"url": "https://example.com/story", "source_name": "示例报",
+                           "metadata": {"image_candidate_details": details}}}
+
+    cached = {"url": url, "provenance": "article_body", "position": 0,
+              "local_path": "media/images/photo.jpg", "sha256": "abc",
+              "width": 1400, "height": 933, "caption": "正文原图注"}
+    page = {"url": url, "provenance": "page_metadata", "declared_width": "1400",
+            "declared_height": "933", "caption": ""}
+    for details in ([cached, page], [page, cached]):
+        images = _news_images(event, {}, indexed([dict(row) for row in details]))
+        assert len(images) == 1
+        assert images[0]["local_path"] == "media/images/photo.jpg"
+        assert (images[0]["width"], images[0]["height"]) == (1400, 933)
+        assert images[0]["caption"] == "正文原图注"
+
+
+def test_page_metadata_cannot_replace_measured_cache_or_body_caption():
+    from signaltrail.news_slides import _news_images
+
+    url = "https://example.com/photo.jpg"
+    event = {"source_refs": [{"item_id": "item-0", "url": "https://example.com/story"}]}
+    details = [
+        {"url": url, "provenance": "article_body", "position": 0,
+         "caption": "正文原图注", "local_path": "media/images/photo.jpg",
+         "sha256": "abc", "width": 1400, "height": 933, "byte_size": 1234,
+         "content_type": "image/jpeg"},
+        {"url": url, "provenance": "page_metadata", "caption": "",
+         "declared_width": "465", "declared_height": "310"},
+    ]
+    indexed = {"item-0": {"url": "https://example.com/story",
+                           "metadata": {"image_candidate_details": details}}}
+
+    images = _news_images(event, {}, indexed)
+
+    assert len(images) == 1
+    assert images[0]["local_path"] == "media/images/photo.jpg"
+    assert images[0]["width"] == 1400 and images[0]["height"] == 933
+    assert images[0]["caption"] == "正文原图注"
+    assert images[0]["provenance"] == "article_body" and images[0]["position"] == 0
+
+
+def test_guardian_responsive_crops_collapse_to_high_resolution_with_body_caption():
+    from signaltrail.news_slides import _news_images
+
+    hero = (
+        "https://i.guim.co.uk/img/media/205a3d6cb96fec1fecb84ab6537d3ac02b0651e0/"
+        "181_0_1500_1200/master/1500.jpg?width=1200&height=630&quality=85&auto=format"
+        "&fit=crop&precrop=40:21&overlay-align=bottom%2Cleft&enable=upscale"
+    )
+    body = (
+        "https://i.guim.co.uk/img/media/205a3d6cb96fec1fecb84ab6537d3ac02b0651e0/"
+        "26_0_1738_1200/master/1738.jpg?width=1300&dpr=2&s=none&crop=none"
+    )
+    other_asset = (
+        "https://i.guim.co.uk/img/media/f41609563a2b6b9472f7c3b63b26ce0151a27d7b/"
+        "260_0_6091_4615/master/6091.jpg?width=620&dpr=2&s=none&crop=none"
+    )
+    event = {"source_refs": [{"item_id": "guardian", "url": "https://example.com/story"}]}
+    indexed = {"guardian": {
+        "url": "https://example.com/story", "source_name": "Guardian",
+        "metadata": {"image_candidate_details": [
+            {"url": hero, "provenance": "page_metadata", "purpose": "publisher_selected"},
+            {"url": body, "provenance": "article_body", "position": 0,
+             "caption": "US forces intercepted the Ecuadorian vessel Manta."},
+            {"url": other_asset, "provenance": "article_body", "position": 1,
+             "caption": "Ecuador’s president presents Marco Rubio with an award."},
+        ]},
+    }}
+
+    images = _news_images(event, {}, indexed)
+
+    assert len(images) == 2
+    assert images[0]["url"] == body
+    assert images[0]["caption"] == "US forces intercepted the Ecuadorian vessel Manta."
+    assert images[1]["url"] == other_asset
+
+
+@pytest.mark.parametrize("small,large", [
+    ("https://ichef.bbci.co.uk/ace/standard/624/cpsprodpb/123/live/photo.jpg.webp",
+     "https://ichef.bbci.co.uk/ace/standard/745/cpsprodpb/123/live/photo.jpg"),
+    ("https://i.guim.co.uk/img/media/photo.jpg?w=320",
+     "https://i.guim.co.uk/img/media/photo.jpg?w=1400"),
+])
+def test_explicit_variant_size_outweighs_shared_html_display_size(small, large):
+    from signaltrail.news_slides import _news_images
+
+    event = {"source_refs": [{"item_id": "item", "url": "https://example.com/story"}]}
+    details = [{
+        "url": url, "provenance": "article_body", "position": 0, "variant": variant,
+        "declared_width": "745", "declared_height": "418", "caption": "原图注",
+    } for variant, url in enumerate([small, large])]
+    indexed = {"item": {"url": "https://example.com/story",
+                        "metadata": {"image_candidate_details": details}}}
+
+    images = _news_images(event, {}, indexed)
+
+    assert [image["url"] for image in images] == [large]
+    assert images[0]["caption"] == "原图注"
+
+
+def test_images_collapse_same_asset_variants_and_prefer_the_clearer_one(slide_case):
+    root, report_path, index_path, report, index = slide_case
+    article = "https://www.channelnewsasia.com/world/australia-openai-agent-breach"
+    hero = (
+        "https://dam.mediacorp.sg/image/upload/s--7LkFLh0E--/c_crop,h_1332,w_1666,x_166,y_0/"
+        "c_fill,g_center,h_598,w_747/f_auto,q_auto/v1/mediacorp/cna/image/2026/09/24/breach.jpg"
+    )
+    cover = (
+        "https://dam.mediacorp.sg/image/upload/s--F34rAgWg--/c_crop,h_1125,w_2000,x_0,y_104/"
+        "c_fill,g_auto,h_676,w_1200/f_auto,q_auto/v1/mediacorp/cna/image/2026/09/24/breach.jpg"
+    )
+    brief = report["sections"][0]["briefs"][0]
+    brief["source_ref"]["url"] = article
+    indexed = index["items"][0]
+    indexed["url"] = article
+    indexed["metadata"] = {"image_candidate_details": [
+        {"url": "https://ichef.bbci.co.uk/ace/branded_news/1200/cpsprodpb/f010/live/"
+                 "69f3ee00-b795-11f1-a430-4d16ee157c41.jpg",
+         "provenance": "page_metadata", "caption": "Image caption, Albanese said it took time."},
+        {"url": "https://ichef.bbci.co.uk/ace/standard/976/cpsprodpb/f010/live/"
+                 "69f3ee00-b795-11f1-a430-4d16ee157c41.jpg.webp",
+         "provenance": "article_body", "position": 0},
+        {"url": cover, "provenance": "page_metadata", "purpose": "publisher_selected",
+         "caption": ""},
+        {"url": hero, "provenance": "article_body", "position": 0,
+         "caption": "Australia's Prime Minister Anthony Albanese speaks."},
+    ]}
+    write_json(report_path, report)
+    write_json(index_path, index)
+
+    result = prepare_slides(report_path, index_path, root, item_ids=["item-0"])
+    plan = load_artifact(Path(result["plan_path"]), root)["payload"]
+    images = plan["news"][0]["images"]
+
+    assert [image["url"] for image in images if "bbci" in image["url"]] == [indexed["metadata"][
+        "image_candidate_details"
+    ][0]["url"]]
+    assert [image["url"] for image in images if "mediacorp" in image["url"]] == [cover]
+    assert next(image for image in images if image["url"] == cover)["caption"] == (
+        "Australia's Prime Minister Anthony Albanese speaks."
+    )

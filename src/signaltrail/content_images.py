@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 from typing import Any
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlsplit
 
 from bs4 import Tag
 
@@ -48,23 +48,83 @@ def _terms(text: str) -> set[str]:
     return terms - {"the", "and", "for", "with", "from", "that", "this"}
 
 
+# 正文区域内的游戏、推广、订阅和同页推荐块不属于新闻配图证据；按容器类名词段判断。
+_NON_BODY_CONTAINER_TOKENS = {
+    "games", "game-list", "game-tile", "game-img",
+    "promo", "promotion", "promotions", "subscription",
+    "newsletter", "related", "recommend", "recommendation", "recommended",
+    "referenced", "cta", "sponsor", "sponsored", "advert", "advertisement",
+    "sidebar", "widget", "entry-pagination",
+    "author", "avatar", "logo",
+    "archive-post", "archive-image",
+}
+
+
+def _in_non_body_container(node: Tag, root: Tag) -> bool:
+    """处理：判断图片是否位于正文内的游戏、推广或同页推荐容器。
+    输入：正文图片节点及选中的正文边界；只比较容器类名的完整词段。
+    输出：命中非正文容器返回真；正文图片返回假，不按尺寸或图注舍弃图片。
+    """
+    for container in node.parents:
+        if container is root or not isinstance(container, Tag):
+            break
+        values = container.get("class") or []
+        if isinstance(values, str):
+            values = values.split()
+        values = [*values, container.get("id", "")]
+        names = {str(value).casefold().replace("_", "-") for value in values if value}
+        if {"block-wrap", "block-list"} <= names:
+            return True
+        tokens = {
+            token
+            for value in names
+            for token in re.split(r"[^a-z0-9]+", str(value).casefold())
+            if token
+        }
+        if names & _NON_BODY_CONTAINER_TOKENS or tokens & _NON_BODY_CONTAINER_TOKENS:
+            return True
+    return False
+
+
+def _pixel_width(url: str) -> float:
+    """处理：从发布者 CDN 参数估算同图变体的实际横向像素。
+    输入：正文图片候选 URL；只读取明确声明的宽度与设备像素比。
+    输出：宽度乘像素比，用于先处理更清晰的响应式版本。
+    """
+    query = parse_qs(urlsplit(url).query)
+    try:
+        width = float((query.get("width") or query.get("w") or [0])[0])
+        density = float((query.get("dpr") or [1])[0])
+    except ValueError:
+        return 0
+    return width * density
+
+
 def article_image_candidates(
     document: ExtractedDocument, title: str, base_url: str,
 ) -> list[dict[str, Any]]:
-    """处理：仅从选中的具体正文区域收集配图，保留图注及相邻文本依据。
-    输入：正文抽取结果、当前条目标题与页面最终 URL。
-    输出：按图注、词法关联和原始顺序排列的候选；宽泛页面不提供配图证据。
+    """处理：从具体正文收集配图；空图片卡片回退到其有图的 main 页面。
+    输入：正文抽取结果、当前条目标题与页面最终 URL；独立 article 仍优先。
+    输出：按图注、词法关联和原始顺序排列的正文候选；过滤导航、标志和侧栏。
     """
     root = document.node
     if root is None or document.quality.get("region") != "specific":
         return []
+    if not root.select_one("img"):
+        main = root.find_parent("main")
+        # 空任务卡片可能抢占正文选择；仅在页面主区确有多张配图时扩大范围。
+        if main is None or len(main.select("img")) < 3:
+            return []
+        root = main
     candidates = []
     title_terms = _terms(title)
-    for position, node in enumerate(root.select("img")[:24]):
+    for position, node in enumerate(root.select("img")):
         alt = str(node.get("alt") or "").strip()
         if node.get("role") == "presentation" or re.search(
             r"\b(?:logo|avatar|icon)\b|头像|图标", alt, re.I,
         ):
+            continue
+        if _in_non_body_container(node, root):
             continue
         caption = _image_caption(node, root)
         adjacent = node.find_next("p")
@@ -78,6 +138,8 @@ def article_image_candidates(
             url for source in picture.select("source")
             for url in srcset_candidates(source.get("srcset") or source.get("data-srcset"))
         ] if picture else []
+        # picture 的 source 常按视口 media 声明，DOM 顺序不等于像素清晰度顺序。
+        picture_urls.sort(key=_pixel_width, reverse=True)
         anchor = node.find_parent("a", href=True)
         full_image = str(anchor.get("href")) if anchor else ""
         if not re.search(r"\.(?:jpe?g|png|webp|gif|avif)$", urlsplit(full_image).path, re.I):
