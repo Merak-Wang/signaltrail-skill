@@ -645,6 +645,42 @@ def test_page_metadata_cannot_replace_measured_cache_or_body_caption():
     assert images[0]["provenance"] == "article_body" and images[0]["position"] == 0
 
 
+def test_guardian_responsive_crops_collapse_to_high_resolution_with_body_caption():
+    from signaltrail.news_slides import _news_images
+
+    hero = (
+        "https://i.guim.co.uk/img/media/205a3d6cb96fec1fecb84ab6537d3ac02b0651e0/"
+        "181_0_1500_1200/master/1500.jpg?width=1200&height=630&quality=85&auto=format"
+        "&fit=crop&precrop=40:21&overlay-align=bottom%2Cleft&enable=upscale"
+    )
+    body = (
+        "https://i.guim.co.uk/img/media/205a3d6cb96fec1fecb84ab6537d3ac02b0651e0/"
+        "26_0_1738_1200/master/1738.jpg?width=1300&dpr=2&s=none&crop=none"
+    )
+    other_asset = (
+        "https://i.guim.co.uk/img/media/f41609563a2b6b9472f7c3b63b26ce0151a27d7b/"
+        "260_0_6091_4615/master/6091.jpg?width=620&dpr=2&s=none&crop=none"
+    )
+    event = {"source_refs": [{"item_id": "guardian", "url": "https://example.com/story"}]}
+    indexed = {"guardian": {
+        "url": "https://example.com/story", "source_name": "Guardian",
+        "metadata": {"image_candidate_details": [
+            {"url": hero, "provenance": "page_metadata", "purpose": "publisher_selected"},
+            {"url": body, "provenance": "article_body", "position": 0,
+             "caption": "US forces intercepted the Ecuadorian vessel Manta."},
+            {"url": other_asset, "provenance": "article_body", "position": 1,
+             "caption": "Ecuador’s president presents Marco Rubio with an award."},
+        ]},
+    }}
+
+    images = _news_images(event, {}, indexed)
+
+    assert len(images) == 2
+    assert images[0]["url"] == body
+    assert images[0]["caption"] == "US forces intercepted the Ecuadorian vessel Manta."
+    assert images[1]["url"] == other_asset
+
+
 @pytest.mark.parametrize("small,large", [
     ("https://ichef.bbci.co.uk/ace/standard/624/cpsprodpb/123/live/photo.jpg.webp",
      "https://ichef.bbci.co.uk/ace/standard/745/cpsprodpb/123/live/photo.jpg"),

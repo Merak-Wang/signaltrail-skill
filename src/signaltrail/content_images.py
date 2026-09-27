@@ -54,6 +54,9 @@ _NON_BODY_CONTAINER_TOKENS = {
     "promo", "promotion", "promotions", "subscription",
     "newsletter", "related", "recommend", "recommendation", "recommended",
     "referenced", "cta", "sponsor", "sponsored", "advert", "advertisement",
+    "sidebar", "widget", "entry-pagination",
+    "author", "avatar", "logo",
+    "archive-post", "archive-image",
 }
 
 
@@ -70,6 +73,8 @@ def _in_non_body_container(node: Tag, root: Tag) -> bool:
             values = values.split()
         values = [*values, container.get("id", "")]
         names = {str(value).casefold().replace("_", "-") for value in values if value}
+        if {"block-wrap", "block-list"} <= names:
+            return True
         tokens = {
             token
             for value in names
@@ -98,13 +103,19 @@ def _pixel_width(url: str) -> float:
 def article_image_candidates(
     document: ExtractedDocument, title: str, base_url: str,
 ) -> list[dict[str, Any]]:
-    """处理：仅从选中的具体正文区域收集配图，保留图注及相邻文本依据。
-    输入：正文抽取结果、当前条目标题与页面最终 URL。
-    输出：按图注、词法关联和原始顺序排列的候选；宽泛页面不提供配图证据。
+    """处理：从具体正文收集配图；空图片卡片回退到其有图的 main 页面。
+    输入：正文抽取结果、当前条目标题与页面最终 URL；独立 article 仍优先。
+    输出：按图注、词法关联和原始顺序排列的正文候选；过滤导航、标志和侧栏。
     """
     root = document.node
     if root is None or document.quality.get("region") != "specific":
         return []
+    if not root.select_one("img"):
+        main = root.find_parent("main")
+        # 空任务卡片可能抢占正文选择；仅在页面主区确有多张配图时扩大范围。
+        if main is None or len(main.select("img")) < 3:
+            return []
+        root = main
     candidates = []
     title_terms = _terms(title)
     for position, node in enumerate(root.select("img")):

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import ExitStack
 from pathlib import Path
@@ -27,6 +28,48 @@ from .media import (
 )
 
 _MAX_PAGE_BYTES = 2 * 1024 * 1024
+
+
+class _ArxivFullTextFetchError(ImageDownloadError):
+    """处理：保留摘要页图片并传递 arXiv 全文页访问失败。
+    输入：失败说明、摘要页候选与摘要页最终 URL。
+    输出：调用方可同时记录来源失败并继续合并摘要页图片。
+    """
+
+    def __init__(self, message: str, candidates: list[dict[str, Any]], page_url: str):
+        """处理：在异常中保留摘要页候选和最终 URL。
+        输入：全文失败说明、摘要候选和最终摘要页 URL。
+        输出：调用方可记录失败并继续合并已找到的图片。
+        """
+        super().__init__(message)
+        self.candidates = candidates
+        self.page_url = page_url
+
+
+def _arxiv_fulltext_link(soup: BeautifulSoup, page_url: str) -> str | None:
+    """处理：从 arXiv 摘要页定位同论文的显式 HTML 全文链接。
+    输入：已解析页面及最终 URL；仅接受 arXiv HTTPS 的 HTML 链接和相同论文 ID。
+    输出：可信范围内的全文 URL；页面未明确提供时返回 None。
+    """
+    page = urlsplit(page_url)
+    if page.hostname != "arxiv.org":
+        return None
+    match = re.fullmatch(r"/abs/(.+?)(?:v\d+)?/?", page.path)
+    if not match:
+        return None
+    paper_id = match.group(1).rstrip("/")
+    for anchor in soup.select("a[href]"):
+        label = " ".join(anchor.get_text(" ", strip=True).casefold().split())
+        if label not in {"html", "html (experimental)"}:
+            continue
+        target = urljoin(page_url, str(anchor.get("href") or ""))
+        parsed = urlsplit(target)
+        if parsed.scheme != "https" or parsed.hostname != "arxiv.org":
+            continue
+        target_match = re.fullmatch(r"/html/(.+?)(?:v\d+)?/?", parsed.path)
+        if target_match and target_match.group(1).rstrip("/") == paper_id:
+            return target
+    return None
 
 
 def fetch_article_page(
@@ -96,6 +139,17 @@ def _read_page(
                 "url": image_url, "provenance": "page_metadata", "purpose": "publisher_selected",
                 "caption": "", "position": -1, "variant": variant,
             })
+    fulltext_url = _arxiv_fulltext_link(soup, current)
+    if fulltext_url:
+        try:
+            fulltext, fulltext_current = fetch_article_page(fulltext_url, config, client)
+        except (httpx.HTTPError, ImageDownloadError, OSError, ValueError) as exc:
+            raise _ArxivFullTextFetchError(
+                f"arXiv HTML full text failed: {type(exc).__name__}: {exc}",
+                candidates, current,
+            ) from exc
+        fulltext_document = extract_document(fulltext, [], expected_title=title)
+        candidates.extend(article_image_candidates(fulltext_document, title, fulltext_current))
     return candidates, current
 
 
@@ -190,6 +244,9 @@ def enrich_slide_images(
                 domain_active[domain] -= 1
                 try:
                     page_results[url] = future.result()
+                except _ArxivFullTextFetchError as exc:
+                    page_results[url] = (exc.candidates, exc.page_url)
+                    source_failures.append({"url": url, "reason": str(exc)})
                 except (httpx.HTTPError, ImageDownloadError, OSError, ValueError) as exc:
                     source_failures.append({"url": url, "reason": f"{type(exc).__name__}: {exc}"})
                 submit_ready(pending)

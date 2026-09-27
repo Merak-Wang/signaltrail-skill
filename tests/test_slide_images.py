@@ -5,6 +5,7 @@ import time
 from pathlib import Path
 
 import httpx
+from bs4 import BeautifulSoup
 
 from signaltrail.config import MediaConfig
 from signaltrail.media import DownloadedImage, ImageDownloadError
@@ -63,6 +64,182 @@ def test_page_reader_uses_article_picture_srcset_and_ignores_related_images(monk
     assert "https://news.example/related.jpg" not in urls
     caption = next(c for c in candidates if "photo-1400" in c["url"])["caption"]
     assert caption == "Original news caption"
+
+
+def test_arxiv_abstract_follows_explicit_same_paper_html_for_body_images(monkeypatch):
+    abstract_url = "https://arxiv.org/abs/2608.23642"
+    fulltext_url = "https://arxiv.org/html/2608.23642v3"
+    pages = {
+        abstract_url: b'''<html><body><main>
+          <p>AI Agents Push Humans Out of the Loop</p>
+          <a href="/html/2608.23642v3">HTML (experimental)</a>
+        </main></body></html>''',
+        fulltext_url: b'''<html><body><article><h1>AI Agents Push Humans Out of the Loop</h1>
+          <p>AI agents affect human oversight and cognition over time.</p>
+          <figure><img src="2608.23642v3/extended_mind.png" alt="Extended mind"
+            width="476" height="240">
+          <figcaption>Figure 1: The extended mind.</figcaption></figure>
+        </article></body></html>''',
+    }
+    requested = []
+
+    class Client:
+        def stream(self, _method, url):
+            requested.append(url)
+            response = httpx.Response(
+                200, content=pages[url], request=httpx.Request("GET", url),
+            )
+
+            class Stream:
+                def __enter__(self):
+                    return response
+
+                def __exit__(self, *_exc):
+                    response.close()
+
+            return Stream()
+
+    monkeypatch.setattr("signaltrail.slide_images.assert_public_image_url", lambda _url: None)
+    candidates, final_url = _read_page(
+        abstract_url, "AI Agents Push Humans Out of the Loop", MediaConfig(), Client(),
+    )
+
+    image = next(candidate for candidate in candidates if candidate.get("alt") == "Extended mind")
+    assert requested == [abstract_url, fulltext_url]
+    assert final_url == abstract_url
+    assert image["url"] == "https://arxiv.org/html/2608.23642v3/extended_mind.png"
+    assert image["caption"] == "Figure 1: The extended mind."
+
+
+def test_arxiv_without_explicit_same_paper_html_keeps_abstract_images(monkeypatch):
+    abstract_url = "https://arxiv.org/abs/2608.23642"
+    markup = b'''<html><body><main><p>AI agents and human oversight.</p>
+      <a href="https://other.example/fulltext">Full text</a>
+      <a href="/html/2609.99999v1">HTML (experimental)</a>
+      <article><p>Original image in selected body.</p>
+      <img src="/figure.png" alt="Human oversight figure"></article>
+    </main></body></html>'''
+    requested = []
+
+    class Client:
+        def stream(self, _method, url):
+            requested.append(url)
+            response = httpx.Response(
+                200, content=markup, request=httpx.Request("GET", url),
+            )
+
+            class Stream:
+                def __enter__(self):
+                    return response
+
+                def __exit__(self, *_exc):
+                    response.close()
+
+            return Stream()
+
+    monkeypatch.setattr("signaltrail.slide_images.assert_public_image_url", lambda _url: None)
+    candidates, _final_url = _read_page(
+        abstract_url, "AI agents oversight", MediaConfig(), Client(),
+    )
+
+    assert requested == [abstract_url]
+    assert "https://arxiv.org/figure.png" in {candidate["url"] for candidate in candidates}
+
+
+def test_arxiv_fulltext_failure_preserves_images_and_records_source_failure(
+    monkeypatch, tmp_path: Path,
+):
+    abstract_url = "https://arxiv.org/abs/2608.23642"
+    fulltext_url = "https://arxiv.org/html/2608.23642v3"
+    markup = BeautifulSoup(b'''<html><body><main>
+      <p>AI Agents Push Humans Out of the Loop</p>
+      <a href="/html/2608.23642v3">HTML (experimental)</a>
+      <article><p>Existing abstract-page figure.</p>
+      <img src="/original.png" alt="Original existing figure"></article>
+    </main></body></html>''', "html.parser")
+
+    def fetch(url, _config, _client):
+        if url == abstract_url:
+            return markup, url
+        assert url == fulltext_url
+        raise ImageDownloadError("HTML endpoint unavailable")
+
+    monkeypatch.setattr("signaltrail.slide_images.fetch_article_page", fetch)
+    original = "https://arxiv.org/original.png"
+    downloaded = DownloadedImage(
+        source_url=original, resolved_url=original, local_path="media/images/original.png",
+        content_type="image/png", sha256="original", byte_size=100,
+        width=1200, height=800, reused=False,
+    )
+    monkeypatch.setattr(
+        "signaltrail.slide_images._download_image_batch",
+        lambda rows, *_args, **_kwargs: {url: downloaded for url, _referer in rows},
+    )
+    news = _news()
+    news[0]["title"] = "AI Agents Push Humans Out of the Loop"
+    news[0]["sources"][0]["url"] = abstract_url
+
+    result, metrics = enrich_slide_images(news, tmp_path, MediaConfig())
+
+    assert {image["url"] for image in result[0]["images"]} == {
+        "https://cdn.example/thumb.jpg", original,
+    }
+    assert metrics["source_failures"] == [{
+        "url": abstract_url,
+        "reason": "arXiv HTML full text failed: ImageDownloadError: HTML endpoint unavailable",
+    }]
+
+
+def test_page_reader_uses_image_rich_main_when_selected_article_is_a_task_card(monkeypatch):
+    markup = b"""<html><body>
+      <header><div class="site-logo"><img src="/stanford-logo.png" alt=""></div></header>
+      <main><h1>HomeBody humanoid research project</h1>
+      <section><p>""" + (b"The project describes an autonomous humanoid robot. " * 12) + b"""</p>
+        <figure><img src="figures/overview.webp" width="1800" alt="Project overview">
+        <figcaption>Project overview.</figcaption></figure>
+        <figure><img src="figures/architecture.webp" width="1800" alt="System architecture">
+        </figure>
+        <figure><img src="figures/comparison.webp" width="720" alt="System comparison">
+        </figure>
+      </section>
+      <article class="task-brief"><p>Retrieve the medicine I forgot;
+        enough text to be selected.</p></article>
+      <aside class="sidebar"><img src="/sidebar-promo.png" alt="Promotion"></aside>
+      </main><nav><img src="/nav-icon.png" alt=""></nav></body></html>"""
+
+    class Client:
+        def __init__(self, **_kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def stream(self, *_args, **_kwargs):
+            response = httpx.Response(
+                200, content=markup, request=httpx.Request("GET", "https://tml.example/homebody/"),
+            )
+            class Stream:
+                def __enter__(self):
+                    return response
+
+                def __exit__(self, *_exc):
+                    response.close()
+
+            return Stream()
+
+    monkeypatch.setattr("signaltrail.slide_images.httpx.Client", Client)
+    monkeypatch.setattr("signaltrail.slide_images.assert_public_image_url", lambda _url: None)
+    candidates, _final_url = _read_page(
+        "https://tml.example/homebody/", "HomeBody humanoid research project", MediaConfig(),
+    )
+    urls = {candidate["url"] for candidate in candidates}
+    assert "https://tml.example/homebody/figures/overview.webp" in urls
+    assert "https://tml.example/homebody/figures/architecture.webp" in urls
+    assert "https://tml.example/homebody/figures/comparison.webp" in urls
+    assert not any("logo" in url or "sidebar" in url or "nav-icon" in url for url in urls)
 
 
 def test_enrich_downloads_page_candidates_and_keeps_existing(monkeypatch, tmp_path: Path):

@@ -429,6 +429,11 @@ def _image_identity(url: str) -> tuple:
         )) != suffix:
             suffix = folded
         return host, "cpsprodpb", suffix
+    if host == "i.guim.co.uk":
+        guardian_asset = re.search(r"/img/media/([^/]+)/", parsed.path)
+        if guardian_asset:
+            # Guardian 的同一媒体 ID 会带不同裁切和尺寸路径；以最高分辨率候选保留单图。
+            return host, "media", guardian_asset.group(1)
     if host in _CLOUDINARY_STYLE_HOSTS:
         # 同一资产只差变换段和签名；按已出现的 v<版本> 之后路径归一，不构造新地址。
         version = re.search(r"/v\d+/", parsed.path)

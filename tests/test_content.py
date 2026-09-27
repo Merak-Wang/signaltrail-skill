@@ -21,6 +21,7 @@ from signaltrail.content import (
     synchronize_nested_items,
 )
 from signaltrail.content_extraction import extract_document, observed_source_metadata
+from signaltrail.content_images import article_image_candidates
 from signaltrail.models import ContentStatus
 from signaltrail.utils import read_json, write_json
 
@@ -368,6 +369,75 @@ def test_article_images_exclude_games_promotions_and_recommended_cards(tmp_path)
         "https://www.bbc.com/game-analysis.jpg",
     ]
     assert details[0]["caption"] == "Prime Minister Anthony Albanese speaks to reporters."
+
+
+def test_article_images_exclude_publisher_sidebar_and_recommendation_widgets(tmp_path):
+    config = load_config()
+    item = _item("aviationist-like")
+    item["source_id"] = "the_aviationist"
+    item["source_name"] = "The Aviationist"
+    item["url"] = "https://theaviationist.com/2026/09/26/example-story/"
+    markup = (
+        "<article class='mv-content-wrapper'>"
+        "<div class='entry-content'><p>" + "A substantive story paragraph. " * 8 + "</p>"
+        "<figure><img src='/story.jpg' alt='Story aircraft'>"
+        "<figcaption>Aircraft in the story.</figcaption></figure></div>"
+        "<div class='block-wrap'><figure><img src='/body-callout.jpg' "
+        "alt='Body callout image'></figure></div>"
+        "<div class='entry-pagination'><img src='/previous-story.jpg' alt='Previous story'></div>"
+        "<div class='block-wrap block-list'><div class='p-wrap'>"
+        "<img src='/recommended-story.jpg' alt='Recommended story'></div></div>"
+        "<div class='author-wrapper meta-avatar'><img src='/author-avatar.jpg' alt=''></div>"
+        "<div class='sidebar-wrap single-sidebar'><div id='media_image-6' "
+        "class='widget rb-section widget_media_image'>"
+        "<h4>Work With Us</h4><a href='/work-with-us/'>"
+        "<img src='/work-with-us.png' alt=''></a></div></div>"
+        "</article>"
+    )
+    source = config.source_by_id(item["source_id"])
+    _apply_http_document(
+        item, source, markup, item["url"], 200, config, tmp_path,
+    )
+
+    details = item["metadata"]["image_candidate_details"]
+    assert [row["url"] for row in details] == [
+        "https://theaviationist.com/story.jpg",
+        "https://theaviationist.com/body-callout.jpg",
+    ]
+    assert details[0]["caption"] == "Aircraft in the story."
+
+
+def test_main_page_keeps_post_media_figures_and_excludes_archive_recommendations():
+    body_images = "".join(
+        f'<figure class="post-body"><img src="/figures/body-{index}.jpg" '
+        f'alt="Article image {index}"><figcaption>Article figure {index}.</figcaption></figure>'
+        for index in range(6)
+    )
+    archive_cards = "".join(
+        f'<article class="archive-post"><div class="archive-image"><a class="link">'
+        f'<img src="/recommendations/recommend-{index}.jpg" alt="Related story">'
+        f'</a></div></article>'
+        for index in range(3)
+    )
+    markup = (
+        "<html><body><main><article class='task-brief'><p>"
+        + "A short task card can be selected ahead of this project page. " * 12
+        + "</p></article><div class='post-main'><div class='post-media'>"
+        + "<div class='post-body'><p>" + "The article body describes vending machines. " * 8
+        + "</p>" + body_images + "</div></div></div><div class='wrapper'>"
+        + archive_cards + "</div></main></body></html>"
+    )
+    document = extract_document(
+        BeautifulSoup(markup, "html.parser"), [], expected_title="vending machines",
+    )
+
+    candidates = article_image_candidates(
+        document, "vending machines", "https://news.example/story/",
+    )
+
+    assert {row["url"] for row in candidates} == {
+        f"https://news.example/figures/body-{index}.jpg" for index in range(6)
+    }
 
 
 def test_article_image_scan_continues_past_early_promotions(tmp_path):
