@@ -575,7 +575,7 @@ def test_deferred_tail_returns_after_html_then_finishes_requested_work(
     assert run["artifacts"]["requested_formats"] == ["html"]
     assert "--publish" in run["tail"]["command"]
     assert run["tail"]["command"].startswith("signaltrail --data-dir ")
-    assert "slides prepare" in run["next_action"]
+    assert "finalize-edition" in run["next_action"]
 
     monkeypatch.setattr(
         "signaltrail.workflow.write_local_outputs",
@@ -617,7 +617,7 @@ def test_deferred_tail_returns_after_html_then_finishes_requested_work(
         assert read_json(run_path)["evaluation"]["scheduler"]["status"] == "scheduled"
     assert run["artifacts"]["pdf_engine"] == "reportlab"
     assert run["metrics"]["pdf_projection_seconds"] >= 0
-    assert "slides prepare" in run["next_action"]
+    assert "finalize-edition" in run["next_action"]
 
 
 def test_schema_20_context_rejects_legacy_draft_before_persistence(monkeypatch, tmp_path: Path):
@@ -733,7 +733,7 @@ def test_deferred_tail_records_projection_failure_without_retracting_html(
     assert run["tail"]["status"] == "partial"
     assert "Local PDF projection failed" in run["tail"]["errors"][0]
     assert run["evaluation"]["scheduler"]["status"] == "scheduled"
-    assert "slides prepare" in run["next_action"]
+    assert "finalize-edition" in run["next_action"]
 
 
 def test_saved_edition_prepares_slides_and_keeps_packet_paths(monkeypatch, tmp_path):
@@ -748,9 +748,10 @@ def test_saved_edition_prepares_slides_and_keeps_packet_paths(monkeypatch, tmp_p
         "artifacts": {"json_path": str(report_path), "index_path": str(index_path)},
     })
     packets = [str(data_dir / "slides" / "packet-1.json")]
+    plan_path = write_json(data_dir / "slides" / "plan.json", {})
     calls = []
-    monkeypatch.setattr("signaltrail.news_slides.prepare_slides", lambda *args: (
-        calls.append(args) or {"plan_path": str(data_dir / "slides" / "plan.json"),
+    monkeypatch.setattr("signaltrail.news_slides.prepare_slides", lambda *args, **_kwargs: (
+        calls.append(args) or {"plan_path": str(plan_path),
                                "packet_paths": packets, "news_count": 2, "batch_count": 1}
     ))
 
@@ -806,7 +807,11 @@ def test_finalize_resumes_existing_report_and_reuses_slide_plan(monkeypatch, tmp
     index_path = write_json(data_dir / "indexes" / "2026-09-24" / "morning-r1.json", {
         "date": "2026-09-24", "edition": "morning", "items": [],
     })
-    plan_path = write_json(data_dir / "slides" / "plan.json", {})
+    from signaltrail.narrative_store import save_artifact
+    plan_path = save_artifact(data_dir, "resumed-slides", "slides-plan", {
+        "selection_policy": "report-admitted-importance-v1",
+        "budget": {"max_news": 50},
+    }, {"report": report_path, "index": index_path})
     draft = write_json(tmp_path / "draft.json", {"date": "2026-09-24", "edition": "morning"})
     run_path = write_json(data_dir / "runs" / "2026-09-24" / "morning.json", {
         "data_root": str(data_dir.resolve()), "date": "2026-09-24", "edition": "morning",
@@ -827,16 +832,84 @@ def test_finalize_resumes_existing_report_and_reuses_slide_plan(monkeypatch, tmp
     assert "slides render" in run["next_action"]
 
 
+def test_finalize_keeps_custom_slide_limit_on_retry_and_changes_plan_explicitly(
+    monkeypatch, tmp_path,
+):
+    from signaltrail.narrative_store import save_artifact
+
+    data_dir = tmp_path / "data"
+    report_path = write_json(data_dir / "reports" / "r1.json", {
+        "date": "2026-09-24", "edition": "morning", "revision": 1,
+    })
+    index_path = write_json(data_dir / "indexes" / "i1.json", {
+        "date": "2026-09-24", "edition": "morning", "items": [],
+    })
+    run_path = write_json(data_dir / "runs" / "run.json", {
+        "data_root": str(data_dir.resolve()), "date": "2026-09-24", "edition": "morning",
+        "status": RunStatus.COMPLETED,
+        "artifacts": {"json_path": str(report_path), "index_path": str(index_path)},
+    })
+    calls = []
+
+    def prepare(report, index, root, *, max_news):
+        calls.append(max_news)
+        plan = save_artifact(root, f"slides-{max_news}-{len(calls)}", "slides-plan", {
+            "selection_policy": "report-admitted-importance-v1",
+            "budget": {"max_news": max_news},
+        }, {"report": report, "index": index})
+        return {"plan_path": str(plan), "packet_paths": [], "news_count": 0,
+                "batch_count": 0}
+
+    monkeypatch.setattr("signaltrail.news_slides.prepare_slides", prepare)
+
+    finalize_edition(run_path, Path("unused.json"), data_dir, slides_max_news=20)
+    custom_plan = read_json(run_path)["artifacts"]["slides"]["plan_path"]
+    finalize_edition(run_path, Path("unused.json"), data_dir)
+    assert calls == [20]
+    assert read_json(run_path)["artifacts"]["slides"]["plan_path"] == custom_plan
+
+    finalize_edition(run_path, Path("unused.json"), data_dir, slides_max_news=50)
+    assert calls == [20, 50]
+    assert read_json(run_path)["artifacts"]["slides"]["plan_path"] != custom_plan
+
+
 def test_rendered_slide_sidecar_clears_pending_action(tmp_path):
+    from signaltrail.narrative_store import save_artifact
+
     data_dir = tmp_path / "data"
     report_path = write_json(data_dir / "reports" / "2026-09-24" / "morning-r1.json", {
         "edition": "morning", "revision": 1,
     })
+    index_path = write_json(data_dir / "index.json", {})
+    plan_path = save_artifact(data_dir, "rendered-slides", "slides-plan", {
+        "selection_policy": "report-admitted-importance-v1",
+        "budget": {"max_news": 50},
+    }, {"report": report_path, "index": index_path})
+    deck_path = save_artifact(data_dir, "rendered-slides", "slides-deck", {}, {
+        "plan": plan_path,
+    })
+    deck_path.with_suffix(".html").write_text("deck", encoding="utf-8")
     (report_path.parent / "morning-r1-slides.html").write_text("deck", encoding="utf-8")
-    run = {"artifacts": {"json_path": str(report_path),
-                         "slides": {"plan_path": str(data_dir / "plan.json")}}}
+    run = {
+        "artifacts": {"json_path": str(report_path),
+                      "slides": {"status": "failed", "plan_path": str(plan_path)}},
+    }
 
-    assert workflow_module._slides_next_action(run) == "News slides are rendered."
+    assert workflow_module._slides_next_action(
+        run, data_dir / "run.json", data_dir,
+    ) == "News slides are rendered."
+
+
+def test_slides_recovery_action_uses_explicit_data_dir_for_legacy_run(tmp_path):
+    data_dir = tmp_path / "data"
+    report_path = write_json(data_dir / "reports" / "2026-09-24" / "morning-r1.json", {})
+    run_path = data_dir / "runs" / "2026-09-24" / "morning.json"
+    run = {"artifacts": {"json_path": str(report_path), "slides": {"status": "failed"}}}
+
+    action = workflow_module._slides_next_action(run, run_path, data_dir)
+
+    assert f'--data-dir "{data_dir}" finalize-edition' in action
+    assert str(run_path) in action
 
 
 def test_slides_prepare_failure_does_not_revoke_saved_report(monkeypatch, tmp_path):
@@ -848,7 +921,7 @@ def test_slides_prepare_failure_does_not_revoke_saved_report(monkeypatch, tmp_pa
         "status": RunStatus.COMPLETED_PARTIAL,
         "artifacts": {"json_path": str(report_path), "index_path": str(index_path)},
     })
-    monkeypatch.setattr("signaltrail.news_slides.prepare_slides", lambda *_args: (
+    monkeypatch.setattr("signaltrail.news_slides.prepare_slides", lambda *_args, **_kwargs: (
         _ for _ in ()
     ).throw(ValueError("No representative news selected")))
 

@@ -12,7 +12,7 @@ mirrors under [zh-CN/](zh-CN/README.md).
 | [Architecture](../ARCHITECTURE.md) | Module ownership, state, files, model boundaries |
 | [Agent instructions](../AGENTS.md) | Rules for changing this repository |
 | [Experimental explainers](explainers.md) | Implemented commands, bilingual reviews, immutable stories and current-admission limits |
-| [News slides](news-slides.md) | Standalone animated HTML from a saved report, bounded narration batches and per-batch cost gates |
+| [News slides](news-slides.md) | Required visual-stream delivery; whole-report candidates, top-50 default, bounded narration batches and per-batch cost gates |
 | [Roadmap](roadmap.md) | Experimental explainer and research workflow; current-news admission and acceptance gaps |
 | [Technical debt](exec-plans/tech-debt-tracker.md) | Known implementation gaps and exit conditions |
 
@@ -76,3 +76,7 @@ Local ignored audit notes are not public engineering records.
 Maintained records use Verified, Draft, or Active; completed records use Historical, and
 mechanical snapshots use Generated. Each maintained record states purpose, owner, and date.
 See [Development](development.md) for the maintenance rules and checks.
+
+For daily delivery, a saved report and a completed edition are separate states. The report can
+be handed off before the visual stream is ready; use `edition-status --run RUN.json
+--require-complete` to check that required slides and other requested delivery work are complete.

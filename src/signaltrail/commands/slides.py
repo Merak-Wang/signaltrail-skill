@@ -18,13 +18,15 @@ def add_slides_parser(sub: argparse._SubParsersAction) -> None:
     parser = sub.add_parser("slides", help="Build animated HTML news slides from a saved report")
     stages = parser.add_subparsers(dest="action", required=True)
     prepare = stages.add_parser(
-        "prepare", help="Include all same-day news and split bounded batches"
+        "prepare", help="Select report news by importance and split bounded batches"
     )
     prepare.add_argument("--report", type=Path, required=True)
     prepare.add_argument("--index", type=Path, required=True)
     prepare.add_argument("--item-id", action="append")
     prepare.add_argument("--min-importance", type=int, default=0,
-                         help="Optional brief score cutoff; default includes all same-day news")
+                         help="Optional brief score cutoff; default includes all report news")
+    prepare.add_argument("--max-news", type=int, default=50,
+                         help="Maximum report stories to author by importance (default: 50)")
     prepare.add_argument("--batch-size", type=int, default=4)
     prepare.add_argument("--max-input-tokens", type=int, default=12000)
     prepare.add_argument("--max-output-tokens", type=int, default=4000)
@@ -50,6 +52,7 @@ def handle_slides(args: argparse.Namespace, context: CommandContext) -> int:
                 result = prepare_slides(
                     args.report, args.index, context.data_dir,
                     min_importance=args.min_importance, item_ids=args.item_id,
+                    max_news=args.max_news,
                     batch_size=args.batch_size, max_input_tokens=args.max_input_tokens,
                     max_output_tokens=args.max_output_tokens,
                 )

@@ -19,9 +19,9 @@ Python 负责身份、访问状态、修订分配、校验和持久化。模型�
 监控单独运行：RSS/Atom 和静态 HTML → 规范条目 → 词汇聚类 → 快照、来源健康和 Feed 缓存。
 监控不调用模型；监控失败时正式采集仍可继续。
 
-日报定稿会根据已保存日报及其索引准备新闻幻灯片，默认纳入按权威发布时间及时区判定为
-`report.date` 当天的精选事件和全部简报；同一原文合并并保留来源引用，无图不影响入选。重要性只排序，
-默认门槛为 0，也可显式缩小范围。讲解写作分成有界批次并接收后，在线渲染会在配置媒体预算内
+日报定稿会根据已保存日报及其索引准备新闻幻灯片。默认日报无论用量是否计量，都必须完成所有讲稿批次并渲染。报告保存状态与整期交付完成状态分开；使用 `edition-status --run RUN.json --require-complete` 动态验收。图文流候选覆盖整份已保存日报的精选事件与简报；同一原文合并并保留来源引用，再按重要性排序，
+默认选择前 50 条，可用 `--max-news` 或 `--slides-max-news` 设置其他正整数，不按来源分配名额。
+未知发布日期保持未知，无图不影响入选。讲解写作分成有界批次并接收后，在线渲染会在配置媒体预算内
 读取公开原文页，补充页面提供的图片候选和原始 caption。有放映时，日报 HTML 在屏幕端以演示
 替代摘要并保留独立打开入口，打印时恢复摘要。日报 JSON/Markdown 保持不变。更新图片可复用
 已接受讲稿而不增加模型调用；`slides prepare` 只读传入的日报和索引，不会抓取网页；离线渲染
@@ -42,7 +42,7 @@ Python 负责身份、访问状态、修订分配、校验和持久化。模型�
 | 写作 | `context`、`authoring`、`semantics`、`state` | 有界数据包、已接收批次、连续状态和缓存 |
 | 报告契约 | `reporting` | 编译草稿、补齐证据、校验 Schema 及跨字段规则 |
 | 报告存储 | `reports` | 保存报告和评估、渲染 Markdown、更新派生状态 |
-| 新闻图文流 | `news_slides`、`slide_images`、`slide_renderer` | 按日报日期筛选的有界讲解批次、原文图片补充，以及独立动态 HTML 放映 |
+| 新闻图文流 | `news_slides`、`slide_images`、`slide_renderer` | 整份日报按重要性取前 N 条的有界讲解批次、原文图片补充，以及独立动态 HTML 放映 |
 | 实验讲解 | `narrative`、`narrative_contracts`、`narrative_store`、`narrative_verification`、`story_stream` | 不可变日报子产物、语言审核和解释图；实时新闻准入保持阻断 |
 | 实验研究 | `research`、`research_contracts`、`research_delivery` | 冻结正文块、本地问题检索、研究底稿和仅供预览的日报晚绑定；当前准入仍阻断 |
 | 交付 | `local_output`、`notion`、`dashboard` | HTML/PDF、远程副本和只读监控界面 |

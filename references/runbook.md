@@ -24,9 +24,9 @@
 
 ```text
 最迟 05:00 启动满载候选/brief 分波与图片预取 -> 紧凑研判 -> 事实校验 -> 06:00 本地 HTML
-HTML 交付后 -> 后台 PDF/可选 Notion -> 按用户要求执行的有界独立评估（最多两次总尝试） -> 刷新 HTML
+HTML 先交付（仅报告已保存） -> tail 与图文讲稿并行 -> 等待 tail 退出且全部讲稿提交 -> 渲染图文流 -> 等待明确请求的评估完成 -> edition-status 整期验收
 最迟 17:00 启动满载候选/brief 分波与图片预取 -> 紧凑研判 -> 事实校验 -> 18:00 本地 HTML
-HTML 交付后 -> 后台 PDF/可选 Notion -> 按用户要求执行的有界独立评估（最多两次总尝试） -> 刷新 HTML
+HTML 先交付（仅报告已保存） -> tail 与图文讲稿并行 -> 等待 tail 退出且全部讲稿提交 -> 渲染图文流 -> 等待明确请求的评估完成 -> edition-status 整期验收
 ```
 
 每次正常运行最多 3600 秒，模型输入加输出最多 10,000,000 token。32 个正式来源满载时最多有 480 条普通 brief；需要准点交付时必须提前启动。采集脚本继续处理单源错误；brief/analysis authors 只消费计划内 packet 和影响研判的必要正文。开发/调试不受该预算限制。
@@ -37,7 +37,7 @@ HTML 交付后 -> 后台 PDF/可选 Notion -> 按用户要求执行的有界独�
 
 质量评分默认关闭，仅当用户明确要求时在 `finalize-edition` 或 `complete-edition-tail` 加 `--evaluate`。请求写入本轮 `evaluation_requested` 并在恢复时沿用；未请求时不创建 evaluator、dossier 或评分用量任务，run 记为 `not_requested`。结构、引用和文件校验正常执行。以下评分调度与重试步骤仅适用于已明确请求的运行。
 
-写作与评估保持角色隔离。`finalize-edition --defer-tail` 在不可变 JSON/Markdown 和 HTML 就绪后返回；authoring coordinator 立即交付 `artifacts.html_path`，再把 run 中的 `tail.command` 放进启用完成通知的后台 terminal。`complete-edition-tail` 生成 PDF、按请求发布 Notion，并先用当前 report/hash 预检已完成评估。图文讲稿写作可与该尾任务并行；渲染会更新日报 HTML，因此必须等尾任务退出后再运行 `slides render`。通过 `signaltrail-hermes` 运行时，评估由带独立用量任务的本地一次性进程执行；普通入口保留 Hermes Cron 调度。两条路径都先对账现有任务；只有既有 job 明确失败或超过停滞窗口时才允许第二次且最后一次尝试，unknown/对账失败不会重复调度。independent evaluator 的输入只有 Python 生成的不可变 hash-bound dossier，输出是供 `finalize-evaluation` 接收的独立 JSON；它禁止修改报告。评估完成后刷新 HTML、桌面副本和归档索引，但同一 report revision 已存在的 PDF 直接复用；PDF 缺失时才补建，不能为加入评分重复渲染整份图片密集文档。目标日报显式使用了 `--publish` 时，调度合同才给评估命令追加 `--publish`。旧 Cron 调度需要 Gateway 保持可用；本地计量入口及覆盖限制见 [用量说明](llm-usage.md)。其他 harness 必须自行调度同一 dossier 并调用 `finalize-evaluation`，否则 tail 会如实保留为 `partial`。tail 或调度失败只写入 run，不撤回本地日报。晚间生成读取当天晨报和已存在的晨报评估；晨报评估尚未完成时按未评估历史处理。
+写作与评估保持角色隔离。`finalize-edition --defer-tail` 在不可变 JSON/Markdown 和 HTML 就绪后返回；这表示报告已保存，允许先交付 HTML，但不表示整期交付完成。authoring coordinator 立即交付 `artifacts.html_path`，再把 run 中的 `tail.command` 放进后台 terminal。`complete-edition-tail` 生成 PDF、按请求发布 Notion，并先用当前 report/hash 预检已完成评估。图文讲稿写作可与该尾任务并行；渲染会更新日报 HTML，因此必须等尾任务退出后再运行 `slides render`。通过 `signaltrail-hermes` 运行时，评估由带独立用量任务的本地一次性进程执行；普通入口保留 Hermes Cron 调度。两条路径都先对账现有任务；只有既有 job 明确失败或超过停滞窗口时才允许第二次且最后一次尝试，unknown/对账失败不会重复调度。independent evaluator 的输入只有 Python 生成的不可变 hash-bound dossier，输出是供 `finalize-evaluation` 接收的独立 JSON；它禁止修改报告。评估完成后刷新 HTML、桌面副本和归档索引，但同一 report revision 已存在的 PDF 直接复用；PDF 缺失时才补建，不能为加入评分重复渲染整份图片密集文档。目标日报显式使用了 `--publish` 时，调度合同才给评估命令追加 `--publish`。旧 Cron 调度需要 Gateway 保持可用；本地计量入口及覆盖限制见 [用量说明](llm-usage.md)。其他 harness 必须自行调度同一 dossier 并调用 `finalize-evaluation`，否则 tail 会如实保留为 `partial`。tail 或调度失败只写入 run，不撤回本地日报。晚间生成读取当天晨报和已存在的晨报评估；晨报评估尚未完成时按未评估历史处理。
 
 ## Harness 与用量接入
 
@@ -47,19 +47,19 @@ HTML 交付后 -> 后台 PDF/可选 Notion -> 按用户要求执行的有界独�
 
 ## 图文幻灯片
 
-图文演示是完成日报后的独立 HTML 投影，不改变日报 JSON/Markdown。先用日报与对应索引准备批次，
-将每个 packet 的 `payload.model_input` 交给宿主写作，再提交各批草稿；全部批次通过后渲染：
+图文流是默认日报整期交付的必需组成部分，无论 run 为 metered 或 unmetered。报告 JSON/Markdown 与 HTML 可以先保存和交付；只有全部批次通过、渲染成功并通过整期验收，才标记为“整期交付完成”。从日报与对应索引准备批次，使用 manifest 中真实计划/packet 路径，读取每包 `payload.model_input` 并提交草稿；最多三名 worker 一波，等整波后再开下一波。全部批次通过且 tail 退出后渲染：
 
 ```text
-signaltrail slides prepare --report REPORT.json --index INDEX.json
-signaltrail slides submit --packet PACKET.json --input DRAFT.json
-signaltrail slides status --plan PLAN.json
-signaltrail slides render --plan PLAN.json
+signaltrail --data-dir DATA_DIR slides prepare --report REPORT.json --index INDEX.json
+signaltrail --data-dir DATA_DIR slides submit --packet PACKET.json --input DRAFT.json
+signaltrail --data-dir DATA_DIR slides status --plan PLAN.json
+signaltrail --data-dir DATA_DIR slides render --plan PLAN.json
+signaltrail --data-dir DATA_DIR edition-status --run RUN.json --require-complete
 ```
 
-代表新闻没有每期总量上限，预算按批次输入/输出估算拆分。`prepare` 只读取给定日报和索引，
-不联网抓取；需要新的图片候选时，先用独立采集流程更新索引。`render` 生成独立放映 HTML，
-并更新日报 HTML 的嵌入容器及独立打开入口。更换图片和重新渲染不需要模型。完整恢复、图注、
+代表新闻从整份已保存日报去重后按重要性降序选取，默认前 50 条，可用 `finalize-edition --slides-max-news N` 自定义；恢复时未显式改数量则沿用既有设置，显式更改会准备新计划。按来源不保证配额，未知发布日期保持未知。`prepare` 只读取给定日报和索引，
+不联网抓取；默认在线 `slides render` 会从入选新闻公开页面补充图片候选和原站 caption。`render` 生成独立放映 HTML，
+并更新日报 HTML 的嵌入容器及独立打开入口。`edition-status` 输出 `delivery_complete`、`report_status`、`pending_steps` 和图文流状态；只有动态命令返回 `delivery_complete: true`、`pending_steps` 为空且 `slides.status` 为 `rendered` 才能报告整期交付完成。不要依赖可能过期的 manifest 快照。更换图片和重新渲染不需要模型。完整恢复、图注、
 大图和打印行为见[新闻图文流参考](news-slides.md)。TTS 与视频合成尚未实现。
 
 并行研究与解释性故事属于实验流程，不是日报交付步骤。尤其研究组合页目前只支持 `preview`，
@@ -104,9 +104,9 @@ run manifest 固定在 `DATA_DIR/runs/YYYY-MM-DD/<edition>.json`。不要手改�
 
 ## 验收
 
-前台交付检查：run/index/report 一致、schema 2.0、七个 section、所有正式来源目标/上限均为 15、有足够候选时正好使用本轮 `brief_plan` 的前 15 条、semantic cache 未越界、普通 brief 在 JSON/Markdown/HTML/PDF/Notion 中保持当前 index 顺序且未按 `importance` 重排、TL;DR 无访问状态话术、brief/精选事件关系、候选足够时满足精选新鲜度下限、发布时间（缺失时显示采集时间）与 NEW、URL/标题身份、正文访问等级、三个视角使用同一事件档案、每篇 `narrative` 为 4—7 个自然段、跨视角综合、JSON/Markdown/HTML、`reports/index.html`、`local_html_ready_at` 和待验证链接。若有 authoring 降级，还要核对 `recovered_batches`、`missing_batches` 与逐来源 `coverage_targets`，并确认已采集候选没有被描述为未采集。浏览器验收还要确认每条 brief 的标题先于配图、版本化 HTML 的相对图片存在，以及桌面 HTML 单独移入无媒体目录后所有内嵌图片均可加载。
+报告保存检查：run/index/report 一致、schema 2.0、七个 section、所有正式来源目标/上限均为 15、有足够候选时正好使用本轮 `brief_plan` 的前 15 条、semantic cache 未越界、普通 brief 在 JSON/Markdown/HTML/PDF/Notion 中保持当前 index 顺序且未按 `importance` 重排、TL;DR 无访问状态话术、brief/精选事件关系、候选足够时满足精选新鲜度下限、发布时间（缺失时显示采集时间）与 NEW、URL/标题身份、正文访问等级、三个视角使用同一事件档案、每篇 `narrative` 为 4—7 个自然段、跨视角综合、JSON/Markdown/HTML、`reports/index.html`、`local_html_ready_at` 和待验证链接。若有 authoring 降级，还要核对 `recovered_batches`、`missing_batches` 与逐来源 `coverage_targets`，并确认已采集候选没有被描述为未采集。浏览器验收还要确认每条 brief 的标题先于配图、版本化 HTML 的相对图片存在，以及桌面 HTML 单独移入无媒体目录后所有内嵌图片均可加载。
 
-后台收尾检查：tail 为 `completed` 或有可操作的 `partial` 错误；PDF、`pdf_ready_at`、可选 Notion page ID/`notion_ready_at` 和独立评估调度彼此可重试，不影响前台 HTML 有效性。核对 `pdf_projection_seconds`、`pdf_bytes`、`pdf_size_budget_bytes` 和 `pdf_size_budget_status`；超预算是显式警告。PDF 必须在断开本地媒体目录与网络后仍能显示全部已物化图片；用页面栅格化抽查和 PDF image XObject 计数确认打印重采样后的图片已写入文件，且不含外链依赖。
+整期交付检查：运行 `edition-status --run RUN.json --require-complete` 并要求 `delivery_complete: true`、`pending_steps` 为空，图文流所有计划批次已接受且 HTML 已生成；如不满足，明确报告待办，不称整期完成。报告保存检查和整期交付检查是不同阶段。后台收尾检查：tail 为 `completed` 或有可操作的 `partial` 错误；PDF、`pdf_ready_at`、可选 Notion page ID/`notion_ready_at` 和独立评估调度彼此可重试，不影响前台 HTML 有效性。核对 `pdf_projection_seconds`、`pdf_bytes`、`pdf_size_budget_bytes` 和 `pdf_size_budget_status`；超预算是显式警告。PDF 必须在断开本地媒体目录与网络后仍能显示全部已物化图片；用页面栅格化抽查和 PDF image XObject 计数确认打印重采样后的图片已写入文件，且不含外链依赖。
 
 已请求评分时检查：九维完整、总分正确、被评 report ID/hash 匹配、独立 artifact 存在、HTML 评估区已刷新、同 revision PDF 已复用且字节与修改时间未变（缺失时才生成）、可选 Notion 已附加更新版 HTML 或可重试、长期连续状态按建议更新。
 

@@ -10,6 +10,7 @@ from urllib.parse import urljoin, urlsplit
 import httpx
 from bs4 import BeautifulSoup
 
+from .access import classify_access_text
 from .config import MediaConfig
 from .content_extraction import extract_document
 from .content_images import article_image_candidates
@@ -104,7 +105,13 @@ def fetch_article_page(
                 break
         else:
             raise ImageDownloadError("article redirect limit was exceeded")
-        return BeautifulSoup(b"".join(chunks), "html.parser"), current
+        soup = BeautifulSoup(b"".join(chunks), "html.parser")
+        title = soup.title.get_text(" ", strip=True) if soup.title else ""
+        access = classify_access_text(response.status_code, title, soup.get_text(" ", strip=True))
+        if access["required"]:
+            reason = access["matched_text"] or f"HTTP {response.status_code}"
+            raise ImageDownloadError(f"article page access challenge: {reason}")
+        return soup, current
 
     if client is not None:
         return fetch(client)
@@ -169,7 +176,7 @@ def _attach_download(candidate: dict[str, Any], downloaded: DownloadedImage) -> 
 def enrich_slide_images(
     news: list[dict], data_dir: Path, config: MediaConfig,
 ) -> tuple[list[dict], dict]:
-    """处理：为日报当天入选新闻补抓发布页高清图片并复用媒体缓存。
+    """处理：为日报入选新闻补抓发布页高清图片并复用媒体缓存。
     输入：候选新闻（event_id/title/sources/images）、数据根和媒体配置；不改动正文或事实。
     输出：图片候选合并后的新闻列表，以及抓取/下载计数和来源、图片失败摘要。
     """
@@ -397,6 +404,17 @@ def enrich_slide_images(
             if digest:
                 seen_digests.add(digest)
             kept.append(candidate)
+        has_article_image = any(
+            image.get("provenance") == "article_body"
+            and image.get("local_path")
+            for image in kept
+        )
+        if has_article_image:
+            kept = [image for image in kept if not (
+                image.get("provenance") == "page_metadata"
+                and 0 < int(image.get("width") or 0) <= 128
+                and 0 < int(image.get("height") or 0) <= 128
+            )]
         item["images"] = kept
     return enriched, {
         "sources_fetched": len(page_results), "images_downloaded": len(downloaded_urls),

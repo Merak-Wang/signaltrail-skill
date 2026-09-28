@@ -9,6 +9,7 @@ import httpx
 import pytest
 from bs4 import BeautifulSoup
 
+from signaltrail.access import classify_access_text
 from signaltrail.config import load_config
 from signaltrail.content import (
     _apply_http_document,
@@ -24,6 +25,14 @@ from signaltrail.content_extraction import extract_document, observed_source_met
 from signaltrail.content_images import article_image_candidates
 from signaltrail.models import ContentStatus
 from signaltrail.utils import read_json, write_json
+
+
+def test_access_classifier_recognizes_verified_request_challenge_text():
+    result = classify_access_text(200, "One moment, please...",
+                                 "Please wait while your request is being verified...")
+
+    assert result["required"] is True
+    assert result["matched_text"] == "your request is being verified"
 
 
 @pytest.mark.parametrize("attribute", ["property", "name"])
@@ -438,6 +447,95 @@ def test_main_page_keeps_post_media_figures_and_excludes_archive_recommendations
     assert {row["url"] for row in candidates} == {
         f"https://news.example/figures/body-{index}.jpg" for index in range(6)
     }
+
+
+def test_yahoo_brand_card_in_header_is_excluded_without_dropping_story_images():
+    markup = BeautifulSoup('''<html><body><article>
+      <header><a href="https://profiles.yahoo.com/brands/bbc/">
+        <img src="https://s.yimg.com/rz/p/yahoo_bbc_logo.png" width="487" height="100"
+             alt="BBC"></a>
+        <figure><a href="/hero.jpg"><img src="/hero.jpg" alt="Story hero"></a></figure>
+      </header>
+      <p>Story title and details. The body contains another relevant image.</p>
+      <figure><img src="/body-small.jpg" width="40" height="40" alt="Story detail"></figure>
+    </article></body></html>''', "html.parser")
+    document = extract_document(markup, [], expected_title="Story title and details")
+
+    candidates = article_image_candidates(
+        document, "Story title and details", "https://news.example/story/",
+    )
+
+    assert {row["url"] for row in candidates} == {
+        "https://news.example/hero.jpg", "https://news.example/body-small.jpg",
+    }
+
+
+def test_sina_visitor_page_is_classified_as_access_challenge():
+    result = classify_access_text(200, "Sina Visitor System", "")
+
+    assert result["required"] is True
+    assert result["matched_text"] == "sina visitor system"
+
+
+def test_github_blob_link_keeps_explicit_raw_image_src():
+    markup = (
+        "<article><p>Imp is a full port of DSPy to the BEAM. "
+        "The library provides modules, optimizers, agent loops and retrieval.</p>"
+        '<a href="/deepfates/imp/blob/main/assets/imp-with-cards.jpg">'
+        '<img src="/deepfates/imp/raw/main/assets/imp-with-cards.jpg" width="300" '
+        'alt="An imp studies a hand of cards through a lens."></a></article>'
+    )
+    document = extract_document(BeautifulSoup(markup, "html.parser"), [])
+
+    candidates = article_image_candidates(
+        document, "Imp DSPy port to BEAM", "https://github.com/deepfates/imp",
+    )
+
+    assert [candidate["url"] for candidate in candidates] == [
+        "https://github.com/deepfates/imp/raw/main/assets/imp-with-cards.jpg",
+    ]
+
+
+@pytest.mark.parametrize(("region", "closing", "selector", "image", "expected_url"), [
+    ('<div class="article">', "</div>", "div.article", "../../../notes/2026/09/27/moon.svg",
+     "https://news.example/notes/2026/09/27/moon.svg"),
+    ('<div id="blogpage"><div class="content">', "</div></div>", "#blogpage .content",
+     "mads-talk.png", "https://news.example/story/mads-talk.png"),
+])
+def test_semantic_article_divs_are_specific_image_regions(region, closing, selector, image,
+                                                          expected_url):
+    markup = (region + "<p>The article explains its main technical argument. "
+              "It includes details and a summary of the evidence presented on the page.</p>"
+              f'<figure><img src="{image}" alt="Article illustration"></figure>{closing}')
+    document = extract_document(BeautifulSoup(markup, "html.parser"), [])
+
+    candidates = article_image_candidates(
+        document, "article technical argument", "https://news.example/story/index.html",
+    )
+
+    assert document.selector == selector
+    assert document.quality["region"] == "specific"
+    assert [candidate["url"] for candidate in candidates] == [expected_url]
+
+
+def test_article_images_exclude_explicit_rss_feed_controls():
+    markup = (
+        '<div class="article"><p>The article explains the technical change and its result. '
+        "It includes the full story and what readers should expect next.</p>"
+        '<img src="/images/story.jpg" alt="Project result">'
+        '<a href="/rss"><img src="/blog/feed.svg" alt="RSS feed" height="35"></a>'
+        '<a href="/atom"><img src="/blog/atom-feed.svg" alt="RSS feed" height="35"></a>'
+        "</div>"
+    )
+    document = extract_document(BeautifulSoup(markup, "html.parser"), [])
+
+    candidates = article_image_candidates(
+        document, "technical change", "https://news.example/story",
+    )
+
+    assert [candidate["url"] for candidate in candidates] == [
+        "https://news.example/images/story.jpg",
+    ]
 
 
 def test_article_image_scan_continues_past_early_promotions(tmp_path):

@@ -122,7 +122,7 @@ def test_selection_does_not_merge_multi_source_event_with_single_source_story(sl
     assert selected[1]["event_id"] == f"brief-{brief['item_id']}"
 
 
-def test_selection_requires_publication_on_report_day_in_local_timezone(slide_case):
+def test_selection_covers_report_dates_and_preserves_unknown_publication(slide_case):
     _, _, _, report, index = slide_case
     before = deepcopy(report)
     values = [
@@ -133,16 +133,26 @@ def test_selection_requires_publication_on_report_day_in_local_timezone(slide_ca
         None, "bad-date", "2026-09-23", "2026-09-22",
     ]
     index["items"] = index["items"][:len(values)]
+    report["sections"][0]["briefs"] = report["sections"][0]["briefs"][:len(values)]
     for item, published in zip(index["items"], values, strict=True):
         item["published_at"] = published
         item["collected_at"] = "2026-09-23T09:00:00+08:00"
-    # 报告引用的日期不能覆盖 canonical index 中未知的发布日期。
+    # 图文流只消费权威日报入选集合，展示日期来自索引且未知仍未知。
     report["sections"][0]["briefs"][4]["source_ref"]["published_at"] = "2026-09-23"
-    assert [e["event_id"] for e in select_news(report, index)] == [
-        "event-0", "brief-item-2", "brief-item-6",
+    selected = select_news(report, index)
+    assert {e["event_id"] for e in selected} == {
+        "event-0", *(f"brief-item-{i}" for i in range(1, 8)),
+    }
+    assert [e["event_id"] for e in select_news(report, index, item_ids=["item-1"])] == [
+        "brief-item-1",
     ]
-    with pytest.raises(ValueError, match="not published on the report date"):
-        select_news(report, index, item_ids=["item-1"])
+    assert index["items"][4]["published_at"] is None
+    root, report_path, index_path, _, _ = slide_case
+    write_json(report_path, report)
+    write_json(index_path, index)
+    prepared = prepare_slides(report_path, index_path, root, item_ids=["item-4"])
+    plan = load_artifact(Path(prepared["plan_path"]), root)["payload"]
+    assert plan["news"][0]["sources"][0]["published_at"] is None
     assert report["sections"][0]["items"] == before["sections"][0]["items"]
 
 
@@ -156,13 +166,13 @@ def test_default_plan_includes_low_score_and_imageless_news_in_score_order(slide
 
     selected = select_news(report, index)
     assert [e["event_id"] for e in selected][-2:] == ["brief-item-1", "brief-item-2"]
-    assert "brief-item-3" not in {e["event_id"] for e in selected}
-    assert len(select_news(report, index, min_importance=70)) == 13
+    assert "brief-item-3" in {e["event_id"] for e in selected}
+    assert len(select_news(report, index, min_importance=70)) == 14
     assert sum(ref["item_id"] == "item-0" for e in selected for ref in e["source_refs"]) == 1
 
     prepared = prepare_slides(report_path, index_path, root)
     plan = load_artifact(Path(prepared["plan_path"]), root)["payload"]
-    assert prepared["news_count"] == 15
+    assert prepared["news_count"] == 16
     assert [n["event_id"] for n in plan["news"]] == [e["event_id"] for e in selected]
     assert all(n["images"] == [] for n in plan["news"])
     assert len(prepared["packet_paths"]) == 4
@@ -176,12 +186,12 @@ def test_old_featured_events_do_not_hide_todays_briefs(slide_case):
         report["sections"][0]["briefs"][1]["source_ref"]
     )
     selected = select_news(report, index)
-    assert selected[0]["event_id"] == "brief-item-1"
-    assert [ref["item_id"] for ref in selected[0]["source_refs"]] == ["item-1"]
-    assert all(ref["item_id"] != "item-0" for e in selected for ref in e["source_refs"])
+    event = next(e for e in selected if e["event_id"] == "event-0")
+    assert [ref["item_id"] for ref in event["source_refs"]] == ["item-0", "item-1"]
+    assert not any(e["event_id"] == "brief-item-1" for e in selected)
 
 
-def test_discovery_uses_submission_day_even_when_original_article_is_older(slide_case):
+def test_discovery_and_unknown_dates_are_retained_with_index_dates(slide_case):
     root, report_path, index_path, report, index = slide_case
     for item, published in zip(
         index["items"][:3], ["2026-09-19", None, "2026-09-23"], strict=True,
@@ -189,11 +199,13 @@ def test_discovery_uses_submission_day_even_when_original_article_is_older(slide
         item["metadata"] = {"role": "discovery", "content_source": {"published_at": published}}
     index["items"][2]["published_at"] = "2026-09-22T23:00:00+08:00"
     selected = select_news(report, index)
-    assert {"event-0", "brief-item-1"} <= {e["event_id"] for e in selected}
-    assert "brief-item-2" not in {e["event_id"] for e in selected}
-    with pytest.raises(ValueError, match="not published on the report date"):
-        select_news(report, index, item_ids=["item-2"])
-    # 聚合条目按转发日期展示和筛选，原文元信息不覆盖它。
+    assert {"event-0", "brief-item-1", "brief-item-2"} <= {
+        e["event_id"] for e in selected
+    }
+    assert [e["event_id"] for e in select_news(report, index, item_ids=["item-2"])] == [
+        "brief-item-2",
+    ]
+    # 聚合条目保留平台发布日期，原文元信息不覆盖；其他来源不伪造日期。
     write_json(index_path, index)
     prepared = prepare_slides(report_path, index_path, root, item_ids=["item-0"])
     plan = load_artifact(Path(prepared["plan_path"]), root)["payload"]
@@ -202,6 +214,53 @@ def test_discovery_uses_submission_day_even_when_original_article_is_older(slide
         submit_slides(Path(packet), author_packet(packet, root), root)
     output = render_slides(Path(prepared["plan_path"]), root, refresh_images=False)
     assert output["news_count"] == 1
+
+
+def test_selection_limits_after_importance_sort_and_deduplication(slide_case):
+    _, _, _, report, index = slide_case
+    report["sections"][0]["briefs"][0]["source_ref"]["url"] = "https://same.test/story"
+    report["sections"][0]["briefs"][1]["source_ref"]["url"] = "https://same.test/story"
+    report["sections"][0]["briefs"][1]["importance"] = 100
+
+    selected = select_news(report, index, max_news=3)
+
+    assert len(selected) == 3
+    assert [event["importance"] for event in selected] == sorted(
+        (event["importance"] for event in selected), reverse=True
+    )
+    assert len(selected[0]["source_refs"]) == 2
+
+
+def test_selection_defaults_to_fifty_and_accepts_custom_limit(slide_case):
+    _, _, _, report, index = slide_case
+    for number in range(16, 55):
+        brief = deepcopy(report["sections"][0]["briefs"][0])
+        brief["item_id"] = f"extra-{number}"
+        brief["event_id"] = f"brief-extra-{number}"
+        brief["importance"] = 100 - number
+        brief["source_ref"] = {**brief["source_ref"], "item_id": brief["item_id"],
+                               "url": f"https://example.com/{number}"}
+        report["sections"][0]["briefs"].append(brief)
+        index["items"].append({"item_id": brief["item_id"], "published_at": None,
+                                "url": brief["source_ref"]["url"]})
+
+    assert len(select_news(report, index)) == 50
+    assert len(select_news(report, index, max_news=7)) == 7
+    with pytest.raises(ValueError, match="max_news must be positive"):
+        select_news(report, index, max_news=0)
+
+
+def test_max_news_is_part_of_immutable_plan_identity(slide_case):
+    root, report_path, index_path, _, _ = slide_case
+
+    ten = prepare_slides(report_path, index_path, root, max_news=10)
+    eleven = prepare_slides(report_path, index_path, root, max_news=11)
+
+    assert ten["plan_path"] != eleven["plan_path"]
+    assert prepare_slides(report_path, index_path, root, max_news=10) == ten
+    payload = load_artifact(Path(ten["plan_path"]), root)["payload"]
+    assert payload["budget"]["max_news"] == 10
+    assert payload["selection_policy"] == "report-admitted-importance-v1"
 
 
 def test_prepare_batches_by_size_and_budget_and_reuses_inputs(slide_case):
@@ -306,7 +365,7 @@ def test_render_fetches_images_once_and_offline_reuses_them(slide_case, monkeypa
     assert deck["image_enrichment"] == {"sources_fetched": 1}
 
 
-def test_render_legacy_plan_still_excludes_old_and_unknown_sources(slide_case, monkeypatch):
+def test_render_legacy_plan_keeps_old_and_unknown_sources(slide_case, monkeypatch):
     from signaltrail.narrative_store import save_artifact
 
     root, report, index_path, _, index = slide_case
@@ -326,8 +385,8 @@ def test_render_legacy_plan_still_excludes_old_and_unknown_sources(slide_case, m
     })
     output = render_slides(legacy_plan, root, refresh_images=False)
     deck = load_artifact(Path(output["json_path"]), root)["payload"]
-    assert len(deck["slides"]) == 14
-    assert {s["event_id"] for s in deck["slides"]}.isdisjoint({"event-0", "brief-item-1"})
+    assert len(deck["slides"]) == 16
+    assert {s["event_id"] for s in deck["slides"]} >= {"event-0", "brief-item-1"}
 
 
 def test_images_keep_original_caption_and_collapse_responsive_versions(slide_case):
@@ -521,6 +580,33 @@ def test_images_collapse_known_cdn_size_variants_and_keep_body_caption(slide_cas
     assert "https://theaviationist.com/wp-content/uploads/2026/09/jet.jpg" in urls
     assert "https://theaviationist.com/wp-content/uploads/2026/09/jet-460x259.jpg" not in urls
     assert "https://s.w.org/images/core/emoji/17/72x72/emoji.png" not in urls
+
+
+def test_usni_wordpress_responsive_sizes_keep_largest_existing_image(slide_case):
+    root, report_path, index_path, report, index = slide_case
+    base_url = "https://news.usni.org/wp-content/uploads/2026/09/ship.jpeg"
+    variants = [
+        (base_url, 1200, 800),
+        (base_url.replace(".jpeg", "-320x214.jpeg"), 320, 214),
+        (base_url.replace(".jpeg", "-150x100.jpeg"), 150, 100),
+        (base_url.replace(".jpeg", "-60x40.jpeg"), 60, 40),
+    ]
+    index["items"][0]["image_candidates"] = [url for url, _, _ in variants]
+    index["items"][0]["metadata"] = {"image_candidate_details": [
+        {"url": url, "declared_width": width, "declared_height": height,
+         "provenance": "page_metadata"}
+        for url, width, height in variants
+    ]}
+    write_json(report_path, report)
+    write_json(index_path, index)
+
+    prepared = prepare_slides(report_path, index_path, root, item_ids=["item-0"])
+    plan = load_artifact(Path(prepared["plan_path"]), root)["payload"]
+    urls = [image["url"] for image in plan["news"][0]["images"]]
+
+    assert urls == [base_url]
+    assert all("-320x214" not in url and "-150x100" not in url and "-60x40" not in url
+               for url in urls)
 
 
 def test_related_perspectives_are_optional_and_fact_text_is_not_truncated(slide_case):

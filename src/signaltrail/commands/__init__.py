@@ -30,6 +30,7 @@ HANDLERS: dict[str, Callable[[Namespace, CommandContext], int]] = {
     "assemble-authoring": editions.handle_assemble_authoring,
     "finalize-edition": editions.handle_finalize_edition,
     "complete-edition-tail": editions.handle_complete_edition_tail,
+    "edition-status": editions.handle_edition_status,
     "validate-report": reports.handle_validate_report,
     "save-report": reports.handle_save_report,
     "finalize-evaluation": reports.handle_finalize_evaluation,

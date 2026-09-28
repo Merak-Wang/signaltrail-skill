@@ -4,7 +4,7 @@
 
 SignalTrail is a local news workflow. It collects material from configured public sources, creates source-linked Chinese or English daily reports, and can turn a report into a navigable, animated HTML presentation. Reports can also be read as HTML, exported to PDF, or optionally sent to Notion.
 
-Python handles collection, evidence and state, validation, and versioned storage. An agent writes from bounded evidence packets. Slide narration uses a conversational, rhythmic presenter voice with light humor, and selects geopolitics, AI/technology, or markets perspectives only when relevant to the story. Chinese narration is 200–350 non-whitespace characters per story. There is no issue-wide cap on representative stories; work is split into batches with per-batch cost gates.
+Python handles collection, evidence and state, validation, and versioned storage. An agent writes from bounded evidence packets. Slide narration uses a conversational, rhythmic presenter voice with light humor, and selects geopolitics, AI/technology, or markets perspectives only when relevant to the story. Chinese narration is 200–350 non-whitespace characters per story. Candidates span the saved report, are deduplicated and ranked by importance, and default to the top 50; the count is configurable, with per-batch cost gates.
 
 [Daily report example](#daily-report-example) · [Quick start](#quick-start) · [Animated HTML slides](#animated-html-slides) · [Local monitor](#local-monitor) · [Documentation](docs/README.md) · [Development](docs/development.md)
 
@@ -12,7 +12,7 @@ Python handles collection, evidence and state, validation, and versioned storage
 
 - **Create daily reports:** collect public sources, write summaries and analysis, save versioned JSON and Markdown, and render local HTML and PDF. The reader works on desktop and mobile.
 - **Browse a local news stream:** refresh RSS/Atom and configured static pages, cluster related stories, and inspect source health. Monitor refresh and clustering make no model calls.
-- **Build illustrated presentations:** select representative stories from a saved report, write narration in bounded batches, and render a standalone animated HTML deck. When available, the deck is also embedded in the report with a separate open link.
+- **Build illustrated presentations:** the visual stream is required for every default daily edition. After report finalization, select representative stories, write narration in bounded batches, and render a standalone animated HTML deck. The report HTML may be delivered earlier; the full edition is complete only after the delivery gate passes.
 - **Explore related work:** optional experimental explainers and parallel research are documented separately. They are not part of the stable daily news narration workflow.
 
 ## Daily report example
@@ -35,7 +35,7 @@ Each story occupies one slide. The presenter-style narration appears with the da
 
 Slides can be navigated inside the report's “Today’s visual briefing” panel or opened as a standalone HTML page. Local templates render the layout and transitions without additional model calls. Text-to-speech and video generation are not implemented.
 
-Representative stories are selected from report highlights and high-importance briefs by default, with no fixed issue-wide cap. A batch contains up to four stories by default and has estimated input and output token limits; larger editions continue in more batches. These are batch-size gates, not price quotes or guarantees of host-reported usage. Chinese narration is validated at 200–350 non-whitespace characters. Analysis perspectives are included only when supported by the story evidence.
+Candidates cover the entire saved report: selected events and briefs. Duplicate original stories are merged, then ranked by importance; the default is the top 50. Set another positive count with `slides prepare --max-news N` or `finalize-edition --slides-max-news N`. There is no per-source quota. Unknown publication dates remain unknown and are never replaced with discovery or collection time. Batches default to four stories and retain estimated input/output size gates. Chinese narration is validated at 200–350 non-whitespace characters. Analysis perspectives are included only when supported by the story evidence.
 
 Start with a saved report and its matching index:
 
@@ -111,7 +111,7 @@ Versioned report JSON and Markdown are the original records; HTML and PDF are re
 
 Collection, monitoring, image handling, and HTML rendering make no model calls. The agent host performs report and slide writing. Batch token gates limit estimated input and output size; actual usage depends on what the host reports. Source availability, network access, evidence coverage, and model latency affect delivery and coverage.
 
-Slides are a separate HTML projection and do not change the report's JSON or Markdown. Speech and video are not currently available. See the [documentation index](docs/README.md) and [roadmap](docs/roadmap.md) for the boundary between experimental explainers/research and the stable report and slides workflow.
+Slides are a separate HTML projection and do not change the report's JSON or Markdown. Every default daily edition requires the visual stream whether usage is metered or unmetered. A report can be saved and delivered before slides finish; `edition-status --run RUN.json --require-complete` is the dynamic gate for full delivery. Speech and video are not currently available. See the [documentation index](docs/README.md) and [roadmap](docs/roadmap.md) for the boundary between experimental explainers/research and the stable report and slides workflow.
 
 ## Documentation
 

@@ -162,7 +162,8 @@ def extract_document(
     # body/main 是宽泛兜底；配置中提前列出它们也不能压过实际 article。
     ordered = list(dict.fromkeys([
         *(selector for selector in selectors if selector not in {"body", "main", "html"}),
-        "article", "main", "body",
+        "article", '[itemprop="articleBody"]', "div.article", "#blogpage .content",
+        "main", "body",
     ]))
     for priority, selector in enumerate(ordered):
         try:

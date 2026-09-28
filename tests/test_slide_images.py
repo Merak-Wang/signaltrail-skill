@@ -5,11 +5,12 @@ import time
 from pathlib import Path
 
 import httpx
+import pytest
 from bs4 import BeautifulSoup
 
 from signaltrail.config import MediaConfig
 from signaltrail.media import DownloadedImage, ImageDownloadError
-from signaltrail.slide_images import _read_page, enrich_slide_images
+from signaltrail.slide_images import _read_page, enrich_slide_images, fetch_article_page
 
 
 def _news() -> list[dict]:
@@ -64,6 +65,76 @@ def test_page_reader_uses_article_picture_srcset_and_ignores_related_images(monk
     assert "https://news.example/related.jpg" not in urls
     caption = next(c for c in candidates if "photo-1400" in c["url"])["caption"]
     assert caption == "Original news caption"
+
+
+def test_page_reader_extracts_body_image_and_keeps_og_candidate(monkeypatch):
+    markup = BeautifulSoup(b'''<html><head>
+      <meta property="og:image" content="/image/eye.jpg"></head><body>
+      <div class="article"><p>Syncing the Rust GCC backend took two months because
+      several repository changes went wrong. This article describes the synchronization.</p>
+      <img src="/blog/images/cat-between-legs.jpg" alt="A good illustration of Murphy's law"></div>
+      </body></html>''', "html.parser")
+    monkeypatch.setattr(
+        "signaltrail.slide_images.fetch_article_page",
+        lambda *_args: (markup, "https://blog.guillaume-gomez.fr/articles/story"),
+    )
+
+    candidates, _final_url = _read_page(
+        "https://blog.guillaume-gomez.fr/articles/story", "Syncing Rust GCC backend",
+        MediaConfig(),
+    )
+
+    body = next(candidate for candidate in candidates
+                if candidate["url"].endswith("cat-between-legs.jpg"))
+    assert body["provenance"] == "article_body"
+    assert any(candidate["url"].endswith("/image/eye.jpg")
+               and candidate["provenance"] == "page_metadata" for candidate in candidates)
+
+
+def test_page_reader_reports_http_200_verification_page(monkeypatch):
+    markup = (b"<html><title>One moment, please...</title><body>"
+              b"Please wait while your request is being verified...</body></html>")
+
+    class Client:
+        def stream(self, _method, url):
+            response = httpx.Response(200, content=markup, request=httpx.Request("GET", url))
+
+            class Stream:
+                def __enter__(self):
+                    return response
+
+                def __exit__(self, *_args):
+                    response.close()
+
+            return Stream()
+
+    monkeypatch.setattr("signaltrail.slide_images.assert_public_image_url", lambda _url: None)
+
+    with pytest.raises(
+        ImageDownloadError, match="access challenge: your request is being verified",
+    ):
+        _read_page("https://news.example/story", "A public story", MediaConfig(), Client())
+
+
+def test_article_page_reader_rejects_http_200_sina_visitor_system(monkeypatch):
+    markup = b"<html><title>Sina Visitor System</title><body></body></html>"
+
+    class Client:
+        def stream(self, _method, url):
+            response = httpx.Response(200, content=markup, request=httpx.Request("GET", url))
+
+            class Stream:
+                def __enter__(self):
+                    return response
+
+                def __exit__(self, *_args):
+                    response.close()
+
+            return Stream()
+
+    monkeypatch.setattr("signaltrail.slide_images.assert_public_image_url", lambda _url: None)
+    with pytest.raises(ImageDownloadError, match="access challenge: sina visitor system"):
+        fetch_article_page("https://weibo.com/story", MediaConfig(), Client())
 
 
 def test_arxiv_abstract_follows_explicit_same_paper_html_for_body_images(monkeypatch):
@@ -267,6 +338,41 @@ def test_enrich_downloads_page_candidates_and_keeps_existing(monkeypatch, tmp_pa
     assert (high["width"], high["height"], high["sha256"]) == (1600, 900, "abc")
     assert metrics["images_downloaded"] == 1
     assert metrics["source_failures"] == []
+
+
+def test_downloaded_body_image_drops_tiny_og_but_keeps_full_size_og(
+    monkeypatch, tmp_path: Path,
+):
+    article = "https://news.example/story"
+    tiny = "https://news.example/image/eye.jpg"
+    hero = "https://news.example/image/hero.jpg"
+    body = "https://news.example/images/story.jpg"
+    news = _news()
+    news[0]["sources"][0]["url"] = article
+    news[0]["images"] = [
+        {"url": tiny, "source_url": article, "provenance": "page_metadata",
+         "local_path": "media/images/eye.jpg", "width": 96, "height": 96,
+         "sha256": "eye", "byte_size": 100},
+        {"url": hero, "source_url": article, "provenance": "page_metadata",
+         "local_path": "media/images/hero.jpg", "width": 1200, "height": 675,
+         "sha256": "hero", "byte_size": 1000},
+    ]
+    monkeypatch.setattr("signaltrail.slide_images._read_page", lambda *_: ([{
+        "url": body, "provenance": "article_body", "position": 0,
+    }], article))
+    downloaded = DownloadedImage(
+        source_url=body, resolved_url=body, local_path="media/images/story.jpg",
+        content_type="image/jpeg", sha256="story", byte_size=2000,
+        width=1200, height=800, reused=False,
+    )
+    monkeypatch.setattr(
+        "signaltrail.slide_images._download_image_batch",
+        lambda rows, *_args, **_kwargs: {rows[0][0]: downloaded},
+    )
+
+    result, _metrics = enrich_slide_images(news, tmp_path, MediaConfig())
+
+    assert {image["url"] for image in result[0]["images"]} == {hero, body}
 
 
 def test_existing_small_variant_merges_with_new_large_variant(monkeypatch, tmp_path: Path):

@@ -11,9 +11,11 @@ CHALLENGE_TEXTS = (
     "unusual traffic",
     "access denied",
     "security check",
+    "your request is being verified",
     "enable javascript and cookies",
     "captcha",
     "robot check",
+    "sina visitor system",
 )
 RATE_LIMIT_TEXTS = (
     "temporarily limited",

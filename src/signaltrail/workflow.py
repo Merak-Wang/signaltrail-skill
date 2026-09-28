@@ -155,6 +155,123 @@ def _completion_status(run: dict[str, Any]) -> RunStatus:
     return RunStatus.COMPLETED
 
 
+def get_edition_status(run_path: Path, data_dir: Path) -> dict[str, Any]:
+    """处理：从运行清单、投影与图文流状态推导整期门禁。
+    输入：运行清单路径和已绑定的数据根目录。
+    输出：报告状态、缺失交付步骤、图文流状态与恢复动作。
+    """
+    run_path = require_data_root_path(run_path, data_dir, "Run manifest")
+    run = read_json_object(run_path, "Run manifest")
+    validate_run_data_root(run, run_path, data_dir)
+    artifacts = run.get("artifacts", {})
+    report_path = Path(str(artifacts.get("json_path", ""))) if artifacts.get("json_path") else None
+    report_exists = bool(report_path and report_path.is_file())
+    slides_artifact = artifacts.get("slides", {})
+    plan_value = slides_artifact.get("plan_path")
+    plan_path = Path(str(plan_value)) if plan_value else None
+    slides: dict[str, Any] = {
+        "status": "missing_plan", "pending_batches": [], "news_count": None,
+        "html_path": None, "packet_paths": [], "next_action": None,
+    }
+    pending_steps: list[str] = []
+    report_ready = (
+        run.get("status") in {RunStatus.COMPLETED, RunStatus.COMPLETED_PARTIAL}
+        and report_exists
+    )
+    if not report_ready:
+        pending_steps.append("report")
+    if report_ready and any(not artifacts.get(key) or not Path(str(artifacts[key])).is_file()
+                            for key in ("markdown_path", "html_path")):
+        pending_steps.append("report")
+    tail = run.get("tail", {})
+    if tail and tail.get("status") != "completed":
+        pending_steps.append("tail")
+    if tail and tail.get("status") == "completed":
+        for fmt in tail.get("requested_formats", []):
+            path = artifacts.get(f"{fmt}_path")
+            if (fmt in {"html", "pdf"} and (not path or not Path(str(path)).is_file())
+                    and "tail" not in pending_steps):
+                pending_steps.append("tail")
+    requested_formats = set(artifacts.get("requested_formats", []))
+    if tail:
+        requested_formats.update(tail.get("requested_formats", []))
+    if "pdf" in requested_formats:
+        pdf_path = artifacts.get("pdf_path")
+        if (not pdf_path or not Path(str(pdf_path)).is_file()) and "tail" not in pending_steps:
+            pending_steps.append("tail")
+    if run.get("evaluation_requested") and run.get("evaluation", {}).get("status") != "completed":
+        pending_steps.append("evaluation")
+    if slides_artifact.get("status") == "failed" and not (
+        plan_path and plan_path.is_file()
+    ):
+        slides["status"] = "prepare_failed"
+        slides["error"] = slides_artifact.get("error")
+        slides["next_action"] = (_slides_finalize_retry(
+            run_path, report_path, data_dir, int(slides_artifact.get("max_news", 50))
+        ) if report_exists else None)
+        pending_steps.append("slides_prepare")
+    elif plan_path and plan_path.is_file() and report_exists:
+        try:
+            from .news_slides import slides_status
+            slide_status = slides_status(plan_path, data_dir)
+            revision = read_json_object(report_path, "Saved report")["revision"]
+            html_path = report_path.with_name(
+                f"{run['edition']}-r{revision}-slides.html"
+            )
+            max_news = int(slides_artifact.get("max_news", 50))
+            if not _slides_plan_matches_selection(plan_path, max_news, data_dir):
+                slides = {"status": "stale_plan", "pending_batches": [],
+                          "news_count": slide_status["news_count"],
+                          "html_path": str(html_path), "packet_paths": [],
+                          "next_action": _slides_finalize_retry(
+                              run_path, report_path, data_dir, max_news)}
+                pending_steps.append("slides_prepare")
+            else:
+                rendered = (
+                    report_ready and not slide_status["pending_batches"]
+                    and _slides_sidecar_matches_plan(plan_path, html_path, data_dir)
+                )
+                slides = {"status": "rendered" if rendered else slide_status["status"],
+                          "pending_batches": slide_status["pending_batches"],
+                          "news_count": slide_status["news_count"], "html_path": str(html_path),
+                          "packet_paths": [slides_artifact.get("packet_paths", [])[i - 1]
+                                           for i in slide_status["pending_batches"]
+                                           if i <= len(slides_artifact.get("packet_paths", []))],
+                          "next_action": (
+                              "Complete each path in slides.packet_paths, then run "
+                              f'signaltrail --data-dir "{data_dir}" slides render '
+                              f'--plan "{plan_path}"'
+                          ) if not rendered else None}
+                if not rendered:
+                    step = ("slides_authoring" if slide_status["pending_batches"]
+                            else "slides_render")
+                    pending_steps.append(step)
+        except (ValueError, KeyError, OSError, RuntimeError) as exc:
+            slides = {"status": "unavailable", "pending_batches": [], "news_count": None,
+                      "html_path": None, "packet_paths": [], "error": str(exc),
+                      "next_action": "Inspect or recreate the slide plan."}
+            pending_steps.append("slides_authoring")
+    elif plan_path and plan_path.is_file():
+        slides["status"] = "unavailable"
+    else:
+        max_news = int(slides_artifact.get("max_news", 50))
+        slides["status"] = (
+            "prepare_failed" if slides_artifact.get("status") == "failed" else "missing_plan"
+        )
+        slides["error"] = slides_artifact.get("error")
+        pending_steps.append("slides_prepare")
+        slides["next_action"] = (_slides_finalize_retry(
+            run_path, report_path, data_dir, max_news
+        ) if report_exists else None)
+    if not report_exists:
+        slides["next_action"] = None
+    report_status = run.get("status")
+    return {"report_status": report_status, "delivery_complete": not pending_steps,
+            "pending_steps": pending_steps, "slides": slides,
+            "tail_status": tail.get("status", "missing"),
+            "report_path": str(report_path) if report_path else None}
+
+
 def _require_llm_budget(
     run: dict[str, Any],
     run_path: Path,
@@ -1876,8 +1993,14 @@ def _prepare_edition_slides(run: dict, run_path: Path, data_dir: Path) -> None:
     输出：将计划与 packet 路径或准备错误写入运行产物，不调用模型。
     """
     artifacts = run.setdefault("artifacts", {})
-    if artifacts.get("slides", {}).get("plan_path"):
-        return
+    slides_max_news = int(artifacts.get("slides", {}).get("max_news", 50))
+    plan_path = artifacts.get("slides", {}).get("plan_path")
+    if plan_path and Path(str(plan_path)).is_file():
+        try:
+            if _slides_plan_matches_selection(Path(str(plan_path)), slides_max_news, data_dir):
+                return
+        except (ValueError, KeyError, OSError):
+            pass
     try:
         from .news_slides import prepare_slides
 
@@ -1885,11 +2008,13 @@ def _prepare_edition_slides(run: dict, run_path: Path, data_dir: Path) -> None:
             Path(str(artifacts["json_path"])),
             Path(str(artifacts["index_path"])),
             data_dir,
+            max_news=slides_max_news,
         )
-        artifacts["slides"] = {**result, "status": "prepared"}
+        artifacts["slides"] = {**result, "max_news": slides_max_news, "status": "prepared"}
     except Exception as exc:
         artifacts["slides"] = {
             "status": "failed",
+            "max_news": slides_max_news,
             "error": f"{type(exc).__name__}: {exc}",
         }
     _update_run(
@@ -1900,26 +2025,74 @@ def _prepare_edition_slides(run: dict, run_path: Path, data_dir: Path) -> None:
     )
 
 
-def _slides_next_action(run: dict) -> str:
+def _slides_next_action(run: dict, run_path: Path, data_dir: Path) -> str:
     """处理：依据计划及最终 HTML sidecar 判断图文流是否已渲染。
-    输入：运行清单和数据根目录；sidecar 是完成状态的现有产物证据。
+    输入：运行清单、清单路径和显式数据根目录；旧运行清单不一定保存数据根字段。
     输出：要求重试准备、完成写作渲染或确认已完成的下一步提示。
     """
     slides = run.get("artifacts", {}).get("slides", {})
-    if slides.get("status") == "failed":
-        return "News slides preparation failed; inspect artifacts.slides.error and retry " \
-            "slides prepare from the saved report and index."
     plan = slides.get("plan_path")
-    if not plan:
-        return "News slides are not prepared; retry slides prepare from the saved report and index."
+    if not plan or not Path(str(plan)).is_file():
+        slides_max_news = int(slides.get("max_news", 50))
+        command = _slides_finalize_retry(
+            run_path, Path(str(run["artifacts"]["json_path"])), data_dir, slides_max_news
+        )
+        return ("Inspect artifacts.slides.error if present, then retry finalize-edition with this "
+                f"run manifest and saved report to register slide preparation: {command}")
     report = read_json_object(Path(str(run["artifacts"]["json_path"])), "Saved report")
     rendered = Path(str(run["artifacts"]["json_path"])).with_name(
         f"{report['edition']}-r{report['revision']}-slides.html"
     )
-    if rendered.exists():
+    if _slides_sidecar_matches_plan(Path(str(plan)), rendered, data_dir):
         return "News slides are rendered."
     return "Complete all artifacts.slides.packet_paths with the host, then run " \
         "slides render --plan artifacts.slides.plan_path."
+
+
+def _slides_sidecar_matches_plan(plan_path: Path, sidecar: Path, data_dir: Path) -> bool:
+    """处理：确认报告侧边栏放映文件来自当前图文计划。
+    输入：当前不可变计划、报告旁的HTML投影和数据根目录。
+    输出：仅当计划子级deck及其HTML与侧边栏逐字节相同时返回真。
+    """
+    from .narrative_store import load_artifact, parent_path
+
+    decks = sorted(
+        plan_path.parent.glob("slides-deck-r*.json"),
+        key=lambda path: int(path.stem.rsplit("-r", 1)[1]), reverse=True,
+    )
+    for deck_path in decks:
+        deck = load_artifact(deck_path, data_dir, kind="slides-deck")
+        if parent_path(deck, "plan", data_dir).resolve() != plan_path.resolve():
+            continue
+        deck_html = deck_path.with_suffix(".html")
+        return deck_html.is_file() and sidecar.is_file() and (
+            deck_html.read_bytes() == sidecar.read_bytes()
+        )
+    return False
+
+
+def _slides_plan_matches_selection(plan_path: Path, max_news: int, data_dir: Path) -> bool:
+    """处理：检查计划预算与本期要求的候选范围和选择规则一致。
+    输入：图文计划路径、当前数量上限和数据根目录。
+    输出：旧日期过滤计划或不同数量的计划返回假，防止误复用。
+    """
+    from .narrative_store import load_artifact
+
+    payload = load_artifact(plan_path, data_dir, kind="slides-plan")["payload"]
+    return (payload.get("selection_policy") == "report-admitted-importance-v1"
+            and payload.get("budget", {}).get("max_news") == max_news)
+
+
+def _slides_finalize_retry(run_path: Path, report_path: Path, data_dir: Path,
+                           max_news: int) -> str:
+    """处理：生成可恢复图文计划的定稿重试命令。
+    输入：运行清单、已保存日报、数据根目录和本期图文数量上限。
+    输出：沿用相同数量配置重新登记计划的完整命令。
+    """
+    return (
+        f'signaltrail --data-dir "{data_dir}" finalize-edition --run "{run_path}" '
+        f'--report "{report_path}" --slides-max-news {max_news} --defer-tail'
+    )
 
 
 def finalize_edition(
@@ -1933,6 +2106,7 @@ def finalize_edition(
     media_config: MediaConfig | None = None,
     defer_tail: bool = False,
     evaluate: bool = False,
+    slides_max_news: int | None = None,
 ) -> Path:
     """处理：编译并校验写作草稿，创建不可变报告及本地投影，再登记可恢复发布状态。
     输入：
@@ -1946,11 +2120,19 @@ def finalize_edition(
     - ``media_config``：图片下载、格式、安全、缓存和报告预算配置。
     - ``defer_tail``：是否把 PDF、Notion 和独立评估移到可恢复的后台尾阶段。
     - ``evaluate``：仅在用户明确要求时开启质量评分；请求随本轮运行保留。
+    - ``slides_max_news``：显式更换图文数量上限；省略时沿用运行清单中的值或默认 50。
     输出：指向“编译并校验写作草稿，创建不可变报告及本地投影，
       再登记可恢复发布状态”所生成、定位或确认产物的本地路径。
     """
     run_path = require_data_root_path(run_path, data_dir, "Run manifest")
     run = read_json_object(run_path, "Run manifest")
+    current_slide_options = run.get("artifacts", {}).get("slides", {})
+    slides_max_news = int(
+        slides_max_news if slides_max_news is not None
+        else current_slide_options.get("max_news", 50)
+    )
+    if slides_max_news < 1:
+        raise ValueError("slides_max_news must be positive")
     validate_run_data_root(run, run_path, data_dir)
     date = str(run["date"])
     edition = str(run["edition"])
@@ -1967,6 +2149,9 @@ def finalize_edition(
             RunStatus.COMPLETED_PARTIAL,
         }:
             if run.get("artifacts", {}).get("json_path"):
+                run.setdefault("artifacts", {}).setdefault("slides", {})[
+                    "max_news"
+                ] = slides_max_news
                 _prepare_edition_slides(run, run_path, data_dir)
             tail = run.get("tail", {})
             if isinstance(tail, dict) and tail.get("status") in {
@@ -1997,14 +2182,14 @@ def finalize_edition(
                         if evaluation["scheduler"]["status"]
                         in {"scheduled", "unknown", "reconciliation_failed"}
                         else "Automatic evaluator scheduling failed; retry finalize-edition."
-                    ) + " Then " + _slides_next_action(run),
+                    ) + " Then " + _slides_next_action(run, run_path, data_dir),
                 )
             elif not (isinstance(tail, dict) and tail.get("status") in {
                 "pending", "running", "partial",
             }):
                 _update_run(
                     run_path, run, RunStatus(run["status"]),
-                    next_action=_slides_next_action(run),
+                    next_action=_slides_next_action(run, run_path, data_dir),
                 )
             return run_path
         recoverable = {
@@ -2094,6 +2279,9 @@ def finalize_edition(
                 milestones=milestones,
             )
         if artifacts.get("json_path"):
+            run.setdefault("artifacts", {}).setdefault("slides", {})[
+                "max_news"
+            ] = slides_max_news
             _prepare_edition_slides(run, run_path, data_dir)
             artifacts = run["artifacts"]
         if defer_tail:
@@ -2147,7 +2335,7 @@ def finalize_edition(
                 metrics=_runtime_metrics(run, local_ready_at),
                 error=None,
                 next_action=(tail["next_action"] + " Then "
-                             + _slides_next_action(run)),
+                             + _slides_next_action(run, run_path, data_dir)),
             )
             return run_path
 
@@ -2198,7 +2386,7 @@ def finalize_edition(
             metrics=_runtime_metrics(run, completed_at),
             error=None,
             next_action=(evaluation_state["next_action"] + " Then "
-                         + _slides_next_action(run)),
+                         + _slides_next_action(run, run_path, data_dir)),
         )
         if not evaluation_requested:
             return run_path
@@ -2221,7 +2409,7 @@ def finalize_edition(
             updated_at=now_iso(timezone),
             evaluation=evaluation_state,
             next_action=(evaluation_state["next_action"] + " Then "
-                         + _slides_next_action(run)),
+                         + _slides_next_action(run, run_path, data_dir)),
         )
         return run_path
 
@@ -2396,14 +2584,14 @@ def complete_edition_tail(
                 "errors": errors,
                 "next_action": (
                     "Retry complete-edition-tail; local HTML remains authoritative. Then "
-                    + _slides_next_action(run)
+                    + _slides_next_action(run, run_path, data_dir)
                     if errors
                     else (
                         "Wait for the isolated evaluator, then "
-                        + _slides_next_action(run)
+                        + _slides_next_action(run, run_path, data_dir)
                         if evaluation_requested and evaluation.get("status") != "completed"
                         else "Report projections are complete. "
-                        + _slides_next_action(run)
+                        + _slides_next_action(run, run_path, data_dir)
                     )
                 ),
             }

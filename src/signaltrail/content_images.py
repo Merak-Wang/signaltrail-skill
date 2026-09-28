@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 from typing import Any
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import parse_qs, urljoin, urlsplit
 
 from bs4 import Tag
 
@@ -124,6 +124,19 @@ def article_image_candidates(
             r"\b(?:logo|avatar|icon)\b|头像|图标", alt, re.I,
         ):
             continue
+        anchor = node.find_parent("a", href=True)
+        anchor_path = urlsplit(urljoin(base_url, str(anchor.get("href") or ""))) if anchor else None
+        yahoo_brand_card = (
+            anchor_path is not None
+            and (anchor_path.hostname or "").casefold() == "profiles.yahoo.com"
+            and anchor_path.path.casefold().startswith("/brands/")
+            and node.find_parent("header") is not None
+        )
+        if yahoo_brand_card:
+            continue
+        if (re.search(r"\b(?:rss|atom)\s+feed\b", alt, re.I)
+                and anchor_path and re.fullmatch(r"/(?:rss|atom)/?", anchor_path.path, re.I)):
+            continue
         if _in_non_body_container(node, root):
             continue
         caption = _image_caption(node, root)
@@ -140,9 +153,14 @@ def article_image_candidates(
         ] if picture else []
         # picture 的 source 常按视口 media 声明，DOM 顺序不等于像素清晰度顺序。
         picture_urls.sort(key=_pixel_width, reverse=True)
-        anchor = node.find_parent("a", href=True)
         full_image = str(anchor.get("href")) if anchor else ""
-        if not re.search(r"\.(?:jpe?g|png|webp|gif|avif)$", urlsplit(full_image).path, re.I):
+        full_image_path = urlsplit(urljoin(base_url, full_image))
+        github_blob_page = (
+            (full_image_path.hostname or "").casefold() == "github.com"
+            and re.match(r"^/[^/]+/[^/]+/blob/", full_image_path.path)
+        )
+        if (github_blob_page or not re.search(
+                r"\.(?:jpe?g|png|webp|gif|avif)$", full_image_path.path, re.I)):
             full_image = ""
         urls = normalize_image_candidates([
             full_image,

@@ -18,6 +18,7 @@ from ..workflow import (
     enrich_edition,
     finalize_edition,
     get_authoring_status,
+    get_edition_status,
     prefetch_authoring_media,
     prepare_authoring_analysis,
     prepare_edition,
@@ -217,8 +218,11 @@ def handle_finalize_edition(args: argparse.Namespace, context: CommandContext) -
         media_config=config.media,
         defer_tail=args.defer_tail,
         evaluate=args.evaluate,
+        slides_max_news=args.slides_max_news,
     )
-    print_json_file(output)
+    payload = read_json_object(output, "Run manifest")
+    payload["delivery"] = get_edition_status(args.run, data_dir)
+    print_json(payload)
     return 0
 
 
@@ -239,5 +243,17 @@ def handle_complete_edition_tail(args: argparse.Namespace, context: CommandConte
         output_config=config.output,
         evaluate=args.evaluate,
     )
-    print_json_file(output)
+    payload = read_json_object(output, "Run manifest")
+    payload["delivery"] = get_edition_status(args.run, data_dir)
+    print_json(payload)
     return 0
+
+
+def handle_edition_status(args: argparse.Namespace, context: CommandContext) -> int:
+    """处理：输出整期交付门禁并按需设置失败退出码。
+    输入：运行清单路径、require-complete 选项和数据根目录。
+    输出：交付状态 JSON；仅强制验收且存在待办时返回非零。
+    """
+    result = get_edition_status(args.run, context.data_dir)
+    print_json(result)
+    return 0 if result["delivery_complete"] or not args.require_complete else 1

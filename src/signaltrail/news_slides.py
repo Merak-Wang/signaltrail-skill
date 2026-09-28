@@ -5,11 +5,9 @@ from __future__ import annotations
 import json
 import re
 from copy import deepcopy
-from datetime import datetime
 from math import ceil
 from pathlib import Path
 from urllib.parse import parse_qs, parse_qsl, urlsplit
-from zoneinfo import ZoneInfo
 
 from jsonschema import Draft202012Validator
 
@@ -47,23 +45,6 @@ def estimate_tokens(value: object) -> int:
     return ceil(len(text.encode("utf-8")) / 2)
 
 
-def _published_on(value: str | None, day: str, timezone: str) -> bool:
-    """处理：把来源发布时间转换到日报时区，判断是否属于本期当天。
-    输入：索引中的发布时间、日报日期和时区；日期缺失或无效时不推算。
-    输出：当天发布返回真，采集时间和更新日期不参与判断。
-    """
-    if not value:
-        return False
-    try:
-        published = datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except ValueError:
-        return False
-    zone = ZoneInfo(timezone)
-    if published.tzinfo is None:
-        published = published.replace(tzinfo=zone)
-    return published.astimezone(zone).date().isoformat() == day
-
-
 def _source_story_identity(url: str) -> tuple | None:
     """处理：规范化单篇文章 URL，忽略协议、www、片段和已知跟踪参数。
     输入：来源引用中的绝对 HTTP(S) 原文 URL；有意义的路径与查询值保持不变。
@@ -82,13 +63,15 @@ def _source_story_identity(url: str) -> tuple | None:
 
 
 def select_news(report: dict, index: dict, *, min_importance: int = 0,
-                item_ids: list[str] | None = None) -> list[dict]:
-    """处理：合并日报当天的全部精选事件与简报，去重并按重要性排序。
-    输入：已存日报、权威索引及可选分数门槛或手选 ID；默认不设分数门槛。
-    输出：按重要性排序的当天新闻，仅保留当天来源，未知日期不入选。
+                item_ids: list[str] | None = None, max_news: int = 50) -> list[dict]:
+    """处理：合并日报中的精选事件与简报，去重并按重要性截取。
+    输入：已存日报、权威索引及可选 ID、分数门槛和条数上限；不按日期二次裁剪。
+    输出：日报内按重要性稳定排序的至多 max_news 条新闻，来源时间保持原值。
     """
     if not 0 <= min_importance <= 100:
         raise ValueError("min_importance must be between 0 and 100")
+    if max_news < 1:
+        raise ValueError("max_news must be positive")
     events = [deepcopy(e) for s in report["sections"] for e in s.get("items", [])]
     briefs = [b for s in report["sections"] for b in s.get("briefs", [])]
     selected = set(item_ids or [])
@@ -97,23 +80,13 @@ def select_news(report: dict, index: dict, *, min_importance: int = 0,
     }
     if selected - known:
         raise ValueError("Items are not in this report: " + ", ".join(sorted(selected - known)))
-    timezone = report.get("timezone") or index.get("timezone") or "Asia/Shanghai"
-    today_ids = {item["item_id"] for item in index["items"]
-                 if _published_on(item.get("published_at"), report["date"], timezone)}
-    if selected - today_ids:
-        raise ValueError("Items are not published on the report date: "
-                         + ", ".join(sorted(selected - today_ids)))
-    # 跨日聚合摘要不可只删旧引用后沿用；回退到下方当天条目的独立简报。
-    events = [event for event in events if event["source_refs"] and all(
-        ref["item_id"] in today_ids for ref in event["source_refs"]
-    )]
     events = [e for e in events if not selected or any(
         ref["item_id"] in selected for ref in e["source_refs"]
     )]
     covered = {ref["item_id"] for e in events for ref in e["source_refs"]}
     for brief in sorted(briefs, key=lambda b: -b.get("importance", 0)):
         item_id = brief["item_id"]
-        if item_id not in today_ids or item_id in covered or (
+        if item_id in covered or (
             item_id not in selected if selected else brief.get("importance", 0) < min_importance
         ):
             continue
@@ -144,7 +117,7 @@ def select_news(report: dict, index: dict, *, min_importance: int = 0,
         refs_by_item = {ref["item_id"]: ref for ref in winner.get("source_refs", [])}
         refs_by_item.update({ref["item_id"]: ref for ref in other.get("source_refs", [])})
         merged[position] = {**winner, "source_refs": list(refs_by_item.values())}
-    return sorted(merged, key=lambda e: -e.get("importance", 0))
+    return sorted(merged, key=lambda e: -e.get("importance", 0))[:max_news]
 
 
 def _merge_image_detail(known: dict, new: dict) -> dict:
@@ -438,7 +411,7 @@ def _image_identity(url: str) -> tuple:
         # 同一资产只差变换段和签名；按已出现的 v<版本> 之后路径归一，不构造新地址。
         version = re.search(r"/v\d+/", parsed.path)
         return (host, "asset", parsed.path[version.end():]) if version else (url,)
-    if (host in {"theaviationist.com", "www.theaviationist.com"}
+    if (host in {"theaviationist.com", "www.theaviationist.com", "news.usni.org"}
             and "/wp-content/uploads/" in parsed.path):
         basename = re.sub(r"-\d+x\d+(?=\.(?:jpg|jpeg|webp)$)", "", basename, flags=re.IGNORECASE)
         path = parsed.path[:parsed.path.rfind("/") + 1] + basename
@@ -503,21 +476,23 @@ def _model_input(candidates: list[dict], style: str, language: str) -> dict:
 
 def prepare_slides(report_path: Path, index_path: Path, data_dir: Path, *,
                    min_importance: int = 0, item_ids: list[str] | None = None,
+                   max_news: int = 50,
                    batch_size: int = 4, max_input_tokens: int = 12000,
                    max_output_tokens: int = 4000) -> dict:
-    """处理：按每批输入与输出预留切分全部当天新闻，复用相同准备结果。
-    输入：明确日报/索引修订、可选分数门槛或手选 ID、每批成本约束。
+    """处理：按重要性截取日报新闻并按每批输入与输出预留分包。
+    输入：明确日报/索引修订、可选分数门槛、手选 ID、数量上限和批次成本约束。
     输出：不可变计划及各批写作包；不调用模型，不修改日报和索引。
     """
-    if batch_size < 1 or max_input_tokens < 1 or max_output_tokens < 1:
+    if batch_size < 1 or max_input_tokens < 1 or max_output_tokens < 1 or max_news < 1:
         raise ValueError("Batch size and token limits must be positive")
     report = read_json_object(report_path, "Report")
     index = read_json_object(index_path, "Index")
     if any(report[key] != index[key] for key in ("date", "edition")):
         raise ValueError("Report and index must belong to the same edition")
-    events = select_news(report, index, min_importance=min_importance, item_ids=item_ids)
+    events = select_news(report, index, min_importance=min_importance, item_ids=item_ids,
+                         max_news=max_news)
     if not events:
-        raise ValueError("No news published on the report date matches the selection")
+        raise ValueError("No report news matches the selection")
     indexed = {i["item_id"]: i for i in index["items"]}
     missing = {r["item_id"] for e in events for r in e["source_refs"]} - indexed.keys()
     if missing:
@@ -544,11 +519,13 @@ def prepare_slides(report_path: Path, index_path: Path, data_dir: Path, *,
     payload = {
         "title": report["title"], "report_id": report["report_id"], "language": language,
         "as_of": report["generated_at"], "news": candidates,
+        "selection_policy": "report-admitted-importance-v1",
         "publication_date": report["date"],
         "timezone": report.get("timezone") or index.get("timezone") or "Asia/Shanghai",
         "batches": [[c["event_id"] for c in batch] for batch in batches],
         "budget": {"max_input_tokens": max_input_tokens, "max_output_tokens": max_output_tokens,
-                   "batch_size": batch_size, "max_model_calls_per_batch": 1,
+                   "batch_size": batch_size, "max_news": max_news,
+                   "max_model_calls_per_batch": 1,
                    "estimation": "utf8_bytes_divided_by_two_plus_512_input_reserve",
                    "input_tokens": None, "output_tokens": None, "cost_usd": None},
         "style": style,
@@ -676,17 +653,11 @@ def render_slides(plan_path: Path, data_dir: Path, *, refresh_images: bool = Tru
     report_path = parent_path(plan, "report", data_dir)
     report = read_json_object(report_path, "Report")
     index = read_json_object(parent_path(plan, "index", data_dir), "Index")
-    timezone = report.get("timezone") or index.get("timezone") or "Asia/Shanghai"
-    today_urls = {i["url"] for i in index["items"]
-                  if _published_on(i.get("published_at"), report["date"], timezone)}
+    timezone = (payload.get("timezone") or report.get("timezone")
+                or index.get("timezone") or "Asia/Shanghai")
     news = deepcopy(payload["news"])
-    news = [item for item in news if item["sources"] and all(
-        source["url"] in today_urls for source in item["sources"]
-    )]
-    for item in news:
-        item["images"] = [i for i in item["images"] if i.get("source_url") in today_urls]
     if not news:
-        raise ValueError("No news published on the report date in this slide plan")
+        raise ValueError("No news in this slide plan")
     image_metrics = None
     if refresh_images:
         news, image_metrics = enrich_slide_images(news, data_dir, media_config or MediaConfig())
@@ -698,8 +669,7 @@ def render_slides(plan_path: Path, data_dir: Path, *, refresh_images: bool = Tru
             saved = load_artifact(previous[0], data_dir, kind="slides-deck")["payload"]
             images = {s["event_id"]: s["images"] for s in saved["slides"]}
             for item in news:
-                item["images"] = [i for i in images.get(item["event_id"], item["images"])
-                                  if i.get("source_url") in today_urls]
+                item["images"] = images.get(item["event_id"], item["images"])
             image_metrics = saved.get("image_enrichment")
     deck = {k: payload[k] for k in ("title", "report_id", "language", "as_of")}
     deck.update(publication_date=report["date"], timezone=timezone)

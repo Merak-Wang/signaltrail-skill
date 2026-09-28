@@ -318,6 +318,10 @@ def build_parser() -> argparse.ArgumentParser:
     finalize.add_argument("--run", type=Path, required=True)
     finalize.add_argument("--report", type=Path, required=True)
     finalize.add_argument(
+        "--slides-max-news", type=int,
+        help="Maximum report stories to include in the visual stream (default: 50)",
+    )
+    finalize.add_argument(
         "--publish",
         action="store_true",
         help="Also publish the locally saved report to Notion",
@@ -351,6 +355,13 @@ def build_parser() -> argparse.ArgumentParser:
         "--evaluate", action="store_true",
         help="Explicitly request independent quality scoring (off by default)",
     )
+
+    edition_status = sub.add_parser(
+        "edition-status", help="Show whether the saved report and requested delivery are complete"
+    )
+    edition_status.add_argument("--run", type=Path, required=True)
+    edition_status.add_argument("--require-complete", action="store_true",
+                                help="Exit nonzero while any declared delivery step is pending")
 
     save = sub.add_parser(
         "save-report", help="Persist JSON/Markdown and configured local reading formats"

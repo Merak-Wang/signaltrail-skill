@@ -22,11 +22,11 @@ The monitor runs separately: RSS/Atom and static HTML → normalized items → l
 → snapshot, source health, and feed cache. It makes no model calls. Formal collection can
 proceed when the monitor fails.
 
-News slides are a report projection prepared by finalization from the saved report and index.
-Preparation admits all selected events and briefs published on `report.date`, merging duplicate original
-stories while retaining source references; missing images do not exclude stories. Importance ranks candidates
-with a default minimum of 0 and optional explicit narrowing. Dates use indexed publication time and the
-report/index timezone. Bounded narration batches produce accepted story scripts; online rendering
+News slides are a report projection prepared by finalization from the saved report and index. Every default daily edition requires accepted narration batches and a rendered deck, whether usage is metered or unmetered. The saved-report lifecycle remains separate from delivery completion; `edition-status --run RUN.json --require-complete` is the dynamic acceptance gate.
+Preparation uses the full saved report's selected events and briefs, merges duplicate original stories while
+retaining source references, sorts by importance, and selects the top 50 by default. `--max-news` and
+`--slides-max-news` allow another positive limit; there is no per-source quota. Unknown publication dates
+remain unknown, and images do not affect eligibility. Bounded narration batches produce accepted story scripts; online rendering
 adds indexed sources, summaries, and publisher-provided image candidates and captions from public article
 pages within configured media budgets. When present, the report HTML embeds the deck in place of its
 on-screen summary and keeps a separate open link; printing restores the summary. Report JSON/Markdown
@@ -49,7 +49,7 @@ All modules below live in `src/signaltrail/`.
 | Writing | `context`, `authoring`, `semantics`, `state` | Bounded packets, accepted batches, continuity and cache |
 | Report contract | `reporting` | Compile drafts, hydrate evidence, validate schema and cross-field rules |
 | Report storage | `reports` | Save reports and evaluations, render Markdown, update derived state |
-| News slides | `news_slides`, `slide_images`, `slide_renderer` | Day-filtered narration batches, public-page image refresh, and standalone animated HTML projection of a saved report |
+| News slides | `news_slides`, `slide_images`, `slide_renderer` | Report-wide top-N narration batches, public-page image refresh, and standalone animated HTML projection of a saved report |
 | Experimental explainers | `narrative`, `narrative_contracts`, `narrative_store`, `narrative_verification`, `story_stream` | Immutable report children, language reviews, diagrams; current-news admission blocked |
 | Experimental research | `research`, `research_contracts`, `research_delivery` | Frozen blocks, local question retrieval, scoped memos and preview-only late report binding; current admission blocked |
 | Delivery | `local_output`, `notion`, `dashboard` | HTML/PDF, remote copies, read-only monitor UI |

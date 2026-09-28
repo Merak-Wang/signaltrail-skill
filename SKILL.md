@@ -155,12 +155,9 @@ signaltrail --data-dir DATA_DIR finalize-edition --run RUN.json --report DRAFT.j
 ```
 
 Finalize only with zero validation errors. Add `--publish` only for requested Notion
-delivery. Return `artifacts.html_path` and `artifacts.desktop_html_path` immediately.
-Finalization also prepares default news-slide packets from the saved report and index;
-return `artifacts.slides.plan_path` and every `artifacts.slides.packet_paths` entry.
-Local JSON/Markdown is authoritative; HTML/PDF is rebuildable.
+delivery. Return `artifacts.html_path` and `artifacts.desktop_html_path` as soon as the report is saved. This means **report saved**, not **edition delivery complete**. Finalization also prepares the default slide plan and packets from the saved report and index; use the exact paths in `artifacts.slides.plan_path` and `artifacts.slides.packet_paths`. Local JSON/Markdown is authoritative; HTML/PDF is rebuildable.
 
-## 6. Finish the tail
+## 6. Finish the visual edition and final delivery
 
 Run the manifest's `tail.command` in the background:
 
@@ -168,27 +165,28 @@ Run the manifest's `tail.command` in the background:
 signaltrail --data-dir DATA_DIR complete-edition-tail --run RUN.json
 ```
 
-While the tail runs, write slides in waves of at most three workers; wait for each wave before the next.
-Wait for all submissions and the tail to exit before `slides render`, since both update projections.
-Inspect the tail's exit status and receipt; a running process is not complete.
+The default daily edition includes the visual story stream for both metered and unmetered runs. While the tail runs, submit every planned slide packet in waves of at most three workers; wait for every worker in a wave before starting the next. Reuse accepted batches and author only pending batches. For each packet, write a JSON draft beside it named `batch-N-draft.json` (where N is that packet's batch number), then run the exact commands below with the manifest paths:
 
-The tail creates PDF and retries requested Notion delivery. Quality scoring is off by default.
-Only for an explicit scoring/results-evaluation request, add `--evaluate` to `finalize-edition`
-or `complete-edition-tail`; recovery retains the request. Ordinary generation never implies scoring.
-The evaluator reads an immutable hash-bound dossier; preflight/reconciliation prevent duplicate work.
-At most two evaluation attempts are allowed. Tail failures stay `partial` without retracting reports.
+```text
+signaltrail --data-dir DATA_DIR slides submit --packet PACKET.json --input DRAFT.json
+signaltrail --data-dir DATA_DIR slides status --plan PLAN.json
+```
 
-Check that the run is `completed` or `completed_partial`, the HTML copies open, and
-schema, source order, counts, evidence, language, tail/PDF receipts and any requested evaluation validate.
-Complete and render every slide batch before sealing its metered run. Wait for workers/imports and
-seal foreground/evaluator tasks, including failures, only after they finish. Retain unknown coverage;
-partial observations cannot establish exact acceptance.
-Use the usage task summary for whole-run totals; Hermes delegation `input_tokens` includes
-cache and covers only child writing calls. Report uncached input, cache reads, output, and
-the host-reported total separately. Missing cost stays unknown. The launcher seals the task
-after the host returns; label any still-open task summary as provisional.
-Finalization never makes a model call for slides. If preparation failed, inspect
-`artifacts.slides.error` and retry `slides prepare`; the saved report remains valid.
+Use `artifacts.slides.packet_paths[]` and `artifacts.slides.plan_path` from the real run manifest, not guessed paths. Check status until no batches are pending. Inspect the tail's exit status and receipt; a running process is not complete. Only after all slide submissions are accepted and the tail has exited, render and check the complete-edition gate:
+
+```text
+signaltrail --data-dir DATA_DIR slides render --plan PLAN.json
+signaltrail --data-dir DATA_DIR edition-status --run RUN.json --require-complete
+```
+
+Use this dynamic gate as the source of truth; do not infer completion from `run.status`, a stale `artifacts.slides.status`, or the tail alone. It must report `delivery_complete: true`, `pending_steps: []`, and `slides.status: rendered`. If it remains false, resolve `pending_steps` or report them as missing; never describe the edition as complete. The saved report and its HTML can already be delivered as a partial handoff, clearly labeled **report saved; edition delivery pending**.
+
+The tail creates PDF and retries requested Notion delivery. Scoring requires explicit `--evaluate`, retained during recovery. The evaluator reads an immutable hash-bound dossier, prevents duplicate work, and allows at most two attempts; tail failures stay `partial` without retracting reports.
+
+Check `edition-status --run RUN.json --require-complete`, report content, receipts and requested evaluation; `run.status` describes only saved-report lifecycle. Complete every slide batch in metered and unmetered runs. Seal metered tasks, including failures, after workers and imports finish. Partial observations cannot establish exact acceptance and missing coverage stays unknown. Use usage task summaries for whole-run totals; Hermes delegation `input_tokens` includes cache and covers child calls only. Report uncached input, cache reads, output and host totals separately; missing cost stays unknown. Summaries remain provisional until the launcher seals each task after return.
+Finalization makes no model call for slides. If preparation failed, inspect `artifacts.slides.error`
+and retry `finalize-edition --run RUN.json --report SAVED_REPORT.json --defer-tail` to register the
+plan again; standalone `slides prepare` remains available for independent use.
 
 ## Experimental explainers after a saved report
 
@@ -210,18 +208,17 @@ or [English](templates/research-style-en.md) style card.
 
 ## Animated news slides in the default daily edition
 
-Finalization prepares the plan and packets from the saved report and index. Complete these batches
-before sealing their metered usage task. For recovery, run
-`signaltrail --data-dir DATA_DIR slides prepare --report REPORT.json --index INDEX.json`.
+Every default daily edition requires a rendered visual story stream, whether metered or unmetered. Finalization prepares the plan and packets from the saved report and index. Complete all batches before declaring edition delivery complete. Use `slides prepare` for standalone preparation; for a failed plan that must be re-registered, follow the finalize retry above.
 Read only each `packet.payload.model_input` and follow its schema plus the embedded
 [writing style](templates/news-slide-style/SKILL.md). Chinese narration is 200–350 characters; use relevant,
 evidence-backed perspectives. Finish all bounded batches, submit drafts, check status, then render.
-The deck includes all selected events and briefs published on `report.date`, deduplicated by original story;
-same-story source references are retained, and missing images do not exclude a story. Importance only sorts
-candidates: default `--min-importance` is 0, and an explicit threshold narrows selection. Dates use
-`index.items[].published_at` with `report.timezone`, then `index.timezone`, then `Asia/Shanghai`; missing or
-invalid times are excluded. This does not filter the main report.
-Hacker News/Lobsters use the platform submission date in `published_at`; an older original can qualify. Keep original-page dates in metadata, and use the article publication date for direct publishers.
+The candidate pool is the entire saved report: selected events and briefs. Merge duplicate original stories,
+retain all source references, sort by importance descending, then prepare the first 50 by default; use
+`slides prepare --max-news N` or `finalize-edition --slides-max-news N` to set another positive limit.
+There is no per-source quota. A new edition defaults to 50; resuming without an explicit limit preserves
+the saved choice. Explicitly changing the limit prepares a new plan. Keep missing publication dates unknown;
+do not replace them with collection or discovery time. Missing images do not exclude stories. This selection changes only the slide projection,
+not the report. Chinese narration remains 200–350 characters.
 Default rendering reads selected public pages for image candidates and captions, chooses declared
 `srcset`/URL size/DPR variants, and caches successful downloads within the media budget. It does not change
 body evidence or access status and makes no model call. `slides render --offline` rebuilds from local images.
