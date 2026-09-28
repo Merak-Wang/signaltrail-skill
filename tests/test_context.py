@@ -342,6 +342,63 @@ def test_context_keeps_index_top_order_even_when_a_lower_item_is_enriched(tmp_pa
     assert "_source_rank" not in read_json(index_path)["items"][0]
 
 
+def test_brief_packets_keep_source_language_separate_from_output_language(tmp_path: Path):
+    data_dir = tmp_path / "data"
+    items = [
+        {
+            "item_id": "bbc-en",
+            "source_id": "bbc_world",
+            "source_name": "BBC",
+            "title": "Central bank holds its policy rate",
+            "description": "The bank kept its policy rate unchanged in its latest decision.",
+            "url": "https://www.bbc.com/news/en-story",
+            "published_at": "2026-09-28T08:00:00+00:00",
+            "content_status": "not_fetched",
+            "metadata": {
+                "source_rank": 1,
+                "language": "en",
+                "content_quality": {"fact_verification": None},
+            },
+        },
+        {
+            "item_id": "bbc-zh",
+            "source_id": "bbc_world",
+            "source_name": "BBC",
+            "title": "央行维持政策利率不变",
+            "description": "央行在最新决议中维持政策利率不变。",
+            "url": "https://www.bbc.com/news/zh-story",
+            "published_at": "2026-09-28T16:00:00+08:00",
+            "content_status": "not_fetched",
+            "metadata": {"source_rank": 2, "language": "zh"},
+        },
+    ]
+    index_path = write_json(
+        data_dir / "indexes" / "2026-09-28" / "morning-r1.json",
+        {"date": "2026-09-28", "edition": "morning", "items": items, "sources": []},
+    )
+    config = load_config()
+
+    for output_language, translation_required in (("zh-CN", True), ("en", False)):
+        context_path = build_context(
+            index_path, config, data_dir, "morning", output_language=output_language
+        )
+        context = read_json(context_path)
+        assert context["output_language"] == output_language
+        packet = read_json(Path(context["brief_authoring_batches"][0]["packet_path"]))
+        assert packet["output_language"] == output_language
+        candidates = {candidate["item_id"]: candidate for candidate in packet["candidates"]}
+        assert set(candidates) == {"bbc-en", "bbc-zh"}
+        assert candidates["bbc-en"]["source_language"] == "en"
+        assert candidates["bbc-en"]["translation_required"] is translation_required
+        assert candidates["bbc-en"]["published_at"] == items[0]["published_at"]
+        assert candidates["bbc-en"]["content_observations"]["quality"][
+            "fact_verification"
+        ] is None
+        assert candidates["bbc-zh"]["source_language"] == "zh"
+        assert candidates["bbc-zh"]["translation_required"] is (output_language == "en")
+        assert candidates["bbc-zh"]["published_at"] == items[1]["published_at"]
+
+
 def test_context_splits_all_formal_top15_work_into_bounded_authoring_waves(
     tmp_path: Path,
 ):

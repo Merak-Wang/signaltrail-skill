@@ -625,6 +625,53 @@ def test_related_perspectives_are_optional_and_fact_text_is_not_truncated(slide_
     assert estimate_tokens(content) > 0
 
 
+def test_slides_inherit_report_language_and_preserve_mixed_language_sources(slide_case):
+    root, report_path, index_path, report, index = slide_case
+    chinese_ref = dict(report["sections"][0]["items"][0]["source_refs"][0])
+    chinese_ref.update({
+        "title": "央行维持政策利率不变",
+        "published_at": "2026-09-28T08:00:00+08:00",
+        "access": "metadata_only",
+    })
+    english_ref = dict(report["sections"][0]["briefs"][1]["source_ref"])
+    english_ref.update({
+        "title": "Central bank holds policy rate",
+        "published_at": "2026-09-28T08:10:00+00:00",
+        "access": "full_text",
+    })
+    report["sections"][0]["items"][0]["source_refs"] = [chinese_ref, english_ref]
+    index["items"][0].update({
+        "source_name": "新华社",
+        "published_at": chinese_ref["published_at"],
+    })
+    index["items"][1].update({
+        "source_name": "Reuters",
+        "published_at": english_ref["published_at"],
+    })
+    write_json(index_path, index)
+
+    for language, title, summary in (
+        ("zh-CN", "央行维持政策利率不变", "央行在最新决议中维持政策利率不变。"),
+        ("en", "Central bank holds policy rate", "The central bank held its policy rate."),
+    ):
+        report["language"] = language
+        event = report["sections"][0]["items"][0]
+        event["title"] = title
+        event["tldr"] = summary
+        write_json(report_path, report)
+        prepared = prepare_slides(report_path, index_path, root, item_ids=["item-0"])
+        payload = load_artifact(Path(prepared["plan_path"]), root)["payload"]
+        packet = load_artifact(Path(prepared["packet_paths"][0]), root)["payload"]
+        sources = payload["news"][0]["sources"]
+
+        assert payload["language"] == language
+        assert packet["model_input"]["language"] == language
+        assert [(s["name"], s["title"], s["published_at"], s["access"]) for s in sources] == [
+            ("新华社", "央行维持政策利率不变", chinese_ref["published_at"], "metadata_only"),
+            ("Reuters", "Central bank holds policy rate", english_ref["published_at"], "full_text"),
+        ]
+
+
 def test_legacy_saved_report_can_prepare_without_briefs(tmp_path):
     report = load_sample_report(Path(__file__).resolve().parents[1])
     report_path = write_json(tmp_path / "reports/legacy-r1.json", report)

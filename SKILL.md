@@ -35,7 +35,7 @@ required_environment_variables:
 
 # SignalTrail
 
-Generate source-linked reports in `zh-CN` (default) or `en`, or monitor without model calls. Reuse configured sources and the existing data root.
+Generate source-linked reports and slides in `zh-CN` (default) or `en`, or monitor without model calls. Collect Chinese and English evidence independently of output language; an explicit user choice takes priority, followed by saved preference/current run, then `zh-CN`. Keep one natural target language throughout each report and deck. Reuse configured sources and the existing data root.
 
 The Python distribution is `signaltrail-skill`; import `signaltrail` or run `python -m signaltrail.cli`.
 When upgrading from `daily-intelligence-skill`, uninstall the old distribution and follow the data/profile
@@ -59,6 +59,8 @@ Choose metered or explicit `unmetered` coverage before provider work. A metered 
 
 ## 1. Collect and inspect
 
+Cover available Chinese- and English-language sources and check overall language coverage. Verify key actors and roles, tense, dates, and figures during collection; see [editorial policy](references/editorial-policy.md). Follow the explicit user language, then saved preference/current run, then `zh-CN` default.
+
 ```text
 signaltrail --data-dir DATA_DIR --timezone Asia/Shanghai run-edition --edition morning --language zh-CN --profile-dir PROFILE_DIR
 ```
@@ -78,6 +80,7 @@ Never pass `--open-verification` during unattended work.
 
 ## 2. Enrich evidence
 
+Before freezing packets, seek primary or independent evidence for error-sensitive claims and resolve material cross-language conflicts; retain unresolved facts as unknown.
 Choose at most 12 item IDs by importance using `collection_coverage` and `enrichment_plan`; suggestions
 do not authorize worker browsing or change source order. After enrichment, inspect index
 `metadata.content_completion` and `content_attempts`. Keep gaps explicit, do not repeat exhausted or
@@ -97,6 +100,7 @@ Completed extraction is reused across index/context commit failures. Read the up
 
 ## 3. Write briefs
 
+Recheck factual sentences and analogies against bounded evidence; preserve qualifiers. See [news slide fact checks and narration guidance](references/news-slides.md).
 ```text
 signaltrail --data-dir DATA_DIR begin-authoring --run RUN.json
 ```
