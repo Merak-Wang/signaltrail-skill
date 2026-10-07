@@ -201,6 +201,22 @@ def get_edition_status(run_path: Path, data_dir: Path) -> dict[str, Any]:
             pending_steps.append("tail")
     if run.get("evaluation_requested") and run.get("evaluation", {}).get("status") != "completed":
         pending_steps.append("evaluation")
+    evaluation = run.get("evaluation", {})
+    scheduler = evaluation.get("scheduler", {}) if isinstance(evaluation, dict) else {}
+    if (
+        evaluation.get("status") != "completed"
+        and scheduler.get("backend") == "external"
+        and scheduler.get("status") == "awaiting_external"
+    ):
+        evaluation_action = {
+            "backend": "external",
+            "status": "awaiting_external",
+            "dossier_path": scheduler["dossier_path"],
+            "draft_path": scheduler["draft_path"],
+            "finalize_command": scheduler["finalize_command"],
+        }
+    else:
+        evaluation_action = None
     if slides_artifact.get("status") == "failed" and not (
         plan_path and plan_path.is_file()
     ):
@@ -268,6 +284,7 @@ def get_edition_status(run_path: Path, data_dir: Path) -> dict[str, Any]:
     report_status = run.get("status")
     return {"report_status": report_status, "delivery_complete": not pending_steps,
             "pending_steps": pending_steps, "slides": slides,
+            **({"evaluation": evaluation_action} if evaluation_action else {}),
             "tail_status": tail.get("status", "missing"),
             "report_path": str(report_path) if report_path else None}
 
@@ -730,6 +747,30 @@ def _schedule_evaluation_attempt(
         content_hash,
     )
     if preflight["status"] == "already_completed":
+        return evaluation
+
+    if run.get("evaluation_backend") == "external":
+        scheduler = evaluation.get("scheduler")
+        if isinstance(scheduler, dict) and scheduler.get("backend") == "external":
+            return evaluation
+        dossier_path = build_evaluation_dossier(
+            report_path, Path(str(artifacts["index_path"])), data_dir
+        )
+        draft_path = data_dir / "evaluations" / "drafts" / f"{report_id}.json"
+        evaluation["status"] = "pending"
+        evaluation["scheduler"] = {
+            "backend": "external",
+            "status": "awaiting_external",
+            "attempt": 1,
+            "max_attempts": 1,
+            "dossier_path": str(dossier_path),
+            "draft_path": str(draft_path),
+            "finalize_command": (
+                f'signaltrail --data-dir "{data_dir}" finalize-evaluation '
+                f'--report "{report_path}" --evaluation "{draft_path}"'
+                + (" --publish" if publish_notion else "")
+            ),
+        }
         return evaluation
 
     evaluation["status"] = "pending"
@@ -2107,6 +2148,7 @@ def finalize_edition(
     defer_tail: bool = False,
     evaluate: bool = False,
     slides_max_news: int | None = None,
+    evaluation_backend: str | None = None,
 ) -> Path:
     """处理：编译并校验写作草稿，创建不可变报告及本地投影，再登记可恢复发布状态。
     输入：
@@ -2121,6 +2163,7 @@ def finalize_edition(
     - ``defer_tail``：是否把 PDF、Notion 和独立评估移到可恢复的后台尾阶段。
     - ``evaluate``：仅在用户明确要求时开启质量评分；请求随本轮运行保留。
     - ``slides_max_news``：显式更换图文数量上限；省略时沿用运行清单中的值或默认 50。
+    - ``evaluation_backend``：选择评分后端；单独指定不会开启评分。
     输出：指向“编译并校验写作草稿，创建不可变报告及本地投影，
       再登记可恢复发布状态”所生成、定位或确认产物的本地路径。
     """
@@ -2141,8 +2184,14 @@ def finalize_edition(
     lock_timestamp = now_iso(timezone)
     with exclusive_lock(lock_path, _lock_payload(edition, lock_timestamp)):
         run = _reload_locked_run(run_path, run, data_dir)
-        if evaluate:
-            _update_run(run_path, run, RunStatus(run["status"]), evaluation_requested=True)
+        if evaluate or evaluation_backend:
+            _update_run(
+                run_path, run, RunStatus(run["status"]),
+                evaluation_requested=(
+                    True if evaluate else bool(run.get("evaluation_requested", False))
+                ),
+                evaluation_backend=evaluation_backend or run.get("evaluation_backend", "hermes"),
+            )
         evaluation_requested = bool(run.get("evaluation_requested", False))
         if run.get("status") in {
             RunStatus.COMPLETED,
@@ -2298,6 +2347,11 @@ def finalize_edition(
                 + (" --publish" if publish else "")
                 + (" --evaluate" if evaluation_requested else "")
                 + (
+                    " --evaluation-backend external"
+                    if run.get("evaluation_backend") == "external"
+                    else ""
+                )
+                + (
                     f' --notion-config "{notion_config}"'
                     if notion_config is not None
                     else ""
@@ -2422,6 +2476,7 @@ def complete_edition_tail(
     notion_config: Path | None = None,
     output_config: OutputConfig | None = None,
     evaluate: bool = False,
+    evaluation_backend: str | None = None,
 ) -> Path:
     """处理：在本地报告完成后补做 PDF、Notion 和独立评估调度。
     输入：
@@ -2431,6 +2486,7 @@ def complete_edition_tail(
     - ``notion_config``：可选 Notion 映射配置路径；提供时覆盖默认 configs/notion.yaml。
     - ``output_config``：本地 HTML、PDF、桌面交付和打开行为配置。
     - ``evaluate``：显式开启本轮质量评分；默认只完成交付，沿用已保存的评分请求。
+    - ``evaluation_backend``：选择评分后端；单独指定不会开启评分。
     输出：指向“在本地报告完成后补做 PDF、Notion 和独立评估调度”所生成、定位或确认产物的本地路径
       。
     """
@@ -2450,8 +2506,14 @@ def complete_edition_tail(
     lock_path = data_dir / "locks" / f"{date}-{edition}.lock"
     with exclusive_lock(lock_path, _lock_payload(edition, now_iso(timezone))):
         run = _reload_locked_run(run_path, run, data_dir)
-        if evaluate:
-            _update_run(run_path, run, RunStatus(run["status"]), evaluation_requested=True)
+        if evaluate or evaluation_backend:
+            _update_run(
+                run_path, run, RunStatus(run["status"]),
+                evaluation_requested=(
+                    True if evaluate else bool(run.get("evaluation_requested", False))
+                ),
+                evaluation_backend=evaluation_backend or run.get("evaluation_backend", "hermes"),
+            )
         evaluation_requested = bool(run.get("evaluation_requested", False))
         tail = dict(run.get("tail") or {})
         if tail.get("status") == "completed" and not (

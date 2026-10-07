@@ -205,7 +205,8 @@ def test_cli_exposes_two_stage_workflow():
     prepared = parser.parse_args(["run-edition", "--edition", "morning", "--language", "en"])
     enriched = parser.parse_args(["enrich-edition", "--run", "run.json"])
     finalized = parser.parse_args(
-        ["finalize-edition", "--run", "run.json", "--report", "draft.json"]
+        ["finalize-edition", "--run", "run.json", "--report", "draft.json",
+         "--evaluation-backend", "external"]
     )
     verification = parser.parse_args(["verify-pending", "--index", "index.json"])
     evaluation = parser.parse_args(
@@ -220,6 +221,7 @@ def test_cli_exposes_two_stage_workflow():
     assert verification.command == "verify-pending"
     assert evaluation.command == "finalize-evaluation"
     assert finalized.evaluate is False
+    assert finalized.evaluation_backend == "external"
     for command, required in (
         ("finalize-edition", ["--report", "draft.json"]),
         ("complete-edition-tail", []),
@@ -227,6 +229,9 @@ def test_cli_exposes_two_stage_workflow():
         arguments = [command, "--run", "run.json", *required]
         assert parser.parse_args(arguments).evaluate is False
         assert parser.parse_args([*arguments, "--evaluate"]).evaluate is True
+        assert parser.parse_args(
+            [*arguments, "--evaluation-backend", "external"]
+        ).evaluation_backend == "external"
     assert prepared.open_verification is False
     assert (
         parser.parse_args(

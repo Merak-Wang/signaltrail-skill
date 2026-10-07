@@ -30,6 +30,17 @@ def html_index_rows(html: str) -> tuple[str, list[dict[str, Any]]]:
     输出：“从公共 HTML 中惰性提取链接行，不执行任何脚本”得到的固定结构结果；
       返回位置依次对应 title、rows。
     """
+    _soup, title, rows = _html_index_document(html)
+    return title, rows
+
+
+def _html_index_document(
+    html: str,
+) -> tuple[BeautifulSoup, str, list[dict[str, Any]]]:
+    """处理：解析索引页一次并提取可见标题与文章链接。
+    输入：不可信的来源 HTML 文本；仅静态解析，不执行脚本。
+    输出：BeautifulSoup DOM、页面标题和有序文章链接行，供索引和挑战检查复用。
+    """
     soup = BeautifulSoup(html, "html.parser")
     title = soup.title.get_text(" ", strip=True) if soup.title else ""
     rows: list[dict[str, Any]] = []
@@ -104,7 +115,7 @@ def html_index_rows(html: str) -> tuple[str, list[dict[str, Any]]]:
                 "context": context,
             }
         )
-    return title, rows
+    return soup, title, rows
 
 
 async def _prefetch_one(
@@ -149,8 +160,16 @@ async def _prefetch_one(
 
     encoding = response.encoding or "utf-8"
     body = content.decode(encoding, errors="replace")
-    title, rows = html_index_rows(body)
-    challenge = classify_access_text(response.status_code, title, body[:30000])
+    soup, title, rows = _html_index_document(body)
+    challenge = classify_access_text(
+        response.status_code,
+        title,
+        soup.get_text(" ", strip=True)[:30000],
+        iframe_detected=bool(soup.select_one(
+            'iframe[src*="captcha"], iframe[src*="challenge"], '
+            'iframe[title*="challenge" i]'
+        )),
+    )
     if truncated:
         challenge["response_truncated"] = True
     if challenge["rate_limited"]:

@@ -35,6 +35,60 @@ def test_access_classifier_recognizes_verified_request_challenge_text():
     assert result["matched_text"] == "your request is being verified"
 
 
+def test_http_challenge_detection_ignores_captcha_script_when_article_is_visible(tmp_path):
+    config = load_config()
+    item = _item()
+    markup = (
+        '<script src="https://o.alicdn.com/captcha-frontend/AliyunCaptcha.js"></script>'
+        "<article><h1>Market update</h1><p>Stocks rose during the session.</p></article>"
+    )
+
+    _apply_http_document(
+        item, config.source_by_id(item["source_id"]), markup, item["url"], 200,
+        config, tmp_path,
+    )
+
+    assert item["content_status"] != ContentStatus.VERIFICATION_REQUIRED
+    assert "content_challenge" not in item["metadata"]
+
+
+def test_http_challenge_detection_keeps_captcha_iframe_signal(tmp_path):
+    config = load_config()
+    item = _item()
+    markup = (
+        "<article><h1>Market update</h1><p>Stocks rose during the session.</p>"
+        '<iframe src="/captcha/challenge"></iframe></article>'
+    )
+
+    _apply_http_document(
+        item, config.source_by_id(item["source_id"]), markup, item["url"], 200,
+        config, tmp_path,
+    )
+
+    assert item["content_status"] == ContentStatus.VERIFICATION_REQUIRED
+    assert item["metadata"]["content_challenge"]["iframe_detected"] is True
+
+
+def test_yicai_article_uses_specific_body_region_when_title_is_outside():
+    config = load_config()
+    source = config.source_by_id("yicai_economy")
+    markup = (
+        "<div class='title'><h1>Market records after chip shares rise</h1></div>"
+        "<div class='m-text'><p>U.S. stock indexes rose during the session, while "
+        "Treasury yields declined and oil prices edged higher.</p></div>"
+    )
+
+    document = extract_document(
+        BeautifulSoup(markup, "html.parser"),
+        source.content_selectors,
+        expected_title="Market records after chip shares rise",
+    )
+
+    assert document.status == ContentStatus.FULL_TEXT
+    assert document.selector == ".m-text"
+    assert document.quality["region"] == "specific"
+
+
 @pytest.mark.parametrize("attribute", ["property", "name"])
 def test_source_publication_date_uses_article_published_meta(attribute):
     soup = BeautifulSoup(

@@ -1,6 +1,6 @@
 # Usage
 
-**Status:** Verified · **Owner:** Repository maintainers · **Last verified:** 2026-09-23
+**Status:** Verified · **Owner:** Repository maintainers · **Last verified:** 2026-10-07
 
 Use this guide after the [quick start](../README.en.md). It covers local configuration,
 host setup, and where to find a finished report. [中文](zh-CN/usage.md)
@@ -167,6 +167,15 @@ Quality scoring is off by default. To request it for one edition, add `--evaluat
 ordinary finalization and PDF delivery create no evaluator task. Existing scores remain
 available. Unscored briefs stay outside the approved semantic cache, so future reports may
 need more fresh writing. Structural and evidence validation still run normally.
+
+The default evaluation backend is Hermes. A harness that will evaluate the dossier itself can
+also pass `--evaluation-backend external`; this records the backend without enabling evaluation
+by itself. With `--evaluate`, the tail creates the hash-bound dossier and `edition-status`
+returns its path, a draft path, and the exact `finalize-evaluation` command. The external
+evaluator reads the dossier and writes the draft, then runs that command. External mode does
+not schedule Hermes or create an evaluator usage task; completion is recorded only after the
+draft passes `finalize-evaluation`. External handoff has one attempt and is not automatically
+redispatched on recovery.
 
 ## Reports and recovery
 

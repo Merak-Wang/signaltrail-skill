@@ -188,7 +188,10 @@ def build_evaluation_dossier(
                 "evaluator_role": "independent",
                 "evaluated_report_id": report.get("report_id"),
                 "evaluated_content_hash": bound_content_hash,
-                "dimensions": "one unique row per dimensions entry",
+                "dimensions": (
+                    "one unique row per dimensions entry; each row requires id from dimensions, "
+                    "integer score (1-5), and target-language finding"
+                ),
                 "total_score": "sum of the nine integer scores",
                 "main_defects": "target-language string array",
                 "insufficient_evidence": "target-language string array",

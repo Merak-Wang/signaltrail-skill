@@ -21,6 +21,61 @@ from signaltrail.workflow import (
 from tests.report_helpers import load_sample_report, write_report_index
 
 
+def test_external_evaluation_builds_dossier_without_scheduling_hermes(monkeypatch, tmp_path):
+    data_dir = tmp_path / "data"
+    report_path = write_json(data_dir / "reports" / "2026-10-07" / "morning-r1.json", {
+        "report_id": "daily-2026-10-07-morning-r1", "date": "2026-10-07",
+        "edition": "morning",
+    })
+    index_path = write_json(data_dir / "indexes" / "2026-10-07" / "morning-r1.json", {})
+    run_path = write_json(data_dir / "runs" / "2026-10-07" / "morning.json", {
+        "evaluation_backend": "external",
+        "artifacts": {
+            "json_path": str(report_path), "index_path": str(index_path),
+            "report_id": "daily-2026-10-07-morning-r1", "content_hash": "hash-1",
+        },
+    })
+    dossier_path = data_dir / "evaluations" / "dossiers" / "dossier-v2.json"
+    monkeypatch.setattr(
+        workflow_module, "build_evaluation_dossier", lambda *_args: dossier_path,
+    )
+    monkeypatch.setattr(
+        workflow_module, "schedule_independent_evaluation",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("external evaluation must not schedule Hermes")
+        ),
+    )
+    run = read_json(run_path)
+    evaluation = workflow_module._schedule_evaluation_attempt(
+        run, run_path, data_dir, publish_notion=True,
+    )
+
+    assert evaluation["scheduler"] == {
+        "backend": "external", "status": "awaiting_external", "attempt": 1,
+        "max_attempts": 1, "dossier_path": str(dossier_path),
+        "draft_path": str(data_dir / "evaluations" / "drafts" / "daily-2026-10-07-morning-r1.json"),
+        "finalize_command": (
+            f'signaltrail --data-dir "{data_dir}" finalize-evaluation '
+            f'--report "{report_path}" --evaluation '
+            f'"{data_dir / "evaluations" / "drafts" / "daily-2026-10-07-morning-r1.json"}" '
+            "--publish"
+        ),
+    }
+    run["evaluation"] = evaluation
+    run["evaluation_requested"] = True
+    run["status"] = RunStatus.COMPLETED
+    write_json(run_path, run)
+    delivery = workflow_module.get_edition_status(run_path, data_dir)
+    assert delivery["evaluation"] == {
+        "backend": "external", "status": "awaiting_external",
+        "dossier_path": str(dossier_path),
+        "draft_path": str(data_dir / "evaluations" / "drafts" / "daily-2026-10-07-morning-r1.json"),
+        "finalize_command": evaluation["scheduler"]["finalize_command"],
+    }
+    assert "evaluation" in delivery["pending_steps"]
+    assert not (data_dir / "usage").exists()
+
+
 @pytest.mark.parametrize("operation", [
     "enrich", "begin", "analysis", "assemble", "adopt", "finalize", "tail", "batch", "metrics",
 ])
@@ -484,9 +539,11 @@ def test_verified_index_reopens_published_run_as_a_report_revision(monkeypatch, 
     assert "evaluation" not in run
 
 
-@pytest.mark.parametrize("evaluate", [False, True])
+@pytest.mark.parametrize(
+    ("evaluate", "backend"), [(False, None), (True, None), (True, "external")]
+)
 def test_deferred_tail_returns_after_html_then_finishes_requested_work(
-    monkeypatch, tmp_path: Path, evaluate
+    monkeypatch, tmp_path: Path, evaluate, backend
 ):
     data_dir = tmp_path / "data"
     date = "2026-07-25"
@@ -552,6 +609,12 @@ def test_deferred_tail_returns_after_html_then_finishes_requested_work(
             AssertionError("evaluation must wait for the tail worker")
         ),
     )
+    if backend == "external":
+        dossier_path = data_dir / "evaluations" / "dossiers" / "dossier-v2.json"
+        monkeypatch.setattr(
+            "signaltrail.workflow.build_evaluation_dossier",
+            lambda *_args: write_json(dossier_path, {"report_id": "bound-report"}),
+        )
 
     finalize_edition(
         run_path,
@@ -560,6 +623,7 @@ def test_deferred_tail_returns_after_html_then_finishes_requested_work(
         publish=True,
         defer_tail=True,
         evaluate=evaluate,
+        evaluation_backend=backend,
         output_config=OutputConfig(formats=["html", "pdf"]),
     )
 
@@ -572,6 +636,9 @@ def test_deferred_tail_returns_after_html_then_finishes_requested_work(
     else:
         assert run["evaluation"]["status"] == "not_requested"
     assert ("--evaluate" in run["tail"]["command"]) is evaluate
+    assert ("--evaluation-backend external" in run["tail"]["command"]) is (
+        backend == "external"
+    )
     assert run["artifacts"]["requested_formats"] == ["html"]
     assert "--publish" in run["tail"]["command"]
     assert run["tail"]["command"].startswith("signaltrail --data-dir ")
@@ -607,7 +674,24 @@ def test_deferred_tail_returns_after_html_then_finishes_requested_work(
     assert run["tail"]["status"] == "completed"
     assert run["publication"]["page_id"] == "notion-page"
     if evaluate:
-        assert run["evaluation"]["scheduler"]["status"] == "scheduled"
+        if backend == "external":
+            assert run["evaluation"]["scheduler"]["status"] == "awaiting_external"
+            assert run["evaluation"]["scheduler"]["dossier_path"] == str(dossier_path)
+            assert run["evaluation"]["scheduler"]["draft_path"].endswith(
+                "daily-2026-07-25-morning-r1.json"
+            )
+            delivery = workflow_module.get_edition_status(run_path, data_dir)
+            assert delivery["evaluation"]["status"] == "awaiting_external"
+            assert "evaluation" in delivery["pending_steps"]
+            assert not (data_dir / "usage").exists()
+            completed_run = read_json(run_path)
+            completed_run["evaluation"]["status"] = "completed"
+            write_json(run_path, completed_run)
+            completed_delivery = workflow_module.get_edition_status(run_path, data_dir)
+            assert "evaluation" not in completed_delivery["pending_steps"]
+            assert "evaluation" not in completed_delivery
+        else:
+            assert run["evaluation"]["scheduler"]["status"] == "scheduled"
     else:
         assert run["evaluation"]["status"] == "not_requested"
         assert "scheduler" not in run["evaluation"]

@@ -1,6 +1,6 @@
 # 使用说明
 
-**状态：** 已验证 · **负责人：** 仓库维护者 · **最后验证：** 2026-09-23
+**状态：** 已验证 · **负责人：** 仓库维护者 · **最后验证：** 2026-10-07
 
 完成[快速开始](../../README.md)后，用本文配置本地运行、宿主接入和报告目录。
 [English](../usage.md)
@@ -144,6 +144,12 @@ signaltrail-hermes run --ledger DATA_DIR --hermes-python HERMES_PYTHON --prompt-
 `--evaluate`，请求随本轮运行保留，供后台收尾和恢复使用。普通定稿和 PDF 交付不会创建评分任务。
 已有评分继续保留；未评分摘要不进入已批准的语义缓存，因此后续日报可能需要增加重新写作量。
 结构和证据校验仍正常运行。
+
+默认评估后端为 Hermes。由当前 harness 自行评估时，可额外传 `--evaluation-backend external`；
+单独指定后端不会开启评估。与 `--evaluate` 一起使用时，tail 会生成绑定报告哈希的 dossier，
+`edition-status` 会返回 dossier 路径、草稿路径和精确的 `finalize-evaluation` 命令。外部评估器
+只读 dossier、写入指定草稿，再执行该命令。external 模式不派发 Hermes，也不创建评估器用量任务；
+只有草稿通过 `finalize-evaluation` 校验后才记为完成。外部交接只尝试派发一次，恢复时不会自动重复派发。
 
 ## 报告与恢复
 

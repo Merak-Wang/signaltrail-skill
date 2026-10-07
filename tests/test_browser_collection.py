@@ -113,6 +113,110 @@ def test_browser_wait_uses_readiness_and_honors_explicit_delay(selector, wait_ms
     assert page.fixed_waits == waits
 
 
+@pytest.mark.parametrize("api_status, fail_title", [(200, False), (503, False), (200, True)])
+def test_seed_api_body_is_consumed_from_initial_navigation(api_status, fail_title):
+    payload = {
+        "sub_article_list": [
+            {
+                "ArticleMeta": {
+                    "ArticleID": "seed-1",
+                    "ExternalLinks": [{"Link": "https://arxiv.org/abs/1234"}],
+                },
+                "ArticleSubContentEn": {
+                    "Title": "A detailed research paper",
+                    "Abstract": "An abstract",
+                },
+            }
+        ]
+    }
+
+    class ApiResponse:
+        url = "https://seed.bytedance.com/get_article_list_v2"
+        ok = api_status < 400
+        status = api_status
+
+        def __init__(self, page):
+            self.page = page
+            self.read_started = False
+
+        async def json(self):
+            self.read_started = True
+            if fail_title:
+                await asyncio.sleep(0)
+                raise RuntimeError("response body read failed")
+            if self.page.navigated_away:
+                raise RuntimeError("response body unavailable after navigation")
+            return payload
+
+    class SeedPage(Page):
+        def __init__(self):
+            super().__init__()
+            self.url = "https://seed.bytedance.com/zh/public_papers"
+            self.listeners = []
+            self.navigated_away = False
+            self.api_response = ApiResponse(self)
+            self.reload_calls = 0
+
+        def on(self, event, listener):
+            assert event == "response"
+            self.listeners.append(listener)
+
+        def remove_listener(self, event, listener):
+            assert event == "response"
+            self.listeners.remove(listener)
+
+        async def goto(self, url, **kwargs):
+            self.url = url
+            for listener in self.listeners:
+                listener(self.api_response)
+            await asyncio.sleep(0)
+            return SimpleNamespace(status=200)
+
+        async def title(self):
+            if fail_title:
+                raise RuntimeError("page metadata failed")
+            return await super().title()
+
+        async def reload(self, **kwargs):
+            self.reload_calls += 1
+            self.navigated_away = True
+
+    source = SourceConfig(
+        id="seed",
+        name="Seed",
+        url="https://seed.bytedance.com/zh/public_papers",
+        mode="seed_papers",
+    )
+    config = AppConfig(timezone="UTC", browser=BrowserConfig(), sources=[source])
+    page = SeedPage()
+
+    async def run():
+        loop = asyncio.get_running_loop()
+        unhandled = []
+        loop.set_exception_handler(lambda _loop, details: unhandled.append(details))
+        result = await collect_browser_page(Context(page), source, config)
+        await asyncio.sleep(0)
+        return result, unhandled
+
+    result, unhandled = asyncio.run(run())
+
+    assert page.reload_calls == 0
+    assert page.api_response.read_started is (api_status == 200 or fail_title)
+    assert page.listeners == []
+    assert unhandled == []
+    if fail_title:
+        assert result.status == "failed"
+        assert result.error == "RuntimeError: page metadata failed"
+    elif api_status == 200:
+        assert result.http_status == 200
+        assert result.status == "success"
+        assert result.items[0].title == "A detailed research paper"
+    else:
+        assert result.http_status == 503
+        assert result.status == "failed"
+        assert result.error == "RuntimeError: ByteDance Seed papers API returned HTTP 503"
+
+
 def test_browser_pool_owns_one_context_and_is_fair_and_ordered(monkeypatch, tmp_path):
     source = SourceConfig(id="busy0", name="Busy", url="https://busy.example/0")
     sources = [replace(source, id=f"busy{i}", url=f"https://busy.example/{i}") for i in range(3)]

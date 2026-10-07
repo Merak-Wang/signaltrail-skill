@@ -71,16 +71,6 @@ async def _candidates(page: Page, source: SourceConfig, result: SourceResult) ->
     """
     mode = source.adapter_name
     observed = result.collected_at
-    if mode == "seed_papers":
-        async with page.expect_response(
-            lambda response: "get_article_list_v2" in response.url, timeout=30_000
-        ) as pending:
-            await page.reload(wait_until="domcontentloaded", timeout=45_000)
-        response = await pending.value
-        result.http_status = response.status
-        if not response.ok:
-            raise RuntimeError(f"ByteDance Seed papers API returned HTTP {response.status}")
-        return seed_items_from_payload(await response.json(), source, observed)
     if mode == "weibo_api":
         return weibo_items_from_payload(
             json.loads(await page.locator("body").inner_text()),
@@ -131,8 +121,36 @@ async def collect_browser_page(
         collected_at=now_iso(config.timezone),
     )
     page = None
+    seed_response_future: asyncio.Future[asyncio.Task[tuple[int, bool, Any]]] | None = None
+    seed_listener = None
     try:
         page = await context.new_page()
+        if source.adapter_name == "seed_papers":
+            seed_response_future = asyncio.get_running_loop().create_future()
+
+            async def read_seed_response(response) -> tuple[int, bool, Any]:
+                """处理：立即读取 API 响应体，避免页面导航后载荷失效。
+                输入：Playwright 捕获的 Seed API 响应对象。
+                输出：HTTP 状态、成功标记及成功响应的 JSON 载荷。
+                """
+                if not response.ok:
+                    return response.status, False, None
+                return response.status, True, await response.json()
+
+            def capture_seed_response(response) -> None:
+                """处理：首次导航命中 Seed API 时启动唯一读取任务。
+                输入：当前页面收到的 Playwright 网络响应。
+                输出：匹配响应的读取任务写入 Future，其他响应不改变状态。
+                """
+                if (
+                    "get_article_list_v2" in response.url
+                    and seed_response_future is not None
+                    and not seed_response_future.done()
+                ):
+                    seed_response_future.set_result(asyncio.create_task(read_seed_response(response)))
+
+            seed_listener = capture_seed_response
+            page.on("response", seed_listener)
         response = await page.goto(
             source.url, wait_until="domcontentloaded", timeout=config.browser.navigation_timeout_ms
         )
@@ -157,7 +175,16 @@ async def collect_browser_page(
         elif result.http_status is not None and result.http_status >= 400:
             result.status = SourceStatus.FAILED
         else:
-            result.items = await _candidates(page, source, result)
+            if seed_response_future is not None:
+                response_task = await asyncio.wait_for(seed_response_future, timeout=30)
+                result.http_status, ok, payload = await response_task
+                if not ok:
+                    raise RuntimeError(
+                        f"ByteDance Seed papers API returned HTTP {result.http_status}"
+                    )
+                result.items = seed_items_from_payload(payload, source, result.collected_at)
+            else:
+                result.items = await _candidates(page, source, result)
             result.status = SourceStatus.SUCCESS if result.items else SourceStatus.NO_ITEMS
         if result.http_status is not None and result.http_status >= 400:
             result.error = f"HTTP {result.http_status}"
@@ -170,6 +197,19 @@ async def collect_browser_page(
         )
         result.error = f"{type(exc).__name__}: {exc}"
     finally:
+        if seed_listener is not None and page is not None:
+            with contextlib.suppress(Exception):
+                page.remove_listener("response", seed_listener)
+        if seed_response_future is not None:
+            if not seed_response_future.done():
+                seed_response_future.cancel()
+            else:
+                with contextlib.suppress(asyncio.CancelledError):
+                    response_task = seed_response_future.result()
+                    if not response_task.done():
+                        response_task.cancel()
+                    with contextlib.suppress(asyncio.CancelledError, Exception):
+                        await response_task
         if page is not None:
             result.final_url = page.url
             with contextlib.suppress(Exception):

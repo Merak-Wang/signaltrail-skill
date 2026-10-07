@@ -374,7 +374,15 @@ def _apply_http_document(
         item["metadata"] = metadata
     soup = BeautifulSoup(body_html, "html.parser")
     page_title = soup.title.get_text(" ", strip=True) if soup.title else ""
-    challenge = classify_access_text(http_status, page_title, body_html[:30000])
+    challenge = classify_access_text(
+        http_status,
+        page_title,
+        soup.get_text(" ", strip=True)[:30000],
+        iframe_detected=bool(soup.select_one(
+            'iframe[src*="captcha"], iframe[src*="challenge"], '
+            'iframe[title*="challenge" i]'
+        )),
+    )
     metadata["content_http_status"] = http_status
     metadata["content_http_final_url"] = final_url
     metadata["content_acquisition"] = "http"

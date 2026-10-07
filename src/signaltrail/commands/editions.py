@@ -219,6 +219,7 @@ def handle_finalize_edition(args: argparse.Namespace, context: CommandContext) -
         defer_tail=args.defer_tail,
         evaluate=args.evaluate,
         slides_max_news=args.slides_max_news,
+        evaluation_backend=args.evaluation_backend,
     )
     payload = read_json_object(output, "Run manifest")
     payload["delivery"] = get_edition_status(args.run, data_dir)
@@ -242,6 +243,7 @@ def handle_complete_edition_tail(args: argparse.Namespace, context: CommandConte
         notion_config=args.notion_config,
         output_config=config.output,
         evaluate=args.evaluate,
+        evaluation_backend=args.evaluation_backend,
     )
     payload = read_json_object(output, "Run manifest")
     payload["delivery"] = get_edition_status(args.run, data_dir)

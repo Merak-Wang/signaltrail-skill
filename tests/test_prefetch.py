@@ -247,6 +247,24 @@ def test_prefetch_stops_stream_at_limit_and_marks_partial(monkeypatch, tmp_path)
     assert not page_needs_browser(result)
 
 
+def test_prefetch_keeps_public_index_with_captcha_script_as_success(tmp_path):
+    source = _source()
+    config = AppConfig(timezone="UTC", browser=BrowserConfig(), sources=[source])
+    page = (
+        '<script src="https://o.alicdn.com/captcha-frontend/AliyunCaptcha.js"></script>'
+        '<article><a href="/articles/one">A detailed public market headline</a></article>'
+    )
+    results = asyncio.run(_prefetch_all(
+        [source], config, tmp_path,
+        transport=httpx.MockTransport(lambda _request: httpx.Response(200, text=page)),
+    ))
+
+    result = results[(source.id, source.url)]
+    assert result.status == SourceStatus.SUCCESS
+    assert len(result.items) == 1
+    assert result.challenge["required"] is False
+
+
 def test_busy_domain_does_not_starve_other_domains(tmp_path):
     async def run():
         other_started = asyncio.Event()

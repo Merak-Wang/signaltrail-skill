@@ -53,6 +53,35 @@ def test_known_feeds_run_while_unknown_source_is_discovering(tmp_path):
     assert discovery["unknown"]["status"] == "unsupported"
 
 
+def test_feed_discovery_ignores_captcha_script_in_public_html_page(tmp_path):
+    config = _config()
+    config.monitor.auto_discover_feeds = True
+    source = SourceConfig(id="discovery", name="Discovery", url="https://news.example/")
+    page = (
+        '<html><head><script src="https://o.alicdn.com/captcha-frontend/AliyunCaptcha.js">'
+        "</script><link rel='alternate' type='application/rss+xml' href='/rss.xml'>"
+        "</head><body><h1>Latest public headlines</h1></body></html>"
+    )
+
+    async def handler(request):
+        if request.url.path == "/":
+            return httpx.Response(200, text=page, headers={"content-type": "text/html"})
+        return httpx.Response(200, text=(
+            "<rss><channel><item><title>A public report with useful detail</title>"
+            "<link>https://news.example/report</link></item></channel></rss>"
+        ), headers={"content-type": "application/rss+xml"})
+
+    feeds, discovery, _ = asyncio.run(_feed_phase(
+        [source], config, tmp_path, force=True,
+        checked_at="2026-10-07T10:00:00+08:00",
+        transport=httpx.MockTransport(handler),
+    ))
+
+    assert discovery[source.id]["status"] == SourceStatus.SUCCESS
+    assert discovery[source.id]["feed_urls"] == ["https://news.example/rss.xml"]
+    assert feeds[source.id][0].items
+
+
 def test_feed_discovery_respects_rate_limit_and_retry_after(tmp_path):
     config = _config()
     config.sources[0].feed_urls = []

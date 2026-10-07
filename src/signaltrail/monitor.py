@@ -10,6 +10,7 @@ from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
 
 import httpx
+from bs4 import BeautifulSoup
 
 from .access import classify_access_text, read_bounded_response
 from .clustering import cluster_articles
@@ -149,7 +150,22 @@ async def _discover_one(
                 response, config.monitor.max_feed_bytes
             )
         text = content.decode(response.encoding or "utf-8", errors="replace")
-        challenge = classify_access_text(response.status_code, "", text[:30000])
+        content_type = response.headers.get("content-type", "").lower()
+        is_html = "html" in content_type or "<html" in text[:1024].lower()
+        soup = BeautifulSoup(text, "html.parser") if is_html else None
+        challenge_text = (
+            soup.get_text(" ", strip=True) if soup else text
+        )
+        iframe_detected = bool(soup and soup.select_one(
+            'iframe[src*="captcha"], iframe[src*="challenge"], '
+            'iframe[title*="challenge" i]'
+        ))
+        challenge = classify_access_text(
+            response.status_code,
+            "",
+            challenge_text[:30000],
+            iframe_detected=iframe_detected,
+        )
         if challenge.get("rate_limited"):
             return (
                 [], SourceStatus.RATE_LIMITED, "Feed discovery was rate limited",

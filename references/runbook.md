@@ -3,7 +3,7 @@
 **权威语言：** 中文（单语运行参考）
 **负责人：** 仓库维护者
 **状态：** 已验证运行参考
-**最后对照代码：** 2026-09-23
+**最后对照代码：** 2026-10-07
 **上级地图：** [`ARCHITECTURE.md`](../ARCHITECTURE.md)
 
 ## 调度与预算
@@ -37,7 +37,7 @@ HTML 先交付（仅报告已保存） -> tail 与图文讲稿并行 -> 等待 t
 
 质量评分默认关闭，仅当用户明确要求时在 `finalize-edition` 或 `complete-edition-tail` 加 `--evaluate`。请求写入本轮 `evaluation_requested` 并在恢复时沿用；未请求时不创建 evaluator、dossier 或评分用量任务，run 记为 `not_requested`。结构、引用和文件校验正常执行。以下评分调度与重试步骤仅适用于已明确请求的运行。
 
-写作与评估保持角色隔离。`finalize-edition --defer-tail` 在不可变 JSON/Markdown 和 HTML 就绪后返回；这表示报告已保存，允许先交付 HTML，但不表示整期交付完成。authoring coordinator 立即交付 `artifacts.html_path`，再把 run 中的 `tail.command` 放进后台 terminal。`complete-edition-tail` 生成 PDF、按请求发布 Notion，并先用当前 report/hash 预检已完成评估。图文讲稿写作可与该尾任务并行；渲染会更新日报 HTML，因此必须等尾任务退出后再运行 `slides render`。通过 `signaltrail-hermes` 运行时，评估由带独立用量任务的本地一次性进程执行；普通入口保留 Hermes Cron 调度。两条路径都先对账现有任务；只有既有 job 明确失败或超过停滞窗口时才允许第二次且最后一次尝试，unknown/对账失败不会重复调度。independent evaluator 的输入只有 Python 生成的不可变 hash-bound dossier，输出是供 `finalize-evaluation` 接收的独立 JSON；它禁止修改报告。评估完成后刷新 HTML、桌面副本和归档索引，但同一 report revision 已存在的 PDF 直接复用；PDF 缺失时才补建，不能为加入评分重复渲染整份图片密集文档。目标日报显式使用了 `--publish` 时，调度合同才给评估命令追加 `--publish`。旧 Cron 调度需要 Gateway 保持可用；本地计量入口及覆盖限制见 [用量说明](llm-usage.md)。其他 harness 必须自行调度同一 dossier 并调用 `finalize-evaluation`，否则 tail 会如实保留为 `partial`。tail 或调度失败只写入 run，不撤回本地日报。晚间生成读取当天晨报和已存在的晨报评估；晨报评估尚未完成时按未评估历史处理。
+写作与评估保持角色隔离。`finalize-edition --defer-tail` 在不可变 JSON/Markdown 和 HTML 就绪后返回；这表示报告已保存，允许先交付 HTML，但不表示整期交付完成。authoring coordinator 立即交付 `artifacts.html_path`，再把 run 中的 `tail.command` 放进后台 terminal。`complete-edition-tail` 生成 PDF、按请求发布 Notion，并先用当前 report/hash 预检已完成评估。图文讲稿写作可与该尾任务并行；渲染会更新日报 HTML，因此必须等尾任务退出后再运行 `slides render`。通过 `signaltrail-hermes` 运行时，评估由带独立用量任务的本地一次性进程执行；普通入口保留 Hermes Cron 调度。两条 Hermes 路径都先对账现有任务；只有既有 job 明确失败或超过停滞窗口时才允许第二次且最后一次尝试，unknown/对账失败不会重复调度。若当前 harness 自行评估，在 `finalize-edition` 或 `complete-edition-tail` 同时传 `--evaluate --evaluation-backend external`。tail 完成后，`edition-status` 会提供 dossier 路径和精确 `finalize-evaluation` 命令；外部评估器只读 Python 生成的不可变 hash-bound dossier，把独立 JSON 写到命令指定路径，再运行该命令。external 模式不派发 Hermes，也不创建虚假 evaluator usage task；在 finalize 命令验证并保存前，评估仍是 pending。评估完成后刷新 HTML、桌面副本和归档索引；同一 report revision 已存在的 PDF 直接复用，PDF 缺失时才补建，不能为加入评分重复渲染图片密集文档。目标日报显式使用了 `--publish` 时，返回的评估命令才追加 `--publish`。旧 Cron 调度需要 Gateway 保持可用；本地计量入口及覆盖限制见 [用量说明](llm-usage.md)。tail 或调度失败只写入 run，不撤回本地日报。晚间生成读取当天晨报和已存在的晨报评估；晨报评估尚未完成时按未评估历史处理。
 
 ## Harness 与用量接入
 
@@ -78,6 +78,8 @@ signaltrail --data-dir DATA_DIR edition-status --run RUN.json --require-complete
 host scheduler、Gateway 和其他无人值守会话不得传 `--open-verification`。`--unattended` 保留为默认非交互行为的兼容参数。
 
 ## 数据根与耗时诊断
+
+若 Windows 检查点写入时报 `WinError 6`，但普通文件写入成功，先停止当前运行并保留运行清单与检查点。不要把 `replace`/重命名改成复制后删除，也不要把该检查点当作已提交。需要继续生成时，可显式用 `--data-dir` 指向已有的工作区数据副本，在该副本内保持唯一数据根；这不会回写原 canonical 数据根。要把副本正式迁回，必须另行执行有记录的显式迁移，不能悄悄混用两个数据根。
 
 所有命令必须使用同一个 `DATA_DIR`。`data-root status` 显示当前绑定；只有确认迁移时才执行 `data-root adopt`。run 内的 `data_root` 与 artifact 路径必须一致，跨根引用在读取前失败。run 的 `artifacts.collection_metrics` 记录来源、候选、状态分布以及监控刷新/复用；`artifacts.enrichment.pipeline` 记录正文缓存、HTTP 提取、Edge 回退及各阶段耗时；报告保存结果的 `save_metrics` 区分编译校验、媒体、持久化、本地投影和状态更新。
 

@@ -129,10 +129,7 @@ signaltrail --data-dir DATA_DIR authoring-status --run RUN.json
 signaltrail --data-dir DATA_DIR prepare-analysis --run RUN.json
 ```
 
-Record only metrics actually exposed by the host. `prepare-analysis` can recover an
-authorized valid draft whose receipt is missing; inspect `recovered_batches` before
-treating it as absent. Cache reuse and drafts must stay within ordered
-`brief_plan.default_item_ids`, never filling gaps with old items outside the plan.
+Record only metrics actually exposed by the host. `prepare-analysis` can recover an authorized valid draft whose receipt is missing; inspect `recovered_batches` before treating it as absent. Cache reuse and drafts must stay within ordered `brief_plan.default_item_ids`, never filling gaps with old items outside the plan.
 
 Use `--allow-degraded` only when `deadline_exceeded: true` and batches remain missing.
 Reduce coverage only for their assigned sources; completed sources retain their targets.
@@ -144,7 +141,9 @@ Do not describe an authoring failure as a collection failure.
 Read the compact analysis packet. Follow its `output_schema`, event count and language;
 omit `python_owned_output_fields`. Produce geopolitics, AI/technology, markets, and one
 cross-perspective synthesis from the authorized evidence. Keep claims attributable and
-TL;DR text useful to readers. Python owns the stable analysis IDs. At most one
+TL;DR text useful to readers. Check each full claim against the cited evidence; if evidence
+does not support it, remove or narrow the claim instead of only swapping citation IDs.
+Python owns the stable analysis IDs. At most one
 budget-approved validation repair is allowed.
 
 ```text
@@ -158,7 +157,8 @@ signaltrail --data-dir DATA_DIR validate-report DRAFT.json --run RUN.json
 signaltrail --data-dir DATA_DIR finalize-edition --run RUN.json --report DRAFT.json --defer-tail
 ```
 
-Finalize only with zero validation errors. Add `--publish` only for requested Notion
+Finalize only with zero validation errors. Structural validation does not establish factual
+accuracy; manually check claims and citations against the complete evidence. Add `--publish` only for requested Notion
 delivery. Return `artifacts.html_path` and `artifacts.desktop_html_path` as soon as the report is saved. This means **report saved**, not **edition delivery complete**. Finalization also prepares the default slide plan and packets from the saved report and index; use the exact paths in `artifacts.slides.plan_path` and `artifacts.slides.packet_paths`. Local JSON/Markdown is authoritative; HTML/PDF is rebuildable.
 
 ## 6. Finish the visual edition and final delivery
@@ -185,12 +185,10 @@ signaltrail --data-dir DATA_DIR edition-status --run RUN.json --require-complete
 
 Use this dynamic gate as the source of truth; do not infer completion from `run.status`, a stale `artifacts.slides.status`, or the tail alone. It must report `delivery_complete: true`, `pending_steps: []`, and `slides.status: rendered`. If it remains false, resolve `pending_steps` or report them as missing; never describe the edition as complete. The saved report and its HTML can already be delivered as a partial handoff, clearly labeled **report saved; edition delivery pending**.
 
-The tail creates PDF and retries requested Notion delivery. Scoring requires explicit `--evaluate`, retained during recovery. The evaluator reads an immutable hash-bound dossier, prevents duplicate work, and allows at most two attempts; tail failures stay `partial` without retracting reports.
+The tail creates PDF and retries requested Notion delivery. Scoring requires explicit `--evaluate`, retained during recovery. The default backend is Hermes. When the current harness must perform evaluation itself, pass `--evaluation-backend external` with `--evaluate` to `finalize-edition` or `complete-edition-tail`. After the tail, `edition-status` returns `evaluation.status: awaiting_external`, the immutable hash-bound dossier path, and an exact `finalize-evaluation` command. Have the external evaluator read only that dossier, write its JSON to the command's `--evaluation` path, then run the command; each dimension row needs `id`, integer `score` (1–5), and target-language `finding`. This path does not schedule Hermes or create an evaluator usage task; scoring remains pending until `finalize-evaluation` validates and saves the result.
 
-Check `edition-status --run RUN.json --require-complete`, report content, receipts and requested evaluation; `run.status` describes only saved-report lifecycle. Complete every slide batch in metered and unmetered runs. Seal metered tasks, including failures, after workers and imports finish. Partial observations cannot establish exact acceptance and missing coverage stays unknown. Use usage task summaries for whole-run totals; Hermes delegation `input_tokens` includes cache and covers child calls only. Report uncached input, cache reads, output and host totals separately; missing cost stays unknown. Summaries remain provisional until the launcher seals each task after return.
-Finalization makes no model call for slides. If preparation failed, inspect `artifacts.slides.error`
-and retry `finalize-edition --run RUN.json --report SAVED_REPORT.json --defer-tail` to register the
-plan again; standalone `slides prepare` remains available for independent use.
+Check `edition-status --run RUN.json --require-complete`, report content, receipts and requested evaluation; `run.status` describes only saved-report lifecycle. If independent evaluation finds unsupported facts, preserve the saved report and create a corrected immutable revision through the normal workflow, then evaluate the new revision. Never edit the old report in place or treat its evaluation as applying to the new revision. Complete every slide batch in metered and unmetered runs. Seal metered tasks, including failures, after workers and imports finish. Partial observations cannot establish exact acceptance and missing coverage stays unknown. Use usage task summaries for whole-run totals; Hermes delegation `input_tokens` includes cache and covers child calls only. Report uncached input, cache reads, output and host totals separately; missing cost stays unknown. Summaries remain provisional until the launcher seals each task after return.
+Finalization makes no model call for slides. If preparation failed, inspect `artifacts.slides.error` and retry `finalize-edition --run RUN.json --report SAVED_REPORT.json --defer-tail` to register the plan again; standalone `slides prepare` remains available for independent use.
 
 ## Experimental explainers after a saved report
 

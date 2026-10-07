@@ -343,6 +343,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--evaluate", action="store_true",
         help="Explicitly request independent quality scoring (off by default)",
     )
+    finalize.add_argument(
+        "--evaluation-backend", choices=("hermes", "external"),
+        help="Use an external agent and expose its dossier instead of scheduling Hermes",
+    )
 
     tail = sub.add_parser(
         "complete-edition-tail",
@@ -354,6 +358,10 @@ def build_parser() -> argparse.ArgumentParser:
     tail.add_argument(
         "--evaluate", action="store_true",
         help="Explicitly request independent quality scoring (off by default)",
+    )
+    tail.add_argument(
+        "--evaluation-backend", choices=("hermes", "external"),
+        help="Use an external agent and expose its dossier instead of scheduling Hermes",
     )
 
     edition_status = sub.add_parser(
