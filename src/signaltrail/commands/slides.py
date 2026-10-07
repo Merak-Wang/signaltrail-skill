@@ -15,19 +15,23 @@ def add_slides_parser(sub: argparse._SubParsersAction) -> None:
     输入：主命令树；筛选与预算选项仅作用于独立图文产物。
     输出：slides 子命令，不改变既有日报命令的参数与默认输出。
     """
-    parser = sub.add_parser("slides", help="Build animated HTML news slides from a saved report")
+    parser = sub.add_parser(
+        "slides", help="Build animated HTML news slides from an index or report"
+    )
     stages = parser.add_subparsers(dest="action", required=True)
     prepare = stages.add_parser(
-        "prepare", help="Select report news by importance and split bounded batches"
+        "prepare", help="Select indexed or report news and split bounded batches"
     )
-    prepare.add_argument("--report", type=Path, required=True)
+    prepare.add_argument("--report", type=Path)
     prepare.add_argument("--index", type=Path, required=True)
+    prepare.add_argument("--language", choices=("zh-CN", "en"))
+    prepare.add_argument("--reuse-plan", type=Path)
     prepare.add_argument("--item-id", action="append")
     prepare.add_argument("--min-importance", type=int, default=0,
-                         help="Optional brief score cutoff; default includes all report news")
+                         help="Optional importance cutoff; index mode requires supplied scores")
     prepare.add_argument("--max-news", type=int, default=50,
-                         help="Maximum report stories to author by importance (default: 50)")
-    prepare.add_argument("--batch-size", type=int, default=4)
+                         help="Maximum stories by report importance or index rank (default: 50)")
+    prepare.add_argument("--batch-size", type=int, default=5)
     prepare.add_argument("--max-input-tokens", type=int, default=12000)
     prepare.add_argument("--max-output-tokens", type=int, default=4000)
     submit = stages.add_parser("submit", help="Accept and reuse one authored batch")
@@ -51,6 +55,9 @@ def handle_slides(args: argparse.Namespace, context: CommandContext) -> int:
             case "prepare":
                 result = prepare_slides(
                     args.report, args.index, context.data_dir,
+                    language=args.language or (context.config.output.language
+                                               if args.report is None else None),
+                    reuse_plan=args.reuse_plan,
                     min_importance=args.min_importance, item_ids=args.item_id,
                     max_news=args.max_news,
                     batch_size=args.batch_size, max_input_tokens=args.max_input_tokens,

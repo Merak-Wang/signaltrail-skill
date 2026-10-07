@@ -20,25 +20,17 @@ BUILD = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(BUILD)
 
 
-def test_skill_metadata_matches_hermes_and_agent_skill_contract():
+def test_skill_metadata_uses_generic_agent_skill_contract():
     metadata = BUILD.parse_frontmatter(ROOT / "SKILL.md")
-    hermes = metadata["metadata"]["hermes"]
     body = (ROOT / "SKILL.md").read_text(encoding="utf-8").split("\n---\n", 1)[1]
 
     assert metadata["name"] == "signaltrail"
     assert metadata["description"].startswith("Use when ")
     assert len(metadata["description"]) <= 1024
     project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
-    assert metadata["version"] == project["project"]["version"] == __version__
-    assert metadata["author"] == "Wang Mingfeng"
-    assert metadata["license"] == "MIT"
-    assert metadata["platforms"] == ["windows", "macos", "linux"]
-    assert hermes["category"] == "research"
-    assert hermes["requires_toolsets"] == ["terminal", "delegation"]
-    assert "version" not in hermes
-    assert "author" not in hermes
-    assert "platforms" not in hermes
-    assert "required_environment_variables" in metadata
+    assert BUILD.package_version(ROOT) == project["project"]["version"] == __version__
+    assert "hermes" not in metadata.get("metadata", {})
+    assert "Notion" in body and "optional" in body
     assert len(body.splitlines()) < 220
 
 

@@ -20,6 +20,8 @@ Python owns collection, state, validation, revisions, and publishing.
 - Versioned JSON and Markdown are authoritative. HTML, PDF, and Notion are projections.
   Never overwrite a report revision; use typed statuses and collision-safe atomic writes.
 - Never commit runtime data, secrets, cookies, browser profiles, authenticated HTML, or account screenshots.
+- For cleanup of user or workspace files and directories, use the OS recycle bin. If that fails or is unavailable,
+  leave the files in place and report it; never fall back to permanent deletion.
 
 When records disagree, follow schemas, enums, validators, and persistence code; then behavior tests;
 then the report contract and `SKILL.md`; then architecture, references, and user documentation.
@@ -64,4 +66,4 @@ Update English engineering docs and their `docs/zh-CN/` mirrors together. Keep r
 [development guide](docs/development.md); known gaps belong in the
 [technical-debt tracker](docs/exec-plans/tech-debt-tracker.md).
 
-[中文](docs/zh-CN/AGENTS.md)
+[中文](docs/zh-CN/agent-instructions.md)

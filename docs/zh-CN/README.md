@@ -9,9 +9,9 @@
 | [使用说明](usage.md) | 安装、数据路径、语言、来源、完整计量和恢复 |
 | [开发指南](development.md) | 测试选择、命名、代码与文档约定 |
 | [架构](ARCHITECTURE.md) | 模块归属、状态、文件和模型边界 |
-| [智能体说明](AGENTS.md) | 修改本仓库的规则 |
+| [智能体说明](agent-instructions.md) | 修改本仓库的规则 |
 | [讲解实验指南](explainers.md) | 已实现命令、双语审核、不可变图文与实时准入边界 |
-| [新闻幻灯片](news-slides.md) | 默认日报必需的图文流、整份日报候选与默认前 50 条、有界讲解批次和单批成本门槛 |
+| [新闻幻灯片](news-slides.md) | 日报与独立索引图文流；默认前 50 条、有界写作、已接受讲稿复用和单批成本门槛 |
 | [路线图](roadmap.md) | 实验性讲解与研究工作流；实时准入和验收缺口 |
 | [技术债](exec-plans/tech-debt-tracker.md) | 已知实现缺口和退出条件 |
 
@@ -48,6 +48,7 @@ Schema 修复说明是英文历史兼容记录。按任务读取需要的那一�
 | [叙事研判](../../references/narrative-analysis.md) | 修复分析内容 |
 | [报告契约](../../templates/report-contract.md)和 [Schema](../../schemas/report.schema.json) | 草稿结构和机器校验 |
 | [用量说明](../../references/llm-usage.md) | 宿主适配器、计量和覆盖限制 |
+| [Hermes 集成](../../references/hermes-integration.md) | 可选 Hermes 计量和评估接入 |
 | [Windows 安装](../../references/windows-setup.md) | Windows 上的 Hermes 安装 |
 | [Notion 配置](../../references/notion-setup.md)和[Schema 修复](../../references/notion-schema-fix.md) | 可选远程交付 |
 

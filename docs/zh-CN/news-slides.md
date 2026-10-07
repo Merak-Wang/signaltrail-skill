@@ -2,7 +2,7 @@
 
 **状态：** 已验证 · **负责人：** 仓库维护者 · **最后验证：** 2026-09-23
 
-新闻幻灯片是从已保存日报及其匹配索引生成的独立动态 HTML 放映稿。每条入选新闻占一页，展示来源、摘要、可用图片、原站 caption 和模型撰写的讲解。候选范围覆盖整份已保存日报中的精选事件与简报，不按发布日期二次筛选，也不从索引中直接添加日报之外的条目。同一原文合并并保留全部来源引用，再按重要性降序排列；默认取前 50 条，可用 `slides prepare --max-news N` 设置其他正整数，也可用 `finalize-edition --slides-max-news N` 配置定稿流程。没有按来源预留名额的保证。新一期默认前 50 条；恢复既有运行且未显式指定数量时沿用上次设置，明确修改数量才准备新计划。发布日期未知时保持未知，不以发现、采集或索引更新时间代替。没有图片不影响入选。此投影不改变主日报。有放映文件时，日报 HTML 会在屏幕上用嵌入式演示替代今日摘要，并保留“打开图文演示”独立入口；打印时隐藏嵌入演示并恢复摘要。日报 JSON 和 Markdown 保持原样并继续作为事实依据；只要放映投影存在，之后重建日报 HTML 时也会保留演示入口。
+新闻幻灯片是从独立索引，或已保存日报及其匹配索引生成的动态 HTML 放映稿。先介绍日报模式，下文独立索引路径可跳过日报写作。每条入选新闻占一页，展示来源、摘要、可用图片、原站 caption 和模型撰写的讲解。候选范围覆盖整份已保存日报中的精选事件与简报，不按发布日期二次筛选，也不从索引中直接添加日报之外的条目。同一原文合并并保留全部来源引用，再按重要性降序排列；默认取前 50 条，可用 `slides prepare --max-news N` 设置其他正整数，也可用 `finalize-edition --slides-max-news N` 配置定稿流程。没有按来源预留名额的保证。新一期默认前 50 条；恢复既有运行且未显式指定数量时沿用上次设置，明确修改数量才准备新计划。发布日期未知时保持未知，不以发现、采集或索引更新时间代替。没有图片不影响入选。此投影不改变主日报。有放映文件时，日报 HTML 会在屏幕上用嵌入式演示替代今日摘要，并保留“打开图文演示”独立入口；打印时隐藏嵌入演示并恢复摘要。日报 JSON 和 Markdown 保持原样并继续作为事实依据；只要放映投影存在，之后重建日报 HTML 时也会保留演示入口。
 
 视觉参考为 [Frontend Design 示例 site-02](https://mimo.xiaomi.com/mimo-v2-6/assets/frontend/site-02/)：暖灰白背景（`#f3f4ef`）、深绿黑文字（`#1c2422`）、少量陶土橘强调色、大字号衬线标题、错落的编辑式分栏、细分隔线和侧边编号。新闻图片保持原始比例，转场遵循减少动态效果偏好。模板在本地确定性渲染，样式不增加模型调用或生成成本。
 
@@ -12,14 +12,27 @@
 
 Hacker News、Lobsters 等发现型来源仍保留平台提交日期，原网页日期另存于 `metadata.content_source.published_at`；直接发布来源保留原站日期。日期用于如实呈现来源信息，不作为从已保存日报中剔除候选的条件。跨日或含未知日期的聚合事件保留完整来源引用，不删掉旧来源后沿用原摘要。
 
+## 仅从索引制作图文流
+
+用户只要图文流时，先采集索引，按需用 `extract-content` 补充选定条目的正文，再运行：
+
+```text
+signaltrail --data-dir DATA_DIR slides prepare --index INDEX.json --language zh-CN
+```
+
+无需日报、简报写作或日报分析。若标题或短摘要不足以支撑讲稿，协调者先对选定条目运行 `extract-content`，再用返回的新索引准备 packet；写作者不能为凑字数补造细节。此模式按跨来源稳定的 `source_rank` 顺序选择索引条目，以原文 URL 去重，默认最多 50 条；重复 `--item-id` 可手选。索引没有重要性分数时，不支持正数 `--min-importance`。语言优先使用显式 `--language`，其次 `config.output.language`。日报模式沿用已保存日报的语言，拒绝显式语言冲突。模型直接输出目标语的 `title`、`summary`、`narration`、`perspectives`；没有已有分析时视角为空。遵循 packet 的模式专属 Schema 与指令。来源、日期和图片由 Python 附加，未知日期保持未知。随后提交待写包、检查 status 并 render，复用下文命令。独立演示不伪造日报，也不更新日报投影。
+
+用 `--reuse-plan OLD_PLAN.json` 复用写作输入完全一致的已接受条目，可跨索引或日报修订。文字、语言或分析变化需要重新写作；仅图片变化可以复用。prepare 和 status 返回 `reused_count`、`pending_news_count`；已复用条目不生成待写模型包。日报定稿自动传入上一次计划。节省幅度取决于已有可复用内容，不承诺固定耗时或成本降幅；未计量费用继续为 `null`。
+
+
 ## 默认日报流程：准备、写作与渲染
 
 日报定稿时会自动根据已保存报告及对应索引准备幻灯片计划和有界写作包。默认早报/晚报无论 metered 或 unmetered 都必须生成图文流。“报告已保存”表示报告文件可用；只有讲稿全部提交、渲染完成、tail 退出且通过整期验收，才表示“整期交付完成”。可先交付已保存报告与 HTML，同时明确其余步骤仍待完成。运行清单会在
 `artifacts.slides.plan_path` 和 `artifacts.slides.packet_paths` 记录路径；准备阶段不会调用模型。
-各数据包彼此独立，每波最多并行写作三包；等整波返回后再启动下一波，并逐包提交结果。SignalTrail 的 Hermes 集成通过
-`delegate_task(background=False)` 同步等待整波返回，并将 `max_concurrent_children` 限制为三。若定稿使用
-`--defer-tail`，可在后台执行运行清单中的精确 `tail.command`，同时完成图文讲稿；保留进程句柄和退出码，
-并等尾任务退出后再渲染，因为尾任务与幻灯片渲染都可能更新日报投影。准备失败不会影响已保存日报，
+各数据包彼此独立；支持隔离 worker 时最多同时运行三包，一个 worker 完成后按序补入下一个 packet，并逐包提交结果。
+没有隔离 worker 时顺序处理。定稿使用 `--defer-tail` 时，执行运行清单中的精确 `tail.command`；
+宿主支持并行进程时可与图文写作同时运行，否则先完成 tail。等待它退出后再渲染，因为两项操作都可能更新日报投影。
+准备失败不会影响已保存日报，
 原因记录在 `artifacts.slides.error`。若要把失败或缺失的计划登记回运行清单，运行
 `signaltrail --data-dir DATA_DIR finalize-edition --run RUN.json --report SAVED_REPORT.json --defer-tail`；
 单独运行 `slides prepare` 仍可用于独立准备。随后通过 `slides status --plan PLAN.json` 核对批次，
@@ -37,11 +50,11 @@ run 状态和保存的图文流快照可能早于渲染。未通过时必须披�
 signaltrail slides prepare --report REPORT.json --index INDEX.json
 ```
 
-候选覆盖整份日报中的精选事件与简报；先按原文身份去重、合并来源引用，再按重要性降序排列，默认取前 50 条。可用 `slides prepare --max-news N` 指定其他正整数，定稿流程可用 `finalize-edition --slides-max-news N` 配置。此上限适用于整期，不按来源预留名额。恢复时未显式修改数量则沿用已保存设置，显式更改数量会准备新计划。日报外的索引条目不会直接补入；旧日期和未知发布日期仍可入选，未知日期不得由发现或采集时间伪造。无图新闻仍会入选。每个写作数据包包含一组有界新闻，默认每批四条；数据包携带风格说明、输出 Schema、允许采用的分析视角和指定日报证据。
+候选覆盖整份日报中的精选事件与简报；先按原文身份去重、合并来源引用，再按重要性降序排列，默认取前 50 条。可用 `slides prepare --max-news N` 指定其他正整数，定稿流程可用 `finalize-edition --slides-max-news N` 配置。此上限适用于整期，不按来源预留名额。恢复时未显式修改数量则沿用已保存设置，显式更改数量会准备新计划。日报外的索引条目不会直接补入；旧日期和未知发布日期仍可入选，未知日期不得由发现或采集时间伪造。无图新闻仍会入选。每个写作数据包包含一组有界新闻，默认每批五条；数据包携带风格说明、输出 Schema、允许采用的分析视角和指定日报证据。
 
-写作时只读取 `packet.payload.model_input`；Schema 位于 `payload.model_input.output_schema`，成本预留单独位于 `payload.budget`。将结果保存为 JSON 后运行 `signaltrail slides submit --packet PACKET.json --input DRAFT.json`。每个分配事件都要且只要输出一次 `{event_id, narration, perspectives}`。`perspectives` 可以为空，只能选择该事件分析中存在且相关的 `geopolitics`、`markets`、`ai_technology`。模型输出不要重复标题、摘要、来源、图片 URL 或 caption；这些由程序附加。成功提交会复用；无效草稿不会自动触发修复。
+写作时只读取 `packet.payload.model_input`；Schema 位于 `payload.model_input.output_schema`，成本预留单独位于 `payload.budget`。将结果保存为 JSON 后运行 `signaltrail slides submit --packet PACKET.json --input DRAFT.json`。日报模式每个分配事件都要且只要输出一次 `{event_id, narration, perspectives}`。`perspectives` 可以为空，只能选择该事件分析中存在且相关的 `geopolitics`、`markets`、`ai_technology`。模型输出不要重复标题、摘要、来源、图片 URL 或 caption；这些由程序附加。成功提交会复用；无效草稿不会自动触发修复。
 
-每个 worker 只处理一个 packet；最多同时运行三包，当前波次全部返回后再分发下一波。
+每个 worker 只处理一个 packet；最多同时运行三包，一个完成就按序补下一个；没有隔离 worker 时顺序处理。
 
 数据包内含[讲解风格](../../templates/news-slide-style/SKILL.md)，写作端无需再加载额外编辑资料。中文 narration 会硬校验 200–350 个非空白字符，标点计入；英文 narration 没有对应的长度校验。结构校验不代表事实已经独立验证。采集应覆盖可获取的中英文来源并检查整体语言覆盖，不按输出语言过滤来源；用户本次明确选择优先，其次已保存偏好或当前 run，最后默认 `zh-CN`。协调者为日报和 packet 选定同一目标语言，写作者严格遵循 `payload.model_input.language`，不自行重选。保留原文标题和 URL 溯源；不要求每条都同时有中英文材料，不把转载当独立佐证。跨语言核对名称、数字、职务、时态和限定语；重要事实冲突时补证，没有证据就保留未知。
 
@@ -60,10 +73,10 @@ signaltrail --data-dir DATA_DIR edition-status --run RUN.json --require-complete
 
 渲染会生成可切换的 HTML 幻灯片、结构化 deck JSON 和 Markdown。新闻标题、摘要和来源引用取自日报；索引提供来源名称、发布时间及已有图片候选。默认在线渲染会读取入选新闻的公开原文页，补充图片和原站 caption，按页面明确提供的 `srcset`、URL 宽度和 DPR 选择候选，并在配置下载预算内缓存成功下载的图片。页面或图片获取失败时保留原候选；此过程不修改正文证据或访问等级，也不调用模型。`--offline` 从已有 deck 和图片文件重建，不抓取页面或下载图片，适用于只调整版式。候选按图片身份去重，实际清晰度取决于原站提供的版本和下载情况，每条新闻不设固定配图上限。图集可选择缩略图、查看大图、按原始尺寸 100% 查看并打开原始图片链接。caption 保留原站抽取文本，缺失时留空，不以 alt 替代。若仍有写作批次待提交或缺失，渲染会停止，不会静默漏掉已分配新闻。状态命令显示已完成和待处理批次。HTML 样式及转场是确定性生成。
 
-`slides prepare` 只读取传入的已保存日报和索引，不会联网抓取网页或调用模型。整份报告是候选范围；`index.items[].published_at` 仅作为来源日期信息，不用于筛除候选，缺失日期保持未知。若需要先补充正文证据，可对选定条目运行正式的 `extract-content` 命令，再用其返回的富化索引准备幻灯片。该命令提取文章正文并生成新索引修订；在线渲染则另行从入选新闻公开页面补充图片。仅图片元数据变化时可复用已接受讲稿，无需再次调用模型。
+日报模式的 `slides prepare` 只读取传入的已保存日报和索引，不会联网抓取网页或调用模型。整份报告是候选范围；`index.items[].published_at` 仅作为来源日期信息，不用于筛除候选，缺失日期保持未知。日报模式的写作文字取自已保存日报的摘要、证据说明和分析，不读取索引关联的文章正文。需要补正文证据时，先对选定条目运行 `extract-content`，用新证据写作并保存新的日报修订，再用新日报及对应索引准备幻灯片。独立索引模式则直接读取返回的富化索引中选定条目的正文；在线渲染则另行从入选新闻公开页面补充图片。仅图片元数据变化时可复用已接受讲稿，无需再次调用模型。
 
 ## 批次成本门槛
 
-在 `slides prepare` 上通过 `--max-news` 设置整期数量，并通过 `--batch-size`、`--max-input-tokens`、`--max-output-tokens` 配置每批上限。默认前 50 条、每批四条、输入估算 12,000 token、输出估算 4,000 token。输出按每条新闻预留 700 个估算 token；输入估算为序列化数据包 UTF-8 字节数除以 2，再加 512 token 预留。这是粗略体积门槛，与 tokenizer 精确计数无关，也不是美元报价或宿主实际用量保证；除非宿主提供实际用量，否则仍记为未知（`null`）。选中的新闻按需要分多批处理。
+在 `slides prepare` 上通过 `--max-news` 设置整期数量，并通过 `--batch-size`、`--max-input-tokens`、`--max-output-tokens` 配置每批上限。默认前 50 条、每批五条、输入估算 12,000 token、输出估算 4,000 token。日报模式每条新闻预留 700 个估算输出 token，独立索引模式还要写标题与摘要，每条约预留 1,000 token；输入估算为序列化数据包 UTF-8 字节数除以 2，再加 512 token 预留。这是粗略体积门槛，与 tokenizer 精确计数无关，也不是美元报价或宿主实际用量保证；除非宿主提供实际用量，否则仍记为未知（`null`）。选中的新闻按需要分多批处理。
 
 模型调用由宿主负责。SignalTrail 负责准备有界数据包和接收结果，不会自动调用模型、重试草稿或额外调用审核模型。

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -130,8 +131,8 @@ class BrowserConfig:
     - ``default_wait_ms``：来源未指定固定等待时，就绪检查的最长等待毫秒数。
     输出：构造后的 ``BrowserConfig`` 实例或枚举定义；其字段和方法共同承担上述职责。
     """
-    profile_dir_env: str = "DAILY_INTEL_PROFILE_DIR"
-    channel_env: str = "DAILY_INTEL_BROWSER_CHANNEL"
+    profile_dir_env: str = "SIGNALTRAIL_PROFILE_DIR"
+    channel_env: str = "SIGNALTRAIL_BROWSER_CHANNEL"
     default_channel: str = ""
     global_concurrency: int = 3
     per_domain_concurrency: int = 1
@@ -500,52 +501,21 @@ def _validate_source(source: SourceConfig, budget: BudgetConfig) -> None:
 
 
 def project_root() -> Path:
-    """处理：返回当前仓库或安装包的根目录。
-    输入：
-    - 无显式业务参数：不接收参数；根据当前 config.py 的安装位置定位仓库或技能包根目录。
-    输出：指向“返回当前仓库或安装包的根目录”所生成、定位或确认产物的本地路径。
+    """处理：从显式技能目录、安装包或完整工作目录定位配置资源。
+    输入：SIGNALTRAIL_SKILL_DIR 优先，其次检查包目录和当前工作目录。
+    输出：包含 sources.yaml 的根路径；找不到完整资源时抛出 FileNotFoundError。
     """
-    explicit = environment_value("DAILY_INTEL_SKILL_DIR")
-    hermes_home = environment_value("HERMES_HOME")
-    local_app_data = environment_value("LOCALAPPDATA")
-    if hermes_home:
-        resolved_hermes_home = Path(hermes_home).expanduser().resolve()
-    elif os.name == "nt" and local_app_data:
-        resolved_hermes_home = (Path(local_app_data) / "hermes").resolve()
-    else:
-        resolved_hermes_home = (Path.home() / ".hermes").resolve()
-
-    candidates = [
-        Path(explicit).expanduser() if explicit else None,
-        Path(__file__).resolve().parents[2],
-        resolved_hermes_home / "skills" / "research" / "signaltrail",
-        resolved_hermes_home / "skills" / "research" / "merak-brief",
-        resolved_hermes_home / "skills" / "research" / "daily-intelligence",
-        Path.cwd(),
-    ]
-    skills_dir = resolved_hermes_home / "skills"
-    if skills_dir.exists():
-        candidates.extend(skills_dir.glob("*/signaltrail"))
-        candidates.extend(skills_dir.glob("*/merak-brief"))
-        candidates.extend(skills_dir.glob("*/daily-intelligence"))
-
-    checked: list[str] = []
-    for candidate in candidates:
-        if candidate is None:
-            continue
-        resolved = candidate.resolve()
-        checked.append(str(resolved))
-        if (
-            (resolved / "SKILL.md").is_file()
-            and (resolved / "configs" / "sources.yaml").is_file()
-            and (resolved / "schemas" / "report.schema.json").is_file()
-        ):
-            return resolved
-    raise FileNotFoundError(
-        "Cannot locate the SignalTrail skill resources. Set DAILY_INTEL_SKILL_DIR "
-        "to the directory containing SKILL.md, configs/, and schemas/. Checked: "
-        + ", ".join(checked)
+    explicit = environment_value("SIGNALTRAIL_SKILL_DIR") or environment_value(
+        "DAILY_INTEL_SKILL_DIR"
     )
+    candidates = ([Path(explicit).expanduser()] if explicit else []) + [
+        Path(__file__).resolve().parents[2], Path.cwd(),
+    ]
+    for candidate in candidates:
+        root = candidate.resolve()
+        if (root / "configs" / "sources.yaml").is_file():
+            return root
+    raise FileNotFoundError("SignalTrail resources not found; set SIGNALTRAIL_SKILL_DIR")
 
 
 def load_config(path: Path | None = None, timezone: str | None = None) -> AppConfig:
@@ -625,6 +595,19 @@ def resolve_hermes_home(platform: str | None = None) -> Path:
     return (Path.home() / ".hermes").resolve()
 
 
+def resolve_signaltrail_home(platform: str | None = None) -> Path:
+    """处理：按平台数据目录生成 SignalTrail 独立应用路径。
+    输入：可选平台标识；缺省时使用当前操作系统和 XDG/LOCALAPPDATA 环境值。
+    输出：规范化的应用目录，供数据根和浏览器 Profile 默认路径使用。
+    """
+    operating_system = platform or sys.platform
+    if operating_system in {"nt", "win32"}:
+        base = Path(environment_value("LOCALAPPDATA") or Path.home() / "AppData" / "Local")
+    else:
+        base = Path(environment_value("XDG_DATA_HOME") or Path.home() / ".local" / "share")
+    return (base / "signaltrail").expanduser().resolve()
+
+
 def resolve_data_dir(explicit: Path | None = None, *, allow_conflict: bool = False) -> Path:
     """处理：按显式参数、环境变量和配置确定唯一运行数据根目录。
     输入：
@@ -633,13 +616,16 @@ def resolve_data_dir(explicit: Path | None = None, *, allow_conflict: bool = Fal
     输出：指向“按显式参数、环境变量和配置确定唯一运行数据根目录”所生成、定位或确认产物的本地路径
       。
     """
-    value = environment_value("DAILY_INTEL_DATA_DIR")
+    signaltrail_value = environment_value("SIGNALTRAIL_DATA_DIR")
+    legacy_value = environment_value("DAILY_INTEL_DATA_DIR")
+    value = signaltrail_value or legacy_value
+    env_name = "SIGNALTRAIL_DATA_DIR" if signaltrail_value else "DAILY_INTEL_DATA_DIR"
     if explicit and value:
         resolved_explicit = explicit.expanduser().resolve()
         resolved_environment = Path(value).expanduser().resolve()
         if resolved_explicit != resolved_environment and not allow_conflict:
             raise ValueError(
-                "--data-dir conflicts with DAILY_INTEL_DATA_DIR: "
+                f"--data-dir conflicts with {env_name}: "
                 f"explicit={resolved_explicit}, environment={resolved_environment}. "
                 "Use one canonical data root."
             )
@@ -647,26 +633,15 @@ def resolve_data_dir(explicit: Path | None = None, *, allow_conflict: bool = Fal
         return explicit.expanduser().resolve()
     if value:
         return Path(value).expanduser().resolve()
-    hermes_home = resolve_hermes_home()
+    app_home = resolve_signaltrail_home()
     from .runtime import load_bound_data_root
 
-    bound = load_bound_data_root(hermes_home)
+    bound = load_bound_data_root(app_home)
     if bound is not None:
         if not bound.is_dir():
-            raise FileNotFoundError(
-                f"Bound SignalTrail data directory is missing: {bound}. "
-                "Restore or migrate the existing data before running."
-            )
+            raise FileNotFoundError(f"Bound SignalTrail data directory is missing: {bound}")
         return bound
-
-    current = (hermes_home / "signaltrail").resolve()
-    legacy = (hermes_home / "daily-intelligence").resolve()
-    if legacy.is_dir() and current.exists():
-        raise ValueError(
-            f"Both legacy and SignalTrail data directories exist: {legacy}, {current}. "
-            "Select the intended data with --data-dir before continuing."
-        )
-    return legacy if legacy.is_dir() else current
+    return app_home
 
 
 def resolve_profile_dir(config: AppConfig, explicit: Path | None = None) -> Path:
@@ -678,18 +653,57 @@ def resolve_profile_dir(config: AppConfig, explicit: Path | None = None) -> Path
     """
     if explicit:
         return explicit.expanduser().resolve()
-    value = environment_value(config.browser.profile_dir_env)
+    value = environment_value("SIGNALTRAIL_PROFILE_DIR") or environment_value(
+        "DAILY_INTEL_PROFILE_DIR"
+    ) or environment_value(config.browser.profile_dir_env)
     if value:
         return Path(value).expanduser().resolve()
+    return (resolve_signaltrail_home() / "browser-profiles" / "signaltrail").resolve()
+
+
+def resolve_hermes_data_dir() -> Path:
+    """处理：为 Hermes 启动器选择显式配置或历史数据根。
+    输入：SignalTrail/旧版数据目录变量及 Hermes 主目录中的绑定。
+    输出：兼容历史数据的规范路径；无绑定时使用 Hermes 默认数据目录。
+    """
+    configured = environment_value("SIGNALTRAIL_DATA_DIR") or environment_value(
+        "DAILY_INTEL_DATA_DIR"
+    )
+    if configured:
+        return Path(configured).expanduser().resolve()
+    hermes_home = resolve_hermes_home()
+    from .runtime import load_bound_data_root
+
+    bound = load_bound_data_root(hermes_home)
+    if bound is not None:
+        renamed = (hermes_home / "signaltrail").resolve()
+        old_name = (hermes_home / "daily-intelligence").resolve()
+        if not bound.exists() and bound == old_name and renamed.exists():
+            return renamed
+        return bound
+    current = (hermes_home / "signaltrail").resolve()
+    legacy = (hermes_home / "daily-intelligence").resolve()
+    if legacy.is_dir() and current.exists():
+        raise ValueError(f"Both legacy and SignalTrail data directories exist: {legacy}, {current}")
+    return legacy if legacy.is_dir() else current
+
+
+def resolve_hermes_profile_dir() -> Path:
+    """处理：为 Hermes 启动器选择显式配置或历史浏览器 Profile。
+    输入：SignalTrail/旧版 Profile 环境变量及 Hermes 主目录中的历史目录。
+    输出：规范化的 Profile 路径；无显式值时兼容旧 Profile。
+    """
+    configured = environment_value("SIGNALTRAIL_PROFILE_DIR") or environment_value(
+        "DAILY_INTEL_PROFILE_DIR"
+    )
+    if configured:
+        return Path(configured).expanduser().resolve()
     profiles = resolve_hermes_home() / "browser-profiles"
     current = (profiles / "signaltrail").resolve()
     legacy = (profiles / "daily-intelligence").resolve()
-    if legacy.is_dir() and current.exists():
-        raise ValueError(
-            f"Both legacy and SignalTrail browser profiles exist: {legacy}, {current}. "
-            "Select the intended profile with --profile-dir before continuing."
-        )
-    return legacy if legacy.is_dir() and not current.exists() else current
+    if legacy.is_dir() and not current.exists():
+        return legacy
+    return current
 
 
 def resolve_browser_channel(
@@ -707,7 +721,9 @@ def resolve_browser_channel(
     """
     if explicit is not None:
         return explicit or None
-    value = environment_value(config.browser.channel_env)
+    value = environment_value("SIGNALTRAIL_BROWSER_CHANNEL") or environment_value(
+        "DAILY_INTEL_BROWSER_CHANNEL"
+    ) or environment_value(config.browser.channel_env)
     if value is not None:
         return value or None
     if config.browser.default_channel:

@@ -1,4 +1,4 @@
-"""Build a tracked-file-only SignalTrail package for Hermes Skills Hub."""
+"""Build a tracked-file-only SignalTrail package."""
 
 from __future__ import annotations
 
@@ -46,11 +46,6 @@ PACKAGE_DIRECTORIES = (
 REQUIRED_ROOT_FIELDS = {
     "name",
     "description",
-    "version",
-    "author",
-    "license",
-    "platforms",
-    "metadata",
 }
 FORBIDDEN_COMPONENTS = {
     ".git",
@@ -147,19 +142,26 @@ def validate_skill_directory(
     description = metadata.get("description")
     if not isinstance(description, str) or not description.startswith("Use when "):
         raise PackageError("SKILL.md description must start with the activation phrase 'Use when '")
-    platforms = metadata.get("platforms")
-    if not isinstance(platforms, list) or not platforms:
-        raise PackageError("SKILL.md platforms must be a non-empty list")
-    unsupported = sorted(set(platforms) - {"windows", "macos", "linux"})
-    if unsupported:
-        raise PackageError(f"Unsupported platform values: {', '.join(unsupported)}")
-    hermes = metadata.get("metadata", {}).get("hermes")
-    if not isinstance(hermes, dict):
-        raise PackageError("SKILL.md metadata.hermes must be a mapping")
-    tags = hermes.get("tags")
-    if not isinstance(tags, list) or not tags:
-        raise PackageError("SKILL.md metadata.hermes.tags must be a non-empty list")
+    metadata.setdefault("metadata", {})
+    if not isinstance(metadata["metadata"], dict):
+        raise PackageError("SKILL.md metadata must be a mapping")
     return metadata
+
+
+def package_version(source_root: Path) -> str:
+    """处理：从发行配置读取版本，避免将其作为通用 Skill frontmatter 必填项。
+    输入：项目根路径；读取 pyproject.toml 中的 project.version。
+    输出：构建结果使用的发行版本字符串。
+    """
+    try:
+        import tomllib
+
+        project = tomllib.loads(
+            (source_root / "pyproject.toml").read_text(encoding="utf-8")
+        )
+        return str(project["project"]["version"])
+    except (OSError, KeyError, TypeError, ValueError) as exc:
+        raise PackageError("Cannot read project version from pyproject.toml") from exc
 
 
 def tracked_files(
@@ -354,7 +356,7 @@ def build_package(
     return {
         "status": "built",
         "name": metadata["name"],
-        "version": metadata["version"],
+        "version": package_version(source_root),
         "output": str(output_dir),
         "files": len(selected),
         "bytes": total_bytes,
@@ -371,7 +373,7 @@ def build_parser() -> argparse.ArgumentParser:
       调用方据此继续相邻阶段或识别无结果状态。
     """
     parser = argparse.ArgumentParser(
-        description="Build an allowlisted, tracked-file-only Hermes community skill package."
+        description="Build an allowlisted, tracked-file-only SignalTrail skill package."
     )
     parser.add_argument(
         "--source",

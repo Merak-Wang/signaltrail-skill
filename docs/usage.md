@@ -14,10 +14,10 @@ inputs. `DAILY_INTEL_SKILL_DIR` remains accepted when launching outside the chec
 
 The checkout maintains one root `src/`. A release build places the complete installable skill
 in `dist/signaltrail/`, including `SKILL.md`, source, configuration, schemas, templates, references,
-and assets. Run the installer from the checkout or extracted package root; it synchronizes
-the complete skill into Hermes and installs the Python project from that directory. Virtual
-environments and runtime data are excluded. `-Editable` (Windows) or `--editable` (macOS/Linux)
-instead binds the Python installation to the original source directory for development.
+and assets. Install from the checkout or extracted package root. The installer can also sync
+the skill into a Hermes Skill directory for that host; this is optional. Virtual environments
+and runtime data are excluded. `-Editable` (Windows) or `--editable` (macOS/Linux) binds the
+Python installation to the original source directory for development.
 
 The Python distribution is now `signaltrail-skill`, replacing `daily-intelligence-skill`.
 The main command is `signaltrail`; new installations do not provide `daily-intel`. Update scripts
@@ -32,59 +32,63 @@ python -m playwright install chromium
 ```
 
 On a new Debian or Ubuntu machine, `python -m playwright install-deps chromium` installs
-the system libraries and may require administrator access. The Hermes install scripts in
-the README synchronize the skill to `skills/research/signaltrail`; Windows-specific setup
-is in [windows-setup.md](../references/windows-setup.md).
+the system libraries and may require administrator access. Hermes-specific installation is
+described in [Hermes integration](../references/hermes-integration.md); Windows browser details
+are in [windows-setup.md](../references/windows-setup.md).
 
 ## Upgrade from an earlier version
 
-Stop SignalTrail and Hermes jobs before moving data or browser profiles. Uninstall the old Python
-distribution, then install the complete new checkout or release package. On Windows:
+Stop active SignalTrail and Hermes jobs before upgrading. Uninstall the old Python distribution,
+then install from the new checkout. Existing Hermes data does not need to be moved; keep using its
+current absolute path explicitly and register it for later no-argument runs:
+
+Replace the example data and profile paths below with your existing absolute paths, whether
+their directory names are `daily-intelligence` or `signaltrail`.
 
 ```powershell
 python -m pip uninstall daily-intelligence-skill
-Move-Item "$env:LOCALAPPDATA\hermes\daily-intelligence" "$env:LOCALAPPDATA\hermes\signaltrail"
-Move-Item "$env:LOCALAPPDATA\hermes\browser-profiles\daily-intelligence" "$env:LOCALAPPDATA\hermes\browser-profiles\signaltrail"
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install.ps1
-signaltrail --data-dir "$env:LOCALAPPDATA\hermes\signaltrail" data-root adopt
-signaltrail --data-dir "$env:LOCALAPPDATA\hermes\signaltrail" data-root status
+python -m pip install -e .
+$env:SIGNALTRAIL_PROFILE_DIR = "$env:LOCALAPPDATA\hermes\browser-profiles\daily-intelligence"
+signaltrail --data-dir "$env:LOCALAPPDATA\hermes\daily-intelligence" data-root adopt
+signaltrail --data-dir "$env:LOCALAPPDATA\hermes\daily-intelligence" data-root status
 ```
 
 On macOS/Linux, from the checkout or complete extracted package:
 
 ```sh
 python -m pip uninstall daily-intelligence-skill
-mv ~/.hermes/daily-intelligence ~/.hermes/signaltrail
-mv ~/.hermes/browser-profiles/daily-intelligence ~/.hermes/browser-profiles/signaltrail
-bash ./scripts/install.sh
-signaltrail --data-dir "$HOME/.hermes/signaltrail" data-root adopt
-signaltrail --data-dir "$HOME/.hermes/signaltrail" data-root status
+python -m pip install -e .
+export SIGNALTRAIL_PROFILE_DIR="$HOME/.hermes/browser-profiles/daily-intelligence"
+signaltrail --data-dir "$HOME/.hermes/daily-intelligence" data-root adopt
+signaltrail --data-dir "$HOME/.hermes/daily-intelligence" data-root status
 ```
 
-Run each rename only when the old directory exists and the new destination does not. If both paths
-exist, stop and inspect them; do not merge histories automatically. A configured `HERMES_HOME`
-replaces the default root above. Directory renames preserve reports, runs, indexes, cache and usage
-history. After a rename, use `data-root adopt` to write the new
-`state/signaltrail-data-root.json` registry and record the prior root, then use `status` to confirm it.
-The old registry remains a read-only fallback. A copy-based migration may keep the old tree staged:
-copy the complete data root and verify it independently before adopting the new path. Adoption changes
-the binding and records the prior root; it does not copy files or verify their integrity. Update saved
-`--profile-dir` paths and scheduled commands too.
+These commands keep existing data and profiles in place. `data-root adopt` records the selected
+root in the SignalTrail application's own data directory; it does not move or copy files. Keep
+passing the same `--data-dir` or set `SIGNALTRAIL_DATA_DIR`, and set the old profile explicitly
+with `SIGNALTRAIL_PROFILE_DIR` or `--profile-dir`. Update scheduled commands too.
+The environment assignments above apply to the current shell; save the profile setting in
+the scheduler's environment or pass `--profile-dir` in its command. Keep existing roots in
+place: moving a root across directories also requires its historical path mapping.
 
-## Data directory
+## Data directories
 
-Pass `--data-dir DATA_DIR` before the subcommand, or set the legacy `DAILY_INTEL_DATA_DIR`.
-Hermes defaults are `%LOCALAPPDATA%\hermes\signaltrail` on Windows and `~/.hermes/signaltrail`
-on macOS/Linux. A configured `HERMES_HOME` uses its `signaltrail/` child. Dedicated browser profiles
-default to `browser-profiles/signaltrail/` under the Hermes home.
+Pass `--data-dir DATA_DIR` before the subcommand, or set `SIGNALTRAIL_DATA_DIR`
+(the legacy `DAILY_INTEL_DATA_DIR` remains accepted). Without an explicit root, data defaults
+to `%LOCALAPPDATA%\signaltrail` on Windows and `${XDG_DATA_HOME:-~/.local/share}/signaltrail`
+on macOS/Linux. Set `SIGNALTRAIL_PROFILE_DIR` or pass `--profile-dir` to choose a browser profile;
+the default is `browser-profiles/signaltrail/` under the SignalTrail application data directory.
+For packaged installations launched outside the checkout, set `SIGNALTRAIL_SKILL_DIR` to the
+complete skill package directory when runtime resources cannot be found relative to the installed module.
 
 ```sh
 signaltrail --data-dir DATA_DIR data-root status
 ```
 
-The first run binds the data root. `data-root adopt` explicitly changes that binding;
-use it only for a deliberate migration. It does not copy existing reports to the new path.
-Run files and their referenced artifacts must belong to the same data root.
+An explicit `--data-dir` is used directly and is not registered automatically.
+`data-root adopt` records a root for later no-argument runs; its registry lives under the
+SignalTrail application data directory, never under Hermes home. Run files and referenced
+artifacts must belong to the same data root.
 
 ## Language and source order
 
@@ -133,7 +137,7 @@ signaltrail --data-dir DATA_DIR extract-content --index INDEX.json --item-id ITE
 signaltrail --data-dir DATA_DIR extract-content --index INDEX.json --item-id ITEM_ID --headed --profile-dir PROFILE_DIR
 ```
 
-## Metered Hermes runs
+## Hermes metering (optional)
 
 For the audited Hermes 0.21 integration, start the host through:
 
@@ -168,9 +172,10 @@ ordinary finalization and PDF delivery create no evaluator task. Existing scores
 available. Unscored briefs stay outside the approved semantic cache, so future reports may
 need more fresh writing. Structural and evidence validation still run normally.
 
-The default evaluation backend is Hermes. A harness that will evaluate the dossier itself can
-also pass `--evaluation-backend external`; this records the backend without enabling evaluation
-by itself. With `--evaluate`, the tail creates the hash-bound dossier and `edition-status`
+The default evaluation backend is external. An independent Agent that did not write the report
+can read the dossier and submit a score; if no independent evaluator is available, leave scoring
+pending. To use Hermes instead, explicitly pass `--evaluation-backend hermes`. With `--evaluate`,
+the tail creates the hash-bound dossier and `edition-status`
 returns its path, a draft path, and the exact `finalize-evaluation` command. The external
 evaluator reads the dossier and writes the draft, then runs that command. External mode does
 not schedule Hermes or create an evaluator usage task; completion is recorded only after the

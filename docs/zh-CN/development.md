@@ -3,7 +3,7 @@
 **状态：** 已验证 · **负责人：** 仓库维护者 · **最后验证：** 2026-09-23
 
 本文说明本地开发和测试选择。代码归属见[架构](ARCHITECTURE.md)，不变量见
-[AGENTS.md](AGENTS.md)。[English](../development.md)
+[agent-instructions.md](agent-instructions.md)。[English](../development.md)
 
 ## 环境与检查
 
@@ -55,7 +55,7 @@ Hermes 重试可能复用请求 ID。观察器用请求 ID 和宿主开始时间
 | `signaltrail` | Python 导入包及 `python -m signaltrail.cli` 模块入口 |
 | `signaltrail-skill` | Python 发行包；替代旧 `daily-intelligence-skill` 发行包 |
 | `DAILY_INTEL_*`、报告 ID | 旧环境变量名称和已存标识继续兼容 |
-| Hermes `signaltrail/` 数据与浏览器配置目录 | 当前默认路径；显式迁移时将旧 `daily-intelligence/` 目录改名 |
+| SignalTrail 应用数据与浏览器配置目录 | 宿主无关默认路径；仅迁移旧数据时才处理 Hermes 目录 |
 
 操作用动词命名，如 `collect_sources`、`save_report`；数据用名词。
 CLI 处理函数采用 `handle_<command>`，放在 `commands/`，负责把参数传给领域函数并输出结果。
@@ -84,6 +84,7 @@ README 介绍用途和首次使用。本文档目录保存使用、开发、路�
 
 实现仅维护根目录的 `src/`，不提交嵌套 Skill 副本。明确发布时运行
 `python scripts/build_hermes_skill.py`，在被忽略的 `dist/signaltrail/` 中生成完整 Skill 包。
+脚本名保留历史兼容；Skill 和安装包不要求 Hermes。
 构建器的 Git 跟踪白名单包含 `SKILL.md`、Python 源码、配置、Schema、模板、参考资料和资源，
 排除运行数据和凭据。生成目录是发布产物；实现与文档以仓库根目录为准，不维护
 `skills/signaltrail/` 嵌套副本。发布 GitHub 版本前更新版本号和发布说明、构建安装包并完成仓库检查，

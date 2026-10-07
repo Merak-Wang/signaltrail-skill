@@ -345,7 +345,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     finalize.add_argument(
         "--evaluation-backend", choices=("hermes", "external"),
-        help="Use an external agent and expose its dossier instead of scheduling Hermes",
+        help="Evaluation backend when --evaluate is requested (defaults to external)",
     )
 
     tail = sub.add_parser(
@@ -361,7 +361,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     tail.add_argument(
         "--evaluation-backend", choices=("hermes", "external"),
-        help="Use an external agent and expose its dossier instead of scheduling Hermes",
+        help="Evaluation backend when --evaluate is requested (defaults to external)",
     )
 
     edition_status = sub.add_parser(

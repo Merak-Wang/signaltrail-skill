@@ -2,7 +2,6 @@ from pathlib import Path
 
 import pytest
 
-from signaltrail.cli import load_hermes_environment
 from signaltrail.config import (
     AppConfig,
     BrowserConfig,
@@ -13,10 +12,14 @@ from signaltrail.config import (
     project_root,
     resolve_browser_channel,
     resolve_data_dir,
+    resolve_hermes_data_dir,
     resolve_hermes_home,
+    resolve_hermes_profile_dir,
     resolve_profile_dir,
+    resolve_signaltrail_home,
     source_urls,
 )
+from signaltrail.hermes_runner import load_hermes_environment
 from signaltrail.runtime import (
     bind_data_root,
     require_data_root_path,
@@ -239,7 +242,7 @@ def test_project_root_uses_explicit_stable_skill_directory(monkeypatch, tmp_path
     assert project_root() == tmp_path.resolve()
 
 
-def test_project_root_discovers_new_hermes_path_before_legacy_path(
+def test_project_root_does_not_scan_hermes_paths_or_arbitrary_cwd(
     monkeypatch,
     tmp_path,
 ):
@@ -271,7 +274,25 @@ def test_project_root_discovers_new_hermes_path_before_legacy_path(
     monkeypatch.delenv("DAILY_INTEL_SKILL_DIR", raising=False)
     monkeypatch.chdir(empty_cwd)
 
-    assert project_root() == new_skill.resolve()
+    with pytest.raises(FileNotFoundError, match="SIGNALTRAIL_SKILL_DIR"):
+        project_root()
+
+
+def test_project_root_uses_complete_current_working_directory(monkeypatch, tmp_path):
+    import signaltrail.config as config_module
+
+    root = tmp_path / "skill"
+    (root / "configs").mkdir(parents=True)
+    (root / "configs" / "sources.yaml").write_text("sources: []\n", encoding="utf-8")
+    fake_module = tmp_path / "site-packages" / "signaltrail" / "config.py"
+    fake_module.parent.mkdir(parents=True)
+    fake_module.write_text("", encoding="utf-8")
+    monkeypatch.setattr(config_module, "__file__", str(fake_module))
+    monkeypatch.delenv("SIGNALTRAIL_SKILL_DIR", raising=False)
+    monkeypatch.delenv("DAILY_INTEL_SKILL_DIR", raising=False)
+    monkeypatch.chdir(root)
+
+    assert project_root() == root.resolve()
 
 
 def test_explicit_browser_channel_overrides_windows_default(monkeypatch):
@@ -288,55 +309,58 @@ def test_windows_hermes_home_uses_local_app_data(monkeypatch, tmp_path):
     assert resolve_hermes_home(platform="nt") == (tmp_path / "hermes").resolve()
 
 
-def test_hermes_home_override_controls_runtime_defaults(monkeypatch, tmp_path):
+def test_signaltrail_defaults_ignore_hermes_home(monkeypatch, tmp_path):
     hermes_home = tmp_path / "custom-hermes"
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "local"))
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "local"))
     monkeypatch.delenv("DAILY_INTEL_DATA_DIR", raising=False)
     monkeypatch.delenv("DAILY_INTEL_PROFILE_DIR", raising=False)
     config = AppConfig(timezone="Asia/Shanghai", browser=BrowserConfig(), sources=[])
 
-    assert resolve_data_dir() == (hermes_home / "signaltrail").resolve()
-    assert (
-        resolve_profile_dir(config)
-        == (hermes_home / "browser-profiles" / "signaltrail").resolve()
-    )
+    assert resolve_data_dir() == (tmp_path / "local" / "signaltrail").resolve()
+    assert resolve_profile_dir(config) == (
+        tmp_path / "local" / "signaltrail" / "browser-profiles" / "signaltrail"
+    ).resolve()
 
 
-def test_legacy_data_directory_is_reused_when_no_binding_exists(monkeypatch, tmp_path):
+def test_hermes_launcher_can_reuse_legacy_data_and_profile(monkeypatch, tmp_path):
     hermes_home = tmp_path / "custom-hermes"
     legacy = hermes_home / "daily-intelligence"
     legacy.mkdir(parents=True)
-    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-    monkeypatch.delenv("DAILY_INTEL_DATA_DIR", raising=False)
-
-    assert resolve_data_dir() == legacy.resolve()
-    assert not (hermes_home / "signaltrail").exists()
-
-
-def test_new_data_directory_defaults_and_legacy_profile_fallback(monkeypatch, tmp_path):
-    hermes_home = tmp_path / "custom-hermes"
     legacy_profile = hermes_home / "browser-profiles" / "daily-intelligence"
     legacy_profile.mkdir(parents=True)
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
     monkeypatch.delenv("DAILY_INTEL_DATA_DIR", raising=False)
+
+    assert resolve_hermes_data_dir() == legacy.resolve()
+    assert resolve_hermes_profile_dir() == legacy_profile.resolve()
+    assert not (hermes_home / "signaltrail").exists()
+
+
+def test_signaltrail_env_overrides_legacy_env(monkeypatch, tmp_path):
+    monkeypatch.delenv("DAILY_INTEL_DATA_DIR", raising=False)
     monkeypatch.delenv("DAILY_INTEL_PROFILE_DIR", raising=False)
+    monkeypatch.setenv("SIGNALTRAIL_DATA_DIR", str(tmp_path / "new-data"))
+    monkeypatch.setenv("DAILY_INTEL_DATA_DIR", str(tmp_path / "legacy-data"))
+    monkeypatch.setenv("SIGNALTRAIL_PROFILE_DIR", str(tmp_path / "new-profile"))
+    monkeypatch.setenv("DAILY_INTEL_PROFILE_DIR", str(tmp_path / "legacy-profile"))
     config = AppConfig(timezone="Asia/Shanghai", browser=BrowserConfig(), sources=[])
 
-    assert resolve_profile_dir(config) == legacy_profile.resolve()
-    assert resolve_data_dir() == (hermes_home / "signaltrail").resolve()
+    assert resolve_data_dir() == (tmp_path / "new-data").resolve()
+    assert resolve_profile_dir(config) == (tmp_path / "new-profile").resolve()
 
 
-def test_ambiguous_legacy_and_new_browser_profiles_require_selection(monkeypatch, tmp_path):
-    hermes_home = tmp_path / "custom-hermes"
-    profiles = hermes_home / "browser-profiles"
-    (profiles / "daily-intelligence").mkdir(parents=True)
-    (profiles / "signaltrail").mkdir()
-    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-    monkeypatch.delenv("DAILY_INTEL_PROFILE_DIR", raising=False)
-    config = AppConfig(timezone="Asia/Shanghai", browser=BrowserConfig(), sources=[])
-
-    with pytest.raises(ValueError, match="Both legacy and SignalTrail browser profiles"):
-        resolve_profile_dir(config)
+def test_signaltrail_home_uses_os_data_environment(monkeypatch, tmp_path):
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "local"))
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "local"))
+    assert resolve_signaltrail_home(platform="win32") == (
+        tmp_path / "local" / "signaltrail"
+    ).resolve()
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
+    assert resolve_signaltrail_home(platform="linux") == (
+        tmp_path / "xdg" / "signaltrail"
+    ).resolve()
 
 
 def test_explicit_data_root_cannot_override_environment(monkeypatch, tmp_path):
@@ -390,17 +414,17 @@ def test_run_artifacts_must_remain_under_active_data_root(tmp_path, artifact):
         "artifacts": {artifact: str(tmp_path / "other" / "index.json")},
     }
 
-    with pytest.raises(ValueError, match="outside the active DAILY_INTEL_DATA_DIR"):
+    with pytest.raises(ValueError, match="outside the active data root"):
         validate_run_data_root(run, run_path, data_dir)
-    with pytest.raises(ValueError, match="outside the active DAILY_INTEL_DATA_DIR"):
+    with pytest.raises(ValueError, match="outside the active data root"):
         require_data_root_path(tmp_path / "draft.json", data_dir, "test artifact")
 
 
-def test_cli_loads_active_hermes_env_without_overriding(monkeypatch, tmp_path):
+def test_hermes_launcher_loads_active_env_without_overriding(monkeypatch, tmp_path):
     calls = []
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.setattr(
-        "signaltrail.cli.load_dotenv",
+        "signaltrail.hermes_runner.load_dotenv",
         lambda path, override: calls.append((path, override)),
     )
 

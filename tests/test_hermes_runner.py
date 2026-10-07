@@ -16,6 +16,126 @@ from signaltrail.hosts.hermes import (
 from signaltrail.llm_usage import UsageLedger
 
 
+def test_hermes_child_environment_pins_legacy_data_and_evaluation(monkeypatch, tmp_path):
+    from signaltrail.hermes_runner import _hermes_child_environment
+
+    hermes_home = tmp_path / "hermes"
+    data_dir = hermes_home / "daily-intelligence"
+    profile_dir = hermes_home / "browser-profiles" / "daily-intelligence"
+    data_dir.mkdir(parents=True)
+    profile_dir.mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.delenv("SIGNALTRAIL_DATA_DIR", raising=False)
+    monkeypatch.delenv("DAILY_INTEL_DATA_DIR", raising=False)
+    monkeypatch.delenv("SIGNALTRAIL_PROFILE_DIR", raising=False)
+    monkeypatch.delenv("DAILY_INTEL_PROFILE_DIR", raising=False)
+
+    env = _hermes_child_environment({})
+
+    assert env["SIGNALTRAIL_DATA_DIR"] == str(data_dir.resolve())
+    assert env["DAILY_INTEL_DATA_DIR"] == str(data_dir.resolve())
+    assert env["SIGNALTRAIL_PROFILE_DIR"] == str(profile_dir.resolve())
+    assert env["DAILY_INTEL_PROFILE_DIR"] == str(profile_dir.resolve())
+    assert env["SIGNALTRAIL_EVALUATION_BACKEND"] == "hermes"
+
+
+def test_hermes_run_loads_only_its_hermes_env(monkeypatch, tmp_path, capsys):
+    import sys
+
+    import signaltrail.hermes_runner as runner
+
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    calls = []
+    monkeypatch.setattr(
+        runner, "load_dotenv", lambda path, override: calls.append((path, override))
+    )
+    monkeypatch.setattr(runner, "run_metered", lambda _args: {
+        "task_id": "task-1", "status": "completed", "returncode": 0, "wall_seconds": 1.0,
+    })
+    monkeypatch.setattr(sys, "argv", [
+        "signaltrail-hermes", "run", "--prompt-file", str(tmp_path / "prompt.txt"),
+        "--ledger", str(tmp_path / "data"), "--hermes-python", str(tmp_path / "python.exe"),
+    ])
+
+    assert runner.main() == 0
+    assert calls == [(hermes_home / ".env", False)]
+    assert json.loads(capsys.readouterr().out)["status"] == "completed"
+
+
+@pytest.mark.parametrize("conflicting_environment", [False, True])
+def test_metered_launcher_binds_custom_ledger_to_child_run(
+    monkeypatch, tmp_path, conflicting_environment
+):
+    import signaltrail.hermes_runner as runner
+    from signaltrail.workflow import _active_usage_binding
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    for name in ("SIGNALTRAIL_DATA_DIR", "DAILY_INTEL_DATA_DIR"):
+        if conflicting_environment:
+            monkeypatch.setenv(name, str(tmp_path / "other-data"))
+        else:
+            monkeypatch.delenv(name, raising=False)
+    prompt_path = tmp_path / "prompt.txt"
+    prompt_path.write_text("生成日报", encoding="utf-8")
+    data_root = tmp_path / "requested-data"
+    args = runner.build_parser().parse_args([
+        "run", "--ledger", str(data_root),
+        "--hermes-python", str(tmp_path / "python.exe"),
+        "--prompt-file", str(prompt_path),
+    ])
+    bindings = []
+
+    class ChildProcess:
+        def __init__(self, _command, *, env, **_kwargs):
+            assert env["SIGNALTRAIL_DATA_DIR"] == str(data_root.resolve())
+            assert env["DAILY_INTEL_DATA_DIR"] == str(data_root.resolve())
+            assert env["SIGNALTRAIL_USAGE_LEDGER"] == str(data_root.resolve())
+            with monkeypatch.context() as child_environment:
+                for name, value in env.items():
+                    child_environment.setenv(name, value)
+                bindings.append(_active_usage_binding(data_root))
+
+        def wait(self, timeout):
+            return 0
+
+    monkeypatch.setattr(runner.subprocess, "Popen", ChildProcess)
+    receipt = runner.run_metered(args)
+    assert bindings[0]["task_id"] == receipt["task_id"]
+    assert receipt["returncode"] == 0
+
+
+@pytest.mark.parametrize("category", ["research", "custom"])
+def test_noneditable_hermes_launcher_locates_installed_resources(monkeypatch, tmp_path, category):
+    import signaltrail.hermes_runner as runner
+
+    home = tmp_path / "hermes"
+    root = home / "skills" / category / "signaltrail"
+    for resource in ("SKILL.md", "configs/sources.yaml", "schemas/report.schema.json"):
+        path = root / resource
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("resource", encoding="utf-8")
+    cwd = tmp_path / "unrelated"
+    cwd.mkdir()
+    monkeypatch.chdir(cwd)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(runner, "__file__", str(
+        tmp_path / "venv/Lib/site-packages/signaltrail/hermes_runner.py"
+    ))
+    env = runner._hermes_child_environment({})
+    assert env["SIGNALTRAIL_SKILL_DIR"] == str(root.resolve())
+
+
+@pytest.mark.parametrize("name", ["SIGNALTRAIL_SKILL_DIR", "DAILY_INTEL_SKILL_DIR"])
+def test_hermes_launcher_preserves_explicit_resource_location(tmp_path, name):
+    from signaltrail.hermes_runner import _hermes_child_environment
+
+    explicit = tmp_path / "explicit"
+    env = _hermes_child_environment({name: str(explicit)})
+    assert env["SIGNALTRAIL_SKILL_DIR"] == str(explicit.resolve())
+
+
 def test_concurrent_observer_is_exact_and_preserves_lineage(tmp_path):
     ledger = UsageLedger(tmp_path)
     task = ledger.start_task("hermes")

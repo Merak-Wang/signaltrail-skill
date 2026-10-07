@@ -26,8 +26,24 @@ def test_slides_cli_prepares_bounded_batches(cli_data_root, monkeypatch, capsys,
     prepare.assert_called_once_with(report, index, cli_data_root, min_importance=expected_score,
                                     item_ids=["news-1"], batch_size=3,
                                     max_news=22,
+                                    language=None, reuse_plan=None,
                                     max_input_tokens=12000, max_output_tokens=4000)
     assert json.loads(capsys.readouterr().out)["news_count"] == 18
+
+
+@pytest.mark.parametrize("language_args,expected", [([], "zh-CN"), (["--language", "en"], "en")])
+def test_slides_cli_prepares_index_without_report(cli_data_root, monkeypatch, capsys,
+                                                 language_args, expected):
+    prepare = Mock(return_value={"reused_count": 2, "pending_news_count": 3})
+    monkeypatch.setattr("signaltrail.commands.slides.prepare_slides", prepare)
+    index, old_plan = cli_data_root / "index.json", cli_data_root / "old-plan.json"
+    assert main(["slides", "prepare", "--index", str(index), "--reuse-plan", str(old_plan),
+                 *language_args]) == 0
+    prepare.assert_called_once_with(None, index, cli_data_root, language=expected,
+                                    reuse_plan=old_plan, min_importance=0, item_ids=None,
+                                    max_news=50, batch_size=5, max_input_tokens=12000,
+                                    max_output_tokens=4000)
+    assert json.loads(capsys.readouterr().out)["reused_count"] == 2
 
 
 def test_slides_cli_reports_missing_plan(cli_data_root, capsys):
@@ -87,11 +103,93 @@ def test_explainer_cli_reports_rejected_parent_without_changing_report(
     assert json.loads(capsys.readouterr().out)["status"] == "rejected"
 
 
+def test_regular_cli_ignores_hermes_environment_and_registry(monkeypatch, tmp_path, capsys):
+    import signaltrail.runtime as runtime
+
+    hermes_home = tmp_path / "hermes"
+    (hermes_home / "state").mkdir(parents=True)
+    (hermes_home / ".env").write_text("DAILY_INTEL_DATA_DIR=/wrong\n", encoding="utf-8")
+    (hermes_home / "state" / "signaltrail-data-root.json").write_text(
+        json.dumps({"data_root": str(tmp_path / "hermes-bound")}), encoding="utf-8"
+    )
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "local"))
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "local"))
+    monkeypatch.delenv("SIGNALTRAIL_DATA_DIR", raising=False)
+    monkeypatch.delenv("DAILY_INTEL_DATA_DIR", raising=False)
+    monkeypatch.setattr(
+        "signaltrail.hermes_runner.load_hermes_environment",
+        lambda: (_ for _ in ()).throw(AssertionError("regular CLI read Hermes.env")),
+    )
+    monkeypatch.setattr(
+        "signaltrail.cli.bind_data_root",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("regular CLI wrote a data-root registry")
+        ),
+    )
+    bound_roots = []
+    real_load_bound = runtime.load_bound_data_root
+
+    def record_native_registry(app_home):
+        bound_roots.append(app_home.resolve())
+        assert app_home.resolve() != hermes_home.resolve()
+        return real_load_bound(app_home)
+
+    monkeypatch.setattr(runtime, "load_bound_data_root", record_native_registry)
+    monkeypatch.setitem(HANDLERS, "refresh-monitor", lambda _args, context: (
+        print(json.dumps({"data_dir": str(context.data_dir)})) or 0
+    ))
+
+    assert main(["refresh-monitor"]) == 0
+    result = json.loads(capsys.readouterr().out)
+    app_home = tmp_path / "local" / "signaltrail"
+    assert result["data_dir"] == str(app_home.resolve())
+    assert bound_roots == [app_home.resolve()]
+    assert not (app_home / "state" / "signaltrail-data-root.json").exists()
+
+
+def test_regular_cli_runs_without_hermes_installation(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "missing-hermes"))
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "local"))
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "local"))
+    monkeypatch.delenv("SIGNALTRAIL_DATA_DIR", raising=False)
+    monkeypatch.delenv("DAILY_INTEL_DATA_DIR", raising=False)
+    monkeypatch.setitem(HANDLERS, "refresh-monitor", lambda _args, _context: 0)
+    assert main(["refresh-monitor"]) == 0
+
+
+def test_data_root_adopt_and_status_use_signaltrail_app_home(monkeypatch, tmp_path, capsys):
+    app_home = tmp_path / "local" / "signaltrail"
+    data_root = tmp_path / "user-data"
+    data_root.mkdir()
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "local"))
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "local"))
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    monkeypatch.delenv("SIGNALTRAIL_DATA_DIR", raising=False)
+    monkeypatch.delenv("DAILY_INTEL_DATA_DIR", raising=False)
+
+    assert main(["--data-dir", str(data_root), "data-root", "adopt"]) == 0
+    adopted = json.loads(capsys.readouterr().out)
+    assert adopted["data_root"] == str(data_root.resolve())
+    assert Path(adopted["registry_path"]) == (
+        app_home / "state" / "signaltrail-data-root.json"
+    ).resolve()
+
+    assert main(["data-root", "status"]) == 0
+    status = json.loads(capsys.readouterr().out)
+    assert status == {"status": "bound", "data_root": str(data_root.resolve())}
+    override = tmp_path / "override"
+    assert main(["--data-dir", str(override), "data-root", "status"]) == 0
+    status = json.loads(capsys.readouterr().out)
+    assert status["data_root"] == str(data_root.resolve())
+    assert status["resolved_from_current_configuration"] == str(override.resolve())
+    assert not (tmp_path / "hermes" / "state" / "signaltrail-data-root.json").exists()
+
+
 @pytest.fixture
 def cli_data_root(monkeypatch, tmp_path):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
     monkeypatch.setenv("DAILY_INTEL_DATA_DIR", str(tmp_path / "data"))
-    monkeypatch.setattr("signaltrail.cli.load_hermes_environment", lambda: None)
     return tmp_path / "data"
 
 
@@ -232,6 +330,9 @@ def test_cli_exposes_two_stage_workflow():
         assert parser.parse_args(
             [*arguments, "--evaluation-backend", "external"]
         ).evaluation_backend == "external"
+        assert parser.parse_args(
+            [*arguments, "--evaluation-backend", "hermes"]
+        ).evaluation_backend == "hermes"
     assert prepared.open_verification is False
     assert (
         parser.parse_args(

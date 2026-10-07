@@ -11,9 +11,44 @@ import time
 from pathlib import Path
 from typing import Any
 
+from dotenv import load_dotenv
+
 from signaltrail.llm_usage import UsageLedger
 from signaltrail.storage import write_immutable_json
 from signaltrail.usage_cli import SafeArgumentParser
+
+from .config import resolve_hermes_data_dir, resolve_hermes_home, resolve_hermes_profile_dir
+
+
+def load_hermes_environment() -> Path:
+    """处理：从 Hermes 环境文件补充尚未设置的进程变量。
+    输入：HERMES_HOME 定位的 .env 和已有进程环境。
+    输出：已加载的文件路径；已有变量保持优先级。
+    """
+    env_path = resolve_hermes_home() / ".env"
+    load_dotenv(env_path, override=False)
+    return env_path
+
+
+def _hermes_skill_root(env: dict[str, str]) -> Path:
+    """处理：先选显式或源码资源，再查 Hermes 已安装的完整技能。
+    输入：子进程环境与当前安装位置、工作目录和 Hermes skills 目录。
+    输出：包含配置、契约与入口文档的资源根；缺失时报告错误。
+    """
+    explicit = env.get("SIGNALTRAIL_SKILL_DIR") or env.get("DAILY_INTEL_SKILL_DIR")
+    if explicit:
+        return Path(explicit).expanduser().resolve()
+    skills = resolve_hermes_home() / "skills"
+    names = ("signaltrail", "merak-brief", "daily-intelligence")
+    candidates = [Path(__file__).resolve().parents[2], Path.cwd()]
+    candidates.extend(skills / "research" / name for name in names)
+    candidates.extend(path for name in names for path in sorted(skills.glob(f"*/{name}")))
+    for root in candidates:
+        if all((root / resource).is_file() for resource in (
+            "SKILL.md", "configs/sources.yaml", "schemas/report.schema.json",
+        )):
+            return root.resolve()
+    raise FileNotFoundError("SignalTrail resources not found; set SIGNALTRAIL_SKILL_DIR")
 
 
 def _write_receipt(path: Path, payload: dict[str, Any]) -> None:
@@ -46,6 +81,26 @@ def coverage_complete(summary: dict[str, Any], observer: dict[str, Any]) -> bool
         and observer.get("database_reconciliation", {}).get("status") == "matched"
         and summary["tokens"]["accounted_total"]["quality"] == "exact"
     )
+
+
+def _hermes_child_environment(
+    env: dict[str, str], data_root: Path | None = None
+) -> dict[str, str]:
+    """处理：向专用子进程传入 Hermes 历史路径与评估后端。
+    输入：子进程环境副本及显式账本数据根；账本路径优先于历史环境配置。
+    输出：补齐数据根、Profile 和 Hermes evaluation backend 的进程环境。
+    """
+    data_dir = str(data_root.resolve() if data_root is not None else resolve_hermes_data_dir())
+    profile_dir = str(resolve_hermes_profile_dir())
+    env.update({
+        "SIGNALTRAIL_SKILL_DIR": str(_hermes_skill_root(env)),
+        "SIGNALTRAIL_DATA_DIR": data_dir,
+        "DAILY_INTEL_DATA_DIR": data_dir,
+        "SIGNALTRAIL_PROFILE_DIR": profile_dir,
+        "DAILY_INTEL_PROFILE_DIR": profile_dir,
+        "SIGNALTRAIL_EVALUATION_BACKEND": "hermes",
+    })
+    return env
 
 
 def _host(args: argparse.Namespace) -> int:
@@ -108,6 +163,7 @@ def run_metered(args: argparse.Namespace) -> dict[str, Any]:
                 "SIGNALTRAIL_HERMES_PYTHON": str(args.hermes_python.resolve()),
                 "SIGNALTRAIL_HERMES_MODEL": args.model or "",
                 "SIGNALTRAIL_HERMES_PROVIDER": args.provider or ""})
+    _hermes_child_environment(env, args.ledger)
     env.pop("SIGNALTRAIL_USAGE_EVALUATION_ATTEMPT", None)
     if args.evaluation_attempt:
         env["SIGNALTRAIL_USAGE_EVALUATION_ATTEMPT"] = str(args.evaluation_attempt)
@@ -197,6 +253,7 @@ def main() -> int:
             raise ValueError("run budgets must be positive")
         if args.command == "_host":
             return _host(args)
+        load_hermes_environment()
         receipt = run_metered(args)
         print(json.dumps({key: receipt[key] for key in (
             "task_id", "status", "returncode", "wall_seconds"

@@ -223,7 +223,8 @@ turn 可能包含多次 tool-loop provider request；只有宿主提供显式调
 ## 预算、修复与独立评估
 
 质量评分默认关闭。只有用户明确要求后，`finalize-edition --evaluate` 或
-`complete-edition-tail --evaluate` 才为本轮开启 evaluator 调度及其独立用量任务。
+`complete-edition-tail --evaluate` 才为本轮创建评估 dossier。评估 backend 默认是 external，
+由未参与写作的独立 Agent 完成；仅显式指定 Hermes backend 才进行 Hermes evaluator 调度。
 以下评分调度、对账与重试说明均以该请求为前提。
 
 `run.llm_budget.checks[]` 保存每次派发前的安全回执。门禁从绑定 usage task 的不可变事件

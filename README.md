@@ -23,6 +23,8 @@ Python 程序负责采集、证据和状态管理、校验及版本化存档；�
 
 [下载日报与嵌入式图文演示 ZIP](https://github.com/Merak-Wang/signaltrail-skill/raw/refs/heads/main/examples/reports/2026-09-23-morning-r1.zip) · [下载单日报 HTML](https://github.com/Merak-Wang/signaltrail-skill/raw/refs/heads/main/examples/reports/2026-09-23-morning-r1.html)
 
+只要图文流时，采集索引、按需补充正文后运行 `signaltrail slides prepare --index INDEX.json --language zh-CN`，仅撰写待完成包，再复用下文 submit/status/render 命令。无需先写日报或分析；`--reuse-plan OLD_PLAN.json` 复用输入未变的已接受内容，未知用量与费用仍保持未知。
+
 ## 动态 HTML 图文演示
 
 ![SignalTrail 新闻幻灯片预览](assets/readme/news-slides-preview.png)
@@ -35,7 +37,7 @@ Python 程序负责采集、证据和状态管理、校验及版本化存档；�
 
 演示可在日报的“今日图文演示”容器中切换，也可通过“独立打开演示”按钮作为单独 HTML 页面放映。动画与版式在本地模板中渲染，不增加模型调用。TTS 和视频合成目前尚未实现。
 
-候选覆盖整份已保存日报中的精选事件与简报；同一原文合并后按重要性降序排列，默认选前 50 条，可用 `slides prepare --max-news N` 或 `finalize-edition --slides-max-news N` 自定义。没有按来源预留名额；发布日期未知时保持未知，不以发现或采集时间代替。每批默认最多四条，并对输入和输出 token 估算设置门槛。中文讲解通过 200–350 个非空白字符校验；写作只在有证据支持时选择分析视角。
+候选覆盖整份已保存日报中的精选事件与简报；同一原文合并后按重要性降序排列，默认选前 50 条，可用 `slides prepare --max-news N` 或 `finalize-edition --slides-max-news N` 自定义。没有按来源预留名额；发布日期未知时保持未知，不以发现或采集时间代替。每批默认最多五条，并对输入和输出 token 估算设置门槛。中文讲解通过 200–350 个非空白字符校验；写作只在有证据支持时选择分析视角。
 
 从一份已保存的日报及匹配索引开始：
 
@@ -55,7 +57,7 @@ signaltrail slides render --plan PLAN.json
 
 ## 快速开始
 
-需要 Python 3.11+ 和一个已配置模型的智能体宿主；从源码克隆时还需要 Git。可从 GitHub 克隆源码，或下载 [SignalTrail 2.1.0 完整安装包](https://github.com/Merak-Wang/signaltrail-skill/releases/latest)。
+需要 Python 3.11+、一个已配置模型的智能体和本地命令行；从源码克隆时还需要 Git。可从 GitHub 克隆源码，或下载 [SignalTrail 2.1.0 完整安装包](https://github.com/Merak-Wang/signaltrail-skill/releases/latest)。
 
 ```sh
 git clone https://github.com/Merak-Wang/signaltrail-skill.git
@@ -72,7 +74,7 @@ signaltrail --help
 
 `signaltrail` 是统一命令入口；Python 包可 `import signaltrail`，也可用 `python -m signaltrail.cli` 启动。命令行准备可复现的采集、校验和存档步骤；智能体根据证据包完成写作。仅运行 `run-edition` 会停在写作交接阶段，不会自行生成完整日报。
 
-### Hermes 安装
+### 可选：安装到 Hermes
 
 在仓库目录或已解压的完整安装包根目录运行对应脚本：
 
@@ -86,13 +88,13 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install.ps1
 bash ./scripts/install.sh
 ```
 
-脚本会将 Skill 同步到 Hermes 并安装 Python 命令。Windows 浏览器采集可使用系统 Microsoft Edge；macOS／Linux 的安装脚本会在同一 Python 环境安装 Playwright Chromium。手动安装时运行：
+脚本会将 Skill 同步到 Hermes 并安装 Python 命令；SignalTrail 核心 CLI 不要求 Hermes。Windows 浏览器采集可使用系统 Microsoft Edge；macOS／Linux 的安装脚本会在同一 Python 环境安装 Playwright Chromium。手动安装时运行：
 
 ```sh
 python -m playwright install chromium
 ```
 
-从旧版升级时，请先卸载 `daily-intelligence-skill` Python 包，再安装此版本的 `signaltrail-skill`。停止运行中的任务后，将旧的 Hermes 数据目录和专用浏览器配置目录改名为 `signaltrail`；目录改名保留全部历史报告。完整步骤见[升级说明](docs/zh-CN/usage.md#从旧版升级)。
+从旧版升级时，请先卸载 `daily-intelligence-skill` Python 包，再安装此版本。旧 Hermes 数据和 Profile 可留在原路径，通过显式数据根和 Profile 设置继续使用。完整步骤见[升级说明](docs/zh-CN/usage.md#从旧版升级)。
 
 更完整的配置、数据目录、计量运行和恢复说明见[使用指南](docs/zh-CN/usage.md)。
 
@@ -107,7 +109,7 @@ signaltrail serve --open --refresh-minutes 30
 
 ## 数据、成本与能力边界
 
-报告 JSON 和 Markdown 是版本化原始记录；HTML、PDF 是可重建的阅读投影。现有报告修订不会被覆盖。来源访问失败、限流和验证挑战会保留其实际状态。运行数据默认保存在本机的 Hermes `signaltrail/` 目录。旧版用户可按[升级说明](docs/zh-CN/usage.md#从旧版升级)将历史数据目录改名迁移，保留报告和运行历史。
+报告 JSON 和 Markdown 是版本化原始记录；HTML、PDF 是可重建的阅读投影。现有报告修订不会被覆盖。来源访问失败、限流和验证挑战会保留其实际状态。运行数据默认保存在本机 SignalTrail 应用目录，与 Hermes 目录独立。旧版用户可按[升级说明](docs/zh-CN/usage.md#从旧版升级)继续使用原有数据目录，保留报告和运行历史。
 
 采集、监控、图片处理和 HTML 演示渲染不调用模型。日报写作与图文讲解由智能体宿主执行；批次 token 门槛用于限制单批输入／输出规模，实际用量取决于宿主是否提供计量数据。新闻来源、网络状况、证据完整度和模型速度都会影响交付时间与内容覆盖。
 

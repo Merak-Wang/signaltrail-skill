@@ -392,7 +392,10 @@ def test_finalize_publish_only_schedules_requested_evaluation(
         lambda *_args, **_kwargs: {"status": "scheduled", "detail": "job-1"},
     )
 
-    finalize_edition(run_path, report_path, data_dir, publish=True, evaluate=evaluate)
+    finalize_edition(
+        run_path, report_path, data_dir, publish=True, evaluate=evaluate,
+        evaluation_backend="hermes" if evaluate else None,
+    )
 
     run = read_json(run_path)
     assert run["status"] == RunStatus.COMPLETED
@@ -438,7 +441,10 @@ def test_finalize_retries_missing_evaluator_schedule_after_completed_publish(
         lambda *_args, **_kwargs: {"status": "scheduled", "detail": "job-recovered"},
     )
 
-    finalize_edition(run_path, report_path, data_dir, publish=True, evaluate=True)
+    finalize_edition(
+        run_path, report_path, data_dir, publish=True, evaluate=True,
+        evaluation_backend="hermes",
+    )
 
     run = read_json(run_path)
     assert run["evaluation"]["scheduler"]["detail"] == "job-recovered"

@@ -9,11 +9,12 @@
 
 在仓库运行 `python -m pip install -e .`，然后让智能体加载根目录的 `SKILL.md`。
 Python 导入包为 `signaltrail`，模块入口为 `python -m signaltrail.cli`。保留仓库目录：来源配置、
-Schema 和模板也是运行输入。从仓库外启动时仍可用 `DAILY_INTEL_SKILL_DIR` 指定仓库绝对路径。
+Schema 和模板也是运行输入。从仓库外启动完整安装包时，可用 `SIGNALTRAIL_SKILL_DIR`
+指定包目录；旧变量 `DAILY_INTEL_SKILL_DIR` 仍兼容。
 
 仓库仅维护根目录的一份 `src/`。发布构建在 `dist/signaltrail/` 中生成完整安装包，包含
 `SKILL.md`、源码、配置、Schema、模板、参考资料和资源。从仓库或解压后的完整包根目录运行
-安装脚本；脚本先将完整 Skill 同步到 Hermes，再从该目录安装 Python 项目，排除虚拟环境和
+安装脚本；同步到 Hermes 是可选宿主安装，Python 项目可独立使用。脚本排除虚拟环境和
 运行数据。开发时使用 `-Editable`（Windows）或 `--editable`（macOS/Linux），
 Python 安装则关联原始源码目录。
 
@@ -28,52 +29,57 @@ python -m playwright install chromium
 ```
 
 全新的 Debian 或 Ubuntu 还需运行 `python -m playwright install-deps chromium` 安装系统库，
-该步骤可能需要管理员权限。README 中的 Hermes 安装脚本会把 Skill 同步到
-`skills/research/signaltrail`；Windows 细节见[安装参考](../../references/windows-setup.md)。
+该步骤可能需要管理员权限。Hermes 专用安装见[可选集成参考](../../references/hermes-integration.md)；
+Windows 浏览器细节见[安装参考](../../references/windows-setup.md)。
 
 ## 从旧版升级
 
-移动数据或浏览器配置前，先停止 SignalTrail 与 Hermes 任务。卸载旧 Python 发行包，再安装完整的新仓库或发布包。
+升级前先停止 SignalTrail 与 Hermes 任务。卸载旧 Python 发行包，再从新仓库安装。
+无需移动已有 Hermes 数据；继续显式使用它的绝对路径，并登记为以后无参数运行时的默认根。
 Windows 示例：
+
+将下列示例中的数据与 Profile 路径替换为实际既有的绝对路径；目录名可以是
+`daily-intelligence` 或 `signaltrail`。
 
 ```powershell
 python -m pip uninstall daily-intelligence-skill
-Move-Item "$env:LOCALAPPDATA\hermes\daily-intelligence" "$env:LOCALAPPDATA\hermes\signaltrail"
-Move-Item "$env:LOCALAPPDATA\hermes\browser-profiles\daily-intelligence" "$env:LOCALAPPDATA\hermes\browser-profiles\signaltrail"
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install.ps1
-signaltrail --data-dir "$env:LOCALAPPDATA\hermes\signaltrail" data-root adopt
-signaltrail --data-dir "$env:LOCALAPPDATA\hermes\signaltrail" data-root status
+python -m pip install -e .
+$env:SIGNALTRAIL_PROFILE_DIR = "$env:LOCALAPPDATA\hermes\browser-profiles\daily-intelligence"
+signaltrail --data-dir "$env:LOCALAPPDATA\hermes\daily-intelligence" data-root adopt
+signaltrail --data-dir "$env:LOCALAPPDATA\hermes\daily-intelligence" data-root status
 ```
 
 macOS/Linux 示例（在仓库或完整解压包目录运行）：
 
 ```sh
 python -m pip uninstall daily-intelligence-skill
-mv ~/.hermes/daily-intelligence ~/.hermes/signaltrail
-mv ~/.hermes/browser-profiles/daily-intelligence ~/.hermes/browser-profiles/signaltrail
-bash ./scripts/install.sh
-signaltrail --data-dir "$HOME/.hermes/signaltrail" data-root adopt
-signaltrail --data-dir "$HOME/.hermes/signaltrail" data-root status
+python -m pip install -e .
+export SIGNALTRAIL_PROFILE_DIR="$HOME/.hermes/browser-profiles/daily-intelligence"
+signaltrail --data-dir "$HOME/.hermes/daily-intelligence" data-root adopt
+signaltrail --data-dir "$HOME/.hermes/daily-intelligence" data-root status
 ```
 
-仅在旧目录存在且新目标不存在时执行对应的 `Move-Item`／`mv`。若新旧目录同时存在，先停止并检查，不要自动合并两份历史。
-配置了 `HERMES_HOME` 时，将示例中的 Hermes 根目录换成该路径。目录改名会逐字节保留报告、运行、索引、缓存和用量历史。
-改名后运行 `data-root adopt`，在 `state/signaltrail-data-root.json` 写入新登记并记录旧根，再用 `status` 核对。
-旧登记表保留为只读回退。若采用复制迁移，可保留旧目录暂存：先完整复制数据根并自行核验，再 adopt 新路径。
-adopt 只切换绑定并记录旧根，不复制文件或验证完整性。还需更新已保存的 `--profile-dir` 和定时任务命令。
+以上命令原地保留旧数据和 Profile。`data-root adopt` 在 SignalTrail 应用目录登记所选根，
+不移动或复制文件。后续继续传同一个 `--data-dir` 或设置 `SIGNALTRAIL_DATA_DIR`；
+并用 `SIGNALTRAIL_PROFILE_DIR` 或 `--profile-dir` 指向旧 Profile。还需更新定时任务命令。
+以上环境变量赋值只作用于当前 Shell；调度任务应保存 Profile 环境变量或在命令中传入
+`--profile-dir`。保留现有根目录：跨目录移动数据根还需要历史路径映射。
 
 ## 数据目录
 
-在子命令前传入 `--data-dir DATA_DIR`，或设置兼容的 `DAILY_INTEL_DATA_DIR`。
-Hermes 在 Windows 默认使用 `%LOCALAPPDATA%\hermes\signaltrail`，macOS/Linux 默认使用 `~/.hermes/signaltrail`。
-配置了 `HERMES_HOME` 时使用其中的 `signaltrail/` 子目录。专用浏览器 Profile 默认位于 Hermes 根目录下的 `browser-profiles/signaltrail/`。
+在子命令前传入 `--data-dir DATA_DIR`，或设置 `SIGNALTRAIL_DATA_DIR`（旧变量
+`DAILY_INTEL_DATA_DIR` 仍兼容）。Windows 默认使用 `%LOCALAPPDATA%\signaltrail`；
+macOS/Linux 默认使用 `${XDG_DATA_HOME:-~/.local/share}/signaltrail`。
+Profile 可由 `SIGNALTRAIL_PROFILE_DIR` 或 `--profile-dir` 指定；默认位于 SignalTrail
+应用目录的 `browser-profiles/signaltrail/`。完整包从仓库外启动且无法定位资源时，设置
+`SIGNALTRAIL_SKILL_DIR`。
 
 ```sh
 signaltrail --data-dir DATA_DIR data-root status
 ```
 
-首次运行绑定数据根。`data-root adopt` 会明确改变绑定，仅用于主动迁移；
-它不会把已有报告复制到新目录。运行清单和引用的产物必须属于同一数据根。
+显式 `--data-dir` 直接选定根，不会自动登记。`data-root adopt` 将根登记，供以后未指定目录时使用；
+登记位于 SignalTrail 应用目录，不在 Hermes home。运行清单和引用的产物必须属于同一数据根。
 
 ## 语言与来源顺序
 
@@ -136,20 +142,19 @@ signaltrail-hermes run --ledger DATA_DIR --hermes-python HERMES_PYTHON --prompt-
 评估器调用；整次运行应以封存的 usage task 摘要为准。
 具体限制及 Codex/OpenClaw 导入见[用量说明](../../references/llm-usage.md)。
 
-其他智能体也可以处理相同写作包。没有已审计适配器时，运行仍可使用，但明确标为
-`unmetered`，token 总量为 null。没有自动评估调度的宿主仅在用户要求质量评分时自行派发评估包，
-并调用 `finalize-evaluation`。
+其他 Agent 也可以处理相同写作包。没有已审计适配器时，运行仍可使用，但明确标为
+`unmetered`，token 总量为 null。
 
 质量评分默认关闭。用户明确要求时，在 `finalize-edition` 或 `complete-edition-tail` 加
 `--evaluate`，请求随本轮运行保留，供后台收尾和恢复使用。普通定稿和 PDF 交付不会创建评分任务。
 已有评分继续保留；未评分摘要不进入已批准的语义缓存，因此后续日报可能需要增加重新写作量。
 结构和证据校验仍正常运行。
 
-默认评估后端为 Hermes。由当前 harness 自行评估时，可额外传 `--evaluation-backend external`；
-单独指定后端不会开启评估。与 `--evaluate` 一起使用时，tail 会生成绑定报告哈希的 dossier，
-`edition-status` 会返回 dossier 路径、草稿路径和精确的 `finalize-evaluation` 命令。外部评估器
-只读 dossier、写入指定草稿，再执行该命令。external 模式不派发 Hermes，也不创建评估器用量任务；
-只有草稿通过 `finalize-evaluation` 校验后才记为完成。外部交接只尝试派发一次，恢复时不会自动重复派发。
+默认评估 backend 为 external。用户明确要求评分时，`--evaluate` 会生成绑定报告哈希的 dossier。
+交由未参与报告写作的独立 Agent 只读 dossier，写出每个维度的 `id`、1–5 整数 `score` 和目标语言
+`finding`，再执行 `edition-status` 返回的精确 `finalize-evaluation` 命令。若没有独立评估器，保留
+pending。此路径不派发 Hermes，也不创建虚假的评估用量任务。只有草稿通过校验并保存后才记为完成。
+有意使用 Hermes 时显式传入 `--evaluation-backend hermes`；Hermes 接入见[参考](../../references/hermes-integration.md)。
 
 ## 报告与恢复
 

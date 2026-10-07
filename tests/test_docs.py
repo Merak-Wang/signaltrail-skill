@@ -39,6 +39,12 @@ def documentation_root(tmp_path):
     return tmp_path
 
 
+def test_root_agent_instructions_translate_to_renamed_chinese_mirror(documentation_root):
+    assert DOCS.translation_path(
+        documentation_root / "AGENTS.md", documentation_root
+    ) == documentation_root / "docs" / "zh-CN" / "agent-instructions.md"
+
+
 @pytest.mark.parametrize(
     ("status", "verified", "error"),
     [
@@ -130,7 +136,7 @@ def test_public_markdown_hygiene_patterns_cover_session_and_personal_paths():
         "Codex 应用内浏览器拒绝了页面",
     ]
     allowed = [
-        "%LOCALAPPDATA%\\hermes\\daily-intelligence",
+        "%LOCALAPPDATA%\\signaltrail",
         "Codex and OpenClaw have built-in usage adapters.",
     ]
 

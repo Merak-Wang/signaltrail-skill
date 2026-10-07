@@ -749,7 +749,7 @@ def _schedule_evaluation_attempt(
     if preflight["status"] == "already_completed":
         return evaluation
 
-    if run.get("evaluation_backend") == "external":
+    if _evaluation_backend(run) == "external":
         scheduler = evaluation.get("scheduler")
         if isinstance(scheduler, dict) and scheduler.get("backend") == "external":
             return evaluation
@@ -914,6 +914,30 @@ def _schedule_evaluation_attempt(
         ledger.finalize_task(usage_task, status="schedule_failed")
     evaluation["scheduler"] = result
     return evaluation
+
+
+def _evaluation_backend(run: dict[str, Any], requested: str | None = None) -> str:
+    """处理：按显式选项、运行记录或旧调度器状态确定评估执行端。
+    输入：本次运行清单及可选命令行后端；旧版已启动的 Hermes 任务必须沿用。
+    输出：``hermes`` 或 ``external``；新评估默认交给外部 Agent。
+    """
+    if requested in {"hermes", "external"}:
+        return requested
+    backend = run.get("evaluation_backend")
+    if backend in {"hermes", "external"}:
+        return backend
+    evaluation = run.get("evaluation")
+    scheduler = evaluation.get("scheduler") if isinstance(evaluation, dict) else None
+    if isinstance(scheduler, dict) and scheduler.get("backend") in {
+        "hermes", "metered-local"
+    }:
+        return "hermes"
+    if isinstance(scheduler, dict) and scheduler.get("job_id"):
+        return "hermes"
+    configured = os.environ.get("SIGNALTRAIL_EVALUATION_BACKEND")
+    if configured in {"hermes", "external"}:
+        return configured
+    return "external"
 
 
 def edition_window(date_value: str, edition: str, timezone: str) -> dict[str, str]:
@@ -1216,6 +1240,7 @@ def _adopt_locked_index(
                 "markdown_path",
                 "content_hash",
                 "notion",
+                "slides",
             }
         }
         run["artifacts"] = {
@@ -2036,9 +2061,26 @@ def _prepare_edition_slides(run: dict, run_path: Path, data_dir: Path) -> None:
     artifacts = run.setdefault("artifacts", {})
     slides_max_news = int(artifacts.get("slides", {}).get("max_news", 50))
     plan_path = artifacts.get("slides", {}).get("plan_path")
-    if plan_path and Path(str(plan_path)).is_file():
+    reuse_plan = plan_path or artifacts.get("previous_report", {}).get("slides", {}).get(
+        "plan_path"
+    )
+    if reuse_plan:
         try:
-            if _slides_plan_matches_selection(Path(str(plan_path)), slides_max_news, data_dir):
+            from .narrative_store import load_artifact, parent_path
+
+            old_plan = load_artifact(Path(str(reuse_plan)), data_dir, kind="slides-plan")
+        except (ValueError, KeyError, OSError):
+            reuse_plan = None
+    if plan_path and reuse_plan:
+        try:
+            same_inputs = all(
+                parent_path(old_plan, key, data_dir).resolve()
+                == Path(str(artifacts[path])).resolve()
+                for key, path in (("report", "json_path"), ("index", "index_path"))
+            )
+            if same_inputs and _slides_plan_matches_selection(
+                Path(str(plan_path)), slides_max_news, data_dir
+            ):
                 return
         except (ValueError, KeyError, OSError):
             pass
@@ -2050,6 +2092,7 @@ def _prepare_edition_slides(run: dict, run_path: Path, data_dir: Path) -> None:
             Path(str(artifacts["index_path"])),
             data_dir,
             max_news=slides_max_news,
+            reuse_plan=Path(str(reuse_plan)) if reuse_plan else None,
         )
         artifacts["slides"] = {**result, "max_news": slides_max_news, "status": "prepared"}
     except Exception as exc:
@@ -2190,7 +2233,7 @@ def finalize_edition(
                 evaluation_requested=(
                     True if evaluate else bool(run.get("evaluation_requested", False))
                 ),
-                evaluation_backend=evaluation_backend or run.get("evaluation_backend", "hermes"),
+                evaluation_backend=_evaluation_backend(run, evaluation_backend),
             )
         evaluation_requested = bool(run.get("evaluation_requested", False))
         if run.get("status") in {
@@ -2347,8 +2390,8 @@ def finalize_edition(
                 + (" --publish" if publish else "")
                 + (" --evaluate" if evaluation_requested else "")
                 + (
-                    " --evaluation-backend external"
-                    if run.get("evaluation_backend") == "external"
+                    f" --evaluation-backend {run['evaluation_backend']}"
+                    if evaluation_requested and run.get("evaluation_backend")
                     else ""
                 )
                 + (
@@ -2512,7 +2555,7 @@ def complete_edition_tail(
                 evaluation_requested=(
                     True if evaluate else bool(run.get("evaluation_requested", False))
                 ),
-                evaluation_backend=evaluation_backend or run.get("evaluation_backend", "hermes"),
+                evaluation_backend=_evaluation_backend(run, evaluation_backend),
             )
         evaluation_requested = bool(run.get("evaluation_requested", False))
         tail = dict(run.get("tail") or {})

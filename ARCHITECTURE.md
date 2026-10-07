@@ -33,6 +33,8 @@ on-screen summary and keeps a separate open link; printing restores the summary.
 stays unchanged. Image updates can reuse accepted narration without another model call; `slides prepare`
 reads the supplied report and index and does not fetch webpages. Offline rendering reuses existing deck
 images without network access.
+An independent index-only path uses collection, optional body extraction, and `slides prepare --index` without report authoring or analysis. It orders indexed stories by source rank and URL identity, writes target-language titles/summaries with narration, and renders a deck without report projections. Accepted writing with unchanged inputs can be reused across revisions; pending counts remain separate from reused counts.
+
 See the [news slides workflow](docs/news-slides.md).
 
 ## Code map
@@ -49,13 +51,13 @@ All modules below live in `src/signaltrail/`.
 | Writing | `context`, `authoring`, `semantics`, `state` | Bounded packets, accepted batches, continuity and cache |
 | Report contract | `reporting` | Compile drafts, hydrate evidence, validate schema and cross-field rules |
 | Report storage | `reports` | Save reports and evaluations, render Markdown, update derived state |
-| News slides | `news_slides`, `slide_images`, `slide_renderer` | Report-wide top-N narration batches, public-page image refresh, and standalone animated HTML projection of a saved report |
+| News slides | `news_slides`, `slide_reuse`, `slide_images`, `slide_renderer` | Report or index-only bounded writing, accepted narration reuse, public-page image refresh, and standalone animated HTML |
 | Experimental explainers | `narrative`, `narrative_contracts`, `narrative_store`, `narrative_verification`, `story_stream` | Immutable report children, language reviews, diagrams; current-news admission blocked |
 | Experimental research | `research`, `research_contracts`, `research_delivery` | Frozen blocks, local question retrieval, scoped memos and preview-only late report binding; current admission blocked |
 | Delivery | `local_output`, `notion`, `dashboard` | HTML/PDF, remote copies, read-only monitor UI |
 | Workflow | `workflow` | Run checkpoints, deadlines, recovery, evaluator scheduling |
 | Usage and budget | `llm_usage/`, `llm_budget`, `evaluation` | Immutable usage events, dispatch reserves, evaluation dossiers |
-| Host integration | `hosts/`, `hermes_runner`, `usage_cli` | Metered host execution, hooks and durable-log imports |
+| Host integration | `hosts/`, `hermes_runner`, `usage_cli` | Optional host metering, launchers, hooks and durable-log imports |
 | Commands | `cli`, `commands/`, `verification`, `importer` | Parse arguments, bind configuration, call domain functions |
 
 Dependencies point from entry points through orchestration to domain code and shared I/O.
@@ -66,7 +68,7 @@ a typed `CommandContext`. `signaltrail` is the main CLI entry point.
 The public Python import and module entry point are `signaltrail` and `python -m signaltrail.cli`;
 the command is `signaltrail`, and the distribution is `signaltrail-skill`. Legacy `DAILY_INTEL_*`
 environment variables and stored report IDs remain compatible. Old Hermes `daily-intelligence`
-data and browser-profile directories migrate by an explicit rename; see [usage](docs/usage.md).
+data and browser-profile directories can remain in place with explicit path settings; see [usage](docs/usage.md).
 
 ## State and files
 
@@ -113,11 +115,13 @@ prompts, responses, reasoning, tool arguments, raw host IDs, and secrets. Unknow
 remain null. Task locks serialize append and finalization; finalization rejects open calls.
 Hashes detect inconsistent local edits, not an attacker able to rewrite the whole ledger.
 
-`signaltrail-hermes` starts metering before Hermes, waits for worker waves, observes auxiliary
-requests, and reconciles the same sessions against host counters before sealing. Independent
-evaluators use a separate task and local one-shot process. Direct CLI/Cron paths retain their
-documented coverage gaps. Adapter formats, accounting semantics, and compatibility limits live
-in [usage metering](references/llm-usage.md).
+The core CLI uses a SignalTrail application data directory and does not require Hermes or read
+Hermes environment files. General host execution may be unmetered unless an audited usage adapter
+is available. The optional `signaltrail-hermes` launcher starts metering before Hermes, observes
+supported auxiliary requests, and reconciles sessions against host counters before sealing.
+Evaluator scoring defaults to an external independent agent; Hermes scheduling is an explicit
+backend choice. Adapter formats and coverage limits live in [usage metering](references/llm-usage.md)
+and the [Hermes integration reference](references/hermes-integration.md).
 
 Remaining large compiler, validator, and renderer functions are tracked as TD-002 in the
 [technical-debt tracker](docs/exec-plans/tech-debt-tracker.md). Test selection and the full gate

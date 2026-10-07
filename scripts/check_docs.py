@@ -85,7 +85,9 @@ def translation_path(record: Path, root: Path = ROOT) -> Path:
     - ``root``：仓库根；决定 docs/zh-CN 的位置。
     输出：预期译文路径，供缺失译文检查和错误提示使用。
     """
-    relative = record.name if record.parent == root else record.relative_to(root / "docs")
+    relative = Path(record.name) if record.parent == root else record.relative_to(root / "docs")
+    if relative == Path("AGENTS.md"):
+        relative = Path("agent-instructions.md")
     return root / "docs" / "zh-CN" / relative
 
 

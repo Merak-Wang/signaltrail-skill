@@ -63,6 +63,28 @@ def test_selection_includes_more_than_twelve_and_manual_ids_override(slide_case)
         select_news(report, index, item_ids=["unknown"])
 
 
+def test_importance_cutoff_filters_featured_and_briefs_together(slide_case):
+    _, _, _, report, index = slide_case
+    report["sections"][0]["items"][0]["importance"] = 20
+    selected = select_news(report, index, min_importance=89)
+    assert [event["event_id"] for event in selected] == ["brief-item-1"]
+
+
+def test_importance_cutoff_can_exclude_every_featured_event(slide_case):
+    _, _, _, report, index = slide_case
+    report["sections"][0]["items"][0]["importance"] = 20
+    report["sections"][0]["briefs"] = []
+    assert select_news(report, index, min_importance=90) == []
+
+
+def test_manual_ids_override_importance_for_featured_and_briefs(slide_case):
+    _, _, _, report, index = slide_case
+    report["sections"][0]["items"][0]["importance"] = 20
+    selected = select_news(report, index, min_importance=100,
+                           item_ids=["item-0", "item-15"])
+    assert {event["event_id"] for event in selected} == {"event-0", "brief-item-15"}
+
+
 def test_selection_merges_single_source_reposts_by_original_url(slide_case):
     _, _, _, report, index = slide_case
     lower, higher = report["sections"][0]["briefs"][1:3]

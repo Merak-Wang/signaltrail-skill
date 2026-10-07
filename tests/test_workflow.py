@@ -29,7 +29,6 @@ def test_external_evaluation_builds_dossier_without_scheduling_hermes(monkeypatc
     })
     index_path = write_json(data_dir / "indexes" / "2026-10-07" / "morning-r1.json", {})
     run_path = write_json(data_dir / "runs" / "2026-10-07" / "morning.json", {
-        "evaluation_backend": "external",
         "artifacts": {
             "json_path": str(report_path), "index_path": str(index_path),
             "report_id": "daily-2026-10-07-morning-r1", "content_hash": "hash-1",
@@ -540,7 +539,8 @@ def test_verified_index_reopens_published_run_as_a_report_revision(monkeypatch, 
 
 
 @pytest.mark.parametrize(
-    ("evaluate", "backend"), [(False, None), (True, None), (True, "external")]
+    ("evaluate", "backend"),
+    [(False, None), (True, None), (True, "hermes"), (True, "external")],
 )
 def test_deferred_tail_returns_after_html_then_finishes_requested_work(
     monkeypatch, tmp_path: Path, evaluate, backend
@@ -609,7 +609,7 @@ def test_deferred_tail_returns_after_html_then_finishes_requested_work(
             AssertionError("evaluation must wait for the tail worker")
         ),
     )
-    if backend == "external":
+    if evaluate and backend != "hermes":
         dossier_path = data_dir / "evaluations" / "dossiers" / "dossier-v2.json"
         monkeypatch.setattr(
             "signaltrail.workflow.build_evaluation_dossier",
@@ -636,9 +636,11 @@ def test_deferred_tail_returns_after_html_then_finishes_requested_work(
     else:
         assert run["evaluation"]["status"] == "not_requested"
     assert ("--evaluate" in run["tail"]["command"]) is evaluate
-    assert ("--evaluation-backend external" in run["tail"]["command"]) is (
-        backend == "external"
-    )
+    if evaluate:
+        expected_backend = backend or "external"
+        assert f"--evaluation-backend {expected_backend}" in run["tail"]["command"]
+    else:
+        assert "--evaluation-backend" not in run["tail"]["command"]
     assert run["artifacts"]["requested_formats"] == ["html"]
     assert "--publish" in run["tail"]["command"]
     assert run["tail"]["command"].startswith("signaltrail --data-dir ")
@@ -674,7 +676,7 @@ def test_deferred_tail_returns_after_html_then_finishes_requested_work(
     assert run["tail"]["status"] == "completed"
     assert run["publication"]["page_id"] == "notion-page"
     if evaluate:
-        if backend == "external":
+        if backend != "hermes":
             assert run["evaluation"]["scheduler"]["status"] == "awaiting_external"
             assert run["evaluation"]["scheduler"]["dossier_path"] == str(dossier_path)
             assert run["evaluation"]["scheduler"]["draft_path"].endswith(
@@ -696,9 +698,15 @@ def test_deferred_tail_returns_after_html_then_finishes_requested_work(
         assert run["evaluation"]["status"] == "not_requested"
         assert "scheduler" not in run["evaluation"]
         assert not (data_dir / "usage").exists()
+        dossier_path = data_dir / "evaluations" / "dossiers" / "dossier-v2.json"
+        monkeypatch.setattr(
+            "signaltrail.workflow.build_evaluation_dossier",
+            lambda *_args: write_json(dossier_path, {"report_id": "bound-report"}),
+        )
         complete_edition_tail(run_path, data_dir, evaluate=True)
         assert read_json(run_path)["evaluation"]["status"] == "pending"
-        assert read_json(run_path)["evaluation"]["scheduler"]["status"] == "scheduled"
+        assert read_json(run_path)["evaluation"]["scheduler"]["status"] == "awaiting_external"
+        assert not (data_dir / "usage").exists()
     assert run["artifacts"]["pdf_engine"] == "reportlab"
     assert run["metrics"]["pdf_projection_seconds"] >= 0
     assert "finalize-edition" in run["next_action"]
@@ -794,6 +802,7 @@ def test_deferred_tail_records_projection_failure_without_retracting_html(
                 "scheduler": {"status": "deferred_until_tail"},
             },
             "evaluation_requested": True,
+            "evaluation_backend": "hermes",
         },
     )
     monkeypatch.setattr(
@@ -935,7 +944,7 @@ def test_finalize_keeps_custom_slide_limit_on_retry_and_changes_plan_explicitly(
     })
     calls = []
 
-    def prepare(report, index, root, *, max_news):
+    def prepare(report, index, root, *, max_news, reuse_plan=None):
         calls.append(max_news)
         plan = save_artifact(root, f"slides-{max_news}-{len(calls)}", "slides-plan", {
             "selection_policy": "report-admitted-importance-v1",

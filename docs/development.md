@@ -59,7 +59,7 @@ or delete regression coverage merely to reduce the test count.
 | `signaltrail` | Python import package and `python -m signaltrail.cli` module entry point |
 | `signaltrail-skill` | Python distribution; replaces the previous `daily-intelligence-skill` distribution |
 | `DAILY_INTEL_*`, report IDs | Legacy environment names and stored identifiers remain compatible |
-| Hermes `signaltrail/` data and browser-profile directories | Current defaults; rename the old `daily-intelligence/` directories during explicit migration |
+| SignalTrail app data and browser-profile directories | Host-neutral defaults; migrate old Hermes directories only when upgrading existing data |
 
 Use verbs for operations (`collect_sources`, `save_report`) and nouns for data.
 CLI handlers use `handle_<command>` and live in `commands/`; they translate options into domain
@@ -94,7 +94,8 @@ The comment checker covers the maintained source modules and maintenance scripts
 
 Maintain one implementation under root `src/`; do not commit a nested skill copy.
 For an explicit release request, run `python scripts/build_hermes_skill.py` to generate the
-complete skill package in ignored `dist/signaltrail/`. Its Git-tracked allowlist includes
+complete skill package in ignored `dist/signaltrail/`. The script name is retained for compatibility;
+the Skill and package do not require Hermes. Its Git-tracked allowlist includes
 `SKILL.md`, Python source, configuration, schemas, templates, references, and assets, excluding
 runtime data and credentials. The generated package is a release artifact; keep the implementation
 and documentation at the repository root, with no nested `skills/signaltrail/` copy. For a GitHub

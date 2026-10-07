@@ -23,6 +23,8 @@ The September 23, 2026 morning report contains 415 news items across 30 source g
 
 [Download the report and embedded presentation ZIP](https://github.com/Merak-Wang/signaltrail-skill/raw/refs/heads/main/examples/reports/2026-09-23-morning-r1.zip) · [Download the report HTML only](https://github.com/Merak-Wang/signaltrail-skill/raw/refs/heads/main/examples/reports/2026-09-23-morning-r1.html)
 
+For a visual stream without a daily report, collect an index, optionally enrich its article text, and run `signaltrail slides prepare --index INDEX.json --language en`. Write only the pending packets and reuse the same submit/status/render commands below. `--reuse-plan OLD_PLAN.json` reuses unchanged accepted writing; unknown usage and costs remain unknown.
+
 ## Animated HTML slides
 
 ![SignalTrail news slides preview](assets/readme/news-slides-preview.png)
@@ -35,7 +37,7 @@ Each story occupies one slide. The presenter-style narration appears with the da
 
 Slides can be navigated inside the report's “Today’s visual briefing” panel or opened as a standalone HTML page. Local templates render the layout and transitions without additional model calls. Text-to-speech and video generation are not implemented.
 
-Candidates cover the entire saved report: selected events and briefs. Duplicate original stories are merged, then ranked by importance; the default is the top 50. Set another positive count with `slides prepare --max-news N` or `finalize-edition --slides-max-news N`. There is no per-source quota. Unknown publication dates remain unknown and are never replaced with discovery or collection time. Batches default to four stories and retain estimated input/output size gates. Chinese narration is validated at 200–350 non-whitespace characters. Analysis perspectives are included only when supported by the story evidence.
+Candidates cover the entire saved report: selected events and briefs. Duplicate original stories are merged, then ranked by importance; the default is the top 50. Set another positive count with `slides prepare --max-news N` or `finalize-edition --slides-max-news N`. There is no per-source quota. Unknown publication dates remain unknown and are never replaced with discovery or collection time. Batches default to five stories and retain estimated input/output size gates. Chinese narration is validated at 200–350 non-whitespace characters. Analysis perspectives are included only when supported by the story evidence.
 
 Start with a saved report and its matching index:
 
@@ -55,7 +57,7 @@ After all batches are ready, `render` creates the deck HTML and updates the matc
 
 ## Quick start
 
-You need Python 3.11+ and an agent host with a configured model; Git is needed when cloning the source. You can clone the repository or download the [SignalTrail 2.1.0 full install package](https://github.com/Merak-Wang/signaltrail-skill/releases/latest).
+You need Python 3.11+, a configured agent, and a local command line; Git is needed when cloning the source. You can clone the repository or download the [SignalTrail 2.1.0 full install package](https://github.com/Merak-Wang/signaltrail-skill/releases/latest).
 
 ```sh
 git clone https://github.com/Merak-Wang/signaltrail-skill.git
@@ -72,7 +74,7 @@ Use SignalTrail to create today's English morning report as local HTML and PDF.
 
 `signaltrail` is the unified CLI. The Python package can be imported as `signaltrail` or launched with `python -m signaltrail.cli`. The CLI prepares reproducible collection, validation, and storage steps; the agent writes from the evidence packets. Running `run-edition` alone stops at the authoring handoff and does not produce a complete report by itself.
 
-### Install for Hermes
+### Optional: install for Hermes
 
 Run the matching installer from the repository or extracted full-package root:
 
@@ -86,13 +88,13 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install.ps1
 bash ./scripts/install.sh
 ```
 
-The scripts synchronize the Skill to Hermes and install the Python command. Browser collection on Windows can use system Microsoft Edge. The macOS/Linux installer also installs Playwright Chromium in the same Python environment. For a manual install, run:
+The scripts synchronize the Skill to Hermes and install the Python command; the SignalTrail CLI itself does not require Hermes. Browser collection on Windows can use system Microsoft Edge. The macOS/Linux installer also installs Playwright Chromium in the same Python environment. For a manual install, run:
 
 ```sh
 python -m playwright install chromium
 ```
 
-When upgrading from the earlier package, uninstall the old `daily-intelligence-skill` Python distribution before installing `signaltrail-skill`. Stop active runs, then rename the old Hermes data and dedicated browser-profile directories to `signaltrail`; renaming keeps all saved report history. See [Upgrade from an earlier version](docs/usage.md#upgrade-from-an-earlier-version) for exact paths and commands.
+When upgrading from the earlier package, uninstall the old `daily-intelligence-skill` Python distribution before installing the new version. Keep existing Hermes data and profiles in place and continue using them through explicit data-root and profile settings. See [Upgrade from an earlier version](docs/usage.md#upgrade-from-an-earlier-version) for commands.
 
 See the [usage guide](docs/usage.md) for host setup, data directories, metered runs, and recovery.
 
@@ -107,7 +109,7 @@ The monitor refreshes sources, organizes the news stream, and clusters related s
 
 ## Data, cost, and boundaries
 
-Versioned report JSON and Markdown are the original records; HTML and PDF are rebuildable reading views. Existing report revisions are not overwritten. Source access failures, rate limits, and verification challenges retain their actual status. Runtime data stays local in the Hermes `signaltrail/` directory by default. Existing users can rename the old data directory as described in [Upgrade from an earlier version](docs/usage.md#upgrade-from-an-earlier-version), preserving reports and run history.
+Versioned report JSON and Markdown are the original records; HTML and PDF are rebuildable reading views. Existing report revisions are not overwritten. Source access failures, rate limits, and verification challenges retain their actual status. Runtime data stays local in an independent SignalTrail application directory by default. Existing users can keep using their current data directory as described in [Upgrade from an earlier version](docs/usage.md#upgrade-from-an-earlier-version), preserving reports and run history.
 
 Collection, monitoring, image handling, and HTML rendering make no model calls. The agent host performs report and slide writing. Batch token gates limit estimated input and output size; actual usage depends on what the host reports. Source availability, network access, evidence coverage, and model latency affect delivery and coverage.
 

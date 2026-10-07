@@ -37,17 +37,19 @@ HTML 先交付（仅报告已保存） -> tail 与图文讲稿并行 -> 等待 t
 
 质量评分默认关闭，仅当用户明确要求时在 `finalize-edition` 或 `complete-edition-tail` 加 `--evaluate`。请求写入本轮 `evaluation_requested` 并在恢复时沿用；未请求时不创建 evaluator、dossier 或评分用量任务，run 记为 `not_requested`。结构、引用和文件校验正常执行。以下评分调度与重试步骤仅适用于已明确请求的运行。
 
-写作与评估保持角色隔离。`finalize-edition --defer-tail` 在不可变 JSON/Markdown 和 HTML 就绪后返回；这表示报告已保存，允许先交付 HTML，但不表示整期交付完成。authoring coordinator 立即交付 `artifacts.html_path`，再把 run 中的 `tail.command` 放进后台 terminal。`complete-edition-tail` 生成 PDF、按请求发布 Notion，并先用当前 report/hash 预检已完成评估。图文讲稿写作可与该尾任务并行；渲染会更新日报 HTML，因此必须等尾任务退出后再运行 `slides render`。通过 `signaltrail-hermes` 运行时，评估由带独立用量任务的本地一次性进程执行；普通入口保留 Hermes Cron 调度。两条 Hermes 路径都先对账现有任务；只有既有 job 明确失败或超过停滞窗口时才允许第二次且最后一次尝试，unknown/对账失败不会重复调度。若当前 harness 自行评估，在 `finalize-edition` 或 `complete-edition-tail` 同时传 `--evaluate --evaluation-backend external`。tail 完成后，`edition-status` 会提供 dossier 路径和精确 `finalize-evaluation` 命令；外部评估器只读 Python 生成的不可变 hash-bound dossier，把独立 JSON 写到命令指定路径，再运行该命令。external 模式不派发 Hermes，也不创建虚假 evaluator usage task；在 finalize 命令验证并保存前，评估仍是 pending。评估完成后刷新 HTML、桌面副本和归档索引；同一 report revision 已存在的 PDF 直接复用，PDF 缺失时才补建，不能为加入评分重复渲染图片密集文档。目标日报显式使用了 `--publish` 时，返回的评估命令才追加 `--publish`。旧 Cron 调度需要 Gateway 保持可用；本地计量入口及覆盖限制见 [用量说明](llm-usage.md)。tail 或调度失败只写入 run，不撤回本地日报。晚间生成读取当天晨报和已存在的晨报评估；晨报评估尚未完成时按未评估历史处理。
+写作与评估保持角色隔离。`finalize-edition --defer-tail` 在不可变 JSON/Markdown 和 HTML 就绪后返回；这表示报告已保存，但不表示整期交付完成。`complete-edition-tail` 生成 PDF、按请求发布 Notion，并处理用户明确请求的评分。图文讲稿可与 tail 同时进行；等待 tail 退出后再渲染，因为两项操作都可能更新日报投影。
+
+评分 backend 默认是 external。独立 evaluator 只读不可变 dossier，按其 `evaluation_contract` 写入 JSON，再执行 `edition-status` 给出的 `finalize-evaluation` 命令。Evaluator 必须未参与报告写作；没有独立 Agent 时保留 pending。仅显式传 `--evaluation-backend hermes` 才调度 Hermes evaluator。评估完成后刷新 HTML、桌面副本和归档索引；已存在的同 revision PDF 会复用。目标日报显式请求 `--publish` 时，评估命令才追加 `--publish`。Hermes 调度恢复、Gateway 和计量限制见[用量说明](llm-usage.md)及[Hermes 集成](hermes-integration.md)。tail 或调度失败不撤回本地日报。晚间生成读取当天晨报和已有评估；晨报评估尚未完成时按未评估历史处理。
 
 ## Harness 与用量接入
 
-核心流程不要求特定 harness。宿主只需能运行本地命令、读取 packet、把结构化 JSON 写到 packet 指定路径，并把提交结果交给 authoring coordinator。所有宿主都应显式复用同一个 `--data-dir`；支持隔离 worker 时按最多 3 个并发 packet 分波，不支持时可以顺序执行。
+核心流程不要求特定 harness。Agent 只需能运行本地命令、读取 packet、把结构化 JSON 写到指定路径并提交。全程复用同一个 `--data-dir`；有隔离 worker 时最多同时运行 3 个 packet，一个完成就按序补下一个；否则顺序执行。
 
 `signaltrail-usage` 只内置 `hermes`、`codex`、`openclaw` 三个 adapter。其他 harness 可以不绑定 usage task，此时工作流保持可运行，但预算回执必须显示 `coverage=unmetered` 且 observed/projected token 为 `null`；也可以在 Python 中实现 `UsageAdapter` 并注册固定字段白名单。不得把未知宿主格式冒充现有 adapter。Hermes 提供逐请求 Hook 和聚合补录；Codex 使用 rollout JSONL；OpenClaw 使用经审计的 per-agent SQLite v17 或旧 JSONL。完整接入与隐私边界见 [`llm-usage.md`](llm-usage.md)。
 
 ## 图文幻灯片
 
-图文流是默认日报整期交付的必需组成部分，无论 run 为 metered 或 unmetered。报告 JSON/Markdown 与 HTML 可以先保存和交付；只有全部批次通过、渲染成功并通过整期验收，才标记为“整期交付完成”。从日报与对应索引准备批次，使用 manifest 中真实计划/packet 路径，读取每包 `payload.model_input` 并提交草稿；最多三名 worker 一波，等整波后再开下一波。全部批次通过且 tail 退出后渲染：
+图文流是默认日报整期交付的必需组成部分，无论 run 为 metered 或 unmetered。报告 JSON/Markdown 与 HTML 可以先保存和交付；只有全部批次通过、渲染成功并通过整期验收，才标记为“整期交付完成”。从日报与对应索引准备批次，使用 manifest 中真实计划/packet 路径，读取每包 `payload.model_input` 并提交草稿；最多同时运行 3 个隔离 worker，一个完成就按序补下一个；也可由单个 Agent 顺序处理。全部批次通过且 tail 退出后渲染：
 
 ```text
 signaltrail --data-dir DATA_DIR slides prepare --report REPORT.json --index INDEX.json
@@ -88,7 +90,7 @@ host scheduler、Gateway 和其他无人值守会话不得传 `--open-verificati
 ## 恢复
 
 - `awaiting_selection`：选择 ID，运行 `enrich-edition`。
-- `awaiting_authoring` 且没有 session：运行 `begin-authoring` 后，在后台启动 `prefetch-media` 并保留进程句柄与退出码；同时把计划内、尚未复用的 packet 按顺序分波，每波最多同时运行 3 个 author，等整波完成再启动下一波。媒体预取只读固定 index/context、写入图片缓存和独立 receipt；等它退出并检查 receipt 后再运行 `prepare-analysis` 或定稿。每个 brief author 的输入只有一个 packet 和其中列出的正文路径，输出只有指定 `draft_result_path` 的 JSON 与对 `submission_command` 的提交；`output_schema` 是字段、类型、枚举与额外字段的权威边界。SignalTrail 的 Hermes 集成通过前台 `delegate_task(background=False)` 同步等待整波返回，内部并发仍受 `max_concurrent_children=3` 限制；宿主其他普通路径可能支持后台子任务，但这里必须等整波完成后再汇总。其他 harness 使用等价 worker 或顺序执行，不得跳过后续波次。
+- `awaiting_authoring` 且没有 session：运行 `begin-authoring` 后，启动 `prefetch-media`；可在宿主支持并行进程时与作者同时运行，否则先完成预取。同时按顺序调度尚未复用的 packet，最多同时运行 3 个 author，一个 worker 完成后按序补入下一个。媒体预取只读固定 index/context、写入图片缓存和独立 receipt；等它退出并检查 receipt 后再运行 `prepare-analysis` 或定稿。每个 brief author 的输入只有一个 packet 和其中列出的正文路径，输出只有指定 `draft_result_path` 的 JSON 与对 `submission_command` 的提交；`output_schema` 是字段、类型、枚举与额外字段的权威边界。SignalTrail 的 Hermes 集成通过前台 `delegate_task(background=False)` 同步等待整波返回，内部并发仍受 `max_concurrent_children=3` 限制；其他 harness 使用等价 worker 或顺序执行，不得跳过 packet。
 - authoring 批次已返回：把宿主提供的有界批次指标写入 session 指定路径并运行 `record-authoring-metrics`；`authoring-status` 全部完成后运行 `prepare-analysis`。即使宿主完成通知或不可变接收结果缺失，也不要先删 draft：`prepare-analysis` 会对每个缺 receipt 的授权 `draft_result_path` 执行原 packet 校验，合法草稿会被原子接收并列入 `recovered_batches`。检查恢复后的 `missing_batches`，只有输出 `deadline_exceeded: true` 时才能用 `prepare-analysis --allow-degraded`。
 - authoring 降级：只把对应 missing batch 所负责来源的 `coverage_targets` 降到该批实际接收数；其他已完成 batch 的来源仍保持原计划目标（候选不少于 15 时为 15）。semantic cache 和草稿都只能使用各来源 `brief_plan.default_item_ids`，不得用 Top15 之外的旧缓存补位。索引已有候选但 brief 缺失时，即使同栏目其他来源正常，也要列出缺失来源及“已验证摘要/计划”计数，不能写成未采集、`no_items`、来源失败或让该来源无提示消失。
 - `analysis_pending`：analysis author 的输入只有 `analysis_packet_path`，其输出是严格满足 `output_schema` 的 `analysis_result_path`，并省略 `python_owned_output_fields` 列出的字段；authoring coordinator 随后运行 `assemble-authoring`、`validate-report --run` 和 `finalize-edition --defer-tail`。

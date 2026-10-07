@@ -3,7 +3,7 @@
 **状态：** 已验证 · **负责人：** 仓库维护者 · **最后验证：** 2026-09-23
 
 本文说明 SignalTrail 的代码分工。[运行契约](../../references/system-design.md)解释数据字段
-和恢复规则，[AGENTS.md](AGENTS.md)说明修改仓库时的约束。[English](../../ARCHITECTURE.md)
+和恢复规则，[agent-instructions.md](agent-instructions.md)说明修改仓库时的约束。[English](../../ARCHITECTURE.md)
 
 ## 报告流程
 
@@ -28,6 +28,8 @@ Python 负责身份、访问状态、修订分配、校验和持久化。模型�
 复用已有 deck 和本地图片，不访问网络。
 详见[新闻幻灯片工作流](news-slides.md)。
 
+独立索引图文路径使用采集、可选正文提取与 `slides prepare --index`，无需日报写作或分析。按来源顺序与原文 URL 选条，模型直接写目标语标题、摘要与讲稿，再生成独立演示，不更新日报投影。跨修订输入未变的已接受写作可复用，待写数与复用数分别报告。
+
 ## 代码地图
 
 下表模块均位于 `src/signaltrail/`。
@@ -42,13 +44,13 @@ Python 负责身份、访问状态、修订分配、校验和持久化。模型�
 | 写作 | `context`、`authoring`、`semantics`、`state` | 有界数据包、已接收批次、连续状态和缓存 |
 | 报告契约 | `reporting` | 编译草稿、补齐证据、校验 Schema 及跨字段规则 |
 | 报告存储 | `reports` | 保存报告和评估、渲染 Markdown、更新派生状态 |
-| 新闻图文流 | `news_slides`、`slide_images`、`slide_renderer` | 整份日报按重要性取前 N 条的有界讲解批次、原文图片补充，以及独立动态 HTML 放映 |
+| 新闻图文流 | `news_slides`、`slide_reuse`、`slide_images`、`slide_renderer` | 日报或独立索引的有界写作、已接受讲稿复用、原文图片补充与独立动态 HTML 放映 |
 | 实验讲解 | `narrative`、`narrative_contracts`、`narrative_store`、`narrative_verification`、`story_stream` | 不可变日报子产物、语言审核和解释图；实时新闻准入保持阻断 |
 | 实验研究 | `research`、`research_contracts`、`research_delivery` | 冻结正文块、本地问题检索、研究底稿和仅供预览的日报晚绑定；当前准入仍阻断 |
 | 交付 | `local_output`、`notion`、`dashboard` | HTML/PDF、远程副本和只读监控界面 |
 | 工作流 | `workflow` | 检查点、期限、恢复和评估调度 |
 | 用量与预算 | `llm_usage/`、`llm_budget`、`evaluation` | 不可变用量事件、派发预留和评估数据包 |
-| 宿主接入 | `hosts/`、`hermes_runner`、`usage_cli` | 计量启动、Hook 和持久日志导入 |
+| 宿主接入 | `hosts/`、`hermes_runner`、`usage_cli` | 可选宿主计量、启动器、Hook 和持久日志导入 |
 | 命令 | `cli`、`commands/`、`verification`、`importer` | 参数解析、配置绑定、调用领域函数 |
 
 依赖从入口经过编排流向领域代码和公共 I/O。领域模块不得导入 `cli` 或 `commands`。
@@ -57,7 +59,7 @@ Python 负责身份、访问状态、修订分配、校验和持久化。模型�
 
 公开 Python 导入包和模块入口为 `signaltrail` 与 `python -m signaltrail.cli`；CLI 命令为
 `signaltrail`，Python 发行包为 `signaltrail-skill`。旧 `DAILY_INTEL_*` 环境变量和已保存的报告 ID
-继续兼容。旧 Hermes `daily-intelligence` 数据及浏览器配置目录需显式改名迁移；见[使用指南](usage.md)。
+继续兼容。旧 Hermes `daily-intelligence` 数据及浏览器配置目录可留在原位置，并通过显式路径继续使用；见[使用指南](usage.md)。
 
 ## 状态与文件
 
@@ -99,9 +101,11 @@ Schema 1.1–1.5 报告保持可读，新报告使用 2.0 并要求跨视角综�
 原始宿主 ID 或密钥。未知观测保持 null。任务锁串行化追加与封账，封账拒绝未闭合调用。
 哈希能够发现不一致的本地修改，不能防御可重写整个账本的攻击者。
 
-`signaltrail-hermes` 在模型启动前接通计量，等待工作波次，观测辅助请求，封账前核对同会话
-宿主计数。独立评估使用单独任务和本地一次性进程。直接 CLI/Cron 路径仍有已记录的覆盖缺口。
-适配器格式、计量语义和兼容范围见[用量说明](../../references/llm-usage.md)。
+核心 CLI 使用 SignalTrail 应用数据目录，不要求 Hermes，也不读取 Hermes 环境文件。通用宿主没有
+已审计用量适配器时保持 unmetered。`signaltrail-hermes` 是可选入口，会在 Hermes 前启动计量、
+观测受支持的辅助请求，并在封账前与宿主计数对账。评估默认使用外部独立 Agent；仅显式选择时
+调度 Hermes。适配器格式和覆盖限制见[用量说明](../../references/llm-usage.md)及
+[Hermes 集成参考](../../references/hermes-integration.md)。
 
 编译器、校验器和渲染器中的超长函数仍记为[技术债](exec-plans/tech-debt-tracker.md) TD-002。
 测试选择和完整检查见[开发指南](development.md)。

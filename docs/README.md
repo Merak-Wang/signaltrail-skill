@@ -12,7 +12,7 @@ mirrors under [zh-CN/](zh-CN/README.md).
 | [Architecture](../ARCHITECTURE.md) | Module ownership, state, files, model boundaries |
 | [Agent instructions](../AGENTS.md) | Rules for changing this repository |
 | [Experimental explainers](explainers.md) | Implemented commands, bilingual reviews, immutable stories and current-admission limits |
-| [News slides](news-slides.md) | Required visual-stream delivery; whole-report candidates, top-50 default, bounded narration batches and per-batch cost gates |
+| [News slides](news-slides.md) | Report and index-only visual streams; top-50 default, bounded writing, accepted narration reuse and per-batch cost gates |
 | [Roadmap](roadmap.md) | Experimental explainer and research workflow; current-news admission and acceptance gaps |
 | [Technical debt](exec-plans/tech-debt-tracker.md) | Known implementation gaps and exit conditions |
 
@@ -52,6 +52,7 @@ Read only the reference needed for the task.
 | [Narrative analysis](../references/narrative-analysis.md) | Repairing analysis content |
 | [Report contract](../templates/report-contract.md) and [schema](../schemas/report.schema.json) | Draft shape and machine validation |
 | [Usage metering](../references/llm-usage.md) | Host adapters, accounting and coverage limits |
+| [Hermes integration](../references/hermes-integration.md) | Optional Hermes metering and evaluator setup |
 | [Windows setup](../references/windows-setup.md) | Hermes installation on Windows |
 | [Notion setup](../references/notion-setup.md) and [schema repair](../references/notion-schema-fix.md) | Optional remote delivery |
 
