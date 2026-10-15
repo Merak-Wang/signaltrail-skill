@@ -1,16 +1,154 @@
 from __future__ import annotations
 
+import json
+import socket
 import threading
 import time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from io import BytesIO
 from pathlib import Path
+from urllib.parse import parse_qs, urlsplit
 
 import httpx
 import pytest
 from bs4 import BeautifulSoup
+from PIL import Image
 
+from signaltrail import media as media_module
 from signaltrail.config import MediaConfig
 from signaltrail.media import DownloadedImage, ImageDownloadError
 from signaltrail.slide_images import _read_page, enrich_slide_images, fetch_article_page
+
+
+@pytest.fixture
+def image_environment_proxy(monkeypatch):
+    """让真实 HTTP 请求经环回代理到达页面、图片和 DNS 应答，目标域名不依赖本机解析。"""
+    requests = []
+    output = BytesIO()
+    image = Image.new("RGB", (32, 32))
+    image.putdata([(x * 7, y * 7, (x + y) * 3) for y in range(32) for x in range(32)])
+    image.save(output, format="PNG")
+    png = output.getvalue()
+
+    class Proxy(BaseHTTPRequestHandler):
+        def do_GET(self):
+            """按代理收到的绝对 URL 返回受控内容，记录内网跳转是否真的发出。"""
+            requests.append(self.path)
+            target = urlsplit(self.path)
+            if target.hostname == "dns.example":
+                query = parse_qs(target.query)
+                body = json.dumps({"Status": 0, "Answer": [{
+                    "type": 1, "data": "8.8.8.8",
+                }] if query["type"] == ["A"] else []}).encode()
+                content_type = "application/dns-json"
+            elif target.path == "/private-redirect":
+                self.send_response(302)
+                self.send_header("Location", "http://127.0.0.1/private.png")
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return
+            elif target.path.endswith(".png"):
+                body, content_type = png, "image/png"
+            else:
+                body = (b'<html><head><title>Public story</title>'
+                        b'<meta property="og:image" content="http://cdn.example/story.png">'
+                        b'</head><body><article><h1>Public story</h1>'
+                        b'<p>Public news article body.</p></article></body></html>')
+                content_type = "text/html"
+            self.send_response(200)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *_args):
+            """保持验收输出只包含 pytest 结果。"""
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Proxy)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    for key in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY",
+                "http_proxy", "https_proxy", "all_proxy", "no_proxy"):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("HTTP_PROXY", f"http://127.0.0.1:{server.server_port}")
+    # 本地 fixture 使用 HTTP 提供 DNS JSON；生产端点的 TLS 不属于本测试的验收范围。
+    monkeypatch.setattr(media_module, "_PUBLIC_DNS_ENDPOINT", "http://dns.example/resolve")
+    original_getaddrinfo = socket.getaddrinfo
+
+    def resolve(host, *args, **kwargs):
+        """目标域名强制解析失败，环回代理地址仍交给系统解析器。"""
+        if str(host).endswith(".example"):
+            raise socket.gaierror("fixture target only resolves through proxy")
+        return original_getaddrinfo(host, *args, **kwargs)
+
+    monkeypatch.setattr(socket, "getaddrinfo", resolve)
+    media_module._resolve_public_dns_addresses.cache_clear()
+    try:
+        yield requests
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+        media_module._resolve_public_dns_addresses.cache_clear()
+
+
+def test_article_page_uses_environment_proxy_without_local_target_dns(image_environment_proxy):
+    soup, final_url = fetch_article_page("http://news.example/story", MediaConfig())
+
+    assert soup.title.string == "Public story"
+    assert final_url == "http://news.example/story"
+    assert "http://news.example/story" in image_environment_proxy
+    assert any(url.startswith("http://dns.example/resolve?") for url in image_environment_proxy)
+
+
+def test_enrichment_shared_pools_use_proxy_without_local_target_dns(
+    image_environment_proxy, tmp_path,
+):
+    news = _news()
+    news[0]["sources"][0]["url"] = "http://news.example/story"
+    news[0]["images"] = []
+
+    enriched, metrics = enrich_slide_images(news, tmp_path, MediaConfig())
+
+    assert metrics["source_failures"] == []
+    assert metrics["image_failures"] == []
+    assert metrics["images_downloaded"] == 1
+    assert (tmp_path / enriched[0]["images"][0]["local_path"]).is_file()
+    assert "http://news.example/story" in image_environment_proxy
+    assert "http://cdn.example/story.png" in image_environment_proxy
+
+
+def test_direct_image_download_uses_environment_proxy_without_local_target_dns(
+    image_environment_proxy, tmp_path,
+):
+    downloaded = media_module.download_image(
+        "http://cdn.example/story.png", tmp_path, MediaConfig(),
+    )
+
+    assert (tmp_path / downloaded.local_path).is_file()
+    assert "http://cdn.example/story.png" in image_environment_proxy
+
+
+def test_dns_confirmation_respects_no_proxy(monkeypatch, image_environment_proxy):
+    monkeypatch.setenv("NO_PROXY", "dns.example")
+
+    with pytest.raises(ImageDownloadError, match="public DNS confirmation failed"):
+        fetch_article_page("http://news.example/story", MediaConfig())
+
+    assert image_environment_proxy == []
+
+
+@pytest.mark.parametrize("target", ["article", "image"])
+def test_proxy_never_receives_private_redirect(target, image_environment_proxy, tmp_path):
+    url = "http://news.example/private-redirect"
+    with pytest.raises(ImageDownloadError, match="non-public"):
+        if target == "article":
+            fetch_article_page(url, MediaConfig())
+        else:
+            media_module.download_image(url, tmp_path, MediaConfig())
+
+    assert url in image_environment_proxy
+    assert not any("127.0.0.1/private.png" in url for url in image_environment_proxy)
 
 
 def _news() -> list[dict]:

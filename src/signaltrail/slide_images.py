@@ -116,7 +116,7 @@ def fetch_article_page(
     if client is not None:
         return fetch(client)
     with httpx.Client(
-        timeout=config.request_timeout_seconds, follow_redirects=False, trust_env=False,
+        timeout=config.request_timeout_seconds, follow_redirects=False, trust_env=True,
         headers={"User-Agent": "SignalTrail/1.0"},
     ) as session:
         return fetch(session)
@@ -208,7 +208,7 @@ def enrich_slide_images(
         domain_cursor = dict.fromkeys(domains, 0)
         domain_index = 0
         with httpx.Client(
-            timeout=config.request_timeout_seconds, follow_redirects=False, trust_env=False,
+            timeout=config.request_timeout_seconds, follow_redirects=False, trust_env=True,
             headers={"User-Agent": "SignalTrail/1.0"},
         ) as client, ThreadPoolExecutor(max_workers=config.global_concurrency) as pool:
             def submit_ready(pending: dict) -> None:

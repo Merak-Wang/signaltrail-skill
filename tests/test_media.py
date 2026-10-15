@@ -217,6 +217,64 @@ def test_public_image_url_rejects_unconfirmed_proxy_fake_ip(monkeypatch):
         assert_public_image_url("https://198.18.0.42/story.jpg")
 
 
+@pytest.mark.parametrize("system_addresses", [(), None])
+def test_public_image_url_uses_public_dns_when_system_dns_is_unavailable(
+    monkeypatch, system_addresses,
+):
+    def system_dns(_hostname, _port):
+        if system_addresses is None:
+            raise ImageDownloadError("system DNS unavailable")
+        return system_addresses
+
+    monkeypatch.setattr(media_module, "_resolve_system_addresses", system_dns)
+    monkeypatch.setattr(
+        media_module, "_resolve_public_dns_addresses", lambda _hostname: ("8.8.8.8",),
+    )
+    assert_public_image_url("https://cdn.example/story.jpg")
+
+
+@pytest.mark.parametrize("public_addresses", [(), ("10.0.0.8",), ("8.8.8.8", "::1")])
+def test_public_image_url_rejects_unsafe_public_dns_fallback(monkeypatch, public_addresses):
+    monkeypatch.setattr(media_module, "_resolve_system_addresses", lambda *_args: ())
+    monkeypatch.setattr(
+        media_module, "_resolve_public_dns_addresses", lambda _hostname: public_addresses,
+    )
+    with pytest.raises(ImageDownloadError, match="could not be confirmed"):
+        assert_public_image_url("https://cdn.example/story.jpg")
+
+
+@pytest.mark.parametrize("addresses", [("10.0.0.8",), ("8.8.8.8", "10.0.0.8")])
+def test_public_image_url_never_overrides_private_system_dns(monkeypatch, addresses):
+    monkeypatch.setattr(media_module, "_resolve_system_addresses", lambda *_args: addresses)
+
+    def forbid_fallback(_hostname):
+        raise AssertionError("Private destinations must not use public DNS fallback")
+
+    monkeypatch.setattr(media_module, "_resolve_public_dns_addresses", forbid_fallback)
+    with pytest.raises(ImageDownloadError, match="non-public"):
+        assert_public_image_url("https://cdn.example/story.jpg")
+
+
+def test_image_download_does_not_request_private_redirect(monkeypatch, tmp_path):
+    requests = []
+
+    def handler(request):
+        requests.append(str(request.url))
+        return httpx.Response(302, headers={"Location": "http://10.0.0.8/private.png"})
+
+    monkeypatch.setattr(
+        media_module, "_resolve_system_addresses", lambda *_args: ("8.8.8.8",),
+    )
+    with (
+        httpx.Client(transport=httpx.MockTransport(handler)) as client,
+        pytest.raises(ImageDownloadError, match="non-public"),
+    ):
+        download_image(
+            "https://cdn.example/story.png", tmp_path, MediaConfig(), client=client,
+        )
+    assert requests == ["https://cdn.example/story.png"]
+
+
 def test_download_image_follows_validated_redirect_and_reuses_content_addressed_file(
     tmp_path: Path,
 ):

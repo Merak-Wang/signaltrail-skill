@@ -341,17 +341,14 @@ def _is_proxy_fake_address(value: str) -> bool:
 
 @lru_cache(maxsize=512)
 def _resolve_public_dns_addresses(hostname: str) -> tuple[str, ...]:
-    """处理：通过可信公共 DNS 解析 fake-IP 主机名，失败时保持关闭。
-    输入：
-    - ``hostname``：图片 URL 的主机名；解析出的全部地址都必须可由公网路由。
-    输出：“通过可信公共 DNS 解析 fake-IP 主机名，失败时保持关闭”得到的固定结构结果；
-      各位置分别承载处理说明中的主结果和伴随状态。
+    """处理：通过环境代理查询公共 DNS，确认本机未知或 fake-IP 域名的公网地址。
+    输入：待确认域名；输出：解析到的 IP，供下载前的公网检查使用。
     """
     try:
         with httpx.Client(
             timeout=5.0,
             follow_redirects=False,
-            trust_env=False,
+            trust_env=True,
         ) as client:
             for record_type, answer_type in (("A", 1), ("AAAA", 28)):
                 response = client.get(
@@ -419,25 +416,23 @@ def assert_public_image_url(url: str) -> None:
             raise ImageDownloadError("image URL resolved to a non-public network address")
         return
 
-    addresses = _resolve_system_addresses(
-        hostname,
-        port or (443 if parsed.scheme == "https" else 80),
-    )
+    try:
+        addresses = _resolve_system_addresses(
+            hostname,
+            port or (443 if parsed.scheme == "https" else 80),
+        )
+    except ImageDownloadError:
+        addresses = ()
     if addresses and all(_is_public_address(address) for address in addresses):
         return
-    if addresses and all(_is_proxy_fake_address(address) for address in addresses):
-        # 代理 fake-IP 不能证明目标公网属性，必须再经可信公共 DNS 确认。
-        public_addresses = _resolve_public_dns_addresses(hostname)
-        if public_addresses and all(
-            _is_public_address(address) for address in public_addresses
-        ):
-            return
-        raise ImageDownloadError(
-            "image hostname uses proxy fake-IP DNS but its public destination "
-            "could not be confirmed"
-        )
-    if not addresses or any(not _is_public_address(address) for address in addresses):
+    if addresses and not all(_is_proxy_fake_address(address) for address in addresses):
         raise ImageDownloadError("image URL resolved to a non-public network address")
+
+    # 本机 DNS 不可用或返回代理 fake-IP 时，改用公共 DNS 确认目标仍为公网。
+    public_addresses = _resolve_public_dns_addresses(hostname)
+    if public_addresses and all(_is_public_address(address) for address in public_addresses):
+        return
+    raise ImageDownloadError("image hostname public destination could not be confirmed")
 
 
 def _inspect_raster(content: bytes, max_pixels: int) -> tuple[str, str, int, int]:
@@ -558,7 +553,7 @@ def download_image(
         client = httpx.Client(
             timeout=config.request_timeout_seconds,
             follow_redirects=False,
-            trust_env=False,
+            trust_env=True,
         )
     current_url = source_url
     deadline = time.monotonic() + config.request_timeout_seconds
@@ -725,7 +720,7 @@ def _download_image_batch(
             )
     if "client" not in shared:
         shared["client"] = resources.enter_context(httpx.Client(
-            timeout=config.request_timeout_seconds, follow_redirects=False, trust_env=False,
+            timeout=config.request_timeout_seconds, follow_redirects=False, trust_env=True,
         ))
         shared["executor"] = resources.enter_context(ThreadPoolExecutor(
             max_workers=config.global_concurrency, thread_name_prefix="daily-intel-image",
