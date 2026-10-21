@@ -894,34 +894,41 @@ def test_first_finalize_prepares_slides_from_newly_saved_report(monkeypatch, tmp
 
 def test_finalize_resumes_existing_report_and_reuses_slide_plan(monkeypatch, tmp_path):
     data_dir = tmp_path / "data"
+    from signaltrail.news_slides import prepare_slides
+
+    source = {"id": "example", "name": "Example", "url": "https://example.com"}
+    ref = {"item_id": "item-1", "title": "News", "url": "https://example.com/news"}
     report_path = write_json(data_dir / "reports" / "2026-09-24" / "morning-r1.json", {
-        "edition": "morning", "revision": 1,
+        "date": "2026-09-24", "edition": "morning", "revision": 1,
+        "title": "Daily news", "report_id": "report-1", "language": "en",
+        "generated_at": "2026-09-24T09:00:00+08:00", "analyses": [],
+        "sections": [{"items": [{"event_id": "event-1", "title": "News",
+                                  "tldr": "Reported facts", "importance": 90,
+                                  "primary_source": source, "source_refs": [ref]}]}],
     })
     index_path = write_json(data_dir / "indexes" / "2026-09-24" / "morning-r1.json", {
-        "date": "2026-09-24", "edition": "morning", "items": [],
+        "date": "2026-09-24", "edition": "morning",
+        "items": [{**ref, "source_id": "example", "source_name": "Example"}],
     })
-    from signaltrail.narrative_store import save_artifact
-    plan_path = save_artifact(data_dir, "resumed-slides", "slides-plan", {
-        "selection_policy": "report-admitted-importance-v1",
-        "budget": {"max_news": 50},
-    }, {"report": report_path, "index": index_path})
+    prepared = prepare_slides(report_path, index_path, data_dir)
+    plan_path = Path(prepared["plan_path"])
     draft = write_json(tmp_path / "draft.json", {"date": "2026-09-24", "edition": "morning"})
     run_path = write_json(data_dir / "runs" / "2026-09-24" / "morning.json", {
         "data_root": str(data_dir.resolve()), "date": "2026-09-24", "edition": "morning",
         "status": RunStatus.FINALIZING,
         "artifacts": {"json_path": str(report_path), "index_path": str(index_path),
                       "slides": {"status": "prepared", "plan_path": str(plan_path),
-                                 "packet_paths": [str(data_dir / "slides" / "packet.json")]}},
+                                 "packet_paths": prepared["packet_paths"]}},
     })
     monkeypatch.setattr("signaltrail.workflow._require_current_context_schema", lambda *_: None)
     monkeypatch.setattr("signaltrail.workflow._validate_enrichment_lineage", lambda *_: None)
-    monkeypatch.setattr("signaltrail.news_slides.prepare_slides", lambda *_args, **_kwargs:
-                        (_ for _ in ()).throw(AssertionError("existing plan must be reused")))
 
     finalize_edition(run_path, draft, data_dir)
 
     run = read_json(run_path)
     assert run["artifacts"]["slides"]["plan_path"] == str(plan_path)
+    assert run["artifacts"]["slides"]["packet_paths"] == prepared["packet_paths"]
+    assert len(list(plan_path.parent.glob("slides-plan-r*.json"))) == 1
     assert "slides render" in run["next_action"]
 
 
@@ -944,8 +951,16 @@ def test_finalize_keeps_custom_slide_limit_on_retry_and_changes_plan_explicitly(
     })
     calls = []
 
-    def prepare(report, index, root, *, max_news, reuse_plan=None):
+    def prepare(report, index, root, *, max_news, reuse_plan=None, config=None,
+                resume_plan=False):
+        from signaltrail.narrative_store import load_artifact
+
         calls.append(max_news)
+        if resume_plan and reuse_plan:
+            prior = load_artifact(reuse_plan, root, kind="slides-plan")
+            if prior["payload"]["budget"]["max_news"] == max_news:
+                return {"plan_path": str(reuse_plan), "packet_paths": [],
+                        "news_count": 0, "batch_count": 0}
         plan = save_artifact(root, f"slides-{max_news}-{len(calls)}", "slides-plan", {
             "selection_policy": "report-admitted-importance-v1",
             "budget": {"max_news": max_news},
@@ -958,11 +973,11 @@ def test_finalize_keeps_custom_slide_limit_on_retry_and_changes_plan_explicitly(
     finalize_edition(run_path, Path("unused.json"), data_dir, slides_max_news=20)
     custom_plan = read_json(run_path)["artifacts"]["slides"]["plan_path"]
     finalize_edition(run_path, Path("unused.json"), data_dir)
-    assert calls == [20]
+    assert calls == [20, 20]
     assert read_json(run_path)["artifacts"]["slides"]["plan_path"] == custom_plan
 
     finalize_edition(run_path, Path("unused.json"), data_dir, slides_max_news=50)
-    assert calls == [20, 50]
+    assert calls == [20, 20, 50]
     assert read_json(run_path)["artifacts"]["slides"]["plan_path"] != custom_plan
 
 

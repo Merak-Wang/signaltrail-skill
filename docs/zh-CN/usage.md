@@ -16,7 +16,8 @@ Schema 和模板也是运行输入。从仓库外启动完整安装包时，可�
 `SKILL.md`、源码、配置、Schema、模板、参考资料和资源。从仓库或解压后的完整包根目录运行
 安装脚本；同步到 Hermes 是可选宿主安装，Python 项目可独立使用。脚本排除虚拟环境和
 运行数据。开发时使用 `-Editable`（Windows）或 `--editable`（macOS/Linux），
-Python 安装则关联原始源码目录。
+Python 安装则关联原始源码目录。两种安装模式都以 editable 安装绑定完整资源根，确保从其他工作目录启动时仍能定位配置、Schema 和模板。
+同步采用增量复制：更新同名文件并保留目标目录额外文件，不执行清理。更新前备份自行修改的配置，同名资源文件仍会被覆盖。
 
 Python 发行包现在为 `signaltrail-skill`，替代旧 `daily-intelligence-skill`。
 主命令统一为 `signaltrail`，新安装不再提供 `daily-intel`。已有 Shell 脚本和定时任务需改用新命令。

@@ -581,7 +581,9 @@ def _write_brief_authoring_packets(
                     "content_status 只表示获取状态，正文可读不代表每项事实已独立核实；"
                     "content_observations 按字段理解，空值或未评估不代表已核实。"
                     "中英文材料都可作证据，数字、引语与事实含义必须一致；区分来源事实和推断。"
-                    "只把影响理解的不确定性写入摘要。材料不足时缩窄到有据内容，不用泛化说明凑字数；"
+                    "直接陈述有据事实，避免说明后紧接“不代表、不证明、并不意味着”等防御性语句。"
+                    "保留计划、涉嫌等事实限定；摘要只陈述当前证据能够支持的内容。"
+                    "材料不足时缩窄到有据内容，不用泛化说明凑字数；"
                     "核心事实仍缺证且无法缩窄时，先不要提交，在宿主回执中向协调者说明"
                     "item_id 和所需证据；成功提交时只返回状态和结果路径，不增加输出字段。",
                     "Before writing, compare the available article text and evidence for the "
@@ -591,8 +593,11 @@ def _write_brief_authoring_packets(
                     "content_observations field on its own; null or unassessed is not verified. "
                     "Use Chinese and English material as evidence "
                     "while keeping facts, numbers, and quotes consistent; distinguish sourced "
-                    "facts from inference. Put uncertainty in the brief only when it changes "
-                    "understanding. When evidence is thin, narrow to supported facts instead of "
+                    "facts from inference. State supported facts directly; avoid following each "
+                    "explanation with defensive phrases such as does not mean or does not prove. "
+                    "Keep factual qualifiers such as planned or alleged, and state only what "
+                    "the available evidence supports. When evidence is thin, narrow to supported "
+                    "facts instead of "
                     "padding with generic caveats. If a central fact remains unsupported after "
                     "narrowing, stop before submission and tell the coordinator the item_id and "
                     "exact evidence needed outside the JSON. Do not add output fields. "
@@ -609,7 +614,10 @@ def _write_brief_authoring_packets(
                 "Do not browse the web, call search, create scripts, validate the full report, "
                 "or inspect candidates outside this packet. A listed content_path may be read "
                 "only when it already exists. The only permitted write is draft_result_path; "
-                "the only permitted command is submission_command."
+                "the only permitted command is submission_command. Its leading signaltrail "
+                "may be replaced with the coordinator-provided absolute CLI executable or "
+                "absolute Python interpreter followed by -m signaltrail.cli; preserve all "
+                "arguments and paths."
             ),
             "repair_policy": (
                 "The caller may request at most one repair containing only validation errors. "
@@ -865,8 +873,10 @@ def build_context(
             "before dispatching the next, and give each worker only its packet_path. The packet "
             "is the complete data boundary: workers must not browse, search, create scripts, "
             "validate the full report, or inspect other batches. Each worker may write only "
-            "the packet's draft_result_path and run only its submission_command. The completion "
-            "response records submission status and the output path. If a worker stops for a "
+            "the packet's draft_result_path and run only its submission_command, with the "
+            "absolute CLI/interpreter prefix substitution permitted by tool_policy. "
+            "The completion response records submission status and the output path. "
+            "If a worker stops for a "
             "central evidence gap, resolve or narrow that item before resuming the packet; do not "
             "treat it as submitted or add a draft field. Python validates and "
             "atomically accepts each batch, merges reusable_briefs without rewriting them, and "
@@ -922,9 +932,18 @@ def build_context(
                     "Open with the concrete change or central falsifiable judgement.",
                     "Use only facts that advance one central question.",
                     "Explain the mechanism, stakeholder incentives, constraints, and backlash.",
-                    "Address the strongest counterargument, evidence limit, or condition.",
+                    "Discuss the strongest counterargument and how it changes the judgement.",
                     "End with conditional paths and observable signals that would change the view.",
                 ],
+                "writing_style": (
+                    "State facts, mechanisms, and judgements directly. Avoid repeatedly following "
+                    "an explanation with does not mean, does not prove, or similar defensive "
+                    "negations. Keep factual qualifiers such as planned or alleged in their "
+                    "sentences. When a material limitation needs explanation, consolidate it "
+                    "in the final narrative paragraph beginning 局限性： for zh-CN or "
+                    "Limitations: for en. Keep detailed evidence gaps and counterevidence in "
+                    "the existing supporting fields; add no output fields or routine caveats."
+                ),
                 "method_visibility": (
                     "Use dialectics and historical materialism to shape causality, conditions, "
                     "contradictions, capabilities, and counterforces. Do not announce the methods "

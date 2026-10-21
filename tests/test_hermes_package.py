@@ -116,11 +116,17 @@ def test_installer_copies_complete_project_and_excludes_local_environments(
         "configs/sources.yaml", "schemas/report.schema.json", "templates/report-contract.md",
         "references/runbook.md", "assets/monitor/index.html",
     )
-    excluded = (".venv", "venv", "env", "skills", "data", ".git")
+    excluded = (".venv", "venv", "env", "skills", "data", ".git",
+                "build", "output", "tmp", ".code-review-graph")
     for relative in (*resources, *(f"{name}/sentinel" for name in excluded)):
         path = source / relative
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(relative, encoding="utf-8")
+    retained = ("data/history.json", "src/daily_intelligence/legacy.py", "old-notes.md")
+    for relative in retained:
+        path = target / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("existing " + relative, encoding="utf-8")
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
     if installer == "powershell":
         if sys.platform != "win32":
@@ -144,7 +150,7 @@ def test_installer_copies_complete_project_and_excludes_local_environments(
             check=True, capture_output=True,
         )
         arguments = json.loads(marker.read_text(encoding="utf-8-sig"))
-        expected = ["-m", "pip", "install", *(["-e"] if editable else [])]
+        expected = ["-m", "pip", "install", "-e"]
         assert arguments == [*expected, str(source if editable else target)]
     else:
         script = (ROOT / "scripts/install.sh").read_text(encoding="utf-8")
@@ -155,20 +161,9 @@ def test_installer_copies_complete_project_and_excludes_local_environments(
         )
     for relative in resources:
         assert (target / relative).read_bytes() == (source / relative).read_bytes()
-    assert all(not (target / name).exists() for name in excluded)
-
-
-def test_windows_installer_excludes_nested_skill_snapshots():
-    text = (ROOT / "scripts" / "install.ps1").read_text(encoding="utf-8")
-    excluded_dirs = text.split("$excludedDirs = @(", 1)[1].split(")", 1)[0]
-    legacy_entries = text.split("$legacyRuntimeEntries = @(", 1)[1].split(")", 1)[0]
-
-    assert '"skills"' in excluded_dirs
-    assert '"skills"' in legacy_entries
-    assert '"src/daily_intelligence"' in legacy_entries
-    assert '"daily_intelligence_skill.egg-info"' in legacy_entries
-    assert '"signaltrail_skill.egg-info"' in legacy_entries
-    assert "/XD $excludedDirs" in text
+    assert all(not (target / name / "sentinel").exists() for name in excluded)
+    for relative in retained:
+        assert (target / relative).read_text(encoding="utf-8") == "existing " + relative
 
 
 def test_community_package_rejects_secret_like_content(tmp_path):
@@ -182,29 +177,12 @@ def test_community_package_rejects_secret_like_content(tmp_path):
         BUILD.inspect_package_file(Path("references/credential.txt"), suspicious)
 
 
-def test_installers_sync_into_platform_hermes_skill_roots_and_exclude_repo_state():
-    root = Path(__file__).resolve().parents[1]
-    powershell = (root / "scripts" / "install.ps1").read_text(encoding="utf-8")
-    shell = (root / "scripts" / "install.sh").read_text(encoding="utf-8")
+def test_installers_default_to_platform_hermes_skill_roots():
+    powershell = (ROOT / "scripts" / "install.ps1").read_text(encoding="utf-8")
+    shell = (ROOT / "scripts" / "install.sh").read_text(encoding="utf-8")
 
     assert 'Join-Path $env:LOCALAPPDATA "hermes"' in powershell
-    assert '"skills"' in powershell
     assert r'"research\signaltrail"' in powershell
-    assert '".git"' in powershell
-    assert '"build"' in powershell
-    assert '".code-review-graph"' in powershell
-    assert '"output"' in powershell
-    assert '"tmp"' in powershell
-    assert "if (-not $sameDirectory)" in powershell
-    assert "post-install artifact" in powershell
     assert '${HOME}/.hermes' in shell
     assert 'skills_root="${hermes_home}/skills"' in shell
     assert 'target_dir="${skills_root}/research/signaltrail"' in shell
-    assert '"daily_intelligence_skill.egg-info", "signaltrail_skill.egg-info"' in shell
-    assert '"src/daily_intelligence"' in shell
-    assert "if source != target:" in shell
-    assert "shutil.copytree(source, target, ignore=ignore)" in shell
-    assert '".code-review-graph"' in shell
-    assert '"output"' in shell
-    assert '"tmp"' in shell
-    assert "post-install artifact" in shell

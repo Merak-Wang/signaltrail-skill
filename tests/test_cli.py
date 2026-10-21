@@ -8,6 +8,7 @@ import pytest
 
 from signaltrail.cli import build_parser, main
 from signaltrail.commands import HANDLERS
+from signaltrail.config import load_config
 from signaltrail.utils import read_json, write_json
 from signaltrail.workflow import (
     RunStatus,
@@ -19,15 +20,21 @@ def test_slides_cli_prepares_bounded_batches(cli_data_root, monkeypatch, capsys,
                                            score_args, expected_score):
     prepare = Mock(return_value={"plan_path": "slides-plan.json", "news_count": 18})
     monkeypatch.setattr("signaltrail.commands.slides.prepare_slides", prepare)
+    config = load_config()
+    monkeypatch.setattr("signaltrail.cli.load_config", Mock(return_value=config))
     report, index = cli_data_root / "report.json", cli_data_root / "index.json"
     assert main(["slides", "prepare", "--report", str(report), "--index", str(index),
                  "--batch-size", "3", "--max-news", "22", "--item-id", "news-1",
                  *score_args]) == 0
-    prepare.assert_called_once_with(report, index, cli_data_root, min_importance=expected_score,
-                                    item_ids=["news-1"], batch_size=3,
-                                    max_news=22,
-                                    language=None, reuse_plan=None,
-                                    max_input_tokens=12000, max_output_tokens=4000)
+    prepare.assert_called_once()
+    assert prepare.call_args.args == (report, index, cli_data_root)
+    options = prepare.call_args.kwargs
+    assert options["min_importance"] == expected_score
+    assert options["item_ids"] == ["news-1"]
+    assert (options["batch_size"], options["max_news"]) == (3, 22)
+    assert options["max_input_tokens"] is None
+    assert options["config"] is config
+    assert config.sources
     assert json.loads(capsys.readouterr().out)["news_count"] == 18
 
 
@@ -36,13 +43,19 @@ def test_slides_cli_prepares_index_without_report(cli_data_root, monkeypatch, ca
                                                  language_args, expected):
     prepare = Mock(return_value={"reused_count": 2, "pending_news_count": 3})
     monkeypatch.setattr("signaltrail.commands.slides.prepare_slides", prepare)
+    config = load_config()
+    monkeypatch.setattr("signaltrail.cli.load_config", Mock(return_value=config))
     index, old_plan = cli_data_root / "index.json", cli_data_root / "old-plan.json"
     assert main(["slides", "prepare", "--index", str(index), "--reuse-plan", str(old_plan),
                  *language_args]) == 0
-    prepare.assert_called_once_with(None, index, cli_data_root, language=expected,
-                                    reuse_plan=old_plan, min_importance=0, item_ids=None,
-                                    max_news=50, batch_size=5, max_input_tokens=12000,
-                                    max_output_tokens=4000)
+    prepare.assert_called_once()
+    assert prepare.call_args.args == (None, index, cli_data_root)
+    options = prepare.call_args.kwargs
+    assert options["language"] == expected
+    assert options["reuse_plan"] == old_plan
+    assert options["max_input_tokens"] is None
+    assert options["config"] is config
+    assert config.sources
     assert json.loads(capsys.readouterr().out)["reused_count"] == 2
 
 

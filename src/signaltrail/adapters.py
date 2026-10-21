@@ -274,7 +274,9 @@ def browser_items_from_rows(
         if not is_eligible(source, title, url):
             continue
         article = _article(source, title, url, discovered_at)
-        article.published_at = _published_at(row.get("context", ""), url, discovered_at)
+        # 从卡片上下文移除标题，避免把标题中的会议日等事件日期当作发布日期。
+        context = clean_title(row.get("context", "")).replace(title, "")
+        article.published_at = _published_at(context, url, discovered_at)
         raw_candidates = row.get("image_candidates")
         if not isinstance(raw_candidates, list):
             raw_candidates = []

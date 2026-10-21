@@ -4,6 +4,7 @@ import hashlib
 import json
 import re
 from dataclasses import dataclass, field
+from datetime import datetime
 from importlib.metadata import version
 from typing import Any
 
@@ -387,6 +388,15 @@ def observed_source_metadata(soup: BeautifulSoup) -> dict[str, Any]:
             published_at = str(node.get("content") or "").strip()
             if published_at:
                 break
+    if not published_at:
+        node = soup.select_one(".article__time")
+        if node:
+            # 读取文章专属发布栏；正文中的会议、事件日期不参与发布日期提取。
+            text = node.get_text(" ", strip=True)
+            try:
+                published_at = datetime.strptime(text, "%B %d, %Y").date().isoformat()
+            except ValueError:
+                published_at = None
     values["published_at"] = published_at[:500] if published_at else None
     values["language"] = str(soup.html.get("lang") or "")[:80] or None if soup.html else None
     values.update(basis="page_declared", independent_origin=None)

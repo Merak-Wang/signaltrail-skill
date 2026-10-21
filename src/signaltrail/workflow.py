@@ -1952,9 +1952,10 @@ def enrich_edition(
             updated_at=now_iso(config.timezone),
             artifacts=run["artifacts"],
             next_action=(
-                "Read coordinator_path and dispatch its authoring packets, "
-                "then run finalize-edition "
-                "with this run manifest and the report draft."
+                f'Run signaltrail --data-dir "{data_dir}" begin-authoring '
+                f'--run "{run_path}"; complete its brief packets, then prepare-analysis, '
+                "assemble-authoring, validate-report, and finalize-edition. "
+                "Continue tail and slides until edition-status --require-complete passes."
             ),
         )
         return run_path
@@ -2053,9 +2054,10 @@ def _require_current_context_schema(
         )
 
 
-def _prepare_edition_slides(run: dict, run_path: Path, data_dir: Path) -> None:
+def _prepare_edition_slides(run: dict, run_path: Path, data_dir: Path,
+                            config: AppConfig | None = None) -> None:
     """处理：从已保存报告和本轮索引准备默认图文流写作包。
-    输入：运行清单、清单路径和数据根目录；已有计划时直接复用。
+    输入：运行清单、清单路径、数据根及正文提取配置。
     输出：将计划与 packet 路径或准备错误写入运行产物，不调用模型。
     """
     artifacts = run.setdefault("artifacts", {})
@@ -2064,37 +2066,35 @@ def _prepare_edition_slides(run: dict, run_path: Path, data_dir: Path) -> None:
     reuse_plan = plan_path or artifacts.get("previous_report", {}).get("slides", {}).get(
         "plan_path"
     )
+    index_path = Path(str(artifacts["index_path"]))
     if reuse_plan:
         try:
             from .narrative_store import load_artifact, parent_path
 
             old_plan = load_artifact(Path(str(reuse_plan)), data_dir, kind="slides-plan")
+            if (plan_path and artifacts.get("slides", {}).get("index_path")
+                    and artifacts["slides"].get("source_index_path") == str(index_path)
+                    and parent_path(old_plan, "report", data_dir).resolve()
+                    == Path(str(artifacts["json_path"])).resolve()):
+                index_path = Path(str(artifacts["slides"]["index_path"]))
         except (ValueError, KeyError, OSError):
             reuse_plan = None
-    if plan_path and reuse_plan:
-        try:
-            same_inputs = all(
-                parent_path(old_plan, key, data_dir).resolve()
-                == Path(str(artifacts[path])).resolve()
-                for key, path in (("report", "json_path"), ("index", "index_path"))
-            )
-            if same_inputs and _slides_plan_matches_selection(
-                Path(str(plan_path)), slides_max_news, data_dir
-            ):
-                return
-        except (ValueError, KeyError, OSError):
-            pass
     try:
         from .news_slides import prepare_slides
 
         result = prepare_slides(
             Path(str(artifacts["json_path"])),
-            Path(str(artifacts["index_path"])),
+            index_path,
             data_dir,
             max_news=slides_max_news,
             reuse_plan=Path(str(reuse_plan)) if reuse_plan else None,
+            config=config,
+            resume_plan=bool(plan_path),
         )
-        artifacts["slides"] = {**result, "max_news": slides_max_news, "status": "prepared"}
+        artifacts["slides"] = {
+            **result, "source_index_path": str(artifacts["index_path"]),
+            "max_news": slides_max_news, "status": "prepared",
+        }
     except Exception as exc:
         artifacts["slides"] = {
             "status": "failed",
@@ -2192,6 +2192,7 @@ def finalize_edition(
     evaluate: bool = False,
     slides_max_news: int | None = None,
     evaluation_backend: str | None = None,
+    app_config: AppConfig | None = None,
 ) -> Path:
     """处理：编译并校验写作草稿，创建不可变报告及本地投影，再登记可恢复发布状态。
     输入：
@@ -2207,6 +2208,7 @@ def finalize_edition(
     - ``evaluate``：仅在用户明确要求时开启质量评分；请求随本轮运行保留。
     - ``slides_max_news``：显式更换图文数量上限；省略时沿用运行清单中的值或默认 50。
     - ``evaluation_backend``：选择评分后端；单独指定不会开启评分。
+    - ``app_config``：正式命令的来源配置，供图文写作前补齐原文。
     输出：指向“编译并校验写作草稿，创建不可变报告及本地投影，
       再登记可恢复发布状态”所生成、定位或确认产物的本地路径。
     """
@@ -2244,7 +2246,7 @@ def finalize_edition(
                 run.setdefault("artifacts", {}).setdefault("slides", {})[
                     "max_news"
                 ] = slides_max_news
-                _prepare_edition_slides(run, run_path, data_dir)
+                _prepare_edition_slides(run, run_path, data_dir, app_config)
             tail = run.get("tail", {})
             if isinstance(tail, dict) and tail.get("status") in {
                 "pending",
@@ -2353,14 +2355,14 @@ def finalize_edition(
             saved_report = read_json_object(
                 Path(artifacts["json_path"]), "Saved report"
             )
-            successful = artifacts.get("enrichment", {}).get(
-                "successful_item_ids", []
+            full_text = artifacts.get("enrichment", {}).get(
+                "full_text_item_ids", []
             )
             artifacts["evidence_metrics"] = {
                 "featured_events": int(saved_report.get("event_count", 0)),
-                "successful_fulltext_items": len(successful),
+                "successful_fulltext_items": len(full_text),
                 "analysis_without_fulltext": bool(
-                    saved_report.get("analyses") and not successful
+                    saved_report.get("analyses") and not full_text
                 ),
             }
             _update_run(
@@ -2374,7 +2376,7 @@ def finalize_edition(
             run.setdefault("artifacts", {}).setdefault("slides", {})[
                 "max_news"
             ] = slides_max_news
-            _prepare_edition_slides(run, run_path, data_dir)
+            _prepare_edition_slides(run, run_path, data_dir, app_config)
             artifacts = run["artifacts"]
         if defer_tail:
             # HTML 是前台交付物；PDF、Notion 与独立评估作为可重试尾部工作延后。

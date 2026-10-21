@@ -17,7 +17,8 @@ in `dist/signaltrail/`, including `SKILL.md`, source, configuration, schemas, te
 and assets. Install from the checkout or extracted package root. The installer can also sync
 the skill into a Hermes Skill directory for that host; this is optional. Virtual environments
 and runtime data are excluded. `-Editable` (Windows) or `--editable` (macOS/Linux) binds the
-Python installation to the original source directory for development.
+Python installation to the original source directory for development. Both installation modes bind Python to their complete resource root with an editable install, so commands work from other working directories.
+Sync is incremental: existing files are updated and extra files in the target remain in place; the installer performs no cleanup. Back up locally customized configuration before updating, because matching resource files are overwritten.
 
 The Python distribution is now `signaltrail-skill`, replacing `daily-intelligence-skill`.
 The main command is `signaltrail`; new installations do not provide `daily-intel`. Update scripts

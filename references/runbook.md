@@ -35,6 +35,8 @@ HTML 先交付（仅报告已保存） -> tail 与图文讲稿并行 -> 等待 t
 
 32 个正式来源的 `report_target` 和 `report_max` 均为 15。默认 `collection.item_order: source`，每来源候选充足时交付网页、榜单或 Feed 的原 Top1–15；切换为 `published_at` 时，采集层把有效发布时间从新到旧写入当前 index，缺失发布时间和时间并列的条目保持稳定输入顺序，日报再取前 15 条。单源覆盖使用同名 `item_order`。两种模式都保留原始 `source_rank`；context、普通 brief、Markdown、HTML、PDF 与 Notion 必须维持当前 index/`brief_plan` 顺序，不能按 `importance` 重排。Hugging Face Papers 的 `source` 模式以 Trending Top 为准，较早发表的论文仍可能出现在当前 Top15。
 
+用户请求日报即授权完成采集、写作、尾任务、幻灯片讲稿、渲染与整期验收。报告保存后发送进度说明并继续执行；动态 `edition-status` 返回待办时，按命令和 packet 路径继续推进，直至 `delivery_complete: true`。只有人工验证、明确请求但缺少独立执行者的评分等外部条件阻塞后续时，才向用户报告具体阻塞及恢复动作；已耗尽动作不反复重试。
+
 质量评分默认关闭，仅当用户明确要求时在 `finalize-edition` 或 `complete-edition-tail` 加 `--evaluate`。请求写入本轮 `evaluation_requested` 并在恢复时沿用；未请求时不创建 evaluator、dossier 或评分用量任务，run 记为 `not_requested`。结构、引用和文件校验正常执行。以下评分调度与重试步骤仅适用于已明确请求的运行。
 
 写作与评估保持角色隔离。`finalize-edition --defer-tail` 在不可变 JSON/Markdown 和 HTML 就绪后返回；这表示报告已保存，但不表示整期交付完成。`complete-edition-tail` 生成 PDF、按请求发布 Notion，并处理用户明确请求的评分。图文讲稿可与 tail 同时进行；等待 tail 退出后再渲染，因为两项操作都可能更新日报投影。
@@ -59,8 +61,7 @@ signaltrail --data-dir DATA_DIR slides render --plan PLAN.json
 signaltrail --data-dir DATA_DIR edition-status --run RUN.json --require-complete
 ```
 
-代表新闻从整份已保存日报去重后按重要性降序选取，默认前 50 条，可用 `finalize-edition --slides-max-news N` 自定义；恢复时未显式改数量则沿用既有设置，显式更改会准备新计划。按来源不保证配额，未知发布日期保持未知。`prepare` 只读取给定日报和索引，
-不联网抓取；默认在线 `slides render` 会从入选新闻公开页面补充图片候选和原站 caption。`render` 生成独立放映 HTML，
+代表新闻从整份已保存日报去重后按重要性降序选取，默认前 50 条，可用 `finalize-edition --slides-max-news N` 自定义；恢复时未显式改数量则沿用既有设置，显式更改会准备新计划。按来源不保证配额，未知发布日期保持未知。CLI `slides prepare` 和日报定稿会先为入选新闻补取缺失或不完整正文，复用已有可用证据，并把完整可用正文放入 `news[].evidence[].body`；写作者先通读正文。正文不截断，默认以每批输入估算 64,000 token 为目标拆批，超长单篇自动扩容；显式 `--max-input-tokens` 为硬上限，超限时拒绝并给出可复用的已补全文索引路径。默认在线 `slides render` 会从入选新闻公开页面补充图片候选和原站 caption。`render` 生成独立放映 HTML，
 并更新日报 HTML 的嵌入容器及独立打开入口。`edition-status` 输出 `delivery_complete`、`report_status`、`pending_steps` 和图文流状态；只有动态命令返回 `delivery_complete: true`、`pending_steps` 为空且 `slides.status` 为 `rendered` 才能报告整期交付完成。不要依赖可能过期的 manifest 快照。更换图片和重新渲染不需要模型。完整恢复、图注、
 大图和打印行为见[新闻图文流参考](news-slides.md)。TTS 与视频合成尚未实现。
 
@@ -90,7 +91,7 @@ host scheduler、Gateway 和其他无人值守会话不得传 `--open-verificati
 ## 恢复
 
 - `awaiting_selection`：选择 ID，运行 `enrich-edition`。
-- `awaiting_authoring` 且没有 session：运行 `begin-authoring` 后，启动 `prefetch-media`；可在宿主支持并行进程时与作者同时运行，否则先完成预取。同时按顺序调度尚未复用的 packet，最多同时运行 3 个 author，一个 worker 完成后按序补入下一个。媒体预取只读固定 index/context、写入图片缓存和独立 receipt；等它退出并检查 receipt 后再运行 `prepare-analysis` 或定稿。每个 brief author 的输入只有一个 packet 和其中列出的正文路径，输出只有指定 `draft_result_path` 的 JSON 与对 `submission_command` 的提交；`output_schema` 是字段、类型、枚举与额外字段的权威边界。SignalTrail 的 Hermes 集成通过前台 `delegate_task(background=False)` 同步等待整波返回，内部并发仍受 `max_concurrent_children=3` 限制；其他 harness 使用等价 worker 或顺序执行，不得跳过 packet。
+- `awaiting_authoring` 且没有 session：运行 `begin-authoring` 后，启动 `prefetch-media`；可在宿主支持并行进程时与作者同时运行，否则先完成预取。同时按顺序调度尚未复用的 packet，最多同时运行 3 个 author，一个 worker 完成后按序补入下一个。媒体预取只读固定 index/context、写入图片缓存和独立 receipt；等它退出并检查 receipt 后再运行 `prepare-analysis` 或定稿。每个 brief author 的输入只有一个 packet 和其中列出的正文路径，输出只有指定 `draft_result_path` 的 JSON 与对 `submission_command` 的提交；`output_schema` 是字段、类型、枚举与额外字段的权威边界。宿主支持隔离 worker 时最多同时执行 3 个，一个完成后按序补入下一个；缺少并发 worker 时顺序执行。无需特定委派 API 或后台任务功能，不得跳过 packet。
 - authoring 批次已返回：把宿主提供的有界批次指标写入 session 指定路径并运行 `record-authoring-metrics`；`authoring-status` 全部完成后运行 `prepare-analysis`。即使宿主完成通知或不可变接收结果缺失，也不要先删 draft：`prepare-analysis` 会对每个缺 receipt 的授权 `draft_result_path` 执行原 packet 校验，合法草稿会被原子接收并列入 `recovered_batches`。检查恢复后的 `missing_batches`，只有输出 `deadline_exceeded: true` 时才能用 `prepare-analysis --allow-degraded`。
 - authoring 降级：只把对应 missing batch 所负责来源的 `coverage_targets` 降到该批实际接收数；其他已完成 batch 的来源仍保持原计划目标（候选不少于 15 时为 15）。semantic cache 和草稿都只能使用各来源 `brief_plan.default_item_ids`，不得用 Top15 之外的旧缓存补位。索引已有候选但 brief 缺失时，即使同栏目其他来源正常，也要列出缺失来源及“已验证摘要/计划”计数，不能写成未采集、`no_items`、来源失败或让该来源无提示消失。
 - `analysis_pending`：analysis author 的输入只有 `analysis_packet_path`，其输出是严格满足 `output_schema` 的 `analysis_result_path`，并省略 `python_owned_output_fields` 列出的字段；authoring coordinator 随后运行 `assemble-authoring`、`validate-report --run` 和 `finalize-edition --defer-tail`。

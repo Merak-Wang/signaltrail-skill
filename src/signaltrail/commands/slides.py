@@ -32,7 +32,8 @@ def add_slides_parser(sub: argparse._SubParsersAction) -> None:
     prepare.add_argument("--max-news", type=int, default=50,
                          help="Maximum stories by report importance or index rank (default: 50)")
     prepare.add_argument("--batch-size", type=int, default=5)
-    prepare.add_argument("--max-input-tokens", type=int, default=12000)
+    prepare.add_argument("--max-input-tokens", type=int,
+                         help="Hard input limit; default targets 64000 and expands for one article")
     prepare.add_argument("--max-output-tokens", type=int, default=4000)
     submit = stages.add_parser("submit", help="Accept and reuse one authored batch")
     submit.add_argument("--packet", type=Path, required=True)
@@ -62,6 +63,7 @@ def handle_slides(args: argparse.Namespace, context: CommandContext) -> int:
                     max_news=args.max_news,
                     batch_size=args.batch_size, max_input_tokens=args.max_input_tokens,
                     max_output_tokens=args.max_output_tokens,
+                    config=context.config,
                 )
             case "submit":
                 result = submit_slides(args.packet, read_json_object(args.input, "Slide draft"),

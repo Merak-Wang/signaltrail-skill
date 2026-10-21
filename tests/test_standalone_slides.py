@@ -90,9 +90,13 @@ def test_index_only_reads_selected_body_and_never_truncates(tmp_path):
     prepared = prepare_slides(None, path, tmp_path, item_ids=["item-0"], language="en")
     packet = load_artifact(Path(prepared["packet_paths"][0]), tmp_path)["payload"]
     assert packet["model_input"]["language"] == "en"
-    Path(index["items"][0]["content_path"]).write_text("正文" * 20000, encoding="utf-8")
+    body = "正文" * 20000
+    Path(index["items"][0]["content_path"]).write_text(body, encoding="utf-8")
     with pytest.raises(ValueError, match="increase token limits"):
-        prepare_slides(None, path, tmp_path, item_ids=["item-0"])
+        prepare_slides(None, path, tmp_path, item_ids=["item-0"], max_input_tokens=12000)
+    prepared = prepare_slides(None, path, tmp_path, item_ids=["item-0"])
+    packet = load_artifact(Path(prepared["packet_paths"][0]), tmp_path)["payload"]
+    assert packet["model_input"]["news"][0]["evidence"][0]["body"] == body
 
 
 @pytest.mark.parametrize("field", ["sources", "images", "caption"])

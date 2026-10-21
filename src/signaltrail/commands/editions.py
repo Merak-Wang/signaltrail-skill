@@ -68,6 +68,7 @@ def handle_run_edition(args: argparse.Namespace, context: CommandContext) -> int
     if automatic_verification is not None:
         run_payload["automatic_verification"] = automatic_verification
         write_json(output, run_payload)
+    run_payload["delivery"] = get_edition_status(output, data_dir)
     print_json(run_payload)
     return 0
 
@@ -220,6 +221,7 @@ def handle_finalize_edition(args: argparse.Namespace, context: CommandContext) -
         evaluate=args.evaluate,
         slides_max_news=args.slides_max_news,
         evaluation_backend=args.evaluation_backend,
+        app_config=config,
     )
     payload = read_json_object(output, "Run manifest")
     payload["delivery"] = get_edition_status(args.run, data_dir)

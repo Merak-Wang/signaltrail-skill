@@ -47,9 +47,7 @@ def ignore(_directory: str, names: list[str]) -> set[str]:
 
 target.parent.mkdir(parents=True, exist_ok=True)
 if source != target:
-    if target.exists():
-        shutil.rmtree(target)
-    shutil.copytree(source, target, ignore=ignore)
+    shutil.copytree(source, target, ignore=ignore, dirs_exist_ok=True)
 PY
 
 package_root="${target_dir}"
@@ -60,34 +58,9 @@ package="${package_root}"
 if [[ "${dev}" == true ]]; then
   package="${package_root}[dev]"
 fi
-pip_args=(-m pip install)
-if [[ "${editable}" == true ]]; then
-  pip_args+=(-e)
-fi
+pip_args=(-m pip install -e)
 python "${pip_args[@]}" "${package}"
 python -m playwright install chromium
 python -m signaltrail.cli --help >/dev/null
-python - "${skill_dir}" "${target_dir}" <<'PY'
-from pathlib import Path
-import shutil
-import sys
-
-source = Path(sys.argv[1]).resolve()
-target = Path(sys.argv[2]).resolve()
-if source != target:
-    for name in (
-        "build", "dist", "src/daily_intelligence",
-        "daily_intelligence_skill.egg-info", "signaltrail_skill.egg-info",
-    ):
-        candidate = (target / name).resolve()
-        try:
-            candidate.relative_to(target)
-        except ValueError as exc:
-            raise SystemExit(f"Refusing to remove a post-install artifact outside {target}") from exc
-        if candidate.is_dir():
-            shutil.rmtree(candidate)
-        elif candidate.exists():
-            candidate.unlink()
-PY
 printf 'Synchronized SignalTrail skill: %s\n' "${target_dir}"
 printf 'Installed SignalTrail. Run: signaltrail --help\n'

@@ -1,6 +1,6 @@
 # Architecture
 
-**Status:** Verified · **Owner:** Repository maintainers · **Last verified:** 2026-09-23
+**Status:** Verified · **Owner:** Repository maintainers · **Last verified:** 2026-10-21
 
 This is the code map for SignalTrail. [Runtime contracts](references/system-design.md)
 describe data fields and recovery rules; [AGENTS.md](AGENTS.md) covers repository changes.
@@ -30,10 +30,9 @@ remain unknown, and images do not affect eligibility. Bounded narration batches 
 adds indexed sources, summaries, and publisher-provided image candidates and captions from public article
 pages within configured media budgets. When present, the report HTML embeds the deck in place of its
 on-screen summary and keeps a separate open link; printing restores the summary. Report JSON/Markdown
-stays unchanged. Image updates can reuse accepted narration without another model call; `slides prepare`
-reads the supplied report and index and does not fetch webpages. Offline rendering reuses existing deck
+stays unchanged. Image updates can reuse accepted narration without another model call; writing packets include complete available source bodies from the index, with extraction status and quality. Bodies are never truncated to fit budgets; batch splitting and explicit input limits bound model input. Offline rendering reuses existing deck
 images without network access.
-An independent index-only path uses collection, optional body extraction, and `slides prepare --index` without report authoring or analysis. It orders indexed stories by source rank and URL identity, writes target-language titles/summaries with narration, and renders a deck without report projections. Accepted writing with unchanged inputs can be reused across revisions; pending counts remain separate from reused counts.
+An independent index-only path uses collection, body extraction, and `slides prepare --index` without report authoring or analysis. It orders indexed stories by source rank and URL identity, writes target-language titles/summaries with narration, and renders a deck without report projections. Accepted writing with unchanged inputs can be reused across revisions; pending counts remain separate from reused counts.
 
 See the [news slides workflow](docs/news-slides.md).
 
