@@ -84,12 +84,11 @@ caption 保留网站抽取原文，缺失时不显示；alt、标题和模型描
 模型基于完整讲解撰写简明 `video_tldr`，建议 60–100 汉字，最多 160 个字符；视频朗读标题和短稿。
 
 ```text
-signaltrail --data-dir DATA_DIR slides voice-setup --profile PROFILE.json --default
 signaltrail --data-dir DATA_DIR slides video-setup
 signaltrail --data-dir DATA_DIR slides video --deck DECK.json --output VIDEO.mp4
 ```
 
-默认使用原生 Qwen3-TTS 1.7B Q8。新安装先准备自备的 3–10 秒参考录音和逐字文本，参照 `assets/tts/profile.example.json` 填写配置并注册为默认声线；已有本机注册声线和旧本地包可继续使用。准备命令按操作系统与架构下载原生程序、模型、FFmpeg 和浏览器，`slides video` 也会自动补齐并复用缓存。无需用户安装 Python TTS 或 CUDA 包。首次准备可联网，后续本地合成与渲染复用缓存。Windows ARM64 的 FFmpeg 通过 `--ffmpeg` 指定；Linux 的浏览器系统库与中文字体由 harness 提供。
+默认使用原生 Qwen3-TTS 1.7B Q8 与随包参考声线 `neutral-a`。技能包含 `assets/tts/reference/profile.json` 和 3.33 秒参考录音；新数据根自动使用该声线，已有本机注册声线和旧本地包可继续使用。自定义声线可准备 3–10 秒录音及逐字文本，参照 `assets/tts/profile.example.json` 填写并注册。准备命令按操作系统与架构下载原生程序、模型、FFmpeg 和浏览器，`slides video` 也会自动补齐并复用缓存。无需用户安装 Python TTS 或 CUDA 包。首次准备可联网，后续本地合成与渲染复用缓存。Windows ARM64 的 FFmpeg 通过 `--ffmpeg` 指定；Linux 的浏览器系统库与中文字体由 harness 提供。
 
 口播包含标题和 `video_tldr`，语速为 1.08 倍；实测音频时长决定翻页和图片轮播。HTML 暂停后再次播放，从当前新闻开头开始。
 
@@ -126,4 +125,4 @@ Qwen 按有界意群合成标题和短稿；完整旧句段缓存仍可复用。
 
 配置采用 `engine: qwen3`、`reference_id` 和 `references: [{id, audio, text, language}]`，录音使用相对配置文件的路径。参数为 `seed: 42`、`context: 4096`、`max_frames: 500`、`speed: 1`、`gain_db: 0`、`peak_limit: 0.794`。新 Qwen 整页合成由标点控制内部停顿，并追加 0.2 秒结尾停顿；旧句段缓存拼接仍保留 0.45/0.35 秒的标题、句间停顿。参考文字逐字匹配录音；目标播报语言由上游 deck 的 `language` 决定，英文稿在 `slides prepare --language en` 阶段写好。朗读规范化负责展开数字表达，Qwen 负责词语和专名发音，不继承旧引擎的强制拼写映射。
 
-模型和原生程序在准备后本地复用。原始直播、其余候选参考、模型及缓存保留在运行数据目录；公开技能包只携带配置示例，参考录音留在本地。
+模型和原生程序在准备后本地复用。原始直播、其余候选参考、模型及缓存保留在运行数据目录；技能包携带默认短参考及配置示例，自定义参考录音留在本地。

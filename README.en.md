@@ -53,15 +53,14 @@ signaltrail slides status --plan PLAN.json
 signaltrail slides render --plan PLAN.json
 ```
 
-After all batches are ready, `render` creates the deck HTML and updates the matching report page with its embedded presentation. Before the first video export, prepare your own 3–10 second reference recording and exact transcript, and complete a profile using [`assets/tts/profile.example.json`](assets/tts/profile.example.json). Existing locally registered voices remain available. Then export:
+After all batches are ready, `render` creates the deck HTML and updates the matching report page with its embedded presentation. New installations use the bundled Qwen3 reference voice `neutral-a` (3.33 seconds) by default; existing locally registered voices remain available. To export a video:
 
 ```sh
-signaltrail --data-dir DATA_DIR slides voice-setup --profile PROFILE.json --default
 signaltrail --data-dir DATA_DIR slides video-setup
 signaltrail --data-dir DATA_DIR slides video --deck DECK.json --output VIDEO.mp4
 ```
 
-First-time setup downloads the programs, model, browser, and FFmpeg. Later runs can reuse local models and audio caches; `slides render --offline` rebuilds the presentation without fetching images, although remote original images may still require a connection. The default device selection probes GPU synthesis and falls back to CPU when unavailable. See the [news slides guide](docs/news-slides.md) for packets, device options, budgets, and recovery.
+For a custom voice, prepare a 3–10 second recording and exact transcript, complete a profile using [`assets/tts/profile.example.json`](assets/tts/profile.example.json), and run `signaltrail --data-dir DATA_DIR slides voice-setup --profile PROFILE.json --default`. First-time setup downloads the programs, model, browser, and FFmpeg. Later runs can reuse local models and audio caches; `slides render --offline` rebuilds the presentation without fetching images, although remote original images may still require a connection. The default device selection probes GPU synthesis and falls back to CPU when unavailable. See the [news slides guide](docs/news-slides.md) for packets, device options, budgets, and recovery.
 
 ## Quick start
 

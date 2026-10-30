@@ -53,15 +53,14 @@ signaltrail slides status --plan PLAN.json
 signaltrail slides render --plan PLAN.json
 ```
 
-`render` 在所有批次就绪后生成演示 HTML，并更新对应日报页面中的嵌入入口。首次导出视频前，准备自备的 3–10 秒参考录音及逐字文本，参照 [`assets/tts/profile.example.json`](assets/tts/profile.example.json) 填写配置；已有本机注册声线可继续使用。然后按需导出：
+`render` 在所有批次就绪后生成演示 HTML，并更新对应日报页面中的嵌入入口。新安装默认使用随包的 Qwen3 参考声线 `neutral-a`（3.33 秒）；已有本机注册声线可继续使用。按需导出视频：
 
 ```sh
-signaltrail --data-dir DATA_DIR slides voice-setup --profile PROFILE.json --default
 signaltrail --data-dir DATA_DIR slides video-setup
 signaltrail --data-dir DATA_DIR slides video --deck DECK.json --output VIDEO.mp4
 ```
 
-首次准备需联网下载程序、模型、浏览器和 FFmpeg；准备完成后可复用本地模型及音频缓存，图文可用 `slides render --offline` 重建。远程原图仍可能需要联网。设备默认先通过实际合成探针选择可用 GPU，不可用时回落 CPU。完整写作数据包、设备和恢复说明见[图文幻灯片指南](docs/zh-CN/news-slides.md)。
+如需自定义声线，可准备 3–10 秒参考录音和逐字文本，参照 [`assets/tts/profile.example.json`](assets/tts/profile.example.json) 填写配置，再运行 `signaltrail --data-dir DATA_DIR slides voice-setup --profile PROFILE.json --default`。首次准备需联网下载程序、模型、浏览器和 FFmpeg；准备完成后可复用本地模型及音频缓存，图文可用 `slides render --offline` 重建。远程原图仍可能需要联网。设备默认先通过实际合成探针选择可用 GPU，不可用时回落 CPU。完整写作数据包、设备和恢复说明见[图文幻灯片指南](docs/zh-CN/news-slides.md)。
 
 ## 快速开始
 

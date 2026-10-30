@@ -19,7 +19,7 @@ this architecture map, bilingual READMEs, release/security/license records, and 
 | `schemas/` | Report and usage contracts; report validation reads the report schema |
 | `templates/` | Report contract, slide writing style and experimental research/explainer prompts |
 | `assets/news-slides/`, `assets/monitor/` | HTML/CSS/JavaScript for the slide renderer and monitor dashboard |
-| `assets/tts/profile.example.json` | Example profile for registering a local reference voice |
+| `assets/tts/reference/`, `assets/tts/profile.example.json` | Bundled default reference voice and example profile for custom voices |
 | `assets/readme/` | Product screenshots referenced by both READMEs |
 | `scripts/` | Installation, packaging, contributor checks and measurements |
 | `references/` | Runtime policies selected by the active workflow |
@@ -77,7 +77,7 @@ collection window. Slide writing also produces a concise `video_tldr` from the f
 `slide_video` reads the saved deck, synthesizes local speech, measures each page, and drives
 image rotation and MP4 encoding from the measured audio timeline.
 `video_runtime` and `qwen_runtime` prepare native Qwen3-TTS 1.7B Q8 by OS and architecture.
-New installations register a user-provided reference recording and transcript using `assets/tts/profile.example.json`; existing locally registered voices remain usable.
+Fresh runtime data uses the bundled `assets/tts/reference/` voice; users can register a custom recording and transcript with `assets/tts/profile.example.json`. Existing locally registered voices remain usable.
 The harness prefers a GPU verified by synthesis and falls back to CPU; export records the actual backend.
 Rendering reuses local evidence, images and audio.
 Qwen speech synthesizes the title and concise video script in bounded segments, while matching

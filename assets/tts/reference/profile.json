@@ -1,0 +1,24 @@
+{
+  "name": "reference",
+  "engine": "qwen3",
+  "reference_id": "neutral-a",
+  "references": [
+    {
+      "id": "neutral-a",
+      "audio": "neutral-a.wav",
+      "text": "然后要那个稍微这个清澈一点的水知道吧。",
+      "language": "zh-CN"
+    }
+  ],
+  "seed": 42,
+  "context": 4096,
+  "max_frames": 500,
+  "speed": 1,
+  "gain_db": 0,
+  "peak_limit": 0.794,
+  "pauses": {
+    "title": 0.45,
+    "sentence": 0.35,
+    "end": 0.2
+  }
+}

@@ -94,14 +94,13 @@ The host is responsible for making the writing call. SignalTrail prepares bounde
 The model writes a concise `video_tldr` based on the full narration: target 60–100 Chinese characters, with a maximum of 160 characters. Video reads the title and this short script.
 
 ```text
-signaltrail --data-dir DATA_DIR slides voice-setup --profile PROFILE.json --default
 signaltrail --data-dir DATA_DIR slides video-setup
 signaltrail --data-dir DATA_DIR slides video --deck DECK.json --output VIDEO.mp4
 ```
 
 When the deck belongs to a saved report, successful video export adds **Open video** beside **Open presentation** in the **Report visual stream and video** section. The video plays in the same frame, and the reader can switch back to the presentation. The presentation link still opens the deck separately. The report's existing desktop HTML copy is refreshed as well. Later report or slide HTML rebuilds preserve these controls; printing hides the embedded section. Index-only decks remain standalone. The report JSON and Markdown retain their saved revision.
 
-The default engine is native Qwen3-TTS 1.7B Q8. For a new installation, prepare your own 3–10 second reference recording and exact transcript, complete `assets/tts/profile.example.json`, and register the profile as the default voice. Existing locally registered voices and older local bundles remain usable. Setup downloads programs, models, FFmpeg and browser for the detected platform; `slides video` also prepares missing tools and reuses the cache. Users do not install Python TTS or CUDA packages. Initial preparation may use the network; subsequent local synthesis and rendering reuse cached files. Windows ARM64 requires an explicit `--ffmpeg`. The Linux harness supplies browser system libraries and Chinese fonts.
+The default is native Qwen3-TTS 1.7B Q8 with the bundled `neutral-a` reference voice. The skill includes `assets/tts/reference/profile.json` and a 3.33-second reference recording, automatically used by a fresh data root. Existing locally registered voices and older local bundles remain usable. For a custom voice, prepare a 3–10 second recording and exact transcript, complete `assets/tts/profile.example.json`, and register it. Setup downloads programs, models, FFmpeg and browser for the detected platform; `slides video` also prepares missing tools and reuses the cache. Users do not install Python TTS or CUDA packages. Initial preparation may use the network; subsequent local synthesis and rendering reuse cached files. Windows ARM64 requires an explicit `--ffmpeg`. The Linux harness supplies browser system libraries and Chinese fonts.
 
 Speech contains the title and `video_tldr` at 1.08× speed. Actual audio duration controls page changes and image rotation. HTML playback starts the current story again when resumed.
 
@@ -130,4 +129,4 @@ Import a voice with `slides voice-setup --profile PROFILE.json --default`. Refer
 
 The profile uses `engine: qwen3`, `reference_id` and `references: [{id, audio, text, language}]`, with recording paths relative to the profile. Settings are `seed: 42`, `context: 4096`, `max_frames: 500`, `speed: 1`, `gain_db: 0`, and `peak_limit: 0.794`. A new Qwen page uses punctuation for internal pauses and adds the configured 0.2-second ending pause; legacy sentence-cache assembly retains the 0.45/0.35-second title/sentence pauses. Reference text matches the recording exactly. The upstream deck language controls synthesis; author English with `slides prepare --language en`. The speech normalizer expands numeric expressions, while Qwen pronounces words and names without the legacy engine's forced-spelling mappings.
 
-Programs and models remain cached after setup. Original streams, additional reference candidates and model caches stay in runtime data; the public skill includes a profile example; reference recordings remain local.
+Programs and models remain cached after setup. Original streams, additional reference candidates and model caches stay in runtime data; the skill includes the default short reference and a profile example; custom reference recordings remain local.

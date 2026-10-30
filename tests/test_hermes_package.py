@@ -45,14 +45,7 @@ def test_community_package_contains_runtime_and_excludes_repository_state(tmp_pa
     for directory in BUILD.PACKAGE_DIRECTORIES:
         origin = ROOT / directory
         if origin.exists():
-            ignore = (
-                shutil.ignore_patterns("reference") if directory == Path("assets/tts") else None
-            )
-            shutil.copytree(origin, source / directory, ignore=ignore)
-    private_voice = source / "assets" / "tts" / "reference"
-    private_voice.mkdir(parents=True)
-    (private_voice / "profile.json").write_text("private test fixture", encoding="utf-8")
-    (private_voice / "neutral-a.wav").write_bytes(b"private test fixture")
+            shutil.copytree(origin, source / directory)
     readme = source / "README.md"
     readme.write_bytes(
         readme.read_bytes().replace(b"\r\n", b"\n").replace(b"\n", b"\r\n")
@@ -84,8 +77,13 @@ def test_community_package_contains_runtime_and_excludes_repository_state(tmp_pa
     example = output / "assets" / "tts" / "profile.example.json"
     profile = json.loads(example.read_text(encoding="utf-8"))
     assert profile["engine"] == "qwen3"
-    assert not (output / "assets" / "tts" / "reference").exists()
-    assert not BUILD.is_packaged(Path("assets/tts/reference/neutral-a.wav"))
+    voice = output / "assets" / "tts" / "reference"
+    reference_profile = json.loads((voice / "profile.json").read_text(encoding="utf-8"))
+    assert reference_profile["engine"] == "qwen3"
+    assert reference_profile["reference_id"] == "neutral-a"
+    assert (voice / reference_profile["references"][0]["audio"]).read_bytes() == (
+        ROOT / "assets" / "tts" / "reference" / "neutral-a.wav"
+    ).read_bytes()
     assert (output / "templates" / "news-slide-style" / "SKILL.md").is_file()
     assert (output / "RELEASE_NOTES.md").is_file()
     assert (output / "scripts" / "install.ps1").is_file()

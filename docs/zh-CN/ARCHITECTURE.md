@@ -17,7 +17,7 @@
 | `schemas/` | 日报和用量契约；日报校验读取 report schema |
 | `templates/` | 日报契约、图文写作风格与实验研究、讲解提示词 |
 | `assets/news-slides/`、`assets/monitor/` | 图文渲染器和监控页面使用的 HTML、CSS、JavaScript |
-| `assets/tts/profile.example.json` | 注册本地参考声线的配置示例 |
+| `assets/tts/reference/`、`assets/tts/profile.example.json` | 随包默认参考声线与自定义声线配置示例 |
 | `assets/readme/` | 双语 README 引用的产品截图 |
 | `scripts/` | 安装、打包、开发检查和测量脚本 |
 | `references/` | 按当前流程选读的运行细则 |
@@ -64,7 +64,7 @@ Python 负责身份、访问状态、修订分配、校验和持久化。模型�
 模型基于完整讲解撰写简明 `video_tldr`，视频朗读标题和短稿。`slide_video` 读取已保存的 deck，
 调用本地语音程序，测量逐页音频，以同一时间轴驱动图片轮播和 MP4 编码。
 `video_runtime` 与 `qwen_runtime` 按操作系统和架构准备原生 Qwen3-TTS 1.7B Q8。
-新安装参照 `assets/tts/profile.example.json` 注册用户自备的参考录音和逐字文本，已有本机注册声线可继续使用；harness 优先使用通过合成探针的 GPU，
+新数据根使用 `assets/tts/reference/` 随包默认声线；用户可参照 `assets/tts/profile.example.json` 注册自定义录音和逐字文本，已有本机注册声线可继续使用。harness 优先使用通过合成探针的 GPU，
 不可用时回落 CPU，并记录实际后端。合成阶段复用本地证据、图片和音频。
 Qwen 按有界意群合成标题与短稿，匹配的原生音频缓存仍可复用；整页音频缓存跳过重复 PCM 拼接。
 视频截取原图文 HTML 画面，保留原文字、图片和分栏，仅在视频截图时将整个网页缩放至 140%，文字和图片一起放大；
