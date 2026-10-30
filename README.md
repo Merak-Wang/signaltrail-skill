@@ -64,7 +64,7 @@ signaltrail --data-dir DATA_DIR slides video --deck DECK.json --output VIDEO.mp4
 
 ## 快速开始
 
-需要 Python 3.11+、一个已配置模型的智能体和本地命令行；从源码克隆时还需要 Git。可从 GitHub 克隆源码，或下载 [SignalTrail 2.1.0 完整安装包](https://github.com/Merak-Wang/signaltrail-skill/releases/latest)。
+需要 Python 3.11+、Git、一个已配置模型的智能体和本地命令行。使用以下命令从 GitHub 克隆源码并安装：
 
 ```sh
 git clone https://github.com/Merak-Wang/signaltrail-skill.git

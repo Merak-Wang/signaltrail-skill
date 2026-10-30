@@ -64,7 +64,7 @@ For a custom voice, prepare a 3–10 second recording and exact transcript, comp
 
 ## Quick start
 
-You need Python 3.11+, a configured agent, and a local command line; Git is needed when cloning the source. You can clone the repository or download the [SignalTrail 2.1.0 full install package](https://github.com/Merak-Wang/signaltrail-skill/releases/latest).
+You need Python 3.11+, Git, a configured agent, and a local command line. Clone the source from GitHub and install it with the commands below:
 
 ```sh
 git clone https://github.com/Merak-Wang/signaltrail-skill.git
