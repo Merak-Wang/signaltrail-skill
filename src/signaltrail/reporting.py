@@ -740,8 +740,9 @@ def compile_report_data(
     report["language"] = output_language
     edition_label = localized(
         output_language,
-        "晚报" if report.get("edition") == "evening" else "晨报",
-        "Evening Edition" if report.get("edition") == "evening" else "Morning Edition",
+        {"daily": "日报", "evening": "晚报", "morning": "晨报"}[report["edition"]],
+        {"daily": "Daily Edition", "evening": "Evening Edition",
+         "morning": "Morning Edition"}[report["edition"]],
     )
     if not report.get("title"):
         report["title"] = localized(

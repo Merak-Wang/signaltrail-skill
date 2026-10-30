@@ -66,13 +66,6 @@ _BRIEF_PACKET_CANDIDATE_FIELDS = (
     "previously_reported",
 )
 
-_BRIEF_PACKET_PLAN_FIELDS = (
-    "source_id",
-    "section_id",
-    "author_item_ids",
-)
-
-
 def _read_state(path: Path) -> list[dict[str, Any]]:
     """处理：读取论点或观察状态文件，并在文件缺失或根结构非法时返回空记录。
     输入：
@@ -102,7 +95,7 @@ def _load_reports(
     输入：
     - ``reports_dir``：历史版本化报告目录；用于寻找连续性和语义复用候选。
     - ``date``：日报日期字符串；用于选择历史记录和版本化目录。
-    - ``edition``：日报版本标识，通常为 morning 或 evening；参与窗口和产物命名。
+    - ``edition``：日报版本标识，默认为 daily；morning/evening 用于历史兼容；参与窗口和产物命名。
     - ``output_language``：目标报告语言；决定标题译文字段、校验规则和界面文本。
     输出：“按版本顺序读取历史报告 JSON，并分离正文报告与独立评估记录”得到的固定结构结果；
       返回位置依次对应 entries、warnings、reported_item_ids。
@@ -129,10 +122,11 @@ def _load_reports(
             if item[2].get("date") == date and item[2].get("edition") == "morning"
         )
     else:
+        previous_edition = "daily" if edition == "daily" else "evening"
         selected.extend(
             item
             for item in reports
-            if item[2].get("date") < date and item[2].get("edition") == "evening"
+            if item[2].get("date") < date and item[2].get("edition") == previous_edition
         )
     selected_ids = {item[2].get("report_id") for item in selected}
     selected.extend(item for item in reports if item[2].get("report_id") not in selected_ids)
@@ -384,6 +378,28 @@ def _planned_authoring_candidates(
     return planned
 
 
+def _brief_aliases(
+    candidates: list[dict[str, Any]],
+    reusable_briefs: dict[str, dict[str, Any]],
+) -> dict[str, str]:
+    """处理：将计划内相同证据指向一个写作者，优先采用已批准缓存。
+    输入：有序计划候选和已经批准的缓存简报；按现有语义证据指纹分组。
+    输出：目标条目到代表条目的映射；来源配额和显示顺序保持原计划。
+    """
+    groups: dict[str, list[str]] = {}
+    for item in candidates:
+        fingerprint = str(item["semantic_fingerprint"])
+        groups.setdefault(fingerprint, []).append(str(item["item_id"]))
+    aliases = {}
+    for item_ids in groups.values():
+        representative = next(
+            (item_id for item_id in item_ids if item_id in reusable_briefs), item_ids[0]
+        )
+        aliases.update({item_id: representative for item_id in item_ids
+                        if item_id != representative})
+    return aliases
+
+
 def _balanced_source_batches(
     candidates: list[dict[str, Any]],
     maximum_batches: int = 12,
@@ -392,7 +408,7 @@ def _balanced_source_batches(
     """处理：按来源完整分组并把大规模 Top15 写作负载均衡到有界批次。
     输入：
     - ``candidates``：仅包含本轮计划内、确实需要模型写作的候选记录。
-    - ``maximum_batches``：允许创建的批次数上限；默认 12，供默认三并发按波次执行。
+    - ``maximum_batches``：允许创建的批次数上限；默认 12，供三并发空槽补位执行。
     - ``target_items_per_batch``：希望单个模型 packet 承担的条目数，用于动态决定批次数。
     输出：“按来源完整分组并把大规模 Top15 写作负载均衡到有界批次”得到的有序结构化记录；
       典型字段包括 batch_id、candidate_count、source_ids，可直接交给下一阶段。
@@ -431,6 +447,7 @@ def _build_brief_plan(
     source_configs: dict[str, Any],
     batches: list[dict[str, Any]],
     reusable_briefs: dict[str, dict[str, Any]] | None = None,
+    aliases: dict[str, str] | None = None,
 ) -> list[dict[str, Any]]:
     """处理：结合来源目标、复用结果和批次分配生成逐条写作计划。
     输入：
@@ -443,6 +460,7 @@ def _build_brief_plan(
       ce_id、target_count，可直接交给下一阶段。
     """
     reusable_briefs = reusable_briefs or {}
+    aliases = aliases or {}
     grouped: dict[str, list[dict[str, Any]]] = {}
     for item in candidates:
         source_id = str(item.get("source_id") or "")
@@ -480,7 +498,8 @@ def _build_brief_plan(
                 "default_item_ids": default_item_ids,
                 "reuse_item_ids": reuse_item_ids,
                 "author_item_ids": [
-                    item_id for item_id in default_item_ids if item_id not in reusable_briefs
+                    item_id for item_id in default_item_ids
+                    if item_id not in reusable_briefs and item_id not in aliases
                 ],
             }
         )
@@ -503,7 +522,7 @@ def _write_brief_authoring_packets(
     - ``batches``：平衡算法生成的写作批次；每批声明来源、候选 ID 和预计规模。
     - ``context_dir``：当前日期和版本的情境产物目录；保存批次包和计划文件。
     - ``context_stem``：情境文件的稳定主文件名；派生批次包沿用此前缀。
-    - ``edition``：日报版本标识，通常为 morning 或 evening；参与窗口和产物命名。
+    - ``edition``：日报版本标识，默认为 daily；morning/evening 用于历史兼容；参与窗口和产物命名。
     - ``output_language``：目标报告语言；决定标题译文字段、校验规则和界面文本。
     输出：“为每个均衡批次写入有界候选、权限和提交命令”得到的有序结构化记录；
       典型字段包括 accepted_result_path、author_item_count、author_item_ids、batch_id、brief_pla
@@ -546,14 +565,6 @@ def _write_brief_authoring_packets(
                 str(candidate.get("title") or ""),
                 output_language,
             )
-        packet_plans = [
-            {
-                key: plan.get(key)
-                for key in _BRIEF_PACKET_PLAN_FIELDS
-                if plan.get(key) is not None
-            }
-            for plan in plans
-        ]
         packet = {
             "schema_version": "1.0",
             "batch_id": batch_id,
@@ -577,30 +588,25 @@ def _write_brief_authoring_packets(
                 "title only for candidates whose translation_required is true. "
                 + localized(
                     output_language,
-                    "先用本包可用正文和证据对照主体/身份、时间及计划、声明、进行中或已完成状态；"
-                    "content_status 只表示获取状态，正文可读不代表每项事实已独立核实；"
-                    "content_observations 按字段理解，空值或未评估不代表已核实。"
-                    "中英文材料都可作证据，数字、引语与事实含义必须一致；区分来源事实和推断。"
-                    "直接陈述有据事实，避免说明后紧接“不代表、不证明、并不意味着”等防御性语句。"
-                    "保留计划、涉嫌等事实限定；摘要只陈述当前证据能够支持的内容。"
-                    "材料不足时缩窄到有据内容，不用泛化说明凑字数；"
-                    "核心事实仍缺证且无法缩窄时，先不要提交，在宿主回执中向协调者说明"
-                    "item_id 和所需证据；成功提交时只返回状态和结果路径，不增加输出字段。",
-                    "Before writing, compare the available article text and evidence for the "
-                    "actor/identity, role, timing, and whether an action is planned, claimed, "
-                    "underway, or completed; content_status describes retrieval, and a readable "
-                    "body does not independently verify every fact. Interpret each "
-                    "content_observations field on its own; null or unassessed is not verified. "
-                    "Use Chinese and English material as evidence "
-                    "while keeping facts, numbers, and quotes consistent; distinguish sourced "
-                    "facts from inference. State supported facts directly; avoid following each "
-                    "explanation with defensive phrases such as does not mean or does not prove. "
-                    "Keep factual qualifiers such as planned or alleged, and state only what "
-                    "the available evidence supports. When evidence is thin, narrow to supported "
-                    "facts instead of "
-                    "padding with generic caveats. If a central fact remains unsupported after "
-                    "narrowing, stop before submission and tell the coordinator the item_id and "
-                    "exact evidence needed outside the JSON. Do not add output fields. "
+                    "证据依次使用可用正文、公开摘要和标题；标题或摘要明确陈述的发布事实可忠实改写，"
+                    "不要补写未观察到的细节。有正文的重点条目保留关键数量、条件和状态；"
+                    "保留计划、涉嫌及来源声称等限定。译题须为自然简体中文，专名可保留原文，"
+                    "不要用整句英文充当译题；不要推测项目功能。直接陈述事实，避免流程状态话术。"
+                    "先完成并集中检查全包，包括译题语言和格式；仅当标题、摘要及正文都无法识别"
+                    "主体或动作时，在宿主回执中汇总 item_id 和所需证据。",
+                    "Use available article text, public descriptions, then titles as evidence. "
+                    "Faithfully paraphrase explicit facts in a title or description without adding "
+                    "unobserved details. For important items with body text retain key numbers, "
+                    "conditions and status; preserve qualifiers such as planned, alleged "
+                    "or claimed. "
+                    "Write natural English translated titles, retaining proper names "
+                    "without guessing "
+                    "project capabilities. State facts directly without retrieval-status "
+                    "commentary. "
+                    "Complete and check the whole batch for title language and formatting "
+                    "together; "
+                    "only report item IDs and needed evidence when the title, description and body "
+                    "cannot identify the actor or action. "
                 )
                 + " "
                 "The output_schema is authoritative for every field, type, enum, and "
@@ -624,27 +630,17 @@ def _write_brief_authoring_packets(
                 "After that repair, resubmit the assigned draft once; do not restart research "
                 "or rewrite already valid briefs."
             ),
-            "required_output_fields": [
-                "item_id",
-                "tldr",
-                "importance",
-                "status",
-            ],
-            "conditional_output_fields": {
-                translated_title_field(output_language): "translation_required == true"
-            },
             "output_schema": _brief_output_schema(output_language),
             "input_projection": {
                 "policy": "brief_packet_allowlist_v1",
                 "candidate_count": len(packet_candidates),
                 "candidate_fields": list(_BRIEF_PACKET_CANDIDATE_FIELDS),
             },
-            "brief_plan": packet_plans,
             "author_item_ids": author_item_ids,
             "draft_result_path": str(draft_result_path.resolve()),
             "accepted_result_path": str(accepted_result_path.resolve()),
             "submission_command": (
-                f'signaltrail --data-dir "{data_dir.resolve()}" '
+                f'signaltrail --compact --data-dir "{data_dir.resolve()}" '
                 f'submit-authoring-batch --run "{run_path.resolve()}" '
                 f'--batch-id "{batch_id}" --result "{draft_result_path.resolve()}"'
             ),
@@ -678,7 +674,7 @@ def build_context(
     - ``index_path``：版本化来源索引 JSON 路径；包含根级规范 items 和来源采集状态。
     - ``config``：已校验的应用配置；提供时区、来源策略、并发限制、预算和输出选项。
     - ``data_dir``：当前运行的唯一数据根；所有状态和版本化产物都必须位于其中。
-    - ``edition``：日报版本标识，通常为 morning 或 evening；参与窗口和产物命名。
+    - ``edition``：日报版本标识，默认为 daily；morning/evening 用于历史兼容；参与窗口和产物命名。
     - ``collection_window``：本次 edition 的预定时段血缘；用于诊断和状态判断，但不改变
       当前 index 的候选资格或来源 Top 顺序。
     - ``output_language``：目标报告语言；决定标题译文字段、校验规则和界面文本。
@@ -784,12 +780,17 @@ def build_context(
             semantic_cache_path(data_dir),
             {"schema_version": SEMANTIC_CACHE_SCHEMA, "items": semantic_cache},
         )
+    aliases = _brief_aliases(
+        _planned_authoring_candidates(candidates, source_configs, {}), reusable_briefs
+    )
     authoring_candidates = _planned_authoring_candidates(
         candidates,
         source_configs,
         reusable_briefs,
     )
-    # 只对计划内缺口按来源均衡分批；多批由默认三并发按波次完成，避免单个
+    authoring_candidates = [item for item in authoring_candidates
+                            if str(item["item_id"]) not in aliases]
+    # 只对计划内缺口按来源均衡分批；多批由默认三并发空槽补位完成，避免单个
     # 约 160 条 packet 超出模型输出边界并放大整批重试成本。
     brief_batches = _balanced_source_batches(authoring_candidates)
     brief_plan = _build_brief_plan(
@@ -797,6 +798,7 @@ def build_context(
         source_configs,
         brief_batches,
         reusable_briefs,
+        aliases,
     )
     context_dir = data_dir / "context" / date
     revision = next_revision(context_dir, edition)
@@ -821,6 +823,7 @@ def build_context(
         "generated_at": now_iso(config.timezone),
         "edition": edition,
         "output_language": target_language,
+        "date": date,
         "collection_window": collection_window,
         "index_path": str(index_path.resolve()),
         "candidate_sources": [
@@ -852,6 +855,7 @@ def build_context(
             config.sources, data_dir, config.budget.max_fulltext_per_run,
         ),
         "reusable_briefs": list(reusable_briefs.values()),
+        "brief_aliases": aliases,
         "semantic_cache_metrics": cache_metrics,
         "brief_authoring_batches": brief_batches,
         "brief_plan": brief_plan,
@@ -867,10 +871,12 @@ def build_context(
             "details."
         ),
         "brief_authoring_rule": (
-            "After begin-authoring, dispatch brief_authoring_batches in ordered waves of at most "
-            "three concurrent harness workers while the coordinator runs prefetch-media. A host "
-            "with a lower concurrency limit may process the packets serially. Wait for each wave "
-            "before dispatching the next, and give each worker only its packet_path. The packet "
+            "After begin-authoring, dispatch brief_authoring_batches in order with at most "
+            "three concurrent harness workers while the coordinator runs prefetch-media. Fill "
+            "each open slot with the next packet as soon as a worker finishes. A host with a "
+            "lower concurrency limit may process the packets serially. Start each worker with "
+            "a fresh context containing only its packet_path and the resolved absolute CLI "
+            "invocation; do not reuse collection or debugging worker history. The packet "
             "is the complete data boundary: workers must not browse, search, create scripts, "
             "validate the full report, or inspect other batches. Each worker may write only "
             "the packet's draft_result_path and run only its submission_command, with the "
@@ -918,7 +924,8 @@ def build_context(
                 "Do not widen evidence separately for one lens, but let each lens cite a "
                 "thematically coherent subset. Events sharing only a date or broad category "
                 "must not be forced into one thesis. Reuse an approved unchanged judgement "
-                "instead of regenerating it."
+                "instead of regenerating it. Cross-perspective synthesis must explain concrete "
+                "transmission mechanisms, not analogies; keep unconnected domains independent."
             ),
             "presentation_mode": "narrative_first",
             "narrative_contract": {
@@ -959,7 +966,9 @@ def build_context(
                 "Facts, reasoning, history, dialectical analysis, stakeholder positions, "
                 "counterevidence, scenarios, assumptions, implications, actions, watch signals, "
                 "invalidation signals, and confidence rationale remain concise and traceable as "
-                "the expandable reasoning ledger behind the narrative."
+                "the expandable reasoning ledger behind the narrative. Watch signals name the "
+                "observation target, any review time present in evidence, and the direction "
+                "that would change the judgement."
             ),
             "per_lens_required_fields": [
                 "claim",

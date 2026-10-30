@@ -2,9 +2,9 @@
 
 [简体中文](README.md) | [English](README.en.md)
 
-SignalTrail 是一个在本机运行的新闻工作流：从配置的公开来源采集材料，生成保留原文链接的中文或英文日报，并可将日报改编成可切换的动态 HTML 图文演示。阅读页可导出 PDF，也可按需同步到 Notion。
+SignalTrail 是一个在本机运行的新闻工作流：从配置的公开来源采集材料，生成保留原文链接的中文或英文日报，并将每日一期日报制作成可切换的动态 HTML 图文演示，还可按需导出本地配音视频。阅读页可导出 PDF，也可按需同步到 Notion。
 
-Python 程序负责采集、证据和状态管理、校验及版本化存档；智能体按有界证据包撰写内容。日报讲解使用口语化、有节奏、轻幽默的主播风格，并按新闻需要选择地缘政治、AI／技术、市场等分析视角。每条中文讲解为 200–350 个非空白字符；候选来自整份已保存日报，去重后按重要性排序，默认取前 50 条，可自定义数量并按每批成本上限拆分处理。
+Python 程序负责采集、证据和状态管理、校验及版本化存档；智能体按有界证据包撰写内容。日报讲解使用口语化、有节奏、轻幽默的主播风格，并按新闻需要选择地缘政治、AI／技术、市场等分析视角。每条中文讲解为 200–350 个非空白字符；候选来自整份已保存日报，去重后按模型生成的重要性分数排序，默认取最重要的 30 条；模型复核时效性与重复覆盖，可排除后自动补位。用户可扩充数量，写作按每批成本上限拆分处理。
 
 [日报示例](#日报示例) · [快速开始](#快速开始) · [图文演示](#动态-html-图文演示) · [本地监控](#本地监控) · [文档索引](docs/README.md) · [开发指南](docs/development.md)
 
@@ -12,7 +12,7 @@ Python 程序负责采集、证据和状态管理、校验及版本化存档；�
 
 - **生成日报：** 采集公开来源，撰写摘要与分析，保存版本化 JSON／Markdown，并输出本地 HTML 和 PDF。HTML 阅读页支持桌面和移动设备。
 - **浏览本地新闻流：** 刷新 RSS／Atom 与配置的静态网页来源，按故事聚类并查看来源状态。监控刷新和聚类不调用模型。
-- **制作图文演示：** 默认日报的整期交付包含图文流。定稿后从已保存日报选取代表新闻，按批次写讲解并渲染为独立动态 HTML；报告 HTML 可以先交付，整期完成需通过交付验收。
+- **制作图文演示和视频：** 默认日报整期包含图文流；按需用本地 Qwen3 TTS 和 FFmpeg 导出 1080p 配音视频，在日报同一容器内切换图文与视频，也可独立打开演示。
 - **拓展阅读：** 可选实验性 explainer 和并行研究流程，详见各自文档。它们不属于当前新闻讲解演示的稳定日报路径。
 
 ## 日报示例
@@ -23,7 +23,7 @@ Python 程序负责采集、证据和状态管理、校验及版本化存档；�
 
 [下载日报与嵌入式图文演示 ZIP](https://github.com/Merak-Wang/signaltrail-skill/raw/refs/heads/main/examples/reports/2026-09-23-morning-r1.zip) · [下载单日报 HTML](https://github.com/Merak-Wang/signaltrail-skill/raw/refs/heads/main/examples/reports/2026-09-23-morning-r1.html)
 
-只要图文流时，采集索引、按需补充正文后运行 `signaltrail slides prepare --index INDEX.json --language zh-CN`，仅撰写待完成包，再复用下文 submit/status/render 命令。无需先写日报或分析；`--reuse-plan OLD_PLAN.json` 复用输入未变的已接受内容，未知用量与费用仍保持未知。
+只要图文流时，采集索引后由模型挑选最重要的条目，将有序 ID 通过重复的 `--item-id` 传给 `signaltrail slides prepare --index INDEX.json --language zh-CN --item-id ITEM_ID`，仅撰写待完成包，再复用下文 submit/status/render 命令。无需先写日报或分析；`--reuse-plan OLD_PLAN.json` 复用输入未变的已接受内容，未知用量与费用仍保持未知。
 
 ## 动态 HTML 图文演示
 
@@ -35,9 +35,9 @@ Python 程序负责采集、证据和状态管理、校验及版本化存档；�
 
 每条新闻占一页，使用风格化的主播讲解，同时呈现日报摘要、来源和可用的封面／正文图片。程序优先合并清晰图片、保留原站 caption，并提供缩略图、放大查看、100% 原始尺寸和原图链接。图片只展示采集到的内容，不生成或猜测图片和图注；来源没有可用配图时会如实留空。
 
-演示可在日报的“今日图文演示”容器中切换，也可通过“独立打开演示”按钮作为单独 HTML 页面放映。动画与版式在本地模板中渲染，不增加模型调用。TTS 和视频合成目前尚未实现。
+演示和视频可在日报的“日报图文流与视频”容器中切换，也可通过“独立打开演示”单独放映图文。视频保留图文流的原文字、图片和分栏，按原顺序自动翻页和轮播图片；捕获画面整体缩放 1.4 倍。模型根据每页完整讲解写简明口播，建议 60–100 汉字、最多 160 字符；本地 Qwen3 TTS 朗读标题与短稿，语速 1.08 倍，FFmpeg 输出 1080p。实际音频时长决定每页停留时间。
 
-候选覆盖整份已保存日报中的精选事件与简报；同一原文合并后按重要性降序排列，默认选前 50 条，可用 `slides prepare --max-news N` 或 `finalize-edition --slides-max-news N` 自定义。没有按来源预留名额；发布日期未知时保持未知，不以发现或采集时间代替。每批默认最多五条，并对输入和输出 token 估算设置门槛。中文讲解通过 200–350 个非空白字符校验；写作只在有证据支持时选择分析视角。
+候选覆盖整份已保存日报中的精选事件与简报；同一原文合并后按模型生成的重要性分数降序排列，默认选最重要的 30 条，可用 `slides prepare --max-news N` 或 `finalize-edition --slides-max-news N` 自定义。没有按来源预留名额；发布日期未知时保持未知，不以发现或采集时间代替。每批默认最多五条，并对输入和输出 token 估算设置门槛。中文讲解通过 200–350 个非空白字符校验；写作只在有证据支持时选择分析视角。
 
 从一份已保存的日报及匹配索引开始：
 
@@ -45,7 +45,7 @@ Python 程序负责采集、证据和状态管理、校验及版本化存档；�
 signaltrail slides prepare --report REPORT.json --index INDEX.json
 ```
 
-智能体读取准备好的批次包并写入结果 JSON，然后逐批提交并检查进度：
+智能体读取准备好的批次包并写入结果 JSON，然后提交并检查进度：
 
 ```sh
 signaltrail slides submit --packet PACKET.json --input DRAFT.json
@@ -53,7 +53,15 @@ signaltrail slides status --plan PLAN.json
 signaltrail slides render --plan PLAN.json
 ```
 
-`render` 在所有批次就绪后生成演示 HTML，并更新对应日报页面中的嵌入入口。完整写作数据包、预算参数和恢复说明见[图文幻灯片指南](docs/news-slides.md)。
+`render` 在所有批次就绪后生成演示 HTML，并更新对应日报页面中的嵌入入口。首次导出视频前，准备自备的 3–10 秒参考录音及逐字文本，参照 [`assets/tts/profile.example.json`](assets/tts/profile.example.json) 填写配置；已有本机注册声线可继续使用。然后按需导出：
+
+```sh
+signaltrail --data-dir DATA_DIR slides voice-setup --profile PROFILE.json --default
+signaltrail --data-dir DATA_DIR slides video-setup
+signaltrail --data-dir DATA_DIR slides video --deck DECK.json --output VIDEO.mp4
+```
+
+首次准备需联网下载程序、模型、浏览器和 FFmpeg；准备完成后可复用本地模型及音频缓存，图文可用 `slides render --offline` 重建。远程原图仍可能需要联网。设备默认先通过实际合成探针选择可用 GPU，不可用时回落 CPU。完整写作数据包、设备和恢复说明见[图文幻灯片指南](docs/zh-CN/news-slides.md)。
 
 ## 快速开始
 
@@ -69,7 +77,7 @@ signaltrail --help
 在智能体中加载仓库根目录的 [`SKILL.md`](SKILL.md)，然后提出报告需求，例如：
 
 ```text
-使用 SignalTrail 生成今天的中文晨报，保存本地 HTML 和 PDF。
+使用 SignalTrail 生成今天的中文日报，保存本地 HTML 和 PDF。
 ```
 
 `signaltrail` 是统一命令入口；Python 包可 `import signaltrail`，也可用 `python -m signaltrail.cli` 启动。命令行准备可复现的采集、校验和存档步骤；智能体根据证据包完成写作。仅运行 `run-edition` 会停在写作交接阶段，不会自行生成完整日报。
@@ -113,7 +121,7 @@ signaltrail serve --open --refresh-minutes 30
 
 采集、监控、图片处理和 HTML 演示渲染不调用模型。日报写作与图文讲解由智能体宿主执行；批次 token 门槛用于限制单批输入／输出规模，实际用量取决于宿主是否提供计量数据。新闻来源、网络状况、证据完整度和模型速度都会影响交付时间与内容覆盖。
 
-图文演示是日报的独立 HTML 投影，不改变日报 JSON／Markdown。默认日报无论用量是否计量都必须完成图文流；日报可先保存和交付，整期交付完成需通过动态验收。当前不提供语音播放或视频制作。实验性 explainer、并行研究与稳定日报及图文演示路径的边界见[文档索引](docs/README.md)和[路线图](docs/zh-CN/roadmap.md)。
+图文演示是日报的独立 HTML 投影，不改变日报 JSON／Markdown。默认日报无论用量是否计量都必须完成图文流；日报可先保存和交付，整期交付完成需通过动态验收。按需可生成本地配音视频，独立平台发布尚未提供。实验性 explainer、并行研究与稳定日报及图文演示路径的边界见[文档索引](docs/README.md)和[路线图](docs/zh-CN/roadmap.md)。
 
 ## 文档
 

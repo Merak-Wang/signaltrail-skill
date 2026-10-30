@@ -87,14 +87,18 @@ def test_legacy_paths_are_not_guessed_without_explicit_adoption(monkeypatch, tmp
 def test_historical_run_paths_are_remapped_in_memory_only(tmp_path):
     hermes_home = tmp_path / "hermes"
     old_root = hermes_home / "daily-intelligence"
+    new_root = hermes_home / "signaltrail"
     run_path = old_root / "runs" / "2026-09-23" / "morning.json"
     index_path = old_root / "indexes" / "2026-09-23" / "morning-r1.json"
     context_path = old_root / "context" / "2026-09-23" / "morning-r1.json"
-    index_path.parent.mkdir(parents=True)
-    context_path.parent.mkdir(parents=True)
-    run_path.parent.mkdir(parents=True)
-    index_path.write_text('{"items":[]}\n', encoding="utf-8")
-    context_path.write_text('{"edition":"morning"}\n', encoding="utf-8")
+    current_index_path = new_root / index_path.relative_to(old_root)
+    current_context_path = new_root / context_path.relative_to(old_root)
+    current_run_path = new_root / run_path.relative_to(old_root)
+    current_index_path.parent.mkdir(parents=True)
+    current_context_path.parent.mkdir(parents=True)
+    current_run_path.parent.mkdir(parents=True)
+    current_index_path.write_text('{"items":[]}\n', encoding="utf-8")
+    current_context_path.write_text('{"edition":"morning"}\n', encoding="utf-8")
     run = {
         "data_root": str(old_root),
         "artifacts": {
@@ -103,10 +107,7 @@ def test_historical_run_paths_are_remapped_in_memory_only(tmp_path):
         },
     }
     run_bytes = json.dumps(run, ensure_ascii=False).encode("utf-8")
-    run_path.write_bytes(run_bytes)
-    old_root.rename(hermes_home / "signaltrail")
-    new_root = hermes_home / "signaltrail"
-    current_run_path = new_root / run_path.relative_to(old_root)
+    current_run_path.write_bytes(run_bytes)
     manifest_digest = hashlib.sha256(current_run_path.read_bytes()).hexdigest()
     index_digest = hashlib.sha256(
         (new_root / index_path.relative_to(old_root)).read_bytes()

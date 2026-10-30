@@ -73,7 +73,7 @@ def main(argv: list[str] | None = None) -> int:
 
     data_dir.mkdir(parents=True, exist_ok=True)
 
-    context = CommandContext(config=config, data_dir=data_dir, parser=parser)
+    context = CommandContext(config=config, data_dir=data_dir, parser=parser, compact=args.compact)
     return HANDLERS[args.command](args, context)
 
 

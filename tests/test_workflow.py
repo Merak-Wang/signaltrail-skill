@@ -1,9 +1,11 @@
 from contextlib import contextmanager
+from datetime import datetime, timedelta
 from hashlib import sha256
 from pathlib import Path
 
 import pytest
 
+import signaltrail.collector as collector_module
 import signaltrail.workflow as workflow_module
 from signaltrail.config import OutputConfig, load_config
 from signaltrail.llm_usage import UsageLedger
@@ -19,6 +21,54 @@ from signaltrail.workflow import (
     prepare_edition,
 )
 from tests.report_helpers import load_sample_report, write_report_index
+
+
+def test_daily_collection_window_covers_previous_24_hours(monkeypatch):
+    class FixedDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return cls(2026, 10, 29, 9, 30, tzinfo=tz)
+
+    monkeypatch.setattr(workflow_module, "datetime", FixedDateTime)
+    window = workflow_module.edition_window("2026-10-29", "daily", "Asia/Shanghai")
+    assert window == {
+        "start": "2026-10-28T09:30:00+08:00",
+        "end": "2026-10-29T09:30:00+08:00",
+    }
+    assert datetime.fromisoformat(window["end"]) - datetime.fromisoformat(
+        window["start"]
+    ) == timedelta(hours=24)
+    assert workflow_module.edition_window("2026-10-20", "daily", "Asia/Shanghai") == {
+        "start": "2026-10-20T00:00:00+08:00",
+        "end": "2026-10-21T00:00:00+08:00",
+    }
+
+
+def test_daily_run_keeps_start_date_when_collection_crosses_midnight(monkeypatch, tmp_path):
+    config = load_config(timezone="Asia/Shanghai")
+    config.monitor.enabled = False
+    monkeypatch.setattr(workflow_module, "today_str", lambda timezone: "2026-10-29")
+    monkeypatch.setattr(collector_module, "today_str", lambda timezone: "2026-10-30")
+    monkeypatch.setattr(workflow_module, "sync_user_feedback", lambda data_dir: None)
+
+    def collect_after_midnight(**kwargs):
+        return collector_module.write_results_index(
+            [], kwargs["data_dir"], kwargs["edition"], config.timezone, tmp_path / "profile",
+            date_value=kwargs["date_value"],
+        )
+
+    def context_from_index(index_path, config, data_dir, edition, **kwargs):
+        index = read_json(index_path)
+        return write_json(data_dir / "context" / index["date"] / f"{edition}.json", index)
+
+    monkeypatch.setattr(workflow_module, "collect_sources", collect_after_midnight)
+    monkeypatch.setattr(workflow_module, "build_context", context_from_index)
+    run_path = prepare_edition(config, tmp_path, "daily")
+    run = read_json(run_path)
+    index = read_json(Path(run["artifacts"]["index_path"]))
+    assert run["date"] == index["date"] == "2026-10-29"
+    assert Path(run["artifacts"]["index_path"]).parent.name == run["date"]
+    assert read_json(Path(run["artifacts"]["context_path"]))["date"] == run["date"]
 
 
 def test_external_evaluation_builds_dossier_without_scheduling_hermes(monkeypatch, tmp_path):
@@ -950,12 +1000,14 @@ def test_finalize_keeps_custom_slide_limit_on_retry_and_changes_plan_explicitly(
         "artifacts": {"json_path": str(report_path), "index_path": str(index_path)},
     })
     calls = []
+    exclusions = []
 
-    def prepare(report, index, root, *, max_news, reuse_plan=None, config=None,
-                resume_plan=False):
+    def prepare(report, index, root, *, max_news, exclude_event_ids=None, reuse_plan=None,
+                config=None, resume_plan=False):
         from signaltrail.narrative_store import load_artifact
 
         calls.append(max_news)
+        exclusions.append(exclude_event_ids)
         if resume_plan and reuse_plan:
             prior = load_artifact(reuse_plan, root, kind="slides-plan")
             if prior["payload"]["budget"]["max_news"] == max_news:
@@ -970,13 +1022,17 @@ def test_finalize_keeps_custom_slide_limit_on_retry_and_changes_plan_explicitly(
 
     monkeypatch.setattr("signaltrail.news_slides.prepare_slides", prepare)
 
-    finalize_edition(run_path, Path("unused.json"), data_dir, slides_max_news=20)
+    finalize_edition(run_path, Path("unused.json"), data_dir, slides_max_news=20,
+                     slides_exclude_event_ids=["bad-story"])
     custom_plan = read_json(run_path)["artifacts"]["slides"]["plan_path"]
     finalize_edition(run_path, Path("unused.json"), data_dir)
     assert calls == [20, 20]
+    assert exclusions == [["bad-story"], ["bad-story"]]
     assert read_json(run_path)["artifacts"]["slides"]["plan_path"] == custom_plan
 
-    finalize_edition(run_path, Path("unused.json"), data_dir, slides_max_news=50)
+    finalize_edition(run_path, Path("unused.json"), data_dir, slides_max_news=50,
+                     slides_exclude_event_ids=[])
+    assert exclusions[-1] == []
     assert calls == [20, 20, 50]
     assert read_json(run_path)["artifacts"]["slides"]["plan_path"] != custom_plan
 

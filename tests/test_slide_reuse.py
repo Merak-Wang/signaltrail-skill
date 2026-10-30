@@ -24,6 +24,7 @@ def accepted_plan(tmp_path):
         "budget": {"max_output_tokens": 4000},
     }, {"plan": plan})
     draft = {"slides": [{"event_id": "event-1", "narration": "这是来源已经确认的变化。" * 20,
+        "video_tldr": "来源已经确认这项变化。",
                          "perspectives": []}]}
     submit_slides(packet, draft, tmp_path)
     return tmp_path, plan, model_input, draft
@@ -97,7 +98,8 @@ def test_revision_and_image_change_reuse_all_and_replay_stably(tmp_path):
     packet = Path(old["packet_paths"][0])
     event_id = load_artifact(packet, tmp_path)["payload"]["model_input"]["news"][0]["event_id"]
     submit_slides(packet, {"slides": [{"event_id": event_id,
-        "narration": "这是来源已经确认的变化。" * 20, "perspectives": []}]}, tmp_path)
+        "narration": "这是来源已经确认的变化。" * 20,
+        "video_tldr": "来源已经确认这项变化。", "perspectives": []}]}, tmp_path)
     revised = read_json(report)
     revised.update({"revision": 2, "report_id": "daily-2026-10-07-morning-r2"})
     report2 = write_json(tmp_path / "reports/r2.json", revised)
@@ -121,7 +123,8 @@ def test_workflow_prepares_new_revision_with_the_known_old_plan(tmp_path, locati
     packet = Path(old["packet_paths"][0])
     event_id = load_artifact(packet, tmp_path)["payload"]["model_input"]["news"][0]["event_id"]
     submit_slides(packet, {"slides": [{"event_id": event_id,
-        "narration": "这是来源已经确认的变化。" * 20, "perspectives": []}]}, tmp_path)
+        "narration": "这是来源已经确认的变化。" * 20,
+        "video_tldr": "来源已经确认这项变化。", "perspectives": []}]}, tmp_path)
     revised = read_json(report)
     revised.update({"revision": 2, "report_id": "daily-2026-10-07-morning-r2"})
     report2 = write_json(tmp_path / "reports/r2.json", revised)
@@ -161,3 +164,33 @@ def test_workflow_rebuilds_when_optional_old_plan_is_unavailable(tmp_path, locat
     assert result["status"] == "prepared"
     assert result["plan_path"] != str(old_plan)
     assert len(result["packet_paths"]) == 1
+
+
+def test_images_reuse_requires_matching_evidence(accepted_plan):
+    from signaltrail.slide_reuse import reusable_images
+
+    root, plan, model_input, _ = accepted_plan
+    save_artifact(root, "old", "slides-deck", {"slides": [
+        {"event_id": "event-1", "images": [{"url": "https://example.com/image.jpg"}]}
+    ]}, {"plan": plan})
+    news = deepcopy(model_input["news"])
+    assert reusable_images(plan, news, root)["event-1"][0]["url"].endswith("image.jpg")
+    news[0]["existing_narration"] = "原讲解"
+    assert "event-1" in reusable_images(plan, news, root)
+    news[0]["summary"] = "changed"
+    assert reusable_images(plan, news, root) == {}
+
+
+def test_missing_video_script_reuses_only_matching_old_narration(tmp_path):
+    from signaltrail.slide_reuse import previous_narrations
+
+    news = {"event_id": "one", "summary": "fact", "images": []}
+    slide = {"event_id": "one", "narration": "完整讲解", "perspectives": []}
+    plan = save_artifact(tmp_path, "old", "slides-plan", {
+        "news": [news], "model_input_template": {"style": "style", "language": "zh-CN"},
+        "reused_slides": [slide],
+    }, {})
+    assert previous_narrations(plan, [news], tmp_path, "style", "zh-CN") == {"one": "完整讲解"}
+    assert previous_narrations(plan, [news], tmp_path, "changed", "zh-CN") == {}
+    assert previous_narrations(plan, [{**news, "summary": "changed"}], tmp_path,
+                               "style", "zh-CN") == {}

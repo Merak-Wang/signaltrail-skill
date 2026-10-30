@@ -39,6 +39,8 @@ Repair the lower-priority record in the same change.
 | Reports and recovery | `reporting.py`, `reports.py`, `workflow.py`, `storage.py` | `test_reporting.py`, `test_report_persistence.py`, `test_workflow.py`, `test_storage.py` |
 | Evaluation and usage | `evaluation.py`, `llm_usage/`, `hosts/` | `test_evaluation*.py`, `test_llm_usage*.py`, `test_hermes_runner.py` |
 | Delivery | `local_output.py`, `notion.py`, `verification.py` | `test_desktop_delivery.py`, `test_notion.py`, `test_verification.py` |
+| News slides | `news_slides.py`, `slide_images.py`, `slide_reuse.py`, `slide_renderer.py` | `test_news_slides.py`, `test_slide_images.py`, `test_slide_reuse.py`, `test_slide_renderer.py` |
+| Narrated video | `slide_video.py`, `voice_synthesis.py`, `speech_text.py`, `video_runtime.py`, `qwen_runtime.py` | `test_slide_video.py`, `test_voice_synthesis.py`, `test_speech_text.py`, `test_video_runtime.py` |
 | Packaging and docs | `scripts/`, `SKILL.md`, `docs/README.md` | `test_hermes_package.py`, `test_docs.py` |
 
 Paths above are relative to `src/signaltrail/` and `tests/`.

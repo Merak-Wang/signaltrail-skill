@@ -158,6 +158,7 @@ def test_cli_external_evaluation_and_slides_complete_without_hermes(
                 {
                     "event_id": news["event_id"],
                     "narration": narration,
+                    "video_tldr": "先说明已保存新闻的事实，再简述相关领域的影响。",
                     "perspectives": [
                         analysis["domain"] for analysis in news.get("analyses", [])
                     ],

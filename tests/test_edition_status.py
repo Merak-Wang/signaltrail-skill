@@ -24,7 +24,7 @@ def _run(tmp_path: Path, *, batches=(1,), tail="completed", fail=False):
     index = write_json(data / "indexes" / "i1.json", {})
     plan = save_artifact(data, "status-slides", "slides-plan", {
         "selection_policy": "report-admitted-importance-v1",
-        "budget": {"max_news": 50},
+        "budget": {"max_news": 30},
     }, {"report": report, "index": index})
     html = report.with_name("morning-r1-slides.html")
     run = {
@@ -135,7 +135,7 @@ def test_edition_status_require_complete_exit_code(tmp_path, monkeypatch, capsys
     monkeypatch.setattr("signaltrail.news_slides.slides_status", lambda *_: {
         "pending_batches": [1], "news_count": 2, "status": "awaiting_authoring",
     })
-    context = SimpleNamespace(data_dir=data)
+    context = SimpleNamespace(data_dir=data, compact=False)
     assert handle_edition_status(Namespace(run=run, require_complete=False), context) == 0
     assert handle_edition_status(Namespace(run=run, require_complete=True), context) == 1
     assert capsys.readouterr().out.count('"delivery_complete": false') == 2
@@ -151,7 +151,7 @@ def test_require_complete_passes_for_rendered_read_only_delivery(tmp_path, monke
     })
     before = run.read_bytes()
     result = handle_edition_status(
-        Namespace(run=run, require_complete=True), SimpleNamespace(data_dir=data)
+        Namespace(run=run, require_complete=True), SimpleNamespace(data_dir=data, compact=False)
     )
     assert result == 0
     assert json.loads(capsys.readouterr().out)["delivery_complete"] is True

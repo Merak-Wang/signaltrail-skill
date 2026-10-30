@@ -7,7 +7,12 @@ from urllib.parse import parse_qs, urljoin, urlsplit
 from bs4 import Tag
 
 from .content_extraction import ExtractedDocument, _inline_text
-from .image_policy import normalize_image_candidates, srcset_candidates
+from .image_policy import (
+    filter_editorial_templates,
+    is_editorial_template,
+    normalize_image_candidates,
+    srcset_candidates,
+)
 
 
 def _image_caption(node: Tag, root: Tag) -> str:
@@ -170,6 +175,8 @@ def article_image_candidates(
             node.get("data-src"), node.get("data-lazy-src"),
         ], base_url)
         for variant, url in enumerate(urls):
+            if is_editorial_template({"url": url, "alt": alt}):
+                continue
             candidates.append({
                 "url": url, "provenance": "article_body", "purpose": "article_illustration",
                 "alt": alt[:1000], "caption": caption, "surrounding_text": surrounding,
@@ -179,6 +186,6 @@ def article_image_candidates(
                 "declared_height": str(node.get("height") or ""),
                 "position": position, "variant": variant,
             })
-    return sorted(candidates, key=lambda entry: (
+    return sorted(filter_editorial_templates(candidates), key=lambda entry: (
         -entry["relevance_score"], -bool(entry["caption"]), entry["position"], entry["variant"],
     ))

@@ -27,6 +27,7 @@ HANDLERS: dict[str, Callable[[Namespace, CommandContext], int]] = {
     "authoring-status": editions.handle_authoring_status,
     "prefetch-media": editions.handle_prefetch_media,
     "prepare-analysis": editions.handle_prepare_analysis,
+    "analysis-stage": editions.handle_analysis_stage,
     "assemble-authoring": editions.handle_assemble_authoring,
     "finalize-edition": editions.handle_finalize_edition,
     "complete-edition-tail": editions.handle_complete_edition_tail,

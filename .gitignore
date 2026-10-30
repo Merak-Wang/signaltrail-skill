@@ -91,3 +91,6 @@ Desktop.ini
 
 # Local build audit; release history belongs in CHANGELOG.md
 /BUILD_REPORT.md
+
+# Local voice recordings and profiles are not included in the public repository
+/assets/tts/reference/

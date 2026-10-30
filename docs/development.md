@@ -41,7 +41,9 @@ the host database. A matching database total does not make missing failed-call u
 | Run lifecycle and evaluation | `tests/test_workflow.py`, `tests/test_evaluation_workflow.py`, `tests/test_evaluation.py` |
 | Browser verification and Notion | `tests/test_verification.py`, `tests/test_notion.py` |
 | Local output and media | `tests/test_desktop_delivery.py`, `tests/test_content.py`, `tests/test_media.py` |
-| News slides | `tests/test_news_slides.py`, `tests/test_slide_renderer.py` |
+| News slide authoring and reuse | `tests/test_news_slides.py`, `tests/test_standalone_slides.py`, `tests/test_slide_reuse.py` |
+| Slide rendering and images | `tests/test_slide_renderer.py`, `tests/test_slide_images.py`, `tests/test_image_policy.py`, `tests/test_content.py`, `tests/test_media.py` |
+| Narrated video and speech | `tests/test_slide_video.py`, `tests/test_voice_synthesis.py`, `tests/test_speech_text.py`, `tests/test_video_runtime.py` |
 | Experimental research and explainers | `tests/test_research.py`, `tests/test_story_stream.py`, `tests/test_narrative.py`, `tests/test_narrative_store.py`, `tests/test_narrative_verification.py` |
 | Usage and host integration | `tests/test_llm_usage*.py`, `tests/test_usage_cli.py`, `tests/test_hermes_runner.py` |
 | Packaging and documentation | `tests/test_hermes_package.py`, `tests/test_docs.py`, `tests/test_code_comments.py` |

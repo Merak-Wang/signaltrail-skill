@@ -334,7 +334,7 @@ def test_context_keeps_index_top_order_even_when_a_lower_item_is_enriched(tmp_pa
     assert "short receipt" not in context["brief_authoring_rule"].lower()
     batch = context["brief_authoring_batches"][0]
     packet = read_json(Path(batch["packet_path"]))
-    assert packet["submission_command"].startswith("signaltrail --data-dir ")
+    assert packet["submission_command"].startswith("signaltrail --compact --data-dir ")
     assert batch["author_item_count"] == len(packet["author_item_ids"])
     assert packet["task"].startswith("Author exactly one structured Chinese brief")
     assert "Do not browse the web" in packet["tool_policy"]
@@ -506,3 +506,56 @@ def test_context_preserves_published_at_order_already_written_to_index(tmp_path:
         "bbc-older",
     ]
     assert [item["source_rank"] for item in context["candidate_items"]] == [2, 1]
+
+
+@pytest.mark.parametrize("same_evidence", [True, False])
+def test_shared_brief_evidence_keeps_source_plan_and_receipt_dependencies(tmp_path, same_evidence):
+    from signaltrail.authoring import _merge_briefs
+    from signaltrail.semantics import run_relative_brief_fields, semantic_fingerprint
+
+    candidates = [
+        {"item_id": item_id, "source_id": source_id, "module": "technology",
+         "category": "papers", "title": "A useful research paper",
+         "url": "https://example.org/paper", "description": description,
+         "published_at": "2026-10-29", "source_rank": rank}
+        for item_id, source_id, description, rank in [
+            ("a", "huggingface_papers", "Evidence one", 1),
+            ("b", "papers_with_code", "Evidence one" if same_evidence else "New evidence", 8),
+        ]
+    ]
+    for item in candidates:
+        item["semantic_fingerprint"] = semantic_fingerprint(item)
+    aliases = context_module._brief_aliases(candidates, {})
+    assert aliases == ({"b": "a"} if same_evidence else {})
+    assert context_module._brief_aliases(candidates, {"b": {}}) == (
+        {"a": "b"} if same_evidence else {}
+    )
+    authors = [item for item in candidates if item["item_id"] not in aliases]
+    batches = context_module._balanced_source_batches(authors)
+    sources = {source_id: load_config().source_by_id(source_id)
+               for source_id in ("huggingface_papers", "papers_with_code")}
+    plan = context_module._build_brief_plan(candidates, sources, batches, {}, aliases)
+    assert sum(len(row["author_item_ids"]) for row in plan) == (1 if same_evidence else 2)
+    assert {row["source_id"]: row["default_item_ids"] for row in plan} == {
+        "huggingface_papers": ["a"], "papers_with_code": ["b"]}
+    receipt = tmp_path / "accepted.json"
+    write_json(receipt, {"briefs": [
+        {"item_id": item["item_id"], "title_zh": "研究论文", "tldr": "论文提出具体研究方法。",
+         "importance": 80, "status": "WATCH"} for item in authors
+    ]})
+    context = {"candidate_items": candidates, "brief_plan": plan,
+               "brief_aliases": aliases, "date": "2026-10-29"}
+    session = {"batches": [{"batch_id": batches[0]["batch_id"], "result_path": str(receipt)}]}
+    sections, missing, targets = _merge_briefs(context, session, allow_degraded=False)
+    briefs = [brief for section in sections for brief in section["briefs"]]
+    assert {brief["item_id"] for brief in briefs} == {"a", "b"}
+    assert targets == {"huggingface_papers": 1, "papers_with_code": 1}
+    assert not missing
+    if same_evidence:
+        alias = next(brief for brief in briefs if brief["item_id"] == "b")
+        fields = run_relative_brief_fields(candidates[1], "2026-10-29")
+        assert {key: alias[key] for key in fields} == fields
+    session["batches"][0]["result_path"] = str(tmp_path / "missing.json")
+    sections, missing, targets = _merge_briefs(context, session, allow_degraded=True)
+    assert missing == [batches[0]["batch_id"]]
+    assert targets == {"huggingface_papers": 0, "papers_with_code": 0}

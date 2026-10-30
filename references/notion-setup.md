@@ -88,7 +88,7 @@ Hermes 运行时也会读取 Hermes Home 下的 `.env`。仓库内的 `.env` 已
 | --- | --- | --- |
 | Name | Title | 报告标题 |
 | Date | Date | 报告日期 |
-| Status | Status | 晨报为 `New`，晚报为 `Reviewed` |
+| Status | Status | 日报为 `New`；历史晚报为 `Reviewed` |
 | Source | Select | `SignalTrail` |
 | Tags | Multi-select | 项目名和版本时段 |
 
@@ -96,7 +96,7 @@ Hermes 运行时也会读取 Hermes Home 下的 `.env`。仓库内的 `.env` 已
 
 ## 发布行为
 
-- 晨报创建或复用当日页面；晚报复用同一日期页面并更新属性。
+- 每日日报创建或复用当日页面；修订复用同一日期页面并更新属性。
 - 页面正文不再复制新闻、研判或证据字段。每个时段只上传一份由已校验 Report 确定性生成的便携 HTML，并以 `file_upload` 文件块附在页面中。
 - 便携 HTML 不引用本机绝对路径；配图使用报告中已经校验的公开来源 URL。下载附件后即可独立打开，阅读层以 HTML 为准。
 - 本地发布登记保存页面 ID、HTML SHA-256、File Upload ID 和追加进度，用于断点续传和避免重复附件。

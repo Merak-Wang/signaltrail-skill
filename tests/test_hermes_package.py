@@ -45,7 +45,14 @@ def test_community_package_contains_runtime_and_excludes_repository_state(tmp_pa
     for directory in BUILD.PACKAGE_DIRECTORIES:
         origin = ROOT / directory
         if origin.exists():
-            shutil.copytree(origin, source / directory)
+            ignore = (
+                shutil.ignore_patterns("reference") if directory == Path("assets/tts") else None
+            )
+            shutil.copytree(origin, source / directory, ignore=ignore)
+    private_voice = source / "assets" / "tts" / "reference"
+    private_voice.mkdir(parents=True)
+    (private_voice / "profile.json").write_text("private test fixture", encoding="utf-8")
+    (private_voice / "neutral-a.wav").write_bytes(b"private test fixture")
     readme = source / "README.md"
     readme.write_bytes(
         readme.read_bytes().replace(b"\r\n", b"\n").replace(b"\n", b"\r\n")
@@ -74,9 +81,15 @@ def test_community_package_contains_runtime_and_excludes_repository_state(tmp_pa
     assert (output / "docs" / "zh-CN" / "README.md").is_file()
     assert (output / "assets" / "readme" / "morning-report-preview.png").is_file()
     assert (output / "assets" / "news-slides" / "template.html").is_file()
+    example = output / "assets" / "tts" / "profile.example.json"
+    profile = json.loads(example.read_text(encoding="utf-8"))
+    assert profile["engine"] == "qwen3"
+    assert not (output / "assets" / "tts" / "reference").exists()
+    assert not BUILD.is_packaged(Path("assets/tts/reference/neutral-a.wav"))
     assert (output / "templates" / "news-slide-style" / "SKILL.md").is_file()
     assert (output / "RELEASE_NOTES.md").is_file()
     assert (output / "scripts" / "install.ps1").is_file()
+    assert (output / "scripts" / "measure_codex_turn.py").is_file()
     assert b"\r\n" not in (output / "README.md").read_bytes()
     assert not (output / ".git").exists()
     assert not (output / "tests").exists()
@@ -89,6 +102,7 @@ def test_community_package_contains_runtime_and_excludes_repository_state(tmp_pa
             path.relative_to(source)
             for path in (source / directory).rglob("*")
             if path.is_file() and "__pycache__" not in path.parts
+            and BUILD.is_packaged(path.relative_to(source))
         }
         packaged = {
             path.relative_to(output)

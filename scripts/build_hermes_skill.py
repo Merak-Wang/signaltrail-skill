@@ -29,6 +29,7 @@ PACKAGE_FILES = {
     Path("SKILL.md"),
     Path("pyproject.toml"),
     Path("scripts/build_hermes_skill.py"),
+    Path("scripts/measure_codex_turn.py"),
     Path("scripts/install.ps1"),
     Path("scripts/install.sh"),
 }
@@ -36,6 +37,7 @@ PACKAGE_DIRECTORIES = (
     Path("assets/monitor"),
     Path("assets/news-slides"),
     Path("assets/readme"),
+    Path("assets/tts"),
     Path("configs"),
     Path("docs"),
     Path("references"),
@@ -202,6 +204,8 @@ def is_packaged(relative_path: Path) -> bool:
     - ``relative_path``：相对于仓库根的跟踪文件路径；用于白名单和危险文件检查。
     输出：布尔判断；True 表示满足处理说明中的条件，False 表示不满足且不产生该结果。
     """
+    if Path("assets/tts/reference") in relative_path.parents:
+        return False
     if relative_path in PACKAGE_FILES:
         return True
     return any(

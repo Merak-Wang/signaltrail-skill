@@ -1,4 +1,5 @@
 import argparse
+import io
 import json
 import tomllib
 from pathlib import Path
@@ -8,11 +9,28 @@ import pytest
 
 from signaltrail.cli import build_parser, main
 from signaltrail.commands import HANDLERS
+from signaltrail.commands.common import print_json_file
 from signaltrail.config import load_config
 from signaltrail.utils import read_json, write_json
 from signaltrail.workflow import (
     RunStatus,
 )
+
+
+@pytest.mark.parametrize("encoding", ["utf-8", "gbk"])
+def test_saved_json_prints_losslessly_with_terminal_encoding(tmp_path, monkeypatch, encoding):
+    payload = {"status": "accepted", "summary": "面积 2 m²，新闻已保存 📰"}
+    result = write_json(tmp_path / "result.json", payload)
+    buffer = io.BytesIO()
+    with io.TextIOWrapper(buffer, encoding=encoding) as stdout:
+        monkeypatch.setattr("sys.stdout", stdout)
+        print_json_file(result)
+        stdout.flush()
+        output = buffer.getvalue().decode(encoding)
+    assert json.loads(output) == payload
+    assert read_json(result) == payload
+    if encoding == "utf-8":
+        assert payload["summary"] in output
 
 
 @pytest.mark.parametrize("score_args,expected_score", [([], 0), (["--min-importance", "70"], 70)])
@@ -57,6 +75,19 @@ def test_slides_cli_prepares_index_without_report(cli_data_root, monkeypatch, ca
     assert options["config"] is config
     assert config.sources
     assert json.loads(capsys.readouterr().out)["reused_count"] == 2
+
+
+@pytest.mark.parametrize(("invalid", "expected"), [([], 0), ([1], 1)])
+def test_slides_check_only_exit_code_tracks_invalid_batches(
+    cli_data_root, monkeypatch, capsys, invalid, expected
+):
+    result = {"status": "partial" if invalid else "ready_to_submit", "check_only": True,
+              "accepted": [], "pending": [1], "invalid": invalid}
+    monkeypatch.setattr("signaltrail.commands.slides._submit_many", Mock(return_value=result))
+    code = main(["slides", "submit", "--plan", str(cli_data_root / "plan.json"),
+                 "--draft-dir", str(cli_data_root), "--check-only"])
+    assert code == expected
+    assert json.loads(capsys.readouterr().out) == result
 
 
 def test_slides_cli_reports_missing_plan(cli_data_root, capsys):
@@ -329,6 +360,9 @@ def test_cli_exposes_two_stage_workflow():
         "finalize-edition",
     )
     assert prepared.language == "en"
+    assert parser.parse_args(["run-edition"]).edition == "daily"
+    assert parser.parse_args(["collect"]).edition == "daily"
+    assert parser.parse_args(["build-context", "--index", "INDEX"]).edition == "daily"
     assert verification.command == "verify-pending"
     assert evaluation.command == "finalize-evaluation"
     assert finalized.evaluate is False
@@ -515,3 +549,83 @@ def test_verification_commands_have_noninteractive_visible_wait_timeout():
     assert pending.timeout_seconds == 300
     assert automatic.open_verification is True
     assert automatic.verification_timeout_seconds == 180
+
+
+@pytest.mark.parametrize("compact", [False, True])
+def test_edition_compact_receipt_keeps_recovery_paths_without_reprinting_briefs(
+    cli_data_root, monkeypatch, capsys, compact,
+):
+    original = {
+        "status": "accepted", "batch_id": "batch-1",
+        "briefs": [{"title": "很长的新闻正文", "tldr": "正文" * 1000}],
+        "coverage": {"total_tokens": {"known_batches": 1, "missing_batches": 2}},
+        "batch_metrics": [{"batch_id": "batch-1", "total_tokens": 1234}],
+        "next_action": "prepare-analysis", "result_path": "accepted.json",
+    }
+    output = write_json(cli_data_root / "accepted.json", original)
+    monkeypatch.setattr("signaltrail.commands.editions.accept_authoring_batch",
+                        Mock(return_value=output))
+    argv = (["--compact"] if compact else []) + [
+        "submit-authoring-batch", "--run", str(cli_data_root / "run.json"),
+        "--batch-id", "batch-1", "--result", str(cli_data_root / "draft.json"),
+    ]
+    assert main(argv) == 0
+    receipt = json.loads(capsys.readouterr().out)
+    if compact:
+        expected = {key: value for key, value in original.items()
+                    if key not in {"briefs", "batch_metrics"}}
+        assert receipt == expected | {"artifact_path": str(output)}
+    else:
+        assert receipt == original
+    assert read_json(output) == original
+
+
+def test_finalize_cli_forwards_explicit_slide_exclusions(cli_data_root, monkeypatch, capsys):
+    output = write_json(cli_data_root / "run.json", {"status": "completed"})
+    finalize = Mock(return_value=output)
+    monkeypatch.setattr("signaltrail.commands.editions.finalize_edition", finalize)
+    monkeypatch.setattr("signaltrail.commands.editions.get_edition_status",
+                        Mock(return_value={"delivery_complete": False}))
+    assert main(["--compact", "finalize-edition", "--run", str(output),
+                 "--report", str(cli_data_root / "report.json"),
+                 "--slides-exclude-event-id", "brief-a",
+                 "--slides-exclude-event-id", "brief-b"]) == 0
+    assert finalize.call_args.kwargs["slides_exclude_event_ids"] == ["brief-a", "brief-b"]
+    assert json.loads(capsys.readouterr().out)["artifact_path"] == str(output)
+
+
+def test_parallel_analysis_cli_dispatches_stages(cli_data_root, monkeypatch, capsys):
+    run = write_json(cli_data_root / "run.json", {"artifacts": {}})
+    packet = write_json(cli_data_root / "packet.json", {"large_evidence": "原文" * 500})
+    prepare = Mock(return_value=packet)
+    selection = Mock(return_value={"packet_path": str(packet), "result_path": "selection.json"})
+    monkeypatch.setattr("signaltrail.commands.editions.prepare_authoring_analysis", prepare)
+    monkeypatch.setattr("signaltrail.analysis_parallel.prepare_analysis_selection", selection)
+    assert main(["--compact", "prepare-analysis", "--run", str(run), "--parallel"]) == 0
+    selection.assert_called_once_with({"artifacts": {}}, cli_data_root)
+    assert json.loads(capsys.readouterr().out)["packet_path"] == str(packet)
+    for stage, function in [("domains", "prepare_analysis_domains"),
+                            ("synthesis", "prepare_analysis_synthesis"),
+                            ("assemble", "assemble_parallel_analysis")]:
+        advance = Mock(return_value={"analysis_result_path": "analysis.json"})
+        monkeypatch.setattr(f"signaltrail.analysis_parallel.{function}", advance)
+        assert main(["--compact", "analysis-stage", "--run", str(run), "--stage", stage]) == 0
+        advance.assert_called_once_with({"artifacts": {}}, cli_data_root)
+        assert json.loads(capsys.readouterr().out)["analysis_result_path"] == "analysis.json"
+
+
+@pytest.mark.parametrize("diagnostics", [
+    {"deadline_exceeded": True, "remaining_seconds": -1, "expected_batches": 8,
+     "recovered_batches": [{"batch_id": "brief-1", "reason": "accepted draft recovered"}]},
+    {"errors": [{"path": "briefs.0.title", "message": "required"}],
+     "warnings": [{"source": "example", "reason": "with_gaps"}],
+     "usage": {"coverage": {"missing_batches": 1}, "reason": "unmetered", "cost_usd": None}},
+])
+def test_compact_keeps_deadline_and_structured_diagnostics(
+    cli_data_root, monkeypatch, capsys, diagnostics,
+):
+    monkeypatch.setattr("signaltrail.commands.editions.get_authoring_status",
+                        Mock(return_value={**diagnostics, "briefs": [{"tldr": "正文" * 100}]}))
+    run = cli_data_root / "run.json"
+    assert main(["--compact", "authoring-status", "--run", str(run)]) == 0
+    assert json.loads(capsys.readouterr().out) == {"artifact_path": str(run), **diagnostics}

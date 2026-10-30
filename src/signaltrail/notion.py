@@ -94,7 +94,7 @@ def validate_notion_schema(config: dict[str, Any], schema: dict[str, Any]) -> No
         option_names = {option.get("name") for option in option_container.get("options", [])}
         if option_names:
             values = config.get("values", {})
-            for value_key in ("morning_status", "evening_status"):
+            for value_key in ("daily_status", "morning_status", "evening_status"):
                 status_value = values.get(value_key)
                 if status_value and status_value not in option_names:
                     errors.append(
@@ -817,6 +817,8 @@ def report_to_blocks(
         ANALYSIS_SECTION_LABELS if chinese else ANALYSIS_SECTION_LABELS_EN
     )
     edition_label = (
+        localized(language, "日报", "Daily Brief")
+        if report["edition"] == "daily" else
         localized(language, "06:00 早报", "06:00 Morning Brief")
         if report["edition"] == "morning"
         else localized(language, "18:00 晚报", "18:00 Evening Brief")
@@ -1680,6 +1682,8 @@ def _edition_story_blocks(
       每项承载处理说明所定义的身份、证据或状态字段，可直接交给下一阶段。
     """
     label = (
+        localized(language, "日报", "Daily Brief")
+        if edition == "daily" else
         localized(language, "06:00 早报", "06:00 Morning Brief")
         if edition == "morning"
         else localized(language, "18:00 晚报", "18:00 Evening Brief")

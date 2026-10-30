@@ -344,21 +344,25 @@ def collect_sources(
     browser_channel: str | None = None,
     revision: int | None = None,
     temporary: bool = False,
+    *,
+    date_value: str | None = None,
 ) -> Path:
     """处理：按并发预算采集选定来源，并为每个来源保留成功、空、失败或挑战状态。
     输入：
     - ``config``：已校验的应用配置；提供时区、来源策略、并发限制、预算和输出选项。
     - ``data_dir``：当前运行的唯一数据根；所有状态和版本化产物都必须位于其中。
-    - ``edition``：日报版本标识，通常为 morning 或 evening；参与窗口和产物命名。
+    - ``edition``：日报版本标识，daily 为默认值，morning/evening 兼容历史运行；参与窗口和产物命名。
     - ``headed``：是否显示真实浏览器窗口；人工登录或验证场景需要开启。
     - ``only_source_ids``：调用方限定的来源 ID 集合；为空时处理配置选中的全部来源。
     - ``profile_dir``：持久化浏览器 Profile 目录；保存用户已授权的浏览器会话。
     - ``browser_channel``：Playwright 浏览器通道名称；为空时使用配置或默认 Chromium。
     - ``revision``：目标产物修订号；为空时由持久化层选择下一个不可变版本。
     - ``temporary``：是否生成重试或验证用的临时索引，而不是正式不可变索引。
+    - ``date_value``：调用方冻结的日报日期；采集跨午夜时保持运行与索引日期一致。
     输出：指向“按并发预算采集选定来源，
       并为每个来源保留成功、空、失败或挑战状态”所生成、定位或确认产物的本地路径。
     """
+    date_value = date_value or today_str(config.timezone)
     selected = [
         source
         for source in config.sources
@@ -431,6 +435,7 @@ def collect_sources(
         },
         revision=revision,
         temporary=temporary,
+        date_value=date_value,
     )
 
 
@@ -443,20 +448,23 @@ def write_results_index(
     source_policies: dict[str, dict[str, Any]] | None = None,
     revision: int | None = None,
     temporary: bool = False,
+    *,
+    date_value: str | None = None,
 ) -> Path:
     """处理：把来源结果和根级条目写成新的不可变索引修订。
     输入：
     - ``results``：本轮各来源的采集结果；每项含状态、错误、页面证据和规范文章条目。
     - ``data_dir``：当前运行的唯一数据根；所有状态和版本化产物都必须位于其中。
-    - ``edition``：日报版本标识，通常为 morning 或 evening；参与窗口和产物命名。
+    - ``edition``：日报版本标识，daily 为默认值，morning/evening 兼容历史运行；参与窗口和产物命名。
     - ``timezone``：IANA 时区名称；用于解析无时区时间并生成日报时间边界。
     - ``profile``：已经解析并创建的浏览器 Profile 绝对路径。
     - ``source_policies``：按来源 ID 记录报告目标数和上限的策略映射。
     - ``revision``：目标产物修订号；为空时由持久化层选择下一个不可变版本。
     - ``temporary``：是否生成重试或验证用的临时索引，而不是正式不可变索引。
+    - ``date_value``：调用方冻结的日报日期；采集跨午夜时保持运行与索引日期一致。
     输出：指向“把来源结果和根级条目写成新的不可变索引修订”所生成、定位或确认产物的本地路径。
     """
-    date = today_str(timezone)
+    date = date_value or today_str(timezone)
     generated_at = now_iso(timezone)
     index_dir = data_dir / "indexes" / date
 

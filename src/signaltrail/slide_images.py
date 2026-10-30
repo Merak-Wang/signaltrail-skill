@@ -14,7 +14,7 @@ from .access import classify_access_text
 from .config import MediaConfig
 from .content_extraction import extract_document
 from .content_images import article_image_candidates
-from .image_policy import normalize_image_candidates
+from .image_policy import filter_editorial_templates, normalize_image_candidates
 from .media import (
     DownloadedImage,
     ImageDownloadError,
@@ -290,7 +290,7 @@ def enrich_slide_images(
             briefs[item_id] = {"primary_source": {"name": source.get("name", "")}}
         event = {"source_refs": refs}
         merged = _news_images(event, briefs, indexed)
-        item["images"] = merged
+        item["images"] = filter_editorial_templates(merged)
         source_url = source_urls[0] if source_urls else ""
         for candidate in item["images"]:
             if candidate.get("url"):

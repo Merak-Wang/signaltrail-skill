@@ -146,7 +146,7 @@ def test_daily_report_links_to_rendered_visual_edition(tmp_path: Path):
     assert slides_link.get("rel") == ["noopener", "noreferrer"]
     toc_first = soup.select_one(".toc-link")
     assert toc_first["href"] == "#visual-briefing"
-    assert toc_first.get_text() == "今日图文演示"
+    assert toc_first.get_text() == "日报图文流与视频"
     frame = soup.select_one(".slides-embed iframe")
     assert frame["src"] == "morning-r1-slides.html?embed=1"
     assert frame.has_attr("allowfullscreen")
@@ -433,3 +433,90 @@ def test_masthead_uses_recorded_time_without_assuming_beijing(timestamp, expecte
     assert soup.select_one(".edition-info-right time").get_text() == f"本版生成于 {expected}"
     assert "北京时间" not in soup.select_one(".edition-info-right").get_text()
     assert "<script>bad</script>" not in rendered
+
+
+def test_video_entry_uses_deck_report_parent_and_survives_projection_refresh(
+    tmp_path, monkeypatch
+):
+    import json
+    from types import SimpleNamespace
+
+    from signaltrail.local_output import refresh_report_slides_entry, refresh_report_video_entry
+    from signaltrail.narrative_store import save_artifact
+
+    data_dir = tmp_path / "data"
+    desktop_dir = tmp_path / "desktop"
+    desktop_dir.mkdir()
+    config = OutputConfig(formats=["html"], copy_html_to_desktop=True,
+                          desktop_dir=str(desktop_dir.resolve()))
+    monkeypatch.setattr(
+        "signaltrail.local_output.load_config", lambda: SimpleNamespace(output=config)
+    )
+    report = _report()
+    report_dir = data_dir / "reports" / report["date"]
+    report_dir.mkdir(parents=True)
+    report_path = report_dir / "morning-r1.json"
+    report_path.write_text(json.dumps(report), encoding="utf-8")
+    slides = report_dir / "morning-r1-slides.html"
+    slides.write_text("slides", encoding="utf-8")
+    outputs = write_local_outputs(report, data_dir, config)
+    initial = BeautifulSoup(Path(outputs["html_path"]).read_text(encoding="utf-8"), "html.parser")
+    assert initial.select_one(".video-entry") is None
+    plan = save_artifact(data_dir, "slides-test", "slides-plan", {}, {"report": report_path})
+    deck = save_artifact(data_dir, "slides-test", "slides-deck",
+                         {"report_id": "different-from-parent"}, {"plan": plan})
+    video = data_dir / "video dir" / "news #1.mp4"
+    video.parent.mkdir()
+    video.write_bytes(b"video")
+    player = refresh_report_video_entry(deck, video, data_dir, config=config)
+    assert player == report_dir / "morning-r1-video.html"
+    player_html = BeautifulSoup(player.read_text(encoding="utf-8"), "html.parser")
+    assert player_html.select_one("video[controls]")["src"] == "../../video%20dir/news%20%231.mp4"
+    report_html = BeautifulSoup(
+        Path(outputs["html_path"]).read_text(encoding="utf-8"), "html.parser"
+    )
+    assert report_html.body.find(recursive=False).get("class") != ["video-entry"]
+    heading = report_html.select_one(".slides-embed-heading")
+    assert heading.select_one("h2").get_text() == "日报图文流与视频"
+    assert heading.select_one(".video-entry")["href"] == player.name
+    assert heading.select_one("[data-open-slides]").has_attr("hidden")
+    assert report_html.select_one("[data-video-frame]").has_attr("hidden")
+    assert "videoFrame.src='about:blank'" in str(report_html)
+    desktop = Path(outputs["desktop_html_path"])
+    assert BeautifulSoup(desktop.read_text(encoding="utf-8"), "html.parser").select_one(
+        ".video-entry")["href"] == player.resolve().as_uri()
+    refresh_report_slides_entry(report_path, slides, data_dir)
+    rebuilt = BeautifulSoup(Path(outputs["html_path"]).read_text(encoding="utf-8"), "html.parser")
+    assert rebuilt.select_one(".video-entry")["href"] == player.name
+    write_local_outputs(report, data_dir, config)
+    assert BeautifulSoup(desktop.read_text(encoding="utf-8"), "html.parser").select_one(
+        ".video-entry")["href"] == player.resolve().as_uri()
+    plan_no_report = save_artifact(data_dir, "slides-index", "slides-plan", {}, {})
+    deck_no_report = save_artifact(data_dir, "slides-index", "slides-deck", {},
+                                   {"plan": plan_no_report})
+    assert refresh_report_video_entry(deck_no_report, video, data_dir, config=config) is None
+    video.rename(video.with_name("moved.mp4"))
+    write_local_outputs(report, data_dir, config)
+    missing = BeautifulSoup(Path(outputs["html_path"]).read_text(encoding="utf-8"), "html.parser")
+    assert missing.select_one(".video-entry") is None
+
+
+def test_video_player_file_uri_preserves_literal_percent_escape(tmp_path):
+    from signaltrail.local_output import _available_video_player
+
+    video = tmp_path / "news%23.mp4"
+    video.write_bytes(b"video")
+    player = tmp_path / "player.html"
+    player.write_text(f'<video src="{video.as_uri()}"></video>', encoding="utf-8")
+    assert _available_video_player(player)
+
+
+def test_video_entry_english_localization():
+    report = _report()
+    report["language"] = "en"
+    soup = BeautifulSoup(
+        render_report_html(report, video_href="video.html", slides_href="slides.html"),
+        "html.parser",
+    )
+    assert soup.select_one(".video-entry").get_text() == "Open video"
+    assert soup.select_one("#slides-embed-title").get_text() == "Daily news slides and video"

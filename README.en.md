@@ -2,9 +2,9 @@
 
 [简体中文](README.md) | [English](README.en.md)
 
-SignalTrail is a local news workflow. It collects material from configured public sources, creates source-linked Chinese or English daily reports, and can turn a report into a navigable, animated HTML presentation. Reports can also be read as HTML, exported to PDF, or optionally sent to Notion.
+SignalTrail is a local news workflow. It collects material from configured public sources, creates source-linked Chinese or English daily reports, and turns each daily edition into a navigable, animated HTML presentation, with an optional locally narrated video. Reports can also be read as HTML, exported to PDF, or optionally sent to Notion.
 
-Python handles collection, evidence and state, validation, and versioned storage. An agent writes from bounded evidence packets. Slide narration uses a conversational, rhythmic presenter voice with light humor, and selects geopolitics, AI/technology, or markets perspectives only when relevant to the story. Chinese narration is 200–350 non-whitespace characters per story. Candidates span the saved report, are deduplicated and ranked by importance, and default to the top 50; the count is configurable, with per-batch cost gates.
+Python handles collection, evidence and state, validation, and versioned storage. An agent writes from bounded evidence packets. Slide narration uses a conversational, rhythmic presenter voice with light humor, and selects geopolitics, AI/technology, or markets perspectives only when relevant to the story. Chinese narration is 200–350 non-whitespace characters per story. Candidates span the saved report, are deduplicated and ranked by model-authored importance, and default to the top 30. The model reviews recency and duplicate coverage, and excluded stories are replaced by the next candidates. Users can expand the count, with per-batch cost gates.
 
 [Daily report example](#daily-report-example) · [Quick start](#quick-start) · [Animated HTML slides](#animated-html-slides) · [Local monitor](#local-monitor) · [Documentation](docs/README.md) · [Development](docs/development.md)
 
@@ -12,7 +12,7 @@ Python handles collection, evidence and state, validation, and versioned storage
 
 - **Create daily reports:** collect public sources, write summaries and analysis, save versioned JSON and Markdown, and render local HTML and PDF. The reader works on desktop and mobile.
 - **Browse a local news stream:** refresh RSS/Atom and configured static pages, cluster related stories, and inspect source health. Monitor refresh and clustering make no model calls.
-- **Build illustrated presentations:** the visual stream is required for every default daily edition. After report finalization, select representative stories, write narration in bounded batches, and render a standalone animated HTML deck. The report HTML may be delivered earlier; the full edition is complete only after the delivery gate passes.
+- **Build illustrated presentations and video:** each default daily edition includes a visual stream. Optionally export a 1080p narrated video with local Qwen3 TTS and FFmpeg, switch between slides and video in the report, or open the slides independently.
 - **Explore related work:** optional experimental explainers and parallel research are documented separately. They are not part of the stable daily news narration workflow.
 
 ## Daily report example
@@ -23,7 +23,7 @@ The September 23, 2026 morning report contains 415 news items across 30 source g
 
 [Download the report and embedded presentation ZIP](https://github.com/Merak-Wang/signaltrail-skill/raw/refs/heads/main/examples/reports/2026-09-23-morning-r1.zip) · [Download the report HTML only](https://github.com/Merak-Wang/signaltrail-skill/raw/refs/heads/main/examples/reports/2026-09-23-morning-r1.html)
 
-For a visual stream without a daily report, collect an index, optionally enrich its article text, and run `signaltrail slides prepare --index INDEX.json --language en`. Write only the pending packets and reuse the same submit/status/render commands below. `--reuse-plan OLD_PLAN.json` reuses unchanged accepted writing; unknown usage and costs remain unknown.
+For a visual stream without a daily report, collect an index, have the model select the most important items in order, and pass their IDs with repeated `--item-id` options to `signaltrail slides prepare --index INDEX.json --language en --item-id ITEM_ID`. Write only the pending packets and reuse the same submit/status/render commands below. `--reuse-plan OLD_PLAN.json` reuses unchanged accepted writing; unknown usage and costs remain unknown.
 
 ## Animated HTML slides
 
@@ -35,9 +35,9 @@ Actual generated presentation: 41 stories from the September 23, 2026 morning re
 
 Each story occupies one slide. The presenter-style narration appears with the daily summary, sources, and available cover and article images. The gallery prefers clearer image variants, keeps extracted publisher captions, and supports thumbnails, an expanded view, 100% original-size inspection, and a link to the original image. It displays collected material only: images and captions are never invented, and stories without usable images remain without one.
 
-Slides can be navigated inside the report's “Today’s visual briefing” panel or opened as a standalone HTML page. Local templates render the layout and transitions without additional model calls. Text-to-speech and video generation are not implemented.
+The report’s visual briefing panel switches between slides and video, and the slides can also be opened independently. The video preserves the visual stream’s text, images, and column layout, automatically advancing through pages and images in their original order. Capture scales the whole page by 1.4×. The model writes a concise `video_tldr` from each full narration (60–100 Chinese characters recommended, 160 characters maximum); local Qwen3 TTS reads the title and short script at 1.08× speed, and FFmpeg produces 1080p video. Measured audio duration determines each page’s display time.
 
-Candidates cover the entire saved report: selected events and briefs. Duplicate original stories are merged, then ranked by importance; the default is the top 50. Set another positive count with `slides prepare --max-news N` or `finalize-edition --slides-max-news N`. There is no per-source quota. Unknown publication dates remain unknown and are never replaced with discovery or collection time. Batches default to five stories and retain estimated input/output size gates. Chinese narration is validated at 200–350 non-whitespace characters. Analysis perspectives are included only when supported by the story evidence.
+Candidates cover the entire saved report: selected events and briefs. Duplicate original stories are merged, then ranked by model-authored importance; the default is the top 30. Set another positive count with `slides prepare --max-news N` or `finalize-edition --slides-max-news N`. There is no per-source quota. Unknown publication dates remain unknown and are never replaced with discovery or collection time. Batches default to five stories and retain estimated input/output size gates. Chinese narration is validated at 200–350 non-whitespace characters. Analysis perspectives are included only when supported by the story evidence.
 
 Start with a saved report and its matching index:
 
@@ -53,7 +53,15 @@ signaltrail slides status --plan PLAN.json
 signaltrail slides render --plan PLAN.json
 ```
 
-After all batches are ready, `render` creates the deck HTML and updates the matching report page with its embedded presentation. See the [news slides guide](docs/news-slides.md) for the full packet, budget, and recovery workflow.
+After all batches are ready, `render` creates the deck HTML and updates the matching report page with its embedded presentation. Before the first video export, prepare your own 3–10 second reference recording and exact transcript, and complete a profile using [`assets/tts/profile.example.json`](assets/tts/profile.example.json). Existing locally registered voices remain available. Then export:
+
+```sh
+signaltrail --data-dir DATA_DIR slides voice-setup --profile PROFILE.json --default
+signaltrail --data-dir DATA_DIR slides video-setup
+signaltrail --data-dir DATA_DIR slides video --deck DECK.json --output VIDEO.mp4
+```
+
+First-time setup downloads the programs, model, browser, and FFmpeg. Later runs can reuse local models and audio caches; `slides render --offline` rebuilds the presentation without fetching images, although remote original images may still require a connection. The default device selection probes GPU synthesis and falls back to CPU when unavailable. See the [news slides guide](docs/news-slides.md) for packets, device options, budgets, and recovery.
 
 ## Quick start
 
@@ -69,7 +77,7 @@ signaltrail --help
 Load the repository root [`SKILL.md`](SKILL.md) in your agent, then ask for a report, for example:
 
 ```text
-Use SignalTrail to create today's English morning report as local HTML and PDF.
+Use SignalTrail to create today's English daily report as local HTML and PDF.
 ```
 
 `signaltrail` is the unified CLI. The Python package can be imported as `signaltrail` or launched with `python -m signaltrail.cli`. The CLI prepares reproducible collection, validation, and storage steps; the agent writes from the evidence packets. Running `run-edition` alone stops at the authoring handoff and does not produce a complete report by itself.
@@ -113,7 +121,7 @@ Versioned report JSON and Markdown are the original records; HTML and PDF are re
 
 Collection, monitoring, image handling, and HTML rendering make no model calls. The agent host performs report and slide writing. Batch token gates limit estimated input and output size; actual usage depends on what the host reports. Source availability, network access, evidence coverage, and model latency affect delivery and coverage.
 
-Slides are a separate HTML projection and do not change the report's JSON or Markdown. Every default daily edition requires the visual stream whether usage is metered or unmetered. A report can be saved and delivered before slides finish; `edition-status --run RUN.json --require-complete` is the dynamic gate for full delivery. Speech and video are not currently available. See the [documentation index](docs/README.md) and [roadmap](docs/roadmap.md) for the boundary between experimental explainers/research and the stable report and slides workflow.
+Slides are a separate HTML projection and do not change the report's JSON or Markdown. Every default daily edition requires the visual stream whether usage is metered or unmetered. A report can be saved and delivered before slides finish; `edition-status --run RUN.json --require-complete` is the dynamic gate for full delivery. Local narrated video export is available on request; external platform publishing is not provided. See the [documentation index](docs/README.md) and [roadmap](docs/roadmap.md) for the boundary between experimental explainers/research and the stable report and slides workflow.
 
 ## Documentation
 

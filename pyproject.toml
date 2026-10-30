@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "signaltrail-skill"
 version = "2.1.0"
-description = "SignalTrail: local news monitoring, source-traceable daily reports, and animated HTML news presentations."
+description = "SignalTrail: local news monitoring, source-traceable daily reports, animated news presentations, and narrated video."
 readme = "README.md"
 requires-python = ">=3.11"
 license = {text = "MIT"}

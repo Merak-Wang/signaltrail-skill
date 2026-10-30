@@ -1,5 +1,7 @@
 from dataclasses import replace
 
+import pytest
+
 from signaltrail.adapters import (
     _published_at,
     arxiv_items_from_rows,
@@ -171,6 +173,16 @@ def test_research_and_repository_filters_are_specific():
     )
     assert is_eligible(arxiv, "A new paper about agents", "https://arxiv.org/abs/2607.12345")
     assert is_eligible(github, "owner / useful-agent", "https://github.com/owner/useful-agent")
+    for path in (
+        "open-source/sponsors",
+        "enterprise/startups",
+        "solutions/industry",
+        "solutions/executive-insights",
+        "security/advanced-security",
+        "enterprise/premium-support",
+        "resources/events",
+    ):
+        assert not is_eligible(github, "GitHub navigation link", f"https://github.com/{path}")
     assert not is_eligible(
         github,
         "AI repositories topic",
@@ -486,3 +498,20 @@ def test_challenge_status_takes_precedence():
 
 def test_rate_limit_status_stops_retrying_before_generic_verification():
     assert classify_source_status(429, True, False, True) == SourceStatus.RATE_LIMITED
+
+
+@pytest.mark.parametrize(
+    ("title", "url", "eligible"),
+    [
+        ("Trending News", "https://defence-blog.com/trending-now-ex/", False),
+        ("About Us", "https://defence-blog.com/about-us/", False),
+        (
+            "New military aircraft enters service",
+            "https://defence-blog.com/new-military-aircraft-enters-service/",
+            True,
+        ),
+    ],
+)
+def test_defence_blog_navigation_filter(title, url, eligible):
+    source = load_config().source_by_id("defence_blog_aviation")
+    assert is_eligible(source, title, url) is eligible

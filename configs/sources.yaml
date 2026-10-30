@@ -488,7 +488,7 @@ sources:
   article_patterns:
   - ^https://github\.com/[^/]+/[^/?#]+/?$
   exclude_patterns:
-  - ^https://github\.com/(topics|collections|sponsors|marketplace|features|settings|login|signup)/
+  - ^https://github\.com/(topics|collections|sponsors|marketplace|features|settings|login|signup|open-source|enterprise|solutions|security|resources)/
   - ^https://github\.com/trending(?:/|\?|$)
   content_selectors:
   - article
@@ -701,6 +701,7 @@ sources:
   article_patterns:
   - ^https://defence-blog\.com/[^/?#]+/?$
   exclude_patterns:
+  - ^https://defence-blog\.com/(?:trending-now-ex|about-us)/?(?:[?#]|$)
   - /category/
   - /author/
   - /tag/

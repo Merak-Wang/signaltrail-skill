@@ -46,10 +46,10 @@ Schema。模型不得增加 Schema 未声明的字段。接收器先用同一 Sc
   "schema_version": "2.0",
   "language": "zh-CN",
   "date": "2026-07-15",
-  "edition": "evening",
-  "title": "迹简·晚报 — 2026年7月15日",
+  "edition": "daily",
+  "title": "迹简·日报 — 2026年7月15日",
   "executive_summary": ["中文摘要一。", "中文摘要二。"],
-  "changes": ["晚报相对晨报的新增事实或判断修正。"],
+  "changes": ["相对前一日日报的新增事实或判断修正。"],
   "tomorrow_watch_items": ["次日需要确认的信号。"],
   "sections": [
     {"id": "information.international", "briefs": [], "items": []},
@@ -65,7 +65,7 @@ Schema。模型不得增加 Schema 未声明的字段。接收器先用同一 Sc
 }
 ```
 
-不要输出 `information.markets`、`technology.tech_news` 或 `technology.oss`。Python 为旧草稿兼容这些别名，但新草稿必须使用规范 ID。晨报的 `changes` 和 `tomorrow_watch_items` 可为空；晚报两者都必须使用目标语言填写。`executive_summary` 始终是字符串数组，不是单个字符串。
+不要输出 `information.markets`、`technology.tech_news` 或 `technology.oss`。Python 为旧草稿兼容这些别名，但新草稿必须使用规范 ID。日报的 `changes` 和 `tomorrow_watch_items` 按实际变化填写，无新增时可为空；历史 `evening` 草稿仍遵循其原有要求。`executive_summary` 始终是字符串数组，不是单个字符串。
 
 ## Analysis author 的紧凑研判输出
 
@@ -73,9 +73,9 @@ analysis author 的输入只有 `prepare-analysis` 生成的 analysis packet，�
 
 ```json
 {
-  "title": "迹简·晚报 — 2026年7月25日",
+  "title": "迹简·日报 — 2026年7月25日",
   "executive_summary": ["当日最重要的事实与判断。"],
-  "changes": ["相对晨报发生的新增或修正。"],
+  "changes": ["相对前一日日报发生的新增或修正。"],
   "tomorrow_watch_items": ["下一观察窗口需要确认的信号。"],
   "featured_events": [
     {
@@ -221,7 +221,7 @@ schema 2.0 中每个精选事件的 `source_item_ids` 必须恰好包含一篇�
 
 精选事件的 `evidence_notes` 或研判的 `facts` 如果点名 BBC、CNBC、路透等来源，该来源必须能从对应 `source_item_ids` / `evidence_item_ids` 追溯到，不能用未绑定来源增强措辞。`scenarios` 中若出现百分比、概率、价格、金额或数字区间，必须用目标语言填写 `scenario_basis`，明确数据来源或说明它只是情景假设；不能把模型自行给出的数字包装成预测事实。
 
-晚报在同一日期页面补充日间新增、事实确认、判断修正和至少一项次日观察；`changes` 和 `tomorrow_watch_items` 不能留空。
+每日日报在当日页面汇总过去 24 小时的信息，`changes` 记录相对前一日的事实与判断变化，`tomorrow_watch_items` 记录下一日需要确认的信号。
 
 保存或发布前先运行快速内存编译与校验；只有 `errors` 为 0 才调用 `finalize-edition`：
 

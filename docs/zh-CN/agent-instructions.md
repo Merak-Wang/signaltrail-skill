@@ -34,6 +34,8 @@ Python 负责采集、状态、校验、版本和发布。
 | 报告与恢复 | `reporting.py`、`reports.py`、`workflow.py`、`storage.py` | `test_reporting.py`、`test_report_persistence.py`、`test_workflow.py`、`test_storage.py` |
 | 评估与用量 | `evaluation.py`、`llm_usage/`、`hosts/` | `test_evaluation*.py`、`test_llm_usage*.py`、`test_hermes_runner.py` |
 | 交付 | `local_output.py`、`notion.py`、`verification.py` | `test_desktop_delivery.py`、`test_notion.py`、`test_verification.py` |
+| 新闻图文流 | `news_slides.py`、`slide_images.py`、`slide_reuse.py`、`slide_renderer.py` | `test_news_slides.py`、`test_slide_images.py`、`test_slide_reuse.py`、`test_slide_renderer.py` |
+| 配音视频 | `slide_video.py`、`voice_synthesis.py`、`speech_text.py`、`video_runtime.py`、`qwen_runtime.py` | `test_slide_video.py`、`test_voice_synthesis.py`、`test_speech_text.py`、`test_video_runtime.py` |
 | 打包与文档 | `scripts/`、`SKILL.md`、`docs/README.md` | `test_hermes_package.py`、`test_docs.py` |
 
 上表代码和测试路径分别相对于 `src/signaltrail/` 与 `tests/`。

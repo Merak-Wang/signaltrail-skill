@@ -6,7 +6,8 @@ This roadmap tracks the experimental report-derived explainer and illustrated re
 The regular daily report and animated HTML news slides are separate, implemented user-facing
 features documented in [usage](usage.md) and [news slides](news-slides.md). Snapshot explainers
 and research are not part of the regular daily publication path; real-time admission and N4
-acceptance remain pending. Audio, timed captions, and video are not implemented. This is the
+acceptance remain pending. Audio, timed captions, and video for this experimental workflow are
+not implemented; the regular news slides already support local narrated video export. This is the
 canonical engineering scope and acceptance record for the experimental workflow. [中文](zh-CN/roadmap.md)
 
 The [research](research/2026-09-08-news-explainer-workflows.md) covers source evidence, alternatives,

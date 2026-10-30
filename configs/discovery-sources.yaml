@@ -1,6 +1,6 @@
 sources:
   # Global and regional news. These sources expand discovery only; they never
-  # create per-source quotas in the morning or evening newspaper.
+  # create per-source quotas in the daily report.
   - id: un_news
     name: UN News
     url: https://news.un.org/en/

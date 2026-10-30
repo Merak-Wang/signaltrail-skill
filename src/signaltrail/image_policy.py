@@ -45,6 +45,53 @@ def is_placeholder_image_url(value: object) -> bool:
     )
 
 
+def is_editorial_template(image: dict) -> bool:
+    """处理：识别第一财经正文内的固定推广资源。
+    输入：图片候选中的发布者 URL。
+    输出：明确匹配已核实推广资源时返回真。
+    """
+    parsed = urlsplit(str(image.get("url") or image.get("resolved_url") or ""))
+    return bool(
+        parsed.hostname == "www.yicai.com"
+        and re.fullmatch(r"/img/article_(?:lock|float)_[a-z]+\.[a-z0-9]+\.png", parsed.path, re.I)
+    )
+
+
+def filter_editorial_templates(images: list[dict]) -> list[dict]:
+    """处理：过滤第一财经固定栏目横幅和推广资源。
+    输入：同一新闻的图片候选及其尺寸、图注。
+    输出：保留正文图片，成组出现的栏目横幅不进入下载或渲染。
+    """
+
+    def section_banner(image: dict) -> bool:
+        """处理：匹配已核实的栏目横幅资源特征。
+        输入：单张图片的来源 URL、尺寸和图注。
+        输出：满足栏目资源特征时返回真。
+        """
+        parsed = urlsplit(str(image.get("url") or image.get("resolved_url") or ""))
+        width = str(image.get("width") or image.get("declared_width") or "")
+        height = str(image.get("height") or image.get("declared_height") or "")
+        return (
+            parsed.hostname == "imgcdn.yicai.com"
+            and parsed.path.startswith("/uppics/images/2019/10/")
+            and width == "500"
+            and height == "87"
+            and not image.get("alt")
+            and not image.get("caption")
+        )
+
+    banners = {
+        str(image.get("url") or image.get("resolved_url"))
+        for image in images
+        if section_banner(image)
+    }
+    return [
+        image
+        for image in images
+        if not is_editorial_template(image) and not (len(banners) >= 2 and section_banner(image))
+    ]
+
+
 def normalize_image_candidates(
     values: Iterable[object],
     base_url: str = "",
@@ -88,7 +135,7 @@ def srcset_candidates(value: object) -> list[str]:
         match = re.match(r"[^\s]+", remaining)
         assert match is not None
         token = match.group()
-        remaining = remaining[match.end():]
+        remaining = remaining[match.end() :]
         url = token.rstrip(",")
         descriptors: list[str] = []
         if not token.endswith(","):
@@ -106,8 +153,10 @@ def srcset_candidates(value: object) -> list[str]:
             continue
         if size > 0 and math.isfinite(size):
             groups.setdefault(unit, []).append((size, url))
-    return list(dict.fromkeys(
-        url
-        for entries in groups.values()
-        for _size, url in sorted(entries, key=lambda entry: -entry[0])
-    ))
+    return list(
+        dict.fromkeys(
+            url
+            for entries in groups.values()
+            for _size, url in sorted(entries, key=lambda entry: -entry[0])
+        )
+    )

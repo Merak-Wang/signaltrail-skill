@@ -12,9 +12,21 @@ mirrors under [zh-CN/](zh-CN/README.md).
 | [Architecture](../ARCHITECTURE.md) | Module ownership, state, files, model boundaries |
 | [Agent instructions](../AGENTS.md) | Rules for changing this repository |
 | [Experimental explainers](explainers.md) | Implemented commands, bilingual reviews, immutable stories and current-admission limits |
-| [News slides](news-slides.md) | Report and index-only visual streams; top-50 default, bounded writing, accepted narration reuse and per-batch cost gates |
+| [News slides](news-slides.md) | Report and index-only visual streams; top-30 default, bounded writing, accepted narration reuse and per-batch cost gates |
 | [Roadmap](roadmap.md) | Experimental explainer and research workflow; current-news admission and acceptance gaps |
 | [Technical debt](exec-plans/tech-debt-tracker.md) | Known implementation gaps and exit conditions |
+
+## Directory roles
+
+| Location | Purpose |
+| --- | --- |
+| `docs/` | Engineering guides, architecture, development and usage. |
+| `references/` | Detailed runtime policies and recovery instructions linked by the skill. |
+| `docs/research/` | Dated research and experimental proposals. |
+| `docs/exec-plans/` | Historical implementation records and the active technical-debt tracker. |
+| `examples/` | Historical report samples and synthetic test fixtures. |
+| `evals/` | Skill trigger examples for evaluation. |
+| `tests/` | Behavior and regression tests for the maintained implementation. |
 
 ## Research and proposals
 

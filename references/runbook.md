@@ -13,6 +13,8 @@
 `image_url` 和 `discovered_at` 仅从协调器副本省略，完整权威 Context 仍由 Python 使用，
 作者 packet 也不受影响。旧运行没有该字段时才回退读取 `context_path`。
 
+同一版固定输入复用已有索引、富化检查点、已接受草稿和图文讲稿；只有具体证据缺口才做有界补取。协调器只读紧凑回执、运行清单和协调器投影，遇到具体缺口才读取相关文件的小范围内容，不逐包读取正文或通读完整报告。
+
 正文富化必须在 `begin-authoring` 之前完成。若中断在 `extracting_content`，重试
 `signaltrail --data-dir DATA_DIR enrich-edition --run RUN.json` 即可恢复已绑定的选择；
 也可传原来的完整 ID 列表，但不能换一组条目。完成的提取结果先存入运行专属
@@ -41,11 +43,15 @@ HTML 先交付（仅报告已保存） -> tail 与图文讲稿并行 -> 等待 t
 
 写作与评估保持角色隔离。`finalize-edition --defer-tail` 在不可变 JSON/Markdown 和 HTML 就绪后返回；这表示报告已保存，但不表示整期交付完成。`complete-edition-tail` 生成 PDF、按请求发布 Notion，并处理用户明确请求的评分。图文讲稿可与 tail 同时进行；等待 tail 退出后再渲染，因为两项操作都可能更新日报投影。
 
-评分 backend 默认是 external。独立 evaluator 只读不可变 dossier，按其 `evaluation_contract` 写入 JSON，再执行 `edition-status` 给出的 `finalize-evaluation` 命令。Evaluator 必须未参与报告写作；没有独立 Agent 时保留 pending。仅显式传 `--evaluation-backend hermes` 才调度 Hermes evaluator。评估完成后刷新 HTML、桌面副本和归档索引；已存在的同 revision PDF 会复用。目标日报显式请求 `--publish` 时，评估命令才追加 `--publish`。Hermes 调度恢复、Gateway 和计量限制见[用量说明](llm-usage.md)及[Hermes 集成](hermes-integration.md)。tail 或调度失败不撤回本地日报。晚间生成读取当天晨报和已有评估；晨报评估尚未完成时按未评估历史处理。
+评分 backend 默认是 external。独立 evaluator 只读不可变 dossier，按其 `evaluation_contract` 写入 JSON，再执行 `edition-status` 给出的 `finalize-evaluation` 命令。Evaluator 必须未参与报告写作；没有独立 Agent 时保留 pending。仅显式传 `--evaluation-backend hermes` 才调度 Hermes evaluator。评估完成后刷新 HTML、桌面副本和归档索引；已存在的同 revision PDF 会复用。目标日报显式请求 `--publish` 时，评估命令才追加 `--publish`。Hermes 调度恢复、Gateway 和计量限制见[用量说明](llm-usage.md)及[Hermes 集成](hermes-integration.md)。tail 或调度失败不撤回本地日报。每日日报优先读取前一日的日报和已有评估；评估尚未完成时按未评估历史处理。
+
+需要独立质量复核时，在定稿前只安排一次未参与写作的独立 Agent，使用新上下文读取紧凑材料：按索引顺序固定抽取 6 条样本、3 个领域研判、综合研判，以及程序生成的校验和覆盖统计。复核者一次提出合并后的具体修改意见，作者按意见修正后执行程序校验；针对具体问题才读取相关证据。避免在长历史中反复串行审查、重写简报和研判、重做 PDF 与图文。此复核与用户明确请求的持久化评分分开执行。
 
 ## Harness 与用量接入
 
-核心流程不要求特定 harness。Agent 只需能运行本地命令、读取 packet、把结构化 JSON 写到指定路径并提交。全程复用同一个 `--data-dir`；有隔离 worker 时最多同时运行 3 个 packet，一个完成就按序补下一个；否则顺序执行。
+核心流程不要求特定 harness。Agent 只需能运行本地命令、读取 packet、把结构化 JSON 写到指定路径并提交。全程复用同一个 `--data-dir`；有隔离 worker 时最多同时运行 3 个 packet，一个完成就按序补下一个；否则顺序执行。简报、研判和图文作者均使用独立的新上下文，初始输入只有自己的 packet 路径与已确定的绝对 CLI 调用；不沿用采集、调试或前一批写作的历史。
+
+Codex 运行的耗时和用量使用 `scripts/measure_codex_turn.py` 从运行记录确定性汇总，阶段耗时使用已有机器记录；不派模型执行计量。成本对照固定相同输入、模型和统计范围，包含协调器和全部子任务。cached input 是 token 数量，实际金额须有真实价格与计费数据；缺失时保留未知。
 
 `signaltrail-usage` 只内置 `hermes`、`codex`、`openclaw` 三个 adapter。其他 harness 可以不绑定 usage task，此时工作流保持可运行，但预算回执必须显示 `coverage=unmetered` 且 observed/projected token 为 `null`；也可以在 Python 中实现 `UsageAdapter` 并注册固定字段白名单。不得把未知宿主格式冒充现有 adapter。Hermes 提供逐请求 Hook 和聚合补录；Codex 使用 rollout JSONL；OpenClaw 使用经审计的 per-agent SQLite v17 或旧 JSONL。完整接入与隐私边界见 [`llm-usage.md`](llm-usage.md)。
 
@@ -61,9 +67,9 @@ signaltrail --data-dir DATA_DIR slides render --plan PLAN.json
 signaltrail --data-dir DATA_DIR edition-status --run RUN.json --require-complete
 ```
 
-代表新闻从整份已保存日报去重后按重要性降序选取，默认前 50 条，可用 `finalize-edition --slides-max-news N` 自定义；恢复时未显式改数量则沿用既有设置，显式更改会准备新计划。按来源不保证配额，未知发布日期保持未知。CLI `slides prepare` 和日报定稿会先为入选新闻补取缺失或不完整正文，复用已有可用证据，并把完整可用正文放入 `news[].evidence[].body`；写作者先通读正文。正文不截断，默认以每批输入估算 64,000 token 为目标拆批，超长单篇自动扩容；显式 `--max-input-tokens` 为硬上限，超限时拒绝并给出可复用的已补全文索引路径。默认在线 `slides render` 会从入选新闻公开页面补充图片候选和原站 caption。`render` 生成独立放映 HTML，
+代表新闻从整份已保存日报去重后按模型生成的重要性分数排序，默认选最重要的 30 条，可用 `finalize-edition --slides-max-news N` 自定义；恢复时未显式改数量则沿用既有设置，显式更改会准备新计划。按来源不保证配额，未知发布日期保持未知。CLI `slides prepare` 和日报定稿会先为入选新闻补取缺失或不完整正文，复用已有可用证据，并把完整可用正文放入 `news[].evidence[].body`；写作者先通读正文。正文不截断，默认以每批输入估算 64,000 token 为目标拆批，超长单篇自动扩容；显式 `--max-input-tokens` 为硬上限，超限时拒绝并给出可复用的已补全文索引路径。默认在线 `slides render` 会从入选新闻公开页面补充图片候选和原站 caption。`render` 生成独立放映 HTML，
 并更新日报 HTML 的嵌入容器及独立打开入口。`edition-status` 输出 `delivery_complete`、`report_status`、`pending_steps` 和图文流状态；只有动态命令返回 `delivery_complete: true`、`pending_steps` 为空且 `slides.status` 为 `rendered` 才能报告整期交付完成。不要依赖可能过期的 manifest 快照。更换图片和重新渲染不需要模型。完整恢复、图注、
-大图和打印行为见[新闻图文流参考](news-slides.md)。TTS 与视频合成尚未实现。
+大图、打印与本地配音视频的执行步骤见[新闻图文流参考](news-slides.md)。
 
 并行研究与解释性故事属于实验流程，不是日报交付步骤。尤其研究组合页目前只支持 `preview`，
 正式 `current` 准入保持阻断，细节见[并行研究参考](research-workflow.md)。
@@ -88,13 +94,16 @@ host scheduler、Gateway 和其他无人值守会话不得传 `--open-verificati
 
 `artifacts.authoring.metrics` 记录每个 brief 批次的 duration、API、输入/输出 token、模型、退出原因，以及 brief 合并、图片预取、紧凑研判与总写作时间；`artifacts.authoring.recovered_batches` 记录在分析准备时从合法 draft 恢复的批次，`missing_batches` 与 `coverage_targets` 记录恢复之后仍然缺失的批次及逐来源降级结果。选定宿主未提供的 queue/首 token/prefill/decode 字段保持空值，不能估算；当前 Hermes Hook 也不完整暴露这些字段。`milestones.local_html_ready_at`、`pdf_ready_at`、`notion_ready_at` 分开记录读者可见时间；`metrics.tail_seconds` 不混入 HTML 关键路径。`metrics.phase_durations_seconds` 汇总采集、context、正文、模型写作等待和验证/定稿，用这些机器计时定位慢点，不再用人工估算或一个总耗时混合后台工作。
 
+所有任务命令在子命令前加全局 `--compact`，压缩标准输出并保留完整生产文件。图文流默认 30 条；模型复核初选新闻的新近性和重复覆盖，必要时排除过时或重复事件，由后续候选补位；单条补证后仍不足，定稿用 `--slides-exclude-event-id EVENT_ID`，独立准备用 `--exclude-event-id EVENT_ID`，按后续候选补位并复用已接受讲稿。
+
 ## 恢复
 
 - `awaiting_selection`：选择 ID，运行 `enrich-edition`。
 - `awaiting_authoring` 且没有 session：运行 `begin-authoring` 后，启动 `prefetch-media`；可在宿主支持并行进程时与作者同时运行，否则先完成预取。同时按顺序调度尚未复用的 packet，最多同时运行 3 个 author，一个 worker 完成后按序补入下一个。媒体预取只读固定 index/context、写入图片缓存和独立 receipt；等它退出并检查 receipt 后再运行 `prepare-analysis` 或定稿。每个 brief author 的输入只有一个 packet 和其中列出的正文路径，输出只有指定 `draft_result_path` 的 JSON 与对 `submission_command` 的提交；`output_schema` 是字段、类型、枚举与额外字段的权威边界。宿主支持隔离 worker 时最多同时执行 3 个，一个完成后按序补入下一个；缺少并发 worker 时顺序执行。无需特定委派 API 或后台任务功能，不得跳过 packet。
 - authoring 批次已返回：把宿主提供的有界批次指标写入 session 指定路径并运行 `record-authoring-metrics`；`authoring-status` 全部完成后运行 `prepare-analysis`。即使宿主完成通知或不可变接收结果缺失，也不要先删 draft：`prepare-analysis` 会对每个缺 receipt 的授权 `draft_result_path` 执行原 packet 校验，合法草稿会被原子接收并列入 `recovered_batches`。检查恢复后的 `missing_batches`，只有输出 `deadline_exceeded: true` 时才能用 `prepare-analysis --allow-degraded`。
+- brief 修复预算限制新一轮模型修复；预算耗尽后，已完成的合法草稿仍可通过校验并接收。
 - authoring 降级：只把对应 missing batch 所负责来源的 `coverage_targets` 降到该批实际接收数；其他已完成 batch 的来源仍保持原计划目标（候选不少于 15 时为 15）。semantic cache 和草稿都只能使用各来源 `brief_plan.default_item_ids`，不得用 Top15 之外的旧缓存补位。索引已有候选但 brief 缺失时，即使同栏目其他来源正常，也要列出缺失来源及“已验证摘要/计划”计数，不能写成未采集、`no_items`、来源失败或让该来源无提示消失。
-- `analysis_pending`：analysis author 的输入只有 `analysis_packet_path`，其输出是严格满足 `output_schema` 的 `analysis_result_path`，并省略 `python_owned_output_fields` 列出的字段；authoring coordinator 随后运行 `assemble-authoring`、`validate-report --run` 和 `finalize-edition --defer-tail`。
+- `analysis_pending`：默认由一个新上下文作者完成原 analysis 包，再执行 `assemble-authoring`。需要缩短写作等待时显式选择 `prepare-analysis --parallel`：先返回 selection 包；完成其输出后运行 `analysis-stage --run RUN.json --stage domains`，并行完成三个领域包，再运行 `analysis-stage --run RUN.json --stage synthesis` 并完成综合包，最后运行 `analysis-stage --run RUN.json --stage assemble` 生成原 `analysis_result_path`。多阶段会重复输入共享内容，增加总输入 token；默认单包避免这部分开销。每任务使用仅含 packet 与绝对 CLI 的新上下文，遵循原 Schema；随后运行 `assemble-authoring`、`validate-report --run` 和 `finalize-edition --defer-tail`。观察信号写明对象、证据已有的复核时间和改变判断的方向；综合只解释具体跨域传导机制，无证据联系的领域保持独立。
 - `finalizing` 在事实源持久化前失败：状态自动退回 `awaiting_authoring` 并记录错误；HTML/PDF 投影失败时 JSON/Markdown 仍有效，结果会记录 `local_output_error`，修复环境后重建投影即可，不要重新生成 revision。
 - `tail.pending`：HTML 已有效；在后台执行 manifest 的精确 `tail.command`。
 - `tail.partial`：读取 `tail.errors`，修复后重跑 `complete-edition-tail`；已存在 PDF/Notion 不会重复创建。

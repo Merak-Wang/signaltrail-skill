@@ -105,11 +105,11 @@
     });
   }
 
-  function show(next) {
-    if (!slides.length || busy) return;
+  function show(next, immediate = false) {
+    if (!slides.length || (busy && !immediate)) return;
     next = (next + slides.length) % slides.length;
     if (next === index) return;
-    busy = true;
+    busy = !immediate;
     document.documentElement.style.setProperty("--direction", next > index ? "1" : "-1");
     const old = slides[index];
     const target = slides[next];
@@ -123,6 +123,7 @@
     toc[index]?.classList.remove("active");
     toc[next]?.classList.add("active");
     index = next;
+    if (playing) restartPageAudio();
     updateChrome();
     setTimeout(() => {
       old.classList.remove("leaving");
@@ -281,4 +282,79 @@
     touchStart = null;
     if (Math.abs(dx) > 60 && Math.abs(dx) > 1.5 * Math.abs(dy)) show(index + (dx < 0 ? 1 : -1));
   }, { passive: true });
+  // 导出和现场放映共用翻页、图片选择及音频时长。
+  let timeline = slides.map(() => ({duration: 30}));
+  let playbackTimer;
+  let startedAt = 0;
+  let playing = false;
+  const playbackAudio = new Audio();
+  async function seek(slideIndex, imageIndex = 0) {
+    show(slideIndex, true);
+    slides.forEach(slide => slide.classList.remove("leaving"));
+    const gallery = slides[index]?.querySelector("[data-gallery]");
+    galleries.get(gallery)?.select(imageIndex);
+    const images = [...(slides[index]?.querySelectorAll("figure.active img") || [])];
+    images.forEach(image => image.loading = "eager");
+    await Promise.all(images.map(image => image.complete ? Promise.resolve() :
+      new Promise(resolve => {
+        image.addEventListener("load", resolve, {once: true});
+        image.addEventListener("error", resolve, {once: true});
+      })));
+    await document.fonts.ready;
+  }
+  function pause() {
+    playing = false;
+    playbackAudio.pause();
+    clearInterval(playbackTimer);
+    playButton.textContent = "▶";
+  }
+  function restartPageAudio() {
+    startedAt = performance.now();
+    playbackAudio.pause();
+    if (timeline[index]?.audio) {
+      playbackAudio.src = timeline[index].audio;
+      playbackAudio.play().catch(pause);
+    }
+  }
+  function play() {
+    pause();
+    playing = true;
+    restartPageAudio();
+    playButton.textContent = "Ⅱ";
+    playbackTimer = setInterval(() => {
+      const elapsed = timeline[index]?.audio ? playbackAudio.currentTime :
+        (performance.now() - startedAt) / 1000;
+      const duration = timeline[index]?.duration || 30;
+      const gallery = slides[index]?.querySelector("[data-gallery]");
+      const group = galleries.get(gallery);
+      if (group) group.select(Math.min(group.figures.length - 1,
+        Math.floor(elapsed / duration * group.figures.length)));
+      if (elapsed >= duration || (timeline[index]?.audio && playbackAudio.ended)) {
+        if (index + 1 >= slides.length) { pause(); return; }
+        seek(index + 1);
+
+      }
+    }, 100);
+  }
+  const playButton = document.createElement("button");
+  playButton.textContent = "▶";
+  playButton.title = "自动放映 / Play";
+  playButton.setAttribute("aria-label", "自动放映 / Play");
+  playButton.addEventListener("click", () => playing ? pause() : play());
+  document.querySelector("[data-next]")?.parentElement.append(playButton);
+  async function seekTime(seconds) {
+    let offset = 0;
+    for (let page = 0; page < timeline.length; page++) {
+      const duration = timeline[page].duration;
+      if (seconds < offset + duration || page === timeline.length - 1) {
+        const count = slides[page]?.querySelectorAll("[data-gallery] figure").length || 1;
+        await seek(page, Math.min(count - 1, Math.floor((seconds - offset) / duration * count)));
+        return;
+      }
+      offset += duration;
+    }
+  }
+  window.signaltrailPlayback = {seek, seekTime, play, pause,
+    setTimeline(value) { timeline = value; }, ready: document.fonts.ready};
+  window.SignalTrailPlayback = window.signaltrailPlayback;
 })();

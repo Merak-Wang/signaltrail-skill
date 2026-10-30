@@ -12,7 +12,8 @@ from io import BytesIO
 from pathlib import Path
 from time import perf_counter
 from typing import Any
-from urllib.parse import urlsplit
+from urllib.parse import quote, unquote, urlsplit
+from urllib.request import url2pathname
 
 from .config import OutputConfig, load_config, validate_output_config
 from .localization import (
@@ -25,8 +26,8 @@ from .storage import write_text_atomic
 from .taxonomy import SECTION_GROUPS_V13
 from .utils import read_json
 
-EDITION_LABELS = {"morning": "晨间版", "evening": "晚间版"}
-EDITION_LABELS_EN = {"morning": "Morning Edition", "evening": "Evening Edition"}
+EDITION_LABELS = {"daily": "日报", "morning": "晨间版", "evening": "晚间版"}
+EDITION_LABELS_EN = {"daily": "Daily Edition", "morning": "Morning Edition", "evening": "Evening Edition"}
 MODULE_LABELS = {"information": "资讯", "technology": "技术"}
 MODULE_LABELS_EN = {"information": "News", "technology": "Technology"}
 STATUS_LABELS = {
@@ -785,7 +786,7 @@ def _toc_html(report: dict[str, Any], *, slides_href: str | None = None) -> str:
     modules = MODULE_LABELS if is_chinese_output(language) else MODULE_LABELS_EN
     analyses = ANALYSIS_LABELS if is_chinese_output(language) else ANALYSIS_LABELS_EN
     first_entry = (
-        ("visual-briefing", localized(language, "今日图文演示", "Today’s visual briefing"))
+        ("visual-briefing", localized(language, "日报图文流与视频", "Daily news slides and video"))
         if slides_href else ("summary", labels["summary"])
     )
     entries: list[tuple[str, str, int]] = [(*first_entry, 0)]
@@ -946,6 +947,7 @@ def render_report_html(
     illustrated_story: dict[str, Any] | None = None,
     research_relations: list[dict[str, Any]] | None = None,
     slides_href: str | None = None,
+    video_href: str | None = None,
 ) -> str:
     """处理：把已验证报告、来源证据和本地图片投影为可离线阅读的完整 HTML。
     输入：
@@ -957,6 +959,7 @@ def render_report_html(
     - ``archive_href``：同日期报告归档页的受控相对链接；为空时不渲染。
     - ``pdf_href``：同版本 PDF 的受控相对链接；为空时不渲染。
     - ``slides_href``：同版本图文放映 HTML 的相对路径或本地文件 URI；存在时嵌入演示并保留新标签入口。
+    - ``video_href``：同版本视频播放器页面的相对路径或本地 URI。
     输出：“把已验证报告、来源证据和本地图片投影为可离线阅读的完整 HTML”得到的规范字符串，
       供调用方存储、比较或展示。
     """
@@ -1074,20 +1077,33 @@ def render_report_html(
         if slides_href
         else ""
     )
+    video_link = (
+        f'<a class="video-entry" href="{_escape(video_href)}" target="_blank" '
+        'rel="noopener noreferrer" data-open-video>'
+        f'{_escape(localized(language, "打开视频", "Open video"))}</a>'
+        f'<button type="button" data-open-slides hidden>'
+        f'{_escape(localized(language, "打开图文演示", "Open visual edition"))}</button>'
+        if video_href else ""
+    )
+    video_frame = (
+        f'<iframe class="video-frame" data-video-frame data-src="{_escape(video_href)}?embed=1" '
+        f'title="{_escape(localized(language, "日报视频", "News video"))}" '
+        'allow="autoplay; fullscreen" allowfullscreen hidden></iframe>'
+        if video_href else ""
+    )
     slides_embed = (
         '<section class="slides-embed" id="visual-briefing" '
         'aria-labelledby="slides-embed-title">'
         f'<div class="slides-embed-heading"><h2 id="slides-embed-title">'
-        f'{_escape(localized(language, "今日图文演示", "Today’s visual briefing"))}'
-        f'</h2><a href="{_escape(slides_href)}" target="_blank" '
-        'rel="noopener noreferrer">'
+        f'{_escape(localized(language, "日报图文流与视频", "Daily news slides and video"))}'
+        '</h2><div class="slides-embed-actions">'
+        f'<a href="{_escape(slides_href)}" target="_blank" rel="noopener noreferrer">'
         f'{_escape(localized(language, "独立打开演示 ↗", "Open presentation ↗"))}'
-        '</a></div>'
-        f'<iframe src="{_escape(slides_embed_href)}" title="'
+        f'</a>{video_link}</div></div>'
+        f'<iframe data-slide-frame src="{_escape(slides_embed_href)}" title="'
         f'{_escape(localized(language, "今日新闻图文演示", "Today’s news presentation"))}'
-        '" allowfullscreen></iframe></section>'
-        if slides_href
-        else ""
+        f'" allowfullscreen></iframe>{video_frame}</section>'
+        if slides_href else ""
     )
     summary_class = "summary summary-print-fallback" if slides_href else "summary"
     archive_link = (
@@ -1161,12 +1177,16 @@ a{{color:var(--blue);text-decoration:none}}a:hover{{text-decoration:underline}}.
 .slides-embed{{margin:0 0 24px;padding:clamp(16px,2.4vw,28px);border:1px solid #d7d7d7;border-radius:14px;background:#fff;box-shadow:0 8px 24px rgba(30,30,30,.05)}}
 .slides-embed-heading{{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:14px}}
 .slides-embed-heading h2{{margin:0;font:700 clamp(22px,3vw,30px)/1.25 Georgia,"Noto Serif CJK SC",serif;color:#1c2422}}
-.slides-embed-heading a{{flex:none;color:#b6472f;font-size:14px;font-weight:700}}
+.slides-embed-actions{{display:flex;align-items:center;gap:16px;flex-wrap:wrap}}
+.slides-embed-heading a,.slides-embed-heading button{{color:#b6472f;font-size:14px;font-weight:700;font-family:inherit}}
+.slides-embed-heading button{{border:0;margin:0;padding:0;background:none;cursor:pointer;text-decoration:underline;line-height:inherit}}
+.slides-embed [hidden]{{display:none!important}}
 .slides-embed iframe{{display:block;width:100%;height:clamp(620px,78vh,880px);border:1px solid #d7ddd6;border-radius:8px;background:#f3f4ef}}
 .summary-print-fallback{{display:none}}
 .slides-expanded{{overflow:hidden}}
 .slides-expanded .slides-embed iframe{{position:fixed;z-index:40;inset:3vh 3vw;width:94vw;height:94vh;min-height:0;box-shadow:0 0 0 100vmax #15201ec9}}
 @media(max-width:720px){{.slides-embed-heading{{align-items:flex-start;flex-direction:column}}.slides-embed iframe{{height:72vh;min-height:560px}}}}
+ .slides-embed iframe.video-frame{{height:auto;min-height:0;aspect-ratio:16/9}}
 @media print{{.slides-embed{{display:none}}.summary-print-fallback{{display:block}}}}
 </style>
 </head>
@@ -1198,7 +1218,20 @@ window.addEventListener('scroll',()=>{{if(!tocUpdatePending){{tocUpdatePending=t
 window.addEventListener('resize',updateActiveToc);
 updateActiveToc();
 const search=document.getElementById('search');
-const slideFrame=document.querySelector('.slides-embed iframe');
+const slideFrame=document.querySelector('[data-slide-frame]');
+const videoFrame=document.querySelector('[data-video-frame]');
+const openVideo=document.querySelector('[data-open-video]');
+const openSlides=document.querySelector('[data-open-slides]');
+if(openVideo&&videoFrame&&slideFrame&&openSlides){{
+  openVideo.addEventListener('click',event=>{{
+    event.preventDefault(); videoFrame.src=videoFrame.dataset.src;
+    slideFrame.hidden=true; videoFrame.hidden=false; openVideo.hidden=true; openSlides.hidden=false;
+  }});
+  openSlides.addEventListener('click',()=>{{
+    videoFrame.src='about:blank'; videoFrame.hidden=true; slideFrame.hidden=false;
+    openSlides.hidden=true; openVideo.hidden=false;
+  }});
+}}
 window.addEventListener('message',event=>{{if(slideFrame&&event.source===slideFrame.contentWindow&&event.data?.type==='signaltrail-image-viewer')document.body.classList.toggle('slides-expanded',event.data.open===true);}});
 search.addEventListener('input',()=>{{const q=search.value.trim().toLowerCase();document.querySelectorAll('.source-group').forEach(group=>{{const groupMatch=!q||group.dataset.search.toLowerCase().includes(q);let any=groupMatch;group.querySelectorAll('.brief').forEach(brief=>{{const match=groupMatch||brief.dataset.search.toLowerCase().includes(q);brief.classList.toggle('hidden-by-search',!match);any=any||match;}});group.classList.toggle('hidden-by-search',!any);}});}});
 document.getElementById('download-feedback').addEventListener('click',()=>{{const feedback={{...reportMeta,created_at:new Date().toISOString()}};document.querySelectorAll('[data-feedback]').forEach(el=>feedback[el.dataset.feedback]=el.value);const blob=new Blob([JSON.stringify(feedback,null,2)],{{type:'application/json'}});const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=`feedback-${{reportMeta.report_id}}.json`;a.click();setTimeout(()=>URL.revokeObjectURL(a.href),1000);}});
@@ -1832,6 +1865,29 @@ def resolve_desktop_directory(config: OutputConfig) -> Path:
     return (Path.home() / "Desktop").resolve()
 
 
+def _available_video_player(player: Path) -> bool:
+    """处理：确认播放器和它引用的本地视频均存在。
+    输入：日报同版本播放器页面路径。
+    输出：视频文件可用时返回真，供重建日报时展示入口。
+    """
+    from bs4 import BeautifulSoup
+
+    if not player.is_file():
+        return False
+    document = BeautifulSoup(player.read_text(encoding="utf-8"), "html.parser")
+    video = document.select_one("video[src]")
+    if video is None:
+        return False
+    source = urlsplit(str(video["src"]))
+    if source.scheme == "file":
+        path = Path(url2pathname(source.path))
+    elif not source.scheme and not source.netloc:
+        path = player.parent / unquote(source.path)
+    else:
+        return False
+    return path.is_file()
+
+
 def write_desktop_html(
     report: dict[str, Any],
     data_dir: Path,
@@ -1858,6 +1914,7 @@ def write_desktop_html(
     report_dir = data_dir / "reports" / str(report["date"])
     pdf_path = report_dir / f"{report['edition']}-r{report['revision']}.pdf"
     slides_path = report_dir / f"{report['edition']}-r{report['revision']}-slides.html"
+    video_path = report_dir / f"{report['edition']}-r{report['revision']}-video.html"
     return write_text_atomic(
         destination,
         render_report_html(
@@ -1872,8 +1929,63 @@ def write_desktop_html(
             archive_href=(data_dir / "reports" / "index.html").resolve().as_uri(),
             pdf_href=pdf_path.resolve().as_uri(),
             slides_href=slides_path.resolve().as_uri() if slides_path.is_file() else None,
+            video_href=video_path.resolve().as_uri() if _available_video_player(video_path) else None,
         ),
     )
+
+
+def refresh_report_video_entry(
+    deck_path: Path, video_path: Path, data_dir: Path, *, config: OutputConfig | None = None,
+) -> Path | None:
+    """处理：沿图文稿父级定位日报并更新播放器和日报入口。
+    输入：已保存图文稿、本地成品视频与其数据根。
+    输出：日报同目录播放器路径；独立索引图文稿没有日报时返回空值。
+    """
+    from .narrative_store import load_artifact, parent_path
+
+    deck = read_json(deck_path)
+    if not isinstance(deck, dict) or "plan" not in deck.get("parents", {}):
+        return None
+    deck = load_artifact(deck_path, data_dir, kind="slides-deck")
+    plan = load_artifact(parent_path(deck, "plan", data_dir), data_dir, kind="slides-plan")
+    if "report" not in plan.get("parents", {}):
+        return None
+    report_path = parent_path(plan, "report", data_dir)
+    report = read_json(report_path)
+    if not isinstance(report, dict):
+        raise ValueError(f"Report must be an object: {report_path}")
+    video_path = video_path.resolve()
+    if not video_path.is_file():
+        raise FileNotFoundError(video_path)
+    player = report_path.with_name(report_path.stem + "-video.html")
+    try:
+        source = quote(os.path.relpath(video_path, player.parent).replace(os.sep, "/"), safe="/")
+    except ValueError:
+        source = video_path.as_uri()
+    language = report.get("language") or "zh-CN"
+    title = "今日日报视频" if is_chinese_output(language) else "Today’s news video"
+    document = f'''<!doctype html><html lang="{_escape(language)}"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>{_escape(title)}</title>
+<script>if(new URLSearchParams(location.search).has('embed'))document.documentElement.classList.add('embed')</script>
+<style>html.embed main{{max-width:none;padding:0}}html.embed h1,html.embed p{{display:none}}body{{margin:0;background:#111;color:#fff;font:16px sans-serif}}main{{max-width:1200px;margin:auto;padding:24px}}video{{display:block;width:100%;height:auto;background:#000}}a{{color:#fff}}</style>
+</head><body><main><h1>{_escape(title)}</h1><video controls preload="metadata" src="{_escape(source)}"></video>
+<p><a href="{_escape(source)}">{"打开视频文件" if is_chinese_output(language) else "Open video file"}</a></p></main></body></html>'''
+    write_text_atomic(player, document)
+    evaluation = _evaluation_map(data_dir).get(str(report.get("report_id", "")))
+    report_html = report_path.with_suffix(".html")
+    slides_path = report_html.with_name(report_html.stem + "-slides.html")
+    write_text_atomic(report_html, render_report_html(
+        report, evaluation, include_pdf_link=report_html.with_suffix(".pdf").is_file(),
+        media_path_prefix="../..", slides_href=slides_path.name if slides_path.is_file() else None,
+        video_href=player.name,
+    ))
+    config = config or load_config().output
+    desktop = resolve_desktop_directory(config) / (
+        f"daily-intelligence-{report['date']}-{report['edition']}-r{report['revision']}.html"
+    )
+    if config.copy_html_to_desktop and desktop.is_file():
+        write_desktop_html(report, data_dir, config, evaluation=evaluation)
+    return player
 
 
 def refresh_report_slides_entry(report_path: Path, slides_path: Path, data_dir: Path) -> None:
@@ -1895,6 +2007,9 @@ def refresh_report_slides_entry(report_path: Path, slides_path: Path, data_dir: 
             include_pdf_link=(report_html.with_suffix(".pdf").is_file()),
             media_path_prefix="../..",
             slides_href=slides_href,
+            video_href=(report_html.stem + "-video.html"
+                        if _available_video_player(report_html.with_name(report_html.stem + "-video.html"))
+                        else None),
         ),
     )
 
@@ -1955,6 +2070,8 @@ def write_local_outputs(
                 evaluation,
                 include_pdf_link="pdf" in config.formats,
                 media_path_prefix="../..",
+                video_href=(f"{stem}-video.html"
+                            if _available_video_player(report_dir / f"{stem}-video.html") else None),
                 slides_href=(
                     f"{stem}-slides.html"
                     if (report_dir / f"{stem}-slides.html").is_file()

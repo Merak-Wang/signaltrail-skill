@@ -13,6 +13,7 @@ import httpx
 from bs4 import BeautifulSoup
 
 from .access import classify_access_text, read_bounded_response
+from .adapters import is_eligible
 from .clustering import cluster_articles
 from .collection_diagnostics import source_coverage
 from .config import AppConfig, SourceConfig
@@ -861,8 +862,12 @@ def load_monitor_results(
             items_by_source[str(row["source_id"])].append(article_from_dict(row))
     results: dict[str, SourceResult] = {}
     for source in sources:
+        # 复用前应用本轮来源规则，旧导航项不再占用目标数，缺口交由实时采集补齐。
         items = order_source_items(
-            items_by_source.get(source.id, []),
+            [
+                item for item in items_by_source.get(source.id, [])
+                if is_eligible(source, item.title, item.url)
+            ],
             source.item_order,
         )
         if not items:

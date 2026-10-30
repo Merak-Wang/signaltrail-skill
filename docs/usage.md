@@ -91,6 +91,14 @@ An explicit `--data-dir` is used directly and is not registered automatically.
 SignalTrail application data directory, never under Hermes home. Run files and referenced
 artifacts must belong to the same data root.
 
+## Daily cadence
+
+SignalTrail generates one `daily` edition per day. `collect`, `build-context`, and `run-edition` default to `--edition daily`. The window used to assess news freshness covers the 24 hours before the run starts in the selected timezone. Source Top ordering and the existing candidate selection rules still apply. Schedule one invocation at a consistent local time and resume its `runs/DATE/daily.json` for recovery. Existing `morning` and `evening` runs retain their original windows and can still be resumed.
+
+```sh
+signaltrail --timezone Asia/Shanghai run-edition --edition daily
+```
+
 ## Language and source order
 
 The default report language is `zh-CN`. Ask the agent for English, or pass `--language en`
@@ -182,6 +190,14 @@ evaluator reads the dossier and writes the draft, then runs that command. Extern
 not schedule Hermes or create an evaluator usage task; completion is recorded only after the
 draft passes `finalize-evaluation`. External handoff has one attempt and is not automatically
 redispatched on recovery.
+
+Use global `--compact` before the subcommand for bounded CLI stdout; saved JSON, Markdown, HTML and packet files remain complete. Keep the same absolute CLI invocation for every isolated worker.
+
+The brief repair budget limits new model repairs; a completed valid draft can still be validated and accepted after the budget is exhausted.
+
+Default analysis uses one packet in a fresh context to avoid repeated shared input. To reduce authoring wait time, opt into `prepare-analysis --parallel`; complete the returned selection packet, then run `analysis-stage --run RUN.json --stage domains`. Complete the three domain packets in parallel, run `--stage synthesis` and complete its packet, then run `--stage assemble` to write the original `analysis_result_path`. Continue with `assemble-authoring`. This optional path uses more total input tokens because stages repeat shared material. Each task starts in a fresh context containing only its packet and absolute CLI. Overlap media prefetch with brief writing and PDF tail work with slide writing; wait for tail completion before rendering.
+
+Observation signals specify the object, any review time present in evidence, and the direction that changes the judgment. Synthesis follows concrete cross-domain transmission mechanisms; unconnected domains remain independent.
 
 ## Reports and recovery
 

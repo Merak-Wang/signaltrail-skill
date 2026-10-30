@@ -38,7 +38,9 @@ Hermes 重试可能复用请求 ID。观察器用请求 ID 和宿主开始时间
 | 运行状态与评估 | `tests/test_workflow.py`、`tests/test_evaluation_workflow.py`、`tests/test_evaluation.py` |
 | 浏览器验证与 Notion | `tests/test_verification.py`、`tests/test_notion.py` |
 | 本地交付与媒体 | `tests/test_desktop_delivery.py`、`tests/test_content.py`、`tests/test_media.py` |
-| 新闻图文流 | `tests/test_news_slides.py`、`tests/test_slide_renderer.py` |
+| 图文写作与复用 | `tests/test_news_slides.py`、`tests/test_standalone_slides.py`、`tests/test_slide_reuse.py` |
+| 图文渲染与图片 | `tests/test_slide_renderer.py`、`tests/test_slide_images.py`、`tests/test_image_policy.py`、`tests/test_content.py`、`tests/test_media.py` |
+| 配音视频与语音 | `tests/test_slide_video.py`、`tests/test_voice_synthesis.py`、`tests/test_speech_text.py`、`tests/test_video_runtime.py` |
 | 实验研究与讲解 | `tests/test_research.py`、`tests/test_story_stream.py`、`tests/test_narrative.py`、`tests/test_narrative_store.py`、`tests/test_narrative_verification.py` |
 | 用量与宿主接入 | `tests/test_llm_usage*.py`、`tests/test_usage_cli.py`、`tests/test_hermes_runner.py` |
 | 打包与文档 | `tests/test_hermes_package.py`、`tests/test_docs.py`、`tests/test_code_comments.py` |

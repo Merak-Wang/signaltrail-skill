@@ -1,10 +1,46 @@
 # Architecture
 
-**Status:** Verified · **Owner:** Repository maintainers · **Last verified:** 2026-10-21
+**Status:** Verified · **Owner:** Repository maintainers · **Last verified:** 2026-10-30
 
 This is the code map for SignalTrail. [Runtime contracts](references/system-design.md)
 describe data fields and recovery rules; [AGENTS.md](AGENTS.md) covers repository changes.
 [中文](docs/zh-CN/ARCHITECTURE.md)
+
+## Repository files
+
+Install the complete checkout or generated skill directory: configuration, templates and assets
+live beside `src/`. The root holds agent instructions (`SKILL.md`), contributor rules (`AGENTS.md`),
+this architecture map, bilingual READMEs, release/security/license records, and Python configuration.
+
+| Location | Purpose and consumer |
+| --- | --- |
+| `src/signaltrail/` | The single implementation; module responsibilities are listed below |
+| `configs/` | `config` reads source/discovery settings; `notion` reads optional delivery settings |
+| `schemas/` | Report and usage contracts; report validation reads the report schema |
+| `templates/` | Report contract, slide writing style and experimental research/explainer prompts |
+| `assets/news-slides/`, `assets/monitor/` | HTML/CSS/JavaScript for the slide renderer and monitor dashboard |
+| `assets/tts/profile.example.json` | Example profile for registering a local reference voice |
+| `assets/readme/` | Product screenshots referenced by both READMEs |
+| `scripts/` | Installation, packaging, contributor checks and measurements |
+| `references/` | Runtime policies selected by the active workflow |
+| `docs/`, `docs/zh-CN/` | English engineering records and Chinese mirrors; current and historical material has separate index entries |
+| `tests/`, `evals/` | Behavior tests and fixtures; skill activation examples |
+| `examples/` | Historical demonstrations and sample JSON; tests also consume `sample_report.json` |
+| `.github/workflows/ci.yml` | Repository validation in CI |
+
+The package includes `scripts/install.ps1`, `install.sh`, `build_hermes_skill.py` and
+`measure_codex_turn.py`. The source checkout additionally contains `check_code_comments.py`,
+`check_docs.py`, `benchmark_slide_efficiency.py` and `evaluate_research_workflow.py` for contributor
+checks and manual benchmarks. Package inclusion follows the build script's allowlist, independently
+of Python imports. Scripts, schemas and prompts can be consumed directly by people, hosts or tests.
+
+Default builds include Git-tracked files only. Add new runtime modules and voice assets to version
+control with the feature before release; `--include-uncommitted` is an explicit local build option.
+Local `data/` holds evidence, accepted writing, reports, models and caches. `output/`, `tmp/` and
+optional `benchmarks/` hold local measurements and temporary work; `build/` and `dist/` are generated
+distribution artifacts. These directories, `.venv/`, tool caches, and local editor/agent state are
+excluded from source packaging. Keep current deliveries, voice assets, recovery backups and needed
+audit evidence; recycle confirmed obsolete build copies and disposable probes.
 
 ## Report flow
 
@@ -24,7 +60,7 @@ proceed when the monitor fails.
 
 News slides are a report projection prepared by finalization from the saved report and index. Every default daily edition requires accepted narration batches and a rendered deck, whether usage is metered or unmetered. The saved-report lifecycle remains separate from delivery completion; `edition-status --run RUN.json --require-complete` is the dynamic acceptance gate.
 Preparation uses the full saved report's selected events and briefs, merges duplicate original stories while
-retaining source references, sorts by importance, and selects the top 50 by default. `--max-news` and
+retaining source references, ranks by model-authored importance, and selects the top 30 by default. `--max-news` and
 `--slides-max-news` allow another positive limit; there is no per-source quota. Unknown publication dates
 remain unknown, and images do not affect eligibility. Bounded narration batches produce accepted story scripts; online rendering
 adds indexed sources, summaries, and publisher-provided image candidates and captions from public article
@@ -32,9 +68,24 @@ pages within configured media budgets. When present, the report HTML embeds the 
 on-screen summary and keeps a separate open link; printing restores the summary. Report JSON/Markdown
 stays unchanged. Image updates can reuse accepted narration without another model call; writing packets include complete available source bodies from the index, with extraction status and quality. Bodies are never truncated to fit budgets; batch splitting and explicit input limits bound model input. Offline rendering reuses existing deck
 images without network access.
-An independent index-only path uses collection, body extraction, and `slides prepare --index` without report authoring or analysis. It orders indexed stories by source rank and URL identity, writes target-language titles/summaries with narration, and renders a deck without report projections. Accepted writing with unchanged inputs can be reused across revisions; pending counts remain separate from reused counts.
+An independent index-only path uses collection, body extraction, and `slides prepare --index` without report authoring or analysis. The host model selects and orders indexed item IDs by importance before preparation; CLI source-rank selection remains available when no IDs are supplied. The path writes target-language titles/summaries with narration and renders a deck without report projections. Accepted writing with unchanged inputs can be reused across revisions; pending counts remain separate from reused counts.
 
 See the [news slides workflow](docs/news-slides.md).
+
+The default edition is `daily`, with one reusable run per local date and a frozen 24-hour
+collection window. Slide writing also produces a concise `video_tldr` from the full narration; video speech uses the title and this short script.
+`slide_video` reads the saved deck, synthesizes local speech, measures each page, and drives
+image rotation and MP4 encoding from the measured audio timeline.
+`video_runtime` and `qwen_runtime` prepare native Qwen3-TTS 1.7B Q8 by OS and architecture.
+New installations register a user-provided reference recording and transcript using `assets/tts/profile.example.json`; existing locally registered voices remain usable.
+The harness prefers a GPU verified by synthesis and falls back to CPU; export records the actual backend.
+Rendering reuses local evidence, images and audio.
+Qwen speech synthesizes the title and concise video script in bounded segments, while matching
+native audio caches remain reusable. Full-page audio reuse skips repeated PCM assembly. Video captures the original slides HTML with its text, images and column layout preserved; video capture applies 140% whole-page zoom to text and images without changing the HTML. Playback follows the original page and image order, with page duration set by audio.
+Page clips are cached by the original HTML, page position, duration and rendering
+settings; pages with external images are rendered again. Stage diagnostics and separate audio/page cache counters describe actual work.
+
+The default analysis uses one fresh-context author. Parallel analysis can shorten authoring wait but repeats shared input across stages; it is an explicit optional path: `prepare-analysis --parallel` freezes selection, `analysis-stage --stage domains` prepares three independent domain packets, `--stage synthesis` prepares the cross-domain packet, and `--stage assemble` restores the normal analysis result consumed by `assemble-authoring`. Each worker starts with only its packet and the absolute CLI. Global `--compact` bounds stdout while persisted artifacts stay complete.
 
 ## Code map
 
@@ -47,10 +98,11 @@ All modules below live in `src/signaltrail/`.
 | Collection | `adapters`, `browser_collection`, `feeds`, `feed_content`, `prefetch`, `collector`, `clustering` | Fetch, normalize, preserve source status and order |
 | Collection diagnostics | `collection_diagnostics` | Configured-source coverage, bounded body-gap suggestions, local artifact integrity |
 | Evidence | `content`, `content_extraction`, `content_images`, `media`, `image_policy`, `monitor` | Structured article blocks, extraction quality, contextual image candidates, snapshots, evidence lineage |
-| Writing | `context`, `authoring`, `semantics`, `state` | Bounded packets, accepted batches, continuity and cache |
+| Writing | `context`, `authoring`, `analysis_parallel`, `semantics`, `state` | Bounded packets, accepted batches, optional parallel analysis, continuity and cache |
 | Report contract | `reporting` | Compile drafts, hydrate evidence, validate schema and cross-field rules |
 | Report storage | `reports` | Save reports and evaluations, render Markdown, update derived state |
 | News slides | `news_slides`, `slide_reuse`, `slide_images`, `slide_renderer` | Report or index-only bounded writing, accepted narration reuse, public-page image refresh, and standalone animated HTML |
+| Narrated video | `slide_video`, `voice_synthesis`, `speech_text`, `qwen_runtime`, `video_runtime` | Speech normalization, local Qwen3 TTS, shared audio/image timeline, native tool preparation and MP4 export |
 | Experimental explainers | `narrative`, `narrative_contracts`, `narrative_store`, `narrative_verification`, `story_stream` | Immutable report children, language reviews, diagrams; current-news admission blocked |
 | Experimental research | `research`, `research_contracts`, `research_delivery` | Frozen blocks, local question retrieval, scoped memos and preview-only late report binding; current admission blocked |
 | Delivery | `local_output`, `notion`, `dashboard` | HTML/PDF, remote copies, read-only monitor UI |

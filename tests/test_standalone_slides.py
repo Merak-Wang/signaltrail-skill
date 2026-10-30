@@ -36,6 +36,7 @@ def write_packets(prepared, root):
         draft = {"slides": [{"event_id": item["event_id"], "title": "目标语言标题",
                              "summary": "来源明确说明这是计划中的变化。",
                              "narration": "来源明确说明这是计划中的变化。" * 18,
+                             "video_tldr": "来源明确说明这是计划中的变化。",
                              "perspectives": []} for item in packet["model_input"]["news"]]}
         submit_slides(Path(path), draft, root)
 
@@ -106,6 +107,7 @@ def test_index_draft_cannot_rewrite_python_fields(tmp_path, field):
     packet = load_artifact(path, tmp_path)["payload"]
     slide = {"event_id": packet["model_input"]["news"][0]["event_id"], "title": "标题",
              "summary": "摘要", "narration": "来源明确说明这是计划中的变化。" * 18,
+                             "video_tldr": "来源明确说明这是计划中的变化。",
              "perspectives": []}
     invalid = deepcopy(slide)
     invalid[field] = "invented"
@@ -132,6 +134,7 @@ def test_plain_cli_standalone_lifecycle_and_all_reused_render(tmp_path, monkeypa
         draft = {"slides": [{"event_id": item["event_id"], "title": "目标语言标题",
                              "summary": "来源说明事件仍在计划中。",
                              "narration": "来源明确说明这是计划中的变化。" * 18,
+                             "video_tldr": "来源明确说明这是计划中的变化。",
                              "perspectives": []} for item in packet["model_input"]["news"]]}
         draft_path = write_json(root / "drafts" / f"batch-{number}.json", draft)
         assert main(["slides", "submit", "--packet", path, "--input", str(draft_path)]) == 0

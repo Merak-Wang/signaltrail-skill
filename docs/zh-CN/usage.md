@@ -82,6 +82,14 @@ signaltrail --data-dir DATA_DIR data-root status
 显式 `--data-dir` 直接选定根，不会自动登记。`data-root adopt` 将根登记，供以后未指定目录时使用；
 登记位于 SignalTrail 应用目录，不在 Hermes home。运行清单和引用的产物必须属于同一数据根。
 
+## 每日一次的日报
+
+SignalTrail 每天生成一次 `daily` 日报。`collect`、`build-context` 和 `run-edition` 默认使用 `--edition daily`，用于时效性判断的窗口为所选时区内本次运行开始前的 24 小时，候选保留既有来源 Top 顺序与选取规则。定时任务每天在固定时间运行一次；重试和修订继续使用当日 `runs/DATE/daily.json`。已有 `morning`、`evening` 运行保留原采集窗口并支持恢复。
+
+```sh
+signaltrail --timezone Asia/Shanghai run-edition --edition daily
+```
+
 ## 语言与来源顺序
 
 默认报告语言是 `zh-CN`。可以向智能体要求英文，或给 `run-edition` 传入 `--language en`。
@@ -156,6 +164,14 @@ signaltrail-hermes run --ledger DATA_DIR --hermes-python HERMES_PYTHON --prompt-
 `finding`，再执行 `edition-status` 返回的精确 `finalize-evaluation` 命令。若没有独立评估器，保留
 pending。此路径不派发 Hermes，也不创建虚假的评估用量任务。只有草稿通过校验并保存后才记为完成。
 有意使用 Hermes 时显式传入 `--evaluation-backend hermes`；Hermes 接入见[参考](../../references/hermes-integration.md)。
+
+子命令前加全局 `--compact` 可压缩 CLI 标准输出；保存的 JSON、Markdown、HTML 与 packet 保持完整。所有隔离 worker 使用同一绝对 CLI。
+
+brief 修复预算限制新一轮模型修复；预算耗尽后，已完成的合法草稿仍可通过校验并接收。
+
+默认研判使用一个新上下文作者完成原 analysis 包，避免多阶段重复输入。需要缩短写作等待时显式运行 `prepare-analysis --parallel`，先完成返回的 selection 包，再运行 `analysis-stage --run RUN.json --stage domains` 并行完成三个领域包；随后运行 `--stage synthesis` 完成综合包，运行 `--stage assemble` 写入原 `analysis_result_path`，继续 `assemble-authoring`。该可选路径会因多阶段重复共享材料增加总输入 token。每任务使用仅含 packet 与绝对 CLI 的新上下文。媒体预取与简报写作并行，PDF tail 与图文写作并行；tail 退出后再渲染。
+
+观察信号写明对象、证据已有的复核时间和改变判断的方向；综合围绕具体跨域传导机制，无证据联系的领域保持独立。
 
 ## 报告与恢复
 

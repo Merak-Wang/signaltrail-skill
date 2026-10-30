@@ -14,6 +14,7 @@ from zoneinfo import ZoneInfo
 
 from jsonschema import Draft202012Validator
 
+from .config import project_root
 from .llm_budget import evaluate_llm_budget
 from .localization import (
     localized,
@@ -23,7 +24,7 @@ from .localization import (
     validate_output_language,
 )
 from .runtime import require_data_root_path
-from .semantics import tldr_quality_issue
+from .semantics import run_relative_brief_fields, tldr_quality_issue
 from .storage import write_immutable_json
 from .taxonomy import SECTION_ORDER_V13
 from .utils import now_iso, read_json, write_json
@@ -125,6 +126,9 @@ def _brief_output_schema(output_language: str) -> dict[str, Any]:
     """
 
     translation_field = translated_title_field(output_language)
+    report_schema = read_json(project_root() / "schemas" / "report.schema.json")
+    section_properties = report_schema["properties"]["sections"]["items"]["properties"]
+    brief_properties = section_properties["briefs"]["items"]["properties"]
     return {
         "type": "object",
         "required": ["briefs"],
@@ -152,7 +156,7 @@ def _brief_output_schema(output_language: str) -> dict[str, Any]:
                         },
                         "tldr": {
                             "type": "string",
-                            "minLength": 4,
+                            "minLength": brief_properties["tldr"]["minLength"],
                             "description": localized(
                                 output_language,
                                 "只概括已观察到的新闻事实；不要追加抓取状态或正文缺失等流程说明，"
@@ -1112,6 +1116,50 @@ def _normalize_analysis_narratives(payload: dict[str, Any]) -> dict[str, Any]:
     return normalized
 
 
+def check_authoring_batch(
+    run: dict[str, Any], batch_id: str, input_path: Path, data_dir: Path,
+) -> dict[str, Any]:
+    """处理：只读检查草稿与写作会话绑定及内容契约。
+    输入：运行记录、批次 ID、草稿路径和数据根。
+    输出：批次标识、草稿与预期结果路径、全部字段错误。
+    """
+    authoring = run.get("artifacts", {}).get("authoring", {})
+    session_path = require_data_root_path(
+        Path(str(authoring.get("session_path") or "")),
+        data_dir,
+        "Authoring session",
+    )
+    session = read_json(session_path)
+    if not isinstance(session, dict):
+        raise ValueError("Authoring session must be a JSON object")
+    _validate_session_binding(run, session, data_dir)
+    batch = _batch_entry(session, batch_id)
+    require_data_root_path(
+        Path(str(batch["packet_path"])),
+        data_dir,
+        "Authoring packet",
+    )
+    input_path = require_data_root_path(input_path, data_dir, "Authoring batch draft")
+    expected_input_path = Path(str(batch["draft_result_path"])).resolve()
+    if input_path.resolve() != expected_input_path:
+        raise ValueError(
+            "Authoring batch draft must use the packet-assigned path: "
+            f"{expected_input_path}"
+        )
+    result_path = require_data_root_path(
+        Path(str(batch["result_path"])),
+        data_dir,
+        "Authoring batch result",
+    )
+    packet = _read_bound_packet(batch, data_dir)
+    payload = read_json(input_path)
+    if not isinstance(packet, dict):
+        raise ValueError("Authoring packet must be a JSON object")
+    errors = validate_authoring_batch(packet, payload)
+    return {"batch_id": batch_id, "draft_path": str(input_path),
+            "expected_path": str(result_path), "errors": errors}
+
+
 def submit_authoring_batch(
     run: dict[str, Any],
     batch_id: str,
@@ -1157,24 +1205,25 @@ def submit_authoring_batch(
     )
     rejection_dir = packet_path.with_name(f"{packet_path.stem}-rejections")
     rejection_paths = _validation_rejection_paths(rejection_dir)
-    if len(rejection_paths) >= _MAX_BRIEF_SUBMISSIONS:
-        raise RuntimeError(
-            f"Brief repair limit exhausted for {batch_id}; start a new run attempt"
-        )
-    if rejection_paths:
-        last_rejection = read_json(rejection_paths[-1])
-        if isinstance(last_rejection, dict) and not last_rejection.get(
-            "repair_authorized", False
-        ):
-            raise RuntimeError(
-                f"Brief repair was not authorized for {batch_id}; preserve the rejection receipt"
-            )
     packet = _read_bound_packet(batch, data_dir)
     payload = read_json(input_path)
     if not isinstance(packet, dict):
         raise ValueError("Authoring packet must be a JSON object")
     errors = validate_authoring_batch(packet, payload)
     if errors:
+        if len(rejection_paths) >= _MAX_BRIEF_SUBMISSIONS:
+            raise RuntimeError(
+                f"Brief repair limit exhausted for {batch_id}; start a new run attempt"
+            )
+        if rejection_paths:
+            last_rejection = read_json(rejection_paths[-1])
+            if isinstance(last_rejection, dict) and not last_rejection.get(
+                "repair_authorized", False
+            ):
+                raise RuntimeError(
+                    f"Brief repair was not authorized for {batch_id}; "
+                    "preserve the rejection receipt"
+                )
         rejection_path = _record_validation_rejection(
             scope="brief_batch",
             work_id=batch_id,
@@ -1755,6 +1804,25 @@ def _merge_briefs(
             "after the authoring deadline."
         )
 
+    aliases = context.get("brief_aliases", {})
+    candidates = {str(item["item_id"]): item for item in context.get("candidate_items", [])}
+    reference_date = context.get("date") or (context.get("collection_window") or {}).get("end")
+    # 同证据只复制已完成的语义字段，排名与当期状态按目标条目重新计算。
+    for item_id, representative in aliases.items():
+        if representative in available:
+            available[item_id] = {
+                key: value for key, value in available[representative].items()
+                if key in {"title_zh", "title_en", "tldr", "semantic_fingerprint"}
+            }
+            available[item_id].update(item_id=item_id)
+            available[item_id].update(
+                run_relative_brief_fields(candidates[item_id], reference_date)
+            )
+    batch_by_item = {
+        str(item_id): str(plan.get("batch_id") or "")
+        for plan in context.get("brief_plan", [])
+        for item_id in plan.get("author_item_ids", [])
+    }
     section_rows = {section_id: [] for section_id in SECTION_ORDER_V13}
     coverage_targets: dict[str, int] = {}
     missing_batch_ids = set(missing_batches)
@@ -1773,7 +1841,9 @@ def _merge_briefs(
         section_rows[section_id].extend(selected)
         coverage_targets[source_id] = (
             len(selected)
-            if str(plan.get("batch_id") or "") in missing_batch_ids
+            if (str(plan.get("batch_id") or "") in missing_batch_ids
+                or any(batch_by_item.get(aliases.get(str(item_id), "")) in missing_batch_ids
+                       for item_id in plan.get("default_item_ids", [])))
             else int(plan.get("target_count", len(selected)))
         )
     sections = [
@@ -2263,7 +2333,11 @@ def prepare_analysis_packet(
             "then author exactly one "
             "geopolitics, ai_technology, and markets analysis plus one "
             "cross_perspective_synthesis. Write all authored reader-facing text in "
-            f"{localized(skeleton['language'], 'Chinese', 'English')}. "
+            f"{localized(skeleton['language'], 'Chinese', 'English')}, including structured "
+            "reader-facing fields such as stakeholder, position, interests, issue and "
+            "source_of_difference; preserve proper names and technical terms. "
+            "Across the three analyses, cite evidence_item_ids from at least 60% of "
+            "selected featured events, rounded up to the next whole event. "
             "For each lens, build the structured reasoning ledger first and then write "
             "narrative as the standalone reader-facing article. Do not join unrelated "
             "same-day events or concatenate field contents. Apply the narrative writing_style "

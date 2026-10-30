@@ -8,6 +8,8 @@ schema_profiles:
       source: "Source"
       tags: "Tags"
     values:
+      daily_status: "New"
+      daily_tags: ["SignalTrail", "Daily"]
       morning_status: "New"
       evening_status: "Reviewed"
       source: "SignalTrail"
@@ -23,6 +25,8 @@ schema_profiles:
       event_count: "Event Count"
       pending_verification_count: "Pending Verification"
     values:
+      daily_version: "Daily v1.0"
+      daily_status: "Published"
       morning_version: "Morning v0.5"
       evening_version: "Final v1.0"
       morning_status: "Published"

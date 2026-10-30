@@ -58,6 +58,8 @@ def _common_parser() -> argparse.ArgumentParser:
     parser.add_argument("--config", type=Path, help="Path to sources.yaml")
     parser.add_argument("--data-dir", type=Path, help="Runtime data directory")
     parser.add_argument("--timezone", help="IANA timezone overriding sources.yaml")
+    parser.add_argument("--compact", action="store_true",
+                        help="Print short edition receipts; full results remain in saved artifacts")
     return parser
 
 
@@ -81,7 +83,7 @@ def build_parser() -> argparse.ArgumentParser:
     data_root.add_argument("action", choices=["status", "adopt"])
 
     collect = sub.add_parser("collect", help="Collect source indexes")
-    collect.add_argument("--edition", choices=["morning", "evening"], required=True)
+    collect.add_argument("--edition", choices=["daily", "morning", "evening"], default="daily")
     collect.add_argument("--headed", action="store_true")
     collect.add_argument("--profile-dir", type=Path)
     collect.add_argument("--browser-channel")
@@ -140,7 +142,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     context = sub.add_parser("build-context", help="Build compact continuity context")
     context.add_argument("--index", type=Path, required=True)
-    context.add_argument("--edition", choices=["morning", "evening"], required=True)
+    context.add_argument("--edition", choices=["daily", "morning", "evening"], default="daily")
     context.add_argument("--language", choices=["zh-CN", "en"])
 
     content = sub.add_parser("extract-content", help="Fetch selected article bodies")
@@ -213,7 +215,7 @@ def build_parser() -> argparse.ArgumentParser:
     source_page.add_argument("--reason", default="Agent judged this page relevant")
 
     run = sub.add_parser("run-edition", help="Prepare an edition through authoring context")
-    run.add_argument("--edition", choices=["morning", "evening"], required=True)
+    run.add_argument("--edition", choices=["daily", "morning", "evening"], default="daily")
     run.add_argument("--language", choices=["zh-CN", "en"])
     run.add_argument("--headed", action="store_true")
     run.add_argument("--profile-dir", type=Path)
@@ -269,8 +271,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Validate and accept one assigned model-authored brief batch",
     )
     submit.add_argument("--run", type=Path, required=True)
-    submit.add_argument("--batch-id", required=True)
-    submit.add_argument("--result", type=Path, required=True)
+    submit.add_argument("--batch-id")
+    submit.add_argument("--result", type=Path)
+    submit.add_argument("--all", action="store_true", help="Check all assigned drafts")
+    submit.add_argument("--check-only", action="store_true",
+                        help="Validate without writing receipts")
 
     metrics = sub.add_parser(
         "record-authoring-metrics",
@@ -296,6 +301,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Merge accepted brief batches and write a compact analysis packet",
     )
     prepare_analysis.add_argument("--run", type=Path, required=True)
+    prepare_analysis.add_argument("--parallel", action="store_true",
+                                  help="Prepare staged selection, parallel domains, and synthesis")
+    analysis_stage = sub.add_parser("analysis-stage", help="Advance staged analysis writing")
+    analysis_stage.add_argument("--run", type=Path, required=True)
+    analysis_stage.add_argument("--stage", choices=["domains", "synthesis", "assemble"],
+                                required=True)
     prepare_analysis.add_argument(
         "--allow-degraded",
         action="store_true",
@@ -317,9 +328,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     finalize.add_argument("--run", type=Path, required=True)
     finalize.add_argument("--report", type=Path, required=True)
+    finalize.add_argument("--slides-exclude-event-id", action="append",
+                          help="Exclude specified slide events before filling the story limit")
     finalize.add_argument(
         "--slides-max-news", type=int,
-        help="Maximum report stories to include in the visual stream (default: 50)",
+        help="Maximum report stories to include in the visual stream (default: 30)",
     )
     finalize.add_argument(
         "--publish",

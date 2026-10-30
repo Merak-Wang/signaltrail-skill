@@ -14,6 +14,7 @@ from signaltrail.config import (
     BrowserConfig,
     MonitorConfig,
     SourceConfig,
+    load_config,
 )
 from signaltrail.dashboard import create_monitor_server
 from signaltrail.models import ArticleItem, SourceResult, SourceStatus
@@ -358,6 +359,42 @@ def test_retained_monitor_history_cannot_satisfy_live_report_target(tmp_path: Pa
         item.metadata.get("retained_from_previous_snapshot")
         for item in result.items
     )
+
+
+def test_current_source_filter_removes_cached_navigation_and_fetches_missing_items(tmp_path):
+    now = datetime(2026, 10, 29, 9, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
+    config = load_config()
+    source = replace(config.source_by_id("github_trending"), report_target=2, max_items=2)
+
+    def article(path: str) -> ArticleItem:
+        url = f"https://github.com/{path}"
+        return ArticleItem(
+            item_id=path,
+            source_id=source.id,
+            source_name=source.name,
+            title=f"Repository {path}",
+            url=url,
+            canonical_url=url,
+            discovered_at=now.isoformat(),
+        )
+
+    cached_items = [article("enterprise/startups"), article("owner/existing")]
+    write_json(tmp_path / "monitor" / "snapshot.json", {
+        "generated_at": now.isoformat(),
+        "items": [item.to_dict() for item in cached_items],
+    })
+    cached = load_monitor_results(
+        tmp_path, [source], config.timezone, max_age_minutes=90, now=now,
+    )[source.id]
+    assert [item.item_id for item in cached.items] == ["owner/existing"]
+    live = replace(cached, items=[article("owner/new"), article("owner/existing")])
+
+    result = collect_source(
+        None, source, config, tmp_path,
+        prefetched_pages={(source.id, source.url): live}, monitor_result=cached,
+    )
+
+    assert [item.item_id for item in result.items] == ["owner/new", "owner/existing"]
 
 
 def test_live_results_precede_an_insufficient_monitor_snapshot(tmp_path: Path):

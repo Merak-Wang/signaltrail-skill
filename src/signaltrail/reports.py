@@ -29,8 +29,8 @@ from .storage import exclusive_lock, next_revision, write_immutable_json, write_
 from .taxonomy import SECTION_GROUPS_V13
 from .utils import read_json, write_json
 
-EDITION_LABELS = {"morning": "早报", "evening": "晚报"}
-EDITION_LABELS_EN = {"morning": "Morning Brief", "evening": "Evening Brief"}
+EDITION_LABELS = {"daily": "日报", "morning": "早报", "evening": "晚报"}
+EDITION_LABELS_EN = {"daily": "Daily Brief", "morning": "Morning Brief", "evening": "Evening Brief"}
 STATUS_LABELS = {
     "NEW": "新增",
     "UPD": "更新",

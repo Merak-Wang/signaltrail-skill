@@ -112,7 +112,7 @@ This does not require Notion credentials. Windows uses installed Edge to print a
 `run-edition` never opens the verification queue by default. Run collection first, then start manual verification only when ready:
 
 ```powershell
-signaltrail run-edition --edition morning --profile-dir "$env:LOCALAPPDATA\hermes\browser-profiles\signaltrail"
+signaltrail run-edition --edition daily --profile-dir "$env:LOCALAPPDATA\hermes\browser-profiles\signaltrail"
 signaltrail verify-source reuters --browser-channel msedge
 signaltrail verify-pending --index "C:\path\to\index.json" --browser-channel msedge --timeout-seconds 300
 ```

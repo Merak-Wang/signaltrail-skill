@@ -167,6 +167,7 @@ def get_edition_status(run_path: Path, data_dir: Path) -> dict[str, Any]:
     report_path = Path(str(artifacts.get("json_path", ""))) if artifacts.get("json_path") else None
     report_exists = bool(report_path and report_path.is_file())
     slides_artifact = artifacts.get("slides", {})
+    exclude_event_ids = slides_artifact.get("exclude_event_ids", [])
     plan_value = slides_artifact.get("plan_path")
     plan_path = Path(str(plan_value)) if plan_value else None
     slides: dict[str, Any] = {
@@ -223,7 +224,8 @@ def get_edition_status(run_path: Path, data_dir: Path) -> dict[str, Any]:
         slides["status"] = "prepare_failed"
         slides["error"] = slides_artifact.get("error")
         slides["next_action"] = (_slides_finalize_retry(
-            run_path, report_path, data_dir, int(slides_artifact.get("max_news", 50))
+            run_path, report_path, data_dir, int(slides_artifact.get("max_news", 30)),
+            exclude_event_ids
         ) if report_exists else None)
         pending_steps.append("slides_prepare")
     elif plan_path and plan_path.is_file() and report_exists:
@@ -234,13 +236,13 @@ def get_edition_status(run_path: Path, data_dir: Path) -> dict[str, Any]:
             html_path = report_path.with_name(
                 f"{run['edition']}-r{revision}-slides.html"
             )
-            max_news = int(slides_artifact.get("max_news", 50))
-            if not _slides_plan_matches_selection(plan_path, max_news, data_dir):
+            max_news = int(slides_artifact.get("max_news", 30))
+            if not _slides_plan_matches_selection(plan_path, max_news, data_dir, exclude_event_ids):
                 slides = {"status": "stale_plan", "pending_batches": [],
                           "news_count": slide_status["news_count"],
                           "html_path": str(html_path), "packet_paths": [],
                           "next_action": _slides_finalize_retry(
-                              run_path, report_path, data_dir, max_news)}
+                              run_path, report_path, data_dir, max_news, exclude_event_ids)}
                 pending_steps.append("slides_prepare")
             else:
                 rendered = (
@@ -270,14 +272,14 @@ def get_edition_status(run_path: Path, data_dir: Path) -> dict[str, Any]:
     elif plan_path and plan_path.is_file():
         slides["status"] = "unavailable"
     else:
-        max_news = int(slides_artifact.get("max_news", 50))
+        max_news = int(slides_artifact.get("max_news", 30))
         slides["status"] = (
             "prepare_failed" if slides_artifact.get("status") == "failed" else "missing_plan"
         )
         slides["error"] = slides_artifact.get("error")
         pending_steps.append("slides_prepare")
         slides["next_action"] = (_slides_finalize_retry(
-            run_path, report_path, data_dir, max_news
+            run_path, report_path, data_dir, max_news, exclude_event_ids
         ) if report_exists else None)
     if not report_exists:
         slides["next_action"] = None
@@ -941,16 +943,18 @@ def _evaluation_backend(run: dict[str, Any], requested: str | None = None) -> st
 
 
 def edition_window(date_value: str, edition: str, timezone: str) -> dict[str, str]:
-    """处理：计算早报或晚报在指定时区内的采集时间窗口。
-    输入：
-    - ``date_value``：目标日报日期；结合版本计算采集窗口起止时间。
-    - ``edition``：日报版本标识，通常为 morning 或 evening；参与窗口和产物命名。
-    - ``timezone``：IANA 时区名称；用于解析无时区时间并生成日报时间边界。
-    输出：“计算早报或晚报在指定时区内的采集时间窗口”形成的结构化字典；典型键包括 end、start。
+    """处理：按生成时刻计算 daily 的 24 小时窗口，保留历史早晚版窗口。
+    输入：目标日报日期、版本标识和 IANA 时区；已有运行恢复时沿用已保存窗口。
+    输出：采集起止时间组成的字典，写入运行清单供写作和时效性判断使用。
     """
     zone = ZoneInfo(timezone)
     date = datetime.fromisoformat(date_value).date()
-    if edition == "morning":
+    if edition == "daily":
+        now = datetime.now(zone).replace(microsecond=0)
+        end = (now if date == now.date()
+               else datetime.combine(date + timedelta(days=1), time(), zone))
+        start = end - timedelta(days=1)
+    elif edition == "morning":
         start = datetime.combine(date - timedelta(days=1), time(18, 0), zone)
         end = datetime.combine(date, time(6, 0), zone)
     elif edition == "evening":
@@ -1014,7 +1018,7 @@ def _reload_locked_run(path: Path, expected: dict[str, Any], data_dir: Path) -> 
 def _lock_payload(edition: str, timestamp: str) -> dict[str, Any]:
     """处理：构建日报互斥锁中记录的进程与版本信息。
     输入：
-    - ``edition``：日报版本标识，通常为 morning 或 evening；参与窗口和产物命名。
+    - ``edition``：日报版本标识，默认为 daily；morning/evening 用于历史兼容；参与窗口和产物命名。
     - ``timestamp``：用于锁、截止时间或状态迁移的 ISO 时间字符串。
     输出：“构建日报互斥锁中记录的进程与版本信息”形成的结构化字典；
       典型键包括 created_at、edition、pid。
@@ -1575,7 +1579,7 @@ def prepare_edition(
     输入：
     - ``config``：已校验的应用配置；提供时区、来源策略、并发限制、预算和输出选项。
     - ``data_dir``：当前运行的唯一数据根；所有状态和版本化产物都必须位于其中。
-    - ``edition``：日报版本标识，通常为 morning 或 evening；参与窗口和产物命名。
+    - ``edition``：日报版本标识，默认为 daily；morning/evening 用于历史兼容；参与窗口和产物命名。
     - ``headed``：是否显示真实浏览器窗口；人工登录或验证场景需要开启。
     - ``profile_dir``：持久化浏览器 Profile 目录；保存用户已授权的浏览器会话。
     - ``browser_channel``：Playwright 浏览器通道名称；为空时使用配置或默认 Chromium。
@@ -1690,6 +1694,7 @@ def prepare_edition(
                 config=config,
                 data_dir=data_dir,
                 edition=edition,
+                date_value=date,
                 headed=headed,
                 profile_dir=profile_dir,
                 browser_channel=browser_channel,
@@ -2061,7 +2066,8 @@ def _prepare_edition_slides(run: dict, run_path: Path, data_dir: Path,
     输出：将计划与 packet 路径或准备错误写入运行产物，不调用模型。
     """
     artifacts = run.setdefault("artifacts", {})
-    slides_max_news = int(artifacts.get("slides", {}).get("max_news", 50))
+    slides_max_news = int(artifacts.get("slides", {}).get("max_news", 30))
+    exclude_event_ids = artifacts.get("slides", {}).get("exclude_event_ids", [])
     plan_path = artifacts.get("slides", {}).get("plan_path")
     reuse_plan = plan_path or artifacts.get("previous_report", {}).get("slides", {}).get(
         "plan_path"
@@ -2086,19 +2092,20 @@ def _prepare_edition_slides(run: dict, run_path: Path, data_dir: Path,
             Path(str(artifacts["json_path"])),
             index_path,
             data_dir,
-            max_news=slides_max_news,
+            max_news=slides_max_news, exclude_event_ids=exclude_event_ids,
             reuse_plan=Path(str(reuse_plan)) if reuse_plan else None,
             config=config,
             resume_plan=bool(plan_path),
         )
         artifacts["slides"] = {
             **result, "source_index_path": str(artifacts["index_path"]),
-            "max_news": slides_max_news, "status": "prepared",
+            "max_news": slides_max_news, "exclude_event_ids": exclude_event_ids,
+            "status": "prepared",
         }
     except Exception as exc:
         artifacts["slides"] = {
             "status": "failed",
-            "max_news": slides_max_news,
+            "max_news": slides_max_news, "exclude_event_ids": exclude_event_ids,
             "error": f"{type(exc).__name__}: {exc}",
         }
     _update_run(
@@ -2117,9 +2124,10 @@ def _slides_next_action(run: dict, run_path: Path, data_dir: Path) -> str:
     slides = run.get("artifacts", {}).get("slides", {})
     plan = slides.get("plan_path")
     if not plan or not Path(str(plan)).is_file():
-        slides_max_news = int(slides.get("max_news", 50))
+        slides_max_news = int(slides.get("max_news", 30))
         command = _slides_finalize_retry(
-            run_path, Path(str(run["artifacts"]["json_path"])), data_dir, slides_max_news
+            run_path, Path(str(run["artifacts"]["json_path"])), data_dir, slides_max_news,
+            slides.get("exclude_event_ids", [])
         )
         return ("Inspect artifacts.slides.error if present, then retry finalize-edition with this "
                 f"run manifest and saved report to register slide preparation: {command}")
@@ -2155,7 +2163,8 @@ def _slides_sidecar_matches_plan(plan_path: Path, sidecar: Path, data_dir: Path)
     return False
 
 
-def _slides_plan_matches_selection(plan_path: Path, max_news: int, data_dir: Path) -> bool:
+def _slides_plan_matches_selection(plan_path: Path, max_news: int, data_dir: Path,
+                                   exclude_event_ids: list[str] | None = None) -> bool:
     """处理：检查计划预算与本期要求的候选范围和选择规则一致。
     输入：图文计划路径、当前数量上限和数据根目录。
     输出：旧日期过滤计划或不同数量的计划返回假，防止误复用。
@@ -2164,11 +2173,12 @@ def _slides_plan_matches_selection(plan_path: Path, max_news: int, data_dir: Pat
 
     payload = load_artifact(plan_path, data_dir, kind="slides-plan")["payload"]
     return (payload.get("selection_policy") == "report-admitted-importance-v1"
-            and payload.get("budget", {}).get("max_news") == max_news)
+            and payload.get("budget", {}).get("max_news") == max_news
+            and payload.get("exclude_event_ids", []) == sorted(set(exclude_event_ids or [])))
 
 
 def _slides_finalize_retry(run_path: Path, report_path: Path, data_dir: Path,
-                           max_news: int) -> str:
+                           max_news: int, exclude_event_ids: list[str] | None = None) -> str:
     """处理：生成可恢复图文计划的定稿重试命令。
     输入：运行清单、已保存日报、数据根目录和本期图文数量上限。
     输出：沿用相同数量配置重新登记计划的完整命令。
@@ -2176,6 +2186,8 @@ def _slides_finalize_retry(run_path: Path, report_path: Path, data_dir: Path,
     return (
         f'signaltrail --data-dir "{data_dir}" finalize-edition --run "{run_path}" '
         f'--report "{report_path}" --slides-max-news {max_news} --defer-tail'
+        + "".join(f' --slides-exclude-event-id "{event_id}"'
+                  for event_id in (exclude_event_ids or []))
     )
 
 
@@ -2191,6 +2203,7 @@ def finalize_edition(
     defer_tail: bool = False,
     evaluate: bool = False,
     slides_max_news: int | None = None,
+    slides_exclude_event_ids: list[str] | None = None,
     evaluation_backend: str | None = None,
     app_config: AppConfig | None = None,
 ) -> Path:
@@ -2206,7 +2219,8 @@ def finalize_edition(
     - ``media_config``：图片下载、格式、安全、缓存和报告预算配置。
     - ``defer_tail``：是否把 PDF、Notion 和独立评估移到可恢复的后台尾阶段。
     - ``evaluate``：仅在用户明确要求时开启质量评分；请求随本轮运行保留。
-    - ``slides_max_news``：显式更换图文数量上限；省略时沿用运行清单中的值或默认 50。
+    - ``slides_max_news``：显式更换图文数量上限；省略时沿用运行清单中的值或默认 30。
+    - ``slides_exclude_event_ids``：显式排除事件后补位；省略时沿用本期选择。
     - ``evaluation_backend``：选择评分后端；单独指定不会开启评分。
     - ``app_config``：正式命令的来源配置，供图文写作前补齐原文。
     输出：指向“编译并校验写作草稿，创建不可变报告及本地投影，
@@ -2217,8 +2231,12 @@ def finalize_edition(
     current_slide_options = run.get("artifacts", {}).get("slides", {})
     slides_max_news = int(
         slides_max_news if slides_max_news is not None
-        else current_slide_options.get("max_news", 50)
+        else current_slide_options.get("max_news", 30)
     )
+    slides_exclude_event_ids = sorted(set(
+        slides_exclude_event_ids if slides_exclude_event_ids is not None
+        else current_slide_options.get("exclude_event_ids", [])
+    ))
     if slides_max_news < 1:
         raise ValueError("slides_max_news must be positive")
     validate_run_data_root(run, run_path, data_dir)
@@ -2246,6 +2264,7 @@ def finalize_edition(
                 run.setdefault("artifacts", {}).setdefault("slides", {})[
                     "max_news"
                 ] = slides_max_news
+                run["artifacts"]["slides"]["exclude_event_ids"] = slides_exclude_event_ids
                 _prepare_edition_slides(run, run_path, data_dir, app_config)
             tail = run.get("tail", {})
             if isinstance(tail, dict) and tail.get("status") in {
@@ -2376,6 +2395,7 @@ def finalize_edition(
             run.setdefault("artifacts", {}).setdefault("slides", {})[
                 "max_news"
             ] = slides_max_news
+            run["artifacts"]["slides"]["exclude_event_ids"] = slides_exclude_event_ids
             _prepare_edition_slides(run, run_path, data_dir, app_config)
             artifacts = run["artifacts"]
         if defer_tail:
