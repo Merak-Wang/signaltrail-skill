@@ -44,6 +44,38 @@ def test_daily_collection_window_covers_previous_24_hours(monkeypatch):
     }
 
 
+def test_refresh_authoring_uses_frozen_index_and_preserves_old_session(monkeypatch, tmp_path):
+    config = load_config()
+    index = write_json(tmp_path / "index.json", {"items": []})
+    old = write_json(tmp_path / "old-session.json", {"draft": "keep"})
+    old_context = write_json(tmp_path / "old-context.json", {})
+    window = {"start": "2026-11-04", "end": "2026-11-05"}
+    run_path = write_json(tmp_path / "runs" / "2026-11-05" / "daily.json", {
+        "date": "2026-11-05", "edition": "daily", "status": "awaiting_authoring",
+        "output_language": "en", "collection_window": window,
+        "artifacts": {"index_path": str(index), "context_path": str(old_context),
+                      "authoring": {"session_path": str(old)}},
+    })
+    new_context = tmp_path / "context" / "daily-r2.json"
+
+    def rebuild(path, settings, root, edition, *, collection_window):
+        assert path == index and settings.output.language == "en"
+        assert collection_window == window and root == tmp_path and edition == "daily"
+        write_json(new_context.with_name("daily-r2-coordinator.json"), {})
+        return write_json(new_context, {})
+
+    monkeypatch.setattr(workflow_module, "build_context", rebuild)
+    monkeypatch.setattr(workflow_module, "_require_llm_budget", lambda *args: None)
+    monkeypatch.setattr(workflow_module, "begin_authoring_session",
+                        lambda run, path, root: write_json(root / "new-session.json", {}))
+    workflow_module.begin_authoring(run_path, tmp_path, config=config, refresh_context=True)
+    artifacts = read_json(run_path)["artifacts"]
+    assert artifacts["context_path"] == str(new_context)
+    assert artifacts["coordinator_path"].endswith("daily-r2-coordinator.json")
+    assert artifacts["authoring"]["session_path"].endswith("new-session.json")
+    assert read_json(old) == {"draft": "keep"}
+
+
 def test_daily_run_keeps_start_date_when_collection_crosses_midnight(monkeypatch, tmp_path):
     config = load_config(timezone="Asia/Shanghai")
     config.monitor.enabled = False
@@ -408,11 +440,26 @@ def test_two_stage_run_reaches_completed(monkeypatch, tmp_path: Path):
     assert [row["status"] for row in completed["stage_history"]].count(RunStatus.COMPLETED) == 1
 
 
+@pytest.mark.parametrize("coverage", ["complete", "missing", "feed_changed", "source_expired"])
 def test_prepare_reuses_fresh_monitor_snapshot_without_refresh(
     monkeypatch,
     tmp_path: Path,
+    coverage,
 ):
     config = load_config(timezone="Asia/Shanghai")
+    enabled = [source for source in config.all_monitor_sources if source.enabled]
+    changed_source = next(source for source in enabled if source.feed_urls)
+    rows = [{"source_id": source.id, "feed_urls": source.feed_urls,
+             "checked_at": "2026-07-24T05:50:00+08:00"} for source in enabled]
+    if coverage == "missing":
+        rows = [row for row in rows if row["source_id"] != changed_source.id]
+    elif coverage == "feed_changed":
+        next(row for row in rows if row["source_id"] == changed_source.id)["feed_urls"] = []
+    elif coverage == "source_expired":
+        next(row for row in rows if row["source_id"] == changed_source.id)["checked_at"] = (
+            "2026-07-23T05:50:00+08:00"
+        )
+    monkeypatch.setattr("signaltrail.workflow.now_iso", lambda _: "2026-07-24T05:55:00+08:00")
     data_dir = tmp_path / "data"
     snapshot_path = write_json(
         data_dir / "monitor" / "snapshot.json",
@@ -420,7 +467,7 @@ def test_prepare_reuses_fresh_monitor_snapshot_without_refresh(
             "schema_version": "2.0",
             "generated_at": "2026-07-24T05:50:00+08:00",
             "token_usage": 0,
-            "sources": [],
+            "sources": rows,
             "items": [],
         },
     )
@@ -450,12 +497,13 @@ def test_prepare_reuses_fresh_monitor_snapshot_without_refresh(
         "signaltrail.workflow.fresh_monitor_snapshot_path",
         lambda *_args, **_kwargs: snapshot_path,
     )
-    monkeypatch.setattr(
-        "signaltrail.workflow.refresh_monitor",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            AssertionError("fresh snapshot must avoid refresh")
-        ),
-    )
+    refresh_calls = []
+
+    def refresh_missing(_config, _data_dir, *, only_source_ids):
+        refresh_calls.append(only_source_ids)
+        return snapshot_path
+
+    monkeypatch.setattr("signaltrail.workflow.refresh_monitor", refresh_missing)
     monkeypatch.setattr(
         "signaltrail.workflow.collect_sources",
         fake_collect_sources,
@@ -468,7 +516,8 @@ def test_prepare_reuses_fresh_monitor_snapshot_without_refresh(
     run = read_json(prepare_edition(config, data_dir, "morning"))
 
     metrics = run["artifacts"]["collection_metrics"]
-    assert metrics["monitor_refresh"] is False
+    assert metrics["monitor_refresh"] is (coverage != "complete")
+    assert refresh_calls == ([] if coverage == "complete" else [{changed_source.id}])
     assert metrics["monitor_snapshot_reused"] is True
     assert run["artifacts"]["monitor_snapshot_path"] == str(snapshot_path)
 
@@ -1095,6 +1144,73 @@ def test_slides_prepare_failure_does_not_revoke_saved_report(monkeypatch, tmp_pa
     assert run["status"] == RunStatus.COMPLETED_PARTIAL
     assert run["artifacts"]["slides"]["status"] == "failed"
     assert "No representative news selected" in run["artifacts"]["slides"]["error"]
+
+
+def test_finalize_reuses_enriched_index_after_navigation_evidence_failure(monkeypatch, tmp_path):
+    from signaltrail.workflow import get_edition_status
+
+    data_dir = tmp_path / "data"
+    source = {"id": "bbc_world", "name": "BBC", "url": "https://www.bbc.com"}
+    refs = [{"item_id": f"item-{number}", "title": f"Report {number}",
+             "url": f"https://www.bbc.com/news/{number}"} for number in range(2)]
+    report_path = write_json(data_dir / "reports" / "2026-09-24" / "morning-r1.json", {
+        "date": "2026-09-24", "edition": "morning", "revision": 1,
+        "title": "Daily news", "report_id": "report-1", "language": "en",
+        "generated_at": "2026-09-24T09:00:00+08:00", "analyses": [],
+        "sections": [{"items": [{"event_id": f"event-{number}", "title": ref["title"],
+                                  "tldr": "Reported facts", "importance": 90 - number,
+                                  "primary_source": source, "source_refs": [ref]}
+                                 for number, ref in enumerate(refs)]}],
+    })
+    body = data_dir / "content" / "usable.md"
+    body.parent.mkdir(parents=True)
+    body.write_text("The bank kept its policy rate at 3%.", encoding="utf-8")
+    index = {"date": "2026-09-24", "edition": "morning", "items": [
+        {**refs[0], "source_id": source["id"], "source_name": source["name"],
+         "description": "Comments", "metadata": {"feed_navigation_only": True}},
+        {**refs[1], "source_id": source["id"], "source_name": source["name"],
+         "content_path": str(body), "content_status": "full_text"},
+    ]}
+    index_path = write_json(data_dir / "indexes" / "2026-09-24" / "morning-r1.json", index)
+    original = index_path.read_bytes()
+    enriched_path = index_path.with_name("morning-r2.json")
+    run_path = write_json(data_dir / "runs" / "2026-09-24" / "morning.json", {
+        "data_root": str(data_dir.resolve()), "date": "2026-09-24", "edition": "morning",
+        "status": RunStatus.COMPLETED,
+        "artifacts": {"json_path": str(report_path), "index_path": str(index_path)},
+    })
+    extractions = []
+
+    def extract(path, *_args, **_kwargs):
+        extractions.append(path)
+        enriched = read_json(path)
+        enriched["items"][0].update(content_status="verification_required", metadata={
+            "feed_navigation_only": True, "content_http_status": 429,
+            "content_completion": {"status": "with_gaps", "stop_reason": "rate_limited"},
+        })
+        return write_json(enriched_path, enriched)
+
+    monkeypatch.setattr("signaltrail.content.extract_content", extract)
+    finalize_edition(run_path, report_path, data_dir, app_config=load_config(), slides_max_news=1)
+    failed = read_json(run_path)["artifacts"]["slides"]
+    assert failed["index_path"] == str(enriched_path)
+    assert failed["source_index_path"] == str(index_path)
+    assert failed["report_path"] == str(report_path)
+    assert failed["evidence_gaps"][0]["event_id"] == "event-0"
+    status = get_edition_status(run_path, data_dir)
+    assert not status["delivery_complete"]
+    assert status["slides"]["status"] == "evidence_required"
+    assert '--slides-exclude-event-id "event-0"' in status["slides"]["next_action"]
+    finalize_edition(run_path, report_path, data_dir, app_config=load_config())
+    assert extractions == [index_path]
+    finalize_edition(run_path, report_path, data_dir, app_config=load_config(),
+                     slides_exclude_event_ids=["event-0"])
+    prepared = read_json(run_path)["artifacts"]["slides"]
+    assert prepared["status"] == "prepared"
+    assert prepared["index_path"] == str(enriched_path)
+    assert extractions == [index_path]
+    assert read_json(enriched_path)["items"][0]["metadata"]["content_http_status"] == 429
+    assert index_path.read_bytes() == original
 
 
 def test_finalize_validation_failure_returns_to_awaiting_authoring(monkeypatch, tmp_path):

@@ -1,35 +1,28 @@
 # 示例
 
-**状态：** 当前实际演示与合成测试夹具
-**最后验证：** 2026-09-24
-
 [简体中文](README.md) | [English](README.en.md)
 
-本目录提供实际生成的完整日报与图文演示、历史日报和合成测试数据。
+## 2026-11-02 日报
 
-## 当前完整日报：2026-09-23 晨报
+本次实际输出包含 402 条简报、8 条重点事件和 28 个来源，配套 50 页图文演示与完整中文讲解视频。
 
-[下载日报与嵌入式图文演示 ZIP](https://github.com/Merak-Wang/signaltrail-skill/raw/refs/heads/main/examples/reports/2026-09-23-morning-r1.zip)，解压后用浏览器打开 `morning-r1.html`。ZIP 内包含完整新闻条目、来源、三视角研判与综合，以及配套图文演示 HTML，保留日报内嵌入口。
+| 样例 | 下载后使用 |
+| --- | --- |
+| [日报与图文 ZIP](reports/2026-11-02-daily-r1.zip) | 解压后打开 `2026-11-02-daily-r1.html` |
+| [日报 HTML](reports/2026-11-02-daily-r1.html) | 阅读新闻、三视角研判与综合；内嵌演示需配套图文 HTML |
+| [图文 HTML](reports/2026-11-02-daily-r1-slides.html) | 用浏览器打开，按方向键切换新闻 |
+| [完整视频 MP4](reports/2026-11-02-daily-r1-video.mp4) | 16 分 11 秒，1920×1080，约 21 MiB |
 
-[单独下载日报 HTML](https://github.com/Merak-Wang/signaltrail-skill/raw/refs/heads/main/examples/reports/2026-09-23-morning-r1.html)（单文件可能无法加载配套的嵌入式图文演示）。
+ZIP 包含日报、图文演示和视频播放器。将 MP4 另存到解压后的同一目录，即可从日报打开视频。
+新闻图片已内嵌；来源链接仍指向原媒体。视频样例保留完整 50 页内容，以 10 fps 压缩便于下载。
 
-## 当前图文演示：2026-09-23 晨报
+[![中文讲解视频](../assets/readme/daily-video-preview.png)](reports/2026-11-02-daily-r1-video.mp4)
 
-[下载 2026-09-23 晨报图文演示 HTML](https://github.com/Merak-Wang/signaltrail-skill/raw/refs/heads/main/examples/reports/2026-09-23-morning-r1-slides.html)是本次实际生成的图文演示，展示 41 条新闻。
-下载后用浏览器打开；远程原图可能需要联网。
+## 历史样例
 
-## 历史完整日报：2026-08-25 晨报 r1
+- [2026-09-23 晨报与图文 ZIP](reports/2026-09-23-morning-r1.zip)
+- [2026-08-25 晨报 HTML](reports/2026-08-25-morning-r1.html)
 
-[下载 2026-08-25 晨报 r1 HTML](https://github.com/Merak-Wang/signaltrail-skill/raw/refs/heads/main/examples/reports/2026-08-25-morning-r1.html)是历史完整日报示例，不代表当前图文演示。
-下载后用浏览器打开；远程图片由外部来源托管，可能随时间变化或需要联网。
+## 测试数据
 
-该历史页面展示旧版阅读器样式；正文和历史内容保持原样。
-
-## 合成测试数据
-
-`sample_input.json` 和 `sample_report.json` 用于自动化测试、兼容性校验和输出渲染，
-不代表当前报告契约。
-
-- 人物、机构、事件、日期与分析均为合成内容。
-- `news.example`、`wire.example` 是保留示例域名，不对应真实媒体。
-- 测试数据仅用于工程验证，不承担事实来源或编辑模板作用。
+`sample_input.json` 和 `sample_report.json` 是自动化测试使用的合成数据。人物、机构、事件和分析均为虚构；`news.example`、`wire.example` 为保留示例域名。

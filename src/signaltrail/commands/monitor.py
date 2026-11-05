@@ -87,5 +87,7 @@ def handle_serve(args: argparse.Namespace, context: CommandContext) -> int:
         open_browser=args.open_browser,
         allow_remote=args.allow_remote,
         refresh_minutes=args.refresh_minutes,
+        auto_research=not args.no_auto_research,
+        research_command=args.research_command,
     )
     return 0

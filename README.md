@@ -2,149 +2,65 @@
 
 [简体中文](README.md) | [English](README.en.md)
 
-SignalTrail 是一个在本机运行的新闻工作流：从配置的公开来源采集材料，生成保留原文链接的中文或英文日报，并将每日一期日报制作成可切换的动态 HTML 图文演示，还可按需导出本地配音视频。阅读页可导出 PDF，也可按需同步到 Notion。
+SignalTrail 在本机采集公开新闻，由智能体撰写中文或英文日报，并生成图文演示和配音视频。适合每天集中阅读新闻、追踪来源，以及将重点内容整理成可分享的阅读材料。
 
-Python 程序负责采集、证据和状态管理、校验及版本化存档；智能体按有界证据包撰写内容。日报讲解使用口语化、有节奏、轻幽默的主播风格，并按新闻需要选择地缘政治、AI／技术、市场等分析视角。每条中文讲解为 200–350 个非空白字符；候选来自整份已保存日报，去重后按模型生成的重要性分数排序，默认取最重要的 30 条；模型复核时效性与重复覆盖，可排除后自动补位。用户可扩充数量，写作按每批成本上限拆分处理。
+- **日报：** 汇集新闻摘要与分析，保留原文链接，输出 HTML、PDF、Markdown 和 JSON。
+- **图文与视频：** 默认选择最重要的 50 条新闻制作演示，按需使用本地 Qwen3-TTS 导出 1080p 配音视频；也可直接从采集索引制作。
+- **采集监控：** 查看新闻、事件聚类和来源健康，通过配置文件扩展来源。
 
-[日报示例](#日报示例) · [快速开始](#快速开始) · [图文演示](#动态-html-图文演示) · [本地监控](#本地监控) · [文档索引](docs/README.md) · [开发指南](docs/development.md)
+## 最新样例
 
-## 你可以用它做什么
+2026 年 11 月 2 日生成的中文日报，图文演示与视频包含 50 条新闻，视频时长 16 分 11 秒。点击封面下载视频：
 
-- **生成日报：** 采集公开来源，撰写摘要与分析，保存版本化 JSON／Markdown，并输出本地 HTML 和 PDF。HTML 阅读页支持桌面和移动设备。
-- **浏览本地新闻流：** 刷新 RSS／Atom 与配置的静态网页来源，按故事聚类并查看来源状态。监控刷新和聚类不调用模型。
-- **制作图文演示和视频：** 默认日报整期包含图文流；按需用本地 Qwen3 TTS 和 FFmpeg 导出 1080p 配音视频，在日报同一容器内切换图文与视频，也可独立打开演示。
-- **拓展阅读：** 可选实验性 explainer 和并行研究流程，详见各自文档。它们不属于当前新闻讲解演示的稳定日报路径。
+[![2026-11-02 新闻视频预览](assets/readme/daily-video-preview.png)](https://github.com/Merak-Wang/signaltrail-skill/raw/refs/heads/main/examples/reports/2026-11-02-daily-r1-video.mp4)
 
-## 日报示例
+[下载配音视频 MP4](https://github.com/Merak-Wang/signaltrail-skill/raw/refs/heads/main/examples/reports/2026-11-02-daily-r1-video.mp4) · [下载日报与图文演示 ZIP](https://github.com/Merak-Wang/signaltrail-skill/raw/refs/heads/main/examples/reports/2026-11-02-daily-r1.zip) · [下载独立图文 HTML](https://github.com/Merak-Wang/signaltrail-skill/raw/refs/heads/main/examples/reports/2026-11-02-daily-r1-slides.html)
 
-![2026-09-23 晨报正文预览](assets/readme/daily-report-preview.png)
+ZIP 解压后打开 `2026-11-02-daily-r1.html`。将 MP4 下载到同一目录，即可在日报内切换图文演示与视频。
 
-这是实际生成的 2026-09-23 晨报，包含 415 条新闻、30 个来源分组、三视角研判与跨视角综合，页面内嵌 41 条新闻的图文演示。推荐下载 ZIP，解压后用浏览器打开 `morning-r1.html`，即可阅读完整日报并切换图文演示。也可单独下载日报 HTML。
-
-[下载日报与嵌入式图文演示 ZIP](https://github.com/Merak-Wang/signaltrail-skill/raw/refs/heads/main/examples/reports/2026-09-23-morning-r1.zip) · [下载单日报 HTML](https://github.com/Merak-Wang/signaltrail-skill/raw/refs/heads/main/examples/reports/2026-09-23-morning-r1.html)
-
-只要图文流时，采集索引后由模型挑选最重要的条目，将有序 ID 通过重复的 `--item-id` 传给 `signaltrail slides prepare --index INDEX.json --language zh-CN --item-id ITEM_ID`，仅撰写待完成包，再复用下文 submit/status/render 命令。无需先写日报或分析；`--reuse-plan OLD_PLAN.json` 复用输入未变的已接受内容，未知用量与费用仍保持未知。
-
-## 动态 HTML 图文演示
-
-![SignalTrail 新闻幻灯片预览](assets/readme/news-slides-preview.png)
-
-实际生成的演示：2026-09-23 晨报中的 41 条新闻。
-
-[下载 2026-09-23 晨报图文演示 HTML](https://github.com/Merak-Wang/signaltrail-skill/raw/refs/heads/main/examples/reports/2026-09-23-morning-r1-slides.html)（下载后用浏览器打开；远程原图可能需要联网）。
-
-每条新闻占一页，使用风格化的主播讲解，同时呈现日报摘要、来源和可用的封面／正文图片。程序优先合并清晰图片、保留原站 caption，并提供缩略图、放大查看、100% 原始尺寸和原图链接。图片只展示采集到的内容，不生成或猜测图片和图注；来源没有可用配图时会如实留空。
-
-演示和视频可在日报的“日报图文流与视频”容器中切换，也可通过“独立打开演示”单独放映图文。视频保留图文流的原文字、图片和分栏，按原顺序自动翻页和轮播图片；捕获画面整体缩放 1.4 倍。模型根据每页完整讲解写简明口播，建议 60–100 汉字、最多 160 字符；本地 Qwen3 TTS 朗读标题与短稿，语速 1.08 倍，FFmpeg 输出 1080p。实际音频时长决定每页停留时间。
-
-候选覆盖整份已保存日报中的精选事件与简报；同一原文合并后按模型生成的重要性分数降序排列，默认选最重要的 30 条，可用 `slides prepare --max-news N` 或 `finalize-edition --slides-max-news N` 自定义。没有按来源预留名额；发布日期未知时保持未知，不以发现或采集时间代替。每批默认最多五条，并对输入和输出 token 估算设置门槛。中文讲解通过 200–350 个非空白字符校验；写作只在有证据支持时选择分析视角。
-
-从一份已保存的日报及匹配索引开始：
-
-```sh
-signaltrail slides prepare --report REPORT.json --index INDEX.json
-```
-
-智能体读取准备好的批次包并写入结果 JSON，然后提交并检查进度：
-
-```sh
-signaltrail slides submit --packet PACKET.json --input DRAFT.json
-signaltrail slides status --plan PLAN.json
-signaltrail slides render --plan PLAN.json
-```
-
-`render` 在所有批次就绪后生成演示 HTML，并更新对应日报页面中的嵌入入口。新安装默认使用随包的 Qwen3 参考声线 `neutral-a`（3.33 秒）；已有本机注册声线可继续使用。按需导出视频：
-
-```sh
-signaltrail --data-dir DATA_DIR slides video-setup
-signaltrail --data-dir DATA_DIR slides video --deck DECK.json --output VIDEO.mp4
-```
-
-如需自定义声线，可准备 3–10 秒参考录音和逐字文本，参照 [`assets/tts/profile.example.json`](assets/tts/profile.example.json) 填写配置，再运行 `signaltrail --data-dir DATA_DIR slides voice-setup --profile PROFILE.json --default`。首次准备需联网下载程序、模型、浏览器和 FFmpeg；准备完成后可复用本地模型及音频缓存，图文可用 `slides render --offline` 重建。远程原图仍可能需要联网。设备默认先通过实际合成探针选择可用 GPU，不可用时回落 CPU。完整写作数据包、设备和恢复说明见[图文幻灯片指南](docs/zh-CN/news-slides.md)。
+![2026-11-02 日报阅读页](assets/readme/daily-report-preview.png)
 
 ## 快速开始
 
-需要 Python 3.11+、Git、一个已配置模型的智能体和本地命令行。使用以下命令从 GitHub 克隆源码并安装：
+需要 Python 3.11+、Git，以及一个已配置模型、可读写文件和运行命令的智能体。
 
 ```sh
 git clone https://github.com/Merak-Wang/signaltrail-skill.git
 cd signaltrail-skill
 python -m pip install -e .
+python -m playwright install chromium
 signaltrail --help
 ```
 
-在智能体中加载仓库根目录的 [`SKILL.md`](SKILL.md)，然后提出报告需求，例如：
+在智能体中加载仓库根目录的 [SKILL.md](SKILL.md)，然后提出需求：
 
 ```text
-使用 SignalTrail 生成今天的中文日报，保存本地 HTML 和 PDF。
+使用 SignalTrail 生成今天的中文日报，包含图文演示和配音视频，
+将 HTML、PDF 和视频保存到本地。
 ```
 
-`signaltrail` 是统一命令入口；Python 包可 `import signaltrail`，也可用 `python -m signaltrail.cli` 启动。命令行准备可复现的采集、校验和存档步骤；智能体根据证据包完成写作。仅运行 `run-edition` 会停在写作交接阶段，不会自行生成完整日报。
+智能体负责选题与写作，CLI 负责采集、渲染和存档。也可以只要求：
 
-### 可选：安装到 Hermes
-
-在仓库目录或已解压的完整安装包根目录运行对应脚本：
-
-```powershell
-# Windows
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install.ps1
+```text
+采集今天的新闻，选择最重要的 50 条，制作中文图文演示和配音视频。
 ```
 
-```sh
-# macOS / Linux
-bash ./scripts/install.sh
-```
+首次视频准备会下载运行程序和模型，后续复用本地缓存。完整安装、数据目录与恢复步骤见[使用指南](docs/zh-CN/usage.md)。
 
-脚本会将 Skill 同步到 Hermes 并安装 Python 命令；SignalTrail 核心 CLI 不要求 Hermes。Windows 浏览器采集可使用系统 Microsoft Edge；macOS／Linux 的安装脚本会在同一 Python 环境安装 Playwright Chromium。手动安装时运行：
+## 配置与文档
 
-```sh
-python -m playwright install chromium
-```
+默认输出中文，可要求英文或设置 `output.language: en`。在 [sources.yaml](configs/sources.yaml) 调整核心来源，在 [discovery-sources.yaml](configs/discovery-sources.yaml) 调整发现来源。
 
-从旧版升级时，请先卸载 `daily-intelligence-skill` Python 包，再安装此版本。旧 Hermes 数据和 Profile 可留在原路径，通过显式数据根和 Profile 设置继续使用。完整步骤见[升级说明](docs/zh-CN/usage.md#从旧版升级)。
+| 文档 | 内容 |
+| --- | --- |
+| [使用指南](docs/zh-CN/usage.md) | 安装、语言、数据目录、宿主用量和恢复 |
+| [图文与视频](docs/zh-CN/news-slides.md) | 日报与独立索引两种路径、渲染、配音和自定义音色 |
+| [采集扩展](docs/zh-CN/platform.md) | 本地监控、RSSHub、Crawl4AI 和研究接口 |
+| [开发指南](docs/zh-CN/development.md) · [架构](docs/zh-CN/ARCHITECTURE.md) | 代码结构、维护约定和检查 |
+| [文档索引](docs/zh-CN/README.md) · [变更记录](CHANGELOG.md) | 其他指南与版本历史 |
 
-更完整的配置、数据目录、计量运行和恢复说明见[使用指南](docs/zh-CN/usage.md)。
+## 许可
 
-## 本地监控
+[MIT License](LICENSE)。可选 Crawl4AI 正文抽取集成署名：
 
-```sh
-signaltrail refresh-monitor
-signaltrail serve --open --refresh-minutes 30
-```
-
-监控会刷新来源、整理新闻流并按内容聚类，不调用模型。服务默认仅监听本机 `127.0.0.1`；关闭进程后停止刷新。正式报告来源配置在 [`configs/sources.yaml`](configs/sources.yaml)，监控发现来源配置在 [`configs/discovery-sources.yaml`](configs/discovery-sources.yaml)。
-
-## 数据、成本与能力边界
-
-报告 JSON 和 Markdown 是版本化原始记录；HTML、PDF 是可重建的阅读投影。现有报告修订不会被覆盖。来源访问失败、限流和验证挑战会保留其实际状态。运行数据默认保存在本机 SignalTrail 应用目录，与 Hermes 目录独立。旧版用户可按[升级说明](docs/zh-CN/usage.md#从旧版升级)继续使用原有数据目录，保留报告和运行历史。
-
-采集、监控、图片处理和 HTML 演示渲染不调用模型。日报写作与图文讲解由智能体宿主执行；批次 token 门槛用于限制单批输入／输出规模，实际用量取决于宿主是否提供计量数据。新闻来源、网络状况、证据完整度和模型速度都会影响交付时间与内容覆盖。
-
-图文演示是日报的独立 HTML 投影，不改变日报 JSON／Markdown。默认日报无论用量是否计量都必须完成图文流；日报可先保存和交付，整期交付完成需通过动态验收。按需可生成本地配音视频，独立平台发布尚未提供。实验性 explainer、并行研究与稳定日报及图文演示路径的边界见[文档索引](docs/README.md)和[路线图](docs/zh-CN/roadmap.md)。
-
-## 文档
-
-- [使用指南](docs/zh-CN/usage.md)：安装、宿主、运行、数据目录与恢复。
-- [图文幻灯片](docs/zh-CN/news-slides.md)：讲解稿、图片、caption、预算和 HTML 渲染流程。
-- [实验性 explainer](docs/zh-CN/explainers.md)与[并行研究](docs/zh-CN/research/2026-09-20-illustrated-workflow.md)：实验功能及准入限制。
-- [架构](docs/zh-CN/ARCHITECTURE.md)、[开发指南](docs/zh-CN/development.md)和[已知问题](docs/zh-CN/exec-plans/tech-debt-tracker.md)：工程设计与开发维护。
-- [变更记录](CHANGELOG.md) · [MIT License](LICENSE)
-
-旧版晨报截图展示的是历史阅读器样式，不代表当前演示设计：
-
-<details>
-<summary>查看历史日报示例与旧版阅读器截图</summary>
-
-[打开历史 HTML 示例](https://github.com/Merak-Wang/signaltrail-skill/raw/refs/heads/main/examples/reports/2026-08-25-morning-r1.html)（下载后用浏览器打开；部分图片需要联网）。更多背景见[示例说明](https://github.com/Merak-Wang/signaltrail-skill/blob/main/examples/README.md)。
-
-![历史阅读器样式](assets/readme/morning-report-preview.png)
-
-![历史分析综合页面](assets/readme/analysis-synthesis-preview.png)
-
-![历史质量评估页面](assets/readme/quality-evaluation-preview.png)
-
-<img src="assets/readme/mobile-report-preview.png" width="390" alt="历史移动端日报样式">
-
-</details>
-
-[English](README.en.md)
+This product includes software developed by UncleCode (https://x.com/unclecode) as part of the Crawl4AI project (https://github.com/unclecode/crawl4ai).

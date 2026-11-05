@@ -335,6 +335,9 @@ def test_context_keeps_index_top_order_even_when_a_lower_item_is_enriched(tmp_pa
     batch = context["brief_authoring_batches"][0]
     packet = read_json(Path(batch["packet_path"]))
     assert packet["submission_command"].startswith("signaltrail --compact --data-dir ")
+    assert packet["preflight_command"] == packet["submission_command"] + " --check-only"
+    assert packet["date"] == "2026-07-16"
+    assert packet["collection_window"] is None
     assert batch["author_item_count"] == len(packet["author_item_ids"])
     assert packet["task"].startswith("Author exactly one structured Chinese brief")
     assert "Do not browse the web" in packet["tool_policy"]
@@ -378,14 +381,19 @@ def test_brief_packets_keep_source_language_separate_from_output_language(tmp_pa
     )
     config = load_config()
 
+    window = {"start": "2026-09-27T18:00:00+08:00", "end": "2026-09-28T18:00:00+08:00"}
     for output_language, translation_required in (("zh-CN", True), ("en", False)):
         context_path = build_context(
-            index_path, config, data_dir, "morning", output_language=output_language
+            index_path, config, data_dir, "morning", collection_window=window,
+            output_language=output_language,
         )
         context = read_json(context_path)
         assert context["output_language"] == output_language
         packet = read_json(Path(context["brief_authoring_batches"][0]["packet_path"]))
         assert packet["output_language"] == output_language
+        assert packet["date"] == "2026-09-28"
+        assert packet["collection_window"] == window
+        assert packet["preflight_command"] == packet["submission_command"] + " --check-only"
         candidates = {candidate["item_id"]: candidate for candidate in packet["candidates"]}
         assert set(candidates) == {"bbc-en", "bbc-zh"}
         assert candidates["bbc-en"]["source_language"] == "en"
@@ -511,12 +519,14 @@ def test_context_preserves_published_at_order_already_written_to_index(tmp_path:
 @pytest.mark.parametrize("same_evidence", [True, False])
 def test_shared_brief_evidence_keeps_source_plan_and_receipt_dependencies(tmp_path, same_evidence):
     from signaltrail.authoring import _merge_briefs
-    from signaltrail.semantics import run_relative_brief_fields, semantic_fingerprint
+    from signaltrail.semantics import semantic_fingerprint
 
     candidates = [
         {"item_id": item_id, "source_id": source_id, "module": "technology",
          "category": "papers", "title": "A useful research paper",
-         "url": "https://example.org/paper", "description": description,
+         "url": ("https://example.org/paper"
+                 + ("-other" if item_id == "b" and not same_evidence else "")),
+         "description": description,
          "published_at": "2026-10-29", "source_rank": rank}
         for item_id, source_id, description, rank in [
             ("a", "huggingface_papers", "Evidence one", 1),
@@ -537,7 +547,7 @@ def test_shared_brief_evidence_keeps_source_plan_and_receipt_dependencies(tmp_pa
     plan = context_module._build_brief_plan(candidates, sources, batches, {}, aliases)
     assert sum(len(row["author_item_ids"]) for row in plan) == (1 if same_evidence else 2)
     assert {row["source_id"]: row["default_item_ids"] for row in plan} == {
-        "huggingface_papers": ["a"], "papers_with_code": ["b"]}
+        "huggingface_papers": ["a"], "papers_with_code": [] if same_evidence else ["b"]}
     receipt = tmp_path / "accepted.json"
     write_json(receipt, {"briefs": [
         {"item_id": item["item_id"], "title_zh": "研究论文", "tldr": "论文提出具体研究方法。",
@@ -548,14 +558,119 @@ def test_shared_brief_evidence_keeps_source_plan_and_receipt_dependencies(tmp_pa
     session = {"batches": [{"batch_id": batches[0]["batch_id"], "result_path": str(receipt)}]}
     sections, missing, targets = _merge_briefs(context, session, allow_degraded=False)
     briefs = [brief for section in sections for brief in section["briefs"]]
-    assert {brief["item_id"] for brief in briefs} == {"a", "b"}
-    assert targets == {"huggingface_papers": 1, "papers_with_code": 1}
+    assert {brief["item_id"] for brief in briefs} == ({"a"} if same_evidence else {"a", "b"})
+    assert targets == {"huggingface_papers": 1, "papers_with_code": 0 if same_evidence else 1}
     assert not missing
     if same_evidence:
-        alias = next(brief for brief in briefs if brief["item_id"] == "b")
-        fields = run_relative_brief_fields(candidates[1], "2026-10-29")
-        assert {key: alias[key] for key in fields} == fields
+        legacy = {**context, "brief_plan": sorted(
+            [{**row} for row in plan], key=lambda row: row["source_id"],
+        )}
+        legacy["brief_plan"][1].update(default_item_ids=["b"], target_count=1)
+        merged, _, old_targets = _merge_briefs(legacy, session, allow_degraded=False)
+        assert [b["item_id"] for row in merged for b in row["briefs"]] == ["a"]
+        assert old_targets["papers_with_code"] == 0
     session["batches"][0]["result_path"] = str(tmp_path / "missing.json")
     sections, missing, targets = _merge_briefs(context, session, allow_degraded=True)
     assert missing == [batches[0]["batch_id"]]
     assert targets == {"huggingface_papers": 0, "papers_with_code": 0}
+
+def test_stored_feed_evidence_reaches_brief_and_analysis_without_fetching(tmp_path):
+    from signaltrail.authoring import _analysis_candidates
+    from signaltrail.feed_content import save_feed_content
+    from signaltrail.semantics import semantic_fingerprint
+
+    text = "Provider supplied evidence with quantities and qualifications. " * 40
+    reference = save_feed_content({
+        "text": text, "blocks": [{"type": "paragraph", "text": text}],
+        "source_field": "encoded", "quality": {"extraction_status": "partial"},
+    }, tmp_path, "bbc_world", "feed-evidence", "https://bbc.example/story", "https://bbc.example/rss")
+    item = {
+        "item_id": "feed-evidence", "source_id": "bbc_world", "title": "Provider report",
+        "url": "https://bbc.example/story", "description": text[:600],
+        "content_status": "not_fetched", "module": "information", "category": "international",
+        "metadata": reference,
+    }
+    second_text = "A different report covers a separate policy decision. " * 20
+    second_reference = save_feed_content({
+        "text": second_text, "blocks": [{"type": "paragraph", "text": second_text}],
+        "source_field": "encoded", "quality": {"extraction_status": "partial"},
+    }, tmp_path, "bbc_world", "second-evidence", "https://bbc.example/second",
+        "https://bbc.example/rss")
+    first_signals = {"discovery_signal": "rank_rise", "signal_at": "2026-09-12T06:00:00Z",
+                     "selection_reason": "rank_rise", "suggested_status": "WATCH",
+                     "published_precision": "date", "updated_at": "2026-09-12",
+                     "first_discovered_at": "2026-09-11T06:00:00Z"}
+    item["metadata"] = {**reference, **first_signals}
+    second = {**item, "item_id": "second-evidence", "title": "Separate policy decision",
+              "url": "https://bbc.example/second", "description": second_text[:600],
+              "content_path": "separate-body.md", "metadata": second_reference}
+    third = {**item, "item_id": "without-feed", "url": "https://bbc.example/third",
+             "metadata": {}}
+    index_path = write_json(tmp_path / "indexes" / "2026-09-12" / "daily-r1.json", {
+        "date": "2026-09-12", "edition": "daily", "items": [item, second, third],
+    })
+    original = index_path.read_bytes()
+    context = read_json(build_context(index_path, load_config(), tmp_path, "daily"))
+    packet = read_json(Path(context["brief_authoring_batches"][0]["packet_path"]))
+    candidate = packet["candidates"][0]
+    analysis = _analysis_candidates([{"id": "information.international", "briefs": [{
+        "item_id": item["item_id"], "tldr": "Provider evidence", "importance": 80,
+    }]}], context, 1)[0]
+    for evidence in (candidate, analysis):
+        assert evidence["feed_content_path"] == reference["feed_content_path"]
+        assert evidence["feed_content_characters"] == len(text)
+        assert evidence["feed_content_status"] == "partial"
+        assert read_json(Path(evidence["feed_content_path"]))["text"] == text
+        assert evidence["content_status"] == "not_fetched"
+        assert not evidence.get("content_path")
+    candidates = {row["item_id"]: row for row in packet["candidates"]}
+    assert (candidates["second-evidence"]["feed_content_path"]
+            == second_reference["feed_content_path"])
+    assert candidates["second-evidence"]["feed_content_characters"] == len(second_text)
+    assert candidates["second-evidence"]["content_path"] == "separate-body.md"
+    for key, value in first_signals.items():
+        assert candidate[key] == value
+        assert key not in candidates["second-evidence"]
+        assert key not in candidates["without-feed"]
+    assert "feed_content_path" not in candidates["without-feed"]
+    assert "feed_content_status" not in candidates["without-feed"]
+    assert semantic_fingerprint(context["candidate_items"][0]) == semantic_fingerprint(item)
+    assert index_path.read_bytes() == original
+    assert not list((tmp_path / "content").rglob("*.md"))
+
+
+def test_unique_brief_slots_refill_within_source_beyond_context_cap():
+    from types import SimpleNamespace
+
+    from signaltrail.brief_selection import select_brief_items
+
+    sources = {key: SimpleNamespace(report_target=2, report_max=2,
+                                   module="technology", category="papers")
+               for key in ("a", "b")}
+    items = [{"item_id": f"{source}-{rank}", "source_id": source,
+              "title": "Same event headline", "url": f"https://example.org/{rank}",
+              "metadata": {"source_rank": rank}, "module": "technology",
+              "category": "papers"}
+             for source, count in (("a", 2), ("b", 4)) for rank in range(1, count + 1)]
+    items[-1]["metadata"].update(discovery_signal="rank_rise", signal_at="2026-11-02",
+                                 selection_reason="research_rank_rise", suggested_status="WATCH")
+    selected = select_brief_items(items, sources)
+    ids = {item["item_id"] for item in selected}
+    assert ids == {"a-1", "a-2", "b-3", "b-4"}
+    compact = context_module._compact_candidates(
+        {"items": items}, 2, {"a": 2, "b": 2}, set(), ids,
+    )
+    assert [i["source_rank"] for i in compact if i["item_id"] in {"b-3", "b-4"}] == [3, 4]
+    authors = context_module._planned_authoring_candidates(compact, sources, {})
+    plan = context_module._build_brief_plan(
+        compact, sources, context_module._balanced_source_batches(authors),
+    )
+    assert {row["source_id"]: row["default_item_ids"] for row in plan} == {
+        "a": ["a-1", "a-2"], "b": ["b-3", "b-4"],
+    }
+    signal = next(item for item in compact if item["item_id"] == "b-4")
+    assert signal["discovery_signal"] == "rank_rise"
+    assert signal["suggested_status"] == "WATCH"
+    assert next(row for row in plan if row["source_id"] == "b")["item_signals"]["b-4"][
+        "suggested_status"] == "WATCH"
+    assert len(items) == 6

@@ -74,3 +74,21 @@ def test_story_id_survives_a_later_corroborating_article():
     assert second[0]["story_id"] == first[0]["story_id"]
     assert second[0]["phase"] == "updated"
 
+
+def test_generic_topic_title_does_not_bridge_unrelated_stories():
+    items = [
+        _item("a", "a", "Artificial intelligence", "https://a.example/topic"),
+        _item(
+            "b",
+            "b",
+            "Foreign ministry remarks concerning artificial intelligence",
+            "https://b.example/news",
+        ),
+        _item(
+            "c",
+            "c",
+            "Artificial intelligence helps industry reduce pollution",
+            "https://c.example/news",
+        ),
+    ]
+    assert len(cluster_articles(items, "2026-07-24T10:00:00+08:00")) == 3

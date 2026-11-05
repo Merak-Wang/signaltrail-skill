@@ -6,10 +6,11 @@ from pathlib import Path
 from typing import Any
 
 from .config import SourceConfig
+from .content_extraction import is_navigation_only
 
 
 def has_local_content(item: dict[str, Any], data_dir: Path) -> bool:
-    """处理：检查证据文件位于数据根内，并复核存在的产物哈希。
+    """处理：检查数据根内的证据文件及已有哈希，排除纯评论入口与评分记录。
     输入：索引中的正文路径、可选结构路径与溯源指纹，以及当前数据根。
     输出：可读取且未检测到损坏时返回真；旧版无哈希文件保持兼容。
     """
@@ -21,7 +22,7 @@ def has_local_content(item: dict[str, Any], data_dir: Path) -> bool:
     if manifest.get("blocks_sha256"):
         artifacts.append((metadata.get("content_blocks_path"), manifest["blocks_sha256"]))
     try:
-        for value, expected_hash in artifacts:
+        for position, (value, expected_hash) in enumerate(artifacts):
             if not value:
                 return False
             path = Path(str(value))
@@ -29,7 +30,10 @@ def has_local_content(item: dict[str, Any], data_dir: Path) -> bool:
             path.relative_to(data_dir.resolve())
             if not path.is_file():
                 return False
-            if expected_hash and hashlib.sha256(path.read_bytes()).hexdigest() != expected_hash:
+            content = path.read_bytes()
+            if position == 0 and is_navigation_only(content.decode("utf-8")):
+                return False
+            if expected_hash and hashlib.sha256(content).hexdigest() != expected_hash:
                 return False
     except (OSError, ValueError):
         return False
@@ -53,7 +57,7 @@ def content_gaps(item: dict[str, Any], data_dir: Path) -> list[str]:
         return ["unsupported_content_type"]
     if status == "failed":
         return ["access_failed"]
-    gaps = []
+    gaps = ["stale_content"] if metadata.get("content_needs_refresh") else []
     if not has_local_content(item, data_dir):
         gaps.append("missing_content_artifact" if item.get("content_path") else "article_body")
     if status == "partial":
@@ -73,23 +77,27 @@ def content_gaps(item: dict[str, Any], data_dir: Path) -> list[str]:
 def enrichment_plan(
     items: list[dict[str, Any]], sources: list[SourceConfig], data_dir: Path, limit: int,
 ) -> dict[str, Any]:
-    """处理：为当前候选建立有界、按来源轮询的正文缺口建议队列。
+    """处理：为当前候选建立有界、按证据收益和来源互补排序的正文建议队列。
     输入：上下文已允许的候选、来源角色、数据根与本轮正文硬上限。
     输出：待协调器选择的动作及跳过原因；不会浏览、修改排名或猜测事件身份。
     """
     source_map = {source.id: source for source in sources}
-    grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    candidates = []
     blocked = Counter()
     stopped = Counter()
-    total = 0
-    seen: set[str] = set()
-    for item in items:
+    seen_ids: set[str] = set()
+    seen_urls: set[str] = set()
+    for position, item in enumerate(items):
         item_id = str(item.get("item_id") or "")
-        if not item_id or item_id in seen:
+        url = str(item.get("canonical_url") or item.get("url") or "")
+        if not item_id or item_id in seen_ids or (url and url in seen_urls):
             continue
-        seen.add(item_id)
+        seen_ids.add(item_id)
+        if url:
+            seen_urls.add(url)
+        metadata = item.get("metadata") or {}
         gaps = content_gaps(item, data_dir)
-        completion = (item.get("metadata") or {}).get("content_completion") or {}
+        completion = metadata.get("content_completion") or {}
         gaps = list(dict.fromkeys([*gaps, *completion.get("unresolved", [])]))
         if not gaps:
             continue
@@ -101,27 +109,55 @@ def enrichment_plan(
             continue
         if completion.get("stop_reason") in {
             "bounded_attempts_exhausted", "no_permitted_escalation",
-        }:
+        } and not metadata.get("content_needs_refresh"):
             stopped.update([completion["stop_reason"]])
             continue
         source_id = str(item.get("source_id") or "")
         source = source_map.get(source_id)
-        grouped[source_id].append({
+        category = item.get("category") or (source.category if source else "")
+        module = item.get("module") or (source.module if source else "")
+        market = module == "market" or category in {"market", "markets", "finance", "economy"}
+        domain = ("markets" if market else "ai_technology" if module == "technology"
+                  else "geopolitics")
+        importance = min(100, max(0, float(item.get("importance") or 50))) / 10
+        structural = 3 * sum(gap in gaps for gap in (
+            "table_headers", "response_truncated", "stale_content",
+        ))
+        existing_feed = min(3, float(metadata.get("feed_content_characters") or 0) / 1000)
+        # 已有长 Feed 降低新增抓取收益；只报告材料可用，不判断主张已经充分。
+        components = {"importance": importance, "structural_gap": structural,
+                      "existing_feed": -existing_feed, "estimated_cost": -1,
+                      "primary_source": int(bool(source and source.role == "primary"))}
+        action = {
             "item_id": item_id, "event_id": None, "source_id": source_id,
             "missing_claim_or_field": gaps,
             "requested_source_role": source.role if source else None,
+            "domain": domain, "priority_components": components,
             "expected_resolution": "read_article_body_and_recheck_structure",
             "cost_bound": {"http_attempts": 1, "browser_attempts": 1, "model_calls": 0},
-        })
-        total += 1
+        }
+        candidates.append((sum(components.values()), position, action))
+    total = len(candidates)
     actions = []
-    for position in range(max((len(rows) for rows in grouped.values()), default=0)):
-        for rows in grouped.values():
-            if position < len(rows) and len(actions) < max(0, limit):
-                actions.append(rows[position])
+    selected_sources: Counter = Counter()
+    selected_domains: Counter = Counter()
+    while candidates and len(actions) < max(0, limit):
+        best = max(range(len(candidates)), key=lambda i: (
+            candidates[i][0] - 4 * selected_sources[candidates[i][2]["source_id"]]
+            - 2 * selected_domains[candidates[i][2]["domain"]], -candidates[i][1],
+        ))
+        score, _, action = candidates.pop(best)
+        action["priority_components"].update(
+            source_diversity=-4 * selected_sources[action["source_id"]],
+            domain_diversity=-2 * selected_domains[action["domain"]],
+        )
+        action["priority"] = round(sum(action["priority_components"].values()), 3)
+        actions.append(action)
+        selected_sources[action["source_id"]] += 1
+        selected_domains[action["domain"]] += 1
     return {
         "schema_version": "1.0", "scope": "article_body_only",
-        "selection_basis": "source_round_robin_preserving_candidate_order",
+        "selection_basis": "importance_observed_gaps_existing_evidence_cost_and_diversity",
         "requires_editorial_selection": True, "max_items": max(0, limit), "actions": actions,
         "deferred_count": total - len(actions), "blocked_counts": dict(blocked),
         "stopped_counts": dict(stopped),

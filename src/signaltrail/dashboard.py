@@ -1,14 +1,18 @@
 from __future__ import annotations
 
 import json
+import mimetypes
 import threading
 import webbrowser
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
+from urllib.parse import parse_qs, unquote, urlsplit
 
 from .config import AppConfig, project_root
+from .edition_reader import edition_artifact_path, list_editions, read_edition, read_edition_event
+from .events import get_event, get_follows, list_events, set_follow
 from .monitor import refresh_monitor
 
 _CONTENT_TYPES = {
@@ -17,6 +21,24 @@ _CONTENT_TYPES = {
     ".js": "text/javascript; charset=utf-8",
     ".json": "application/json; charset=utf-8",
 }
+
+
+class PlatformHTTPServer(ThreadingHTTPServer):
+    """处理：在关闭新闻服务时一并停止研究工作线程。
+    输入：现有HTTP监听地址、处理器及可选研究服务。
+    输出：保留标准HTTP服务器接口，关闭时释放研究宿主进程。
+    """
+
+    research_service: Any = None
+
+    def server_close(self) -> None:
+        """处理：释放监听端口并通知研究服务停止后台任务。
+        输入：当前服务器绑定的研究服务。
+        输出：HTTP与研究资源共同结束，页面退出不遗留宿主进程。
+        """
+        super().server_close()
+        if self.research_service is not None:
+            self.research_service.close()
 
 
 def _asset_dir() -> Path:
@@ -34,9 +56,7 @@ def _json_bytes(payload: object) -> bytes:
     - ``payload``：上游传入的结构化对象；函数只读取处理说明列出的受支持字段。
     输出：受大小边界约束的字节内容，可直接写入文件或 HTTP 响应。
     """
-    return json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode(
-        "utf-8"
-    )
+    return json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
 
 
 def _handler_factory(
@@ -44,6 +64,7 @@ def _handler_factory(
     assets: Path,
     *,
     quiet: bool,
+    research_service: Any = None,
 ) -> type[BaseHTTPRequestHandler]:
     """处理：创建绑定数据目录与配置的本地监控 HTTP 处理器。
     输入：
@@ -53,6 +74,7 @@ def _handler_factory(
     输出：封装“创建绑定数据目录与配置的本地监控 HTTP 处理器”业务结果的 ``type[BaseHTTPRequestHan
       dler]`` 对象；调用方据此继续相邻阶段或识别无结果状态。
     """
+
     class MonitorHandler(BaseHTTPRequestHandler):
         """处理：路由本地监控的静态资产、快照、健康状态和刷新请求。
         输入：
@@ -60,6 +82,7 @@ def _handler_factory(
           通过类成员承担“路由本地监控的静态资产、快照、健康状态和刷新请求”职责。
         输出：构造后的 ``MonitorHandler`` 实例或枚举定义；其字段和方法共同承担上述职责。
         """
+
         server_version = "DailyIntelligenceMonitor/2.0"
 
         def _send(
@@ -119,9 +142,7 @@ def _handler_factory(
                 resolved = path.resolve(strict=True)
                 resolved.relative_to(assets.resolve())
             except (FileNotFoundError, ValueError):
-                self._send_json(
-                    {"error": "not_found"}, HTTPStatus.NOT_FOUND
-                )
+                self._send_json({"error": "not_found"}, HTTPStatus.NOT_FOUND)
                 return
             self._send(
                 resolved.read_bytes(),
@@ -139,6 +160,51 @@ def _handler_factory(
             """
             self.do_GET()
 
+        def _serve_artifact(self, relative: str) -> None:
+            """处理：流式读取已有日报及其本地媒体文件。
+            输入：相对资料根的产物路径；仅开放报告与媒体目录。
+            输出：可阅读或播放的原文件，视频支持字节区间请求。
+            """
+            path = edition_artifact_path(data_dir, unquote(relative))
+            if path is None:
+                self._send_json({"error": "artifact_not_found"}, HTTPStatus.NOT_FOUND)
+                return
+            size = path.stat().st_size
+            start, end = 0, size - 1
+            requested = self.headers.get("Range", "")
+            if requested.startswith("bytes="):
+                left, _, right = requested[6:].partition("-")
+                start = int(left) if left.isdigit() else 0
+                end = min(int(right), size - 1) if right.isdigit() else size - 1
+                if not left and right.isdigit():
+                    start, end = max(0, size - int(right)), size - 1
+            if start > end or start >= size:
+                self.send_response(HTTPStatus.REQUESTED_RANGE_NOT_SATISFIABLE)
+                self.send_header("Content-Range", f"bytes */{size}")
+                self.end_headers()
+                return
+            self.send_response(HTTPStatus.PARTIAL_CONTENT if requested else HTTPStatus.OK)
+            self.send_header(
+                "Content-Type", mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+            )
+            self.send_header("Content-Length", str(end - start + 1))
+            self.send_header("Accept-Ranges", "bytes")
+            if requested:
+                self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
+            self.send_header(
+                "Content-Security-Policy",
+                "default-src 'self' https: data:; style-src 'self' 'unsafe-inline' https:; "
+                "script-src 'self' 'unsafe-inline'; frame-ancestors 'self'; object-src 'none'",
+            )
+            self.end_headers()
+            if self.command != "HEAD":
+                with path.open("rb") as stream:
+                    stream.seek(start)
+                    remaining = end - start + 1
+                    while remaining and (chunk := stream.read(min(1024 * 1024, remaining))):
+                        self.wfile.write(chunk)
+                        remaining -= len(chunk)
+
         def do_GET(self) -> None:  # noqa: N802
             """处理：按受控路由返回监控快照、健康状态或白名单内的静态资源。
             输入：
@@ -149,7 +215,21 @@ def _handler_factory(
               副作用限于该处理声明的受控对象或产物。
             """
             route = self.path.split("?", 1)[0]
-            if route in {"/", "/index.html"}:
+            if route.startswith("/files/"):
+                self._serve_artifact(route.removeprefix("/files/"))
+                return
+            if route == "/api/editions":
+                self._send_json(list_editions(data_dir))
+                return
+            if route == "/api/edition":
+                query = parse_qs(urlsplit(self.path).query)
+                filters = {
+                    key: query.get(key, [""])[0]
+                    for key in ("date", "edition", "revision", "language")
+                }
+                self._send_json(read_edition(data_dir, **filters))
+                return
+            if route in {"/", "/index.html"} or route.startswith("/events/"):
                 self._serve_file(assets / "index.html")
                 return
             if route == "/app.js":
@@ -157,6 +237,58 @@ def _handler_factory(
                 return
             if route == "/styles.css":
                 self._serve_file(assets / "styles.css")
+                return
+            if route == "/api/events":
+                query = parse_qs(urlsplit(self.path).query)
+                filters = {key: query.get(key, [""])[0] for key in ("category", "source", "q")}
+                try:
+                    limit = int(query.get("limit", ["60"])[0])
+                    offset = int(query.get("offset", ["0"])[0])
+                except ValueError:
+                    self._send_json({"error": "invalid_pagination"}, HTTPStatus.BAD_REQUEST)
+                    return
+                self._send_json(
+                    list_events(
+                        data_dir,
+                        sort=query.get("sort", ["latest"])[0],
+                        following=query.get("following", [""])[0] == "1",
+                        **filters,
+                        limit=limit,
+                        offset=offset,
+                    )
+                )
+                return
+            if route.startswith("/api/research/"):
+                job = (
+                    research_service.get(unquote(route.removeprefix("/api/research/")))
+                    if research_service
+                    else None
+                )
+                self._send_json(
+                    {"job": job} if job else {"error": "research_not_found"},
+                    HTTPStatus.OK if job else HTTPStatus.NOT_FOUND,
+                )
+                return
+            if route.startswith("/api/events/"):
+                query = parse_qs(urlsplit(self.path).query)
+                if query.get("report_id"):
+                    detail = read_edition_event(
+                        data_dir,
+                        query["report_id"][0],
+                        query.get("report_event_id", [unquote(route.removeprefix("/api/events/"))])[
+                            0
+                        ],
+                        language=query.get("language", [""])[0],
+                    )
+                else:
+                    detail = get_event(data_dir, unquote(route.removeprefix("/api/events/")))
+                self._send_json(
+                    detail or {"error": "event_not_found"},
+                    HTTPStatus.OK if detail else HTTPStatus.NOT_FOUND,
+                )
+                return
+            if route == "/api/follows":
+                self._send_json(get_follows(data_dir))
                 return
             if route == "/api/snapshot":
                 snapshot = data_dir / "monitor" / "snapshot.json"
@@ -180,9 +312,91 @@ def _handler_factory(
                 self._send_json(payload)
                 return
             if route == "/api/health":
-                self._send_json({"status": "ok", "read_only": True})
+                self._send_json(
+                    {
+                        "status": "ok",
+                        "read_only": False,
+                        "research_available": research_service is not None,
+                    }
+                )
                 return
             self._send_json({"error": "not_found"}, HTTPStatus.NOT_FOUND)
+
+        def _discard_short_body(self) -> None:
+            """处理：拒绝跨源请求时限时消耗已发送的短正文，避免 Windows 关闭连接时复位。
+            输入：请求头声明的长度与当前连接；分块、超限和无效长度不读取。
+            输出：最多丢弃 8192 字节，正文不解析、不参与业务写入。
+            """
+            try:
+                length = int(self.headers.get("Content-Length", 0))
+            except ValueError:
+                return
+            if self.headers.get("Transfer-Encoding") or not 0 < length <= 8192:
+                return
+            timeout = self.connection.gettimeout()
+            self.connection.settimeout(0.25)
+            try:
+                self.rfile.read(length)
+            except OSError:
+                pass
+            finally:
+                self.connection.settimeout(timeout)
+
+        def do_POST(self) -> None:  # noqa: N802
+            """处理：接受同源页面的关注变更和事件研究问题。
+            输入：关注开关或事件问题与分析视角。
+            输出：保存后的关注列表或已排队研究任务。
+            """
+            origin = self.headers.get("Origin")
+            if (origin and urlsplit(origin).netloc != self.headers.get("Host")) or self.headers.get(
+                "Sec-Fetch-Site"
+            ) == "cross-site":
+                self._discard_short_body()
+                self._send_json({"error": "origin_not_allowed"}, HTTPStatus.FORBIDDEN)
+                return
+            route = urlsplit(self.path).path
+            research_event = (
+                unquote(route[len("/api/events/") : -len("/research")])
+                if route.startswith("/api/events/") and route.endswith("/research")
+                else None
+            )
+            if route != "/api/follows" and research_event is None:
+                self._send_json({"error": "not_found"}, HTTPStatus.NOT_FOUND)
+                return
+            try:
+                length = int(self.headers.get("Content-Length", 0))
+                if not 0 < length <= 8192:
+                    raise ValueError("请求大小不正确")
+                payload = json.loads(self.rfile.read(length))
+                if not isinstance(payload, dict):
+                    raise ValueError("请求必须为JSON对象")
+                if research_event is not None:
+                    if research_service is None:
+                        self._send_json(
+                            {"error": "research_unavailable"}, HTTPStatus.SERVICE_UNAVAILABLE
+                        )
+                        return
+                    if not isinstance(payload.get("question"), str):
+                        raise ValueError("研究问题必须为文本")
+                    job = research_service.submit(
+                        research_event,
+                        payload.get("question", ""),
+                        payload.get("domain"),
+                        language=payload.get("language", "zh-CN"),
+                    )
+                    self._send_json({"job": job}, HTTPStatus.ACCEPTED)
+                    return
+                if type(payload.get("following")) is not bool:
+                    raise ValueError("关注开关必须为布尔值")
+                result = set_follow(
+                    data_dir, payload.get("kind"), payload.get("target"), payload["following"]
+                )
+            except (ValueError, TypeError) as exc:
+                self._send_json(
+                    {"error": "invalid_request", "message": str(exc)}, HTTPStatus.BAD_REQUEST
+                )
+                return
+            self._send_json(result)
 
         def log_message(self, message_format: str, *args: Any) -> None:
             """处理：按监控服务的日志格式记录请求。
@@ -204,8 +418,9 @@ def create_monitor_server(
     port: int = 8765,
     *,
     quiet: bool = False,
+    research_service: Any = None,
 ) -> ThreadingHTTPServer:
-    """处理：创建只监听本地地址并绑定监控快照的线程式 HTTP 服务。
+    """处理：创建绑定新闻档案、关注与研究入口的 HTTP 服务。
     输入：
     - ``data_dir``：当前运行的唯一数据根；所有状态和版本化产物都必须位于其中。
     - ``host``：本地监控服务器绑定的主机地址；远程地址需要显式授权。
@@ -222,10 +437,14 @@ def create_monitor_server(
         raise FileNotFoundError(
             f"Monitor frontend assets are missing from {assets}: {', '.join(missing)}"
         )
-    return ThreadingHTTPServer(
+    server = PlatformHTTPServer(
         (host, port),
-        _handler_factory(data_dir.resolve(), assets, quiet=quiet),
+        _handler_factory(
+            data_dir.resolve(), assets, quiet=quiet, research_service=research_service
+        ),
     )
+    server.research_service = research_service
+    return server
 
 
 def _refresh_loop(
@@ -233,6 +452,8 @@ def _refresh_loop(
     config: AppConfig,
     data_dir: Path,
     refresh_minutes: int,
+    research_service: Any = None,
+    auto_research: bool = True,
 ) -> None:
     """处理：按固定间隔刷新监控快照，并保留上一份可用结果。
     输入：
@@ -243,13 +464,25 @@ def _refresh_loop(
     输出：不返回新数据；完成“按固定间隔刷新监控快照，并保留上一份可用结果”，
       副作用限于该处理声明的受控对象或产物。
     """
-    while not stop_event.wait(refresh_minutes * 60):
+    first = True
+    while not stop_event.is_set():
         try:
-            refresh_monitor(config, data_dir)
+            if (
+                first
+                and not (data_dir / "monitor" / "snapshot.json").exists()
+                or not first
+                and refresh_minutes
+            ):
+                refresh_monitor(config, data_dir)
+            if auto_research and research_service:
+                research_service.schedule_followed()
         except Exception:
             # 刷新失败时保留上一份可读快照；来源级错误继续写入 health.json，
             # 下一次成功刷新再清除连续失败状态。
-            continue
+            pass
+        first = False
+        if not refresh_minutes or stop_event.wait(refresh_minutes * 60):
+            break
 
 
 def serve_monitor(
@@ -261,6 +494,8 @@ def serve_monitor(
     open_browser: bool = False,
     allow_remote: bool = False,
     refresh_minutes: int = 0,
+    auto_research: bool = True,
+    research_command: str | None = None,
 ) -> None:
     """处理：启动本地监控服务、可选刷新线程并保持进程运行。
     输入：
@@ -281,17 +516,20 @@ def serve_monitor(
         )
     if refresh_minutes < 0:
         raise ValueError("--refresh-minutes must be zero or a positive integer")
-    server = create_monitor_server(data_dir, host, port)
+    from .platform_research import ResearchService
+
+    research_service = ResearchService(config, data_dir, worker_command=research_command)
+    server = create_monitor_server(data_dir, host, port, research_service=research_service)
     actual_host, actual_port = server.server_address[:2]
     display_host = "127.0.0.1" if actual_host in {"0.0.0.0", "::"} else actual_host
     url = f"http://{display_host}:{actual_port}/"
-    print(f"本地情报台已启动：{url}")
+    print(f"SignalTrail 新闻情报平台已启动：{url}")
     stop_event = threading.Event()
     refresh_thread = None
-    if refresh_minutes:
+    if refresh_minutes > 0:
         refresh_thread = threading.Thread(
             target=_refresh_loop,
-            args=(stop_event, config, data_dir, refresh_minutes),
+            args=(stop_event, config, data_dir, refresh_minutes, research_service, auto_research),
             name="daily-intelligence-monitor-refresh",
             daemon=True,
         )

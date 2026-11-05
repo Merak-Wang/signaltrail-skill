@@ -69,6 +69,32 @@ def test_longer_web_body_replaces_feed_excerpt_with_equal_structural_gaps(tmp_pa
     assert current["content_path"] == new_path
 
 
+def test_legacy_navigation_feed_does_not_override_actual_rate_limit(monkeypatch, tmp_path):
+    config = load_config()
+    item = _item()
+    body_path = tmp_path / "legacy.md"
+    body_path.write_text('---\ntitle: "Legacy original title"\n---\n\nComments\n', encoding="utf-8")
+    feed_path = write_json(tmp_path / "legacy-feed.json", {"text": "Comments"})
+    item.update(content_status="partial", content_path=str(body_path))
+    item["metadata"].update(content_acquisition="feed", feed_content_path=str(feed_path))
+
+    async def rate_limited(targets, *_args):
+        for target in targets:
+            target["content_status"] = "verification_required"
+            target["metadata"].update(content_http_status=429)
+        return []
+
+    monkeypatch.setattr("signaltrail.content._run_http_extraction", rate_limited)
+    result = asyncio.run(_extract_pipeline([item], config, tmp_path, False,
+                                           tmp_path / "profile", None))
+    assert result["successful"] == 0
+    assert item["content_status"] == "verification_required"
+    assert item["metadata"]["content_http_status"] == 429
+    assert item["metadata"]["content_completion"]["stop_reason"] == "rate_limited"
+    assert "content_path" not in item
+    assert body_path.exists() and feed_path.exists()
+
+
 def _item():
     return {"item_id": "story", "source_id": "bbc_world", "title": "Service update",
             "url": "https://www.bbc.com/news/articles/story", "metadata": {}}
@@ -173,7 +199,10 @@ def test_provider_only_receives_cleaned_html_and_does_not_prove_completeness(mon
         "<p hidden>HIDDEN</p><script>SECRET_SCRIPT</script></body>", "html.parser"), [],
         fallback="trafilatura", truncated=True)
     assert result.status == "partial"
-    assert result.quality["extractor"] == "trafilatura"
+    assert result.quality["extractor"] == "builtin"
+    assert result.quality["fallback"]["version"] == "test"
+    assert result.quality["fallback"]["status"] == "not_selected"
+    assert result.quality["fallback"]["reason"] == "no_observed_gain"
     assert result.quality["response_truncated"] is True
 
 
@@ -187,8 +216,9 @@ def test_real_trafilatura_adapter_is_local_and_returns_audited_candidate():
     result = extract_with_fallback(BeautifulSoup(markup, "html.parser"), [],
                                    fallback="trafilatura")
     assert result.status == "partial"
-    assert result.quality["fallback"]["status"] == "selected"
-    assert result.quality["extractor_version"]
+    assert result.quality["fallback"]["status"] == "not_selected"
+    assert result.quality["fallback"]["reason"] == "no_observed_gain"
+    assert result.quality["fallback"]["version"]
     assert len(result.blocks) >= 4
 
 
@@ -264,6 +294,7 @@ def test_partial_body_escalates_once_and_browser_failure_preserves_evidence(
     monkeypatch, tmp_path, browser_outcome,
 ):
     config = load_config()
+    config.collection.browser_extractor = "playwright"
     item = _item()
     original = "<body><p>The service remains available to current customers.</p></body>"
     _apply(item, original, config, tmp_path)

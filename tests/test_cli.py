@@ -17,6 +17,29 @@ from signaltrail.workflow import (
 )
 
 
+def test_selection_summary_uses_saved_window_and_bounded_recommendations(tmp_path):
+    from signaltrail.commands.common import _selection_summary
+
+    index = write_json(tmp_path / "index.json", {"sources": [
+        {"source_id": "a", "status": "success"},
+        {"source_id": "b", "status": "verification_required"},
+    ]})
+    coordinator = write_json(tmp_path / "coordinator.json", {
+        "candidate_items": [{"item_id": "one", "title": "标题", "description": "证据"}],
+        "enrichment_plan": {"actions": [{"item_id": "one", "source_id": "a",
+                                          "priority": 5}] * 15},
+    })
+    run = {"collection_window": {"start": "start", "end": "end"}, "artifacts": {
+        "index_path": str(index), "coordinator_path": str(coordinator)}}
+    summary = _selection_summary(run)
+    assert summary["collection_window"] == run["collection_window"]
+    assert summary["source_count"] == 2 and summary["problem_source_count"] == 1
+    assert summary["problem_sources"] == [{"source_id": "b", "status": "verification_required"}]
+    assert len(summary["suggestions"]) == 12
+    assert summary["suggestions"][0]["title"] == "标题"
+    assert _selection_summary({"artifacts": {}}) == {}
+
+
 @pytest.mark.parametrize("encoding", ["utf-8", "gbk"])
 def test_saved_json_prints_losslessly_with_terminal_encoding(tmp_path, monkeypatch, encoding):
     payload = {"status": "accepted", "summary": "面积 2 m²，新闻已保存 📰"}
@@ -92,6 +115,29 @@ def test_slides_check_only_exit_code_tracks_invalid_batches(
 
 def test_slides_cli_reports_missing_plan(cli_data_root, capsys):
     assert main(["slides", "status", "--plan", str(cli_data_root / "missing.json")]) == 1
+    assert json.loads(capsys.readouterr().out)["status"] == "rejected"
+
+
+def test_slides_input_preserves_complete_bound_model_input(cli_data_root, capsys):
+    from signaltrail.narrative_store import save_artifact
+
+    model_input = {
+        "language": "zh-CN", "style": "完整讲解风格。",
+        "output_schema": {"type": "object"},
+        "news": [{"event_id": "one", "evidence": [{"body": "原文首段。\n\n原文末段。"}]}],
+    }
+    payload = {"batch_id": 1, "model_input": model_input,
+               "budget": {"max_input_tokens": 64000}}
+    packet = save_artifact(cli_data_root, "input-test", "slides-packet-1", payload, {})
+    original = packet.read_bytes()
+    assert main(["slides", "input", "--packet", str(packet)]) == 0
+    output = capsys.readouterr().out
+    assert json.loads(output) == model_input
+    assert len(output.splitlines()) == 1
+    assert packet.read_bytes() == original
+
+    wrong = save_artifact(cli_data_root, "input-test", "slides-plan", payload, {})
+    assert main(["slides", "input", "--packet", str(wrong)]) == 1
     assert json.loads(capsys.readouterr().out)["status"] == "rejected"
 
 
@@ -268,6 +314,8 @@ def test_monitor_server_aliases_forward_the_same_options(cli_data_root, monkeypa
         "open_browser": True,
         "allow_remote": False,
         "refresh_minutes": 30,
+        "auto_research": True,
+        "research_command": None,
     }
 
 

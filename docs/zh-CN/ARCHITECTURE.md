@@ -1,6 +1,6 @@
 # 架构
 
-**状态：** 已验证 · **负责人：** 仓库维护者 · **最后验证：** 2026-10-30
+**状态：** 已验证 · **负责人：** 仓库维护者 · **最后验证：** 2026-11-02
 
 本文说明 SignalTrail 的代码分工。[运行契约](../../references/system-design.md)解释数据字段
 和恢复规则，[agent-instructions.md](agent-instructions.md)说明修改仓库时的约束。[English](../../ARCHITECTURE.md)
@@ -23,7 +23,7 @@
 | `references/` | 按当前流程选读的运行细则 |
 | `docs/`、`docs/zh-CN/` | 英文工程记录及中文镜像，索引分别列出当前说明与历史记录 |
 | `tests/`、`evals/` | 行为测试及夹具、skill 触发案例 |
-| `examples/` | 历史演示和示例 JSON；测试也读取 `sample_report.json` |
+| `examples/` | 当前与历史公开样例；测试也读取 `sample_report.json` |
 | `.github/workflows/ci.yml` | 仓库 CI 检查 |
 
 发布包包含 `scripts/install.ps1`、`install.sh`、`build_hermes_skill.py` 和 `measure_codex_turn.py`。
@@ -37,44 +37,37 @@
 这些目录与 `.venv/`、工具缓存、编辑器及智能体本地状态均不进入源码发布包。
 保留当前交付、音色资源、恢复备份和必要审阅证据，将确认过时的构建副本和一次性探针移入回收站。
 
-## 报告流程
+## 数据流程
 
 ```text
-公开来源 → 索引 → 有界证据包 → 模型草稿
-→ Python 编译与校验 → 版本化 JSON + Markdown → HTML
-→ 可重试的 PDF、可选 Notion、用户明确要求的独立评估
+公开来源 → 规范索引 → 证据包 → 模型草稿
+→ Python 编译与校验 → 版本化 JSON + Markdown → HTML/PDF
+                                           → 图文幻灯片 → 可选 MP4
 ```
 
-Python 负责身份、访问状态、修订分配、校验和持久化。模型只在指定证据范围内选择和写作。
-外部内容即使出现在数据包中也仍是数据。模型草稿通过校验后才能成为报告。
+Python 负责采集、身份、访问状态、修订和持久化。模型在数据包声明的证据范围内选题和写作。
+证据读取优先使用网页正文，其次是已保存的 Feed 内容，最后是公开摘要；Feed 内容保留为来源提供的部分证据。
 
-监控单独运行：RSS/Atom 和静态 HTML → 规范条目 → 词汇聚类 → 快照、来源健康和 Feed 缓存。
-监控不调用模型；监控失败时正式采集仍可继续。
+默认 `daily` 运行冻结此前 24 小时的采集窗口，并复用同一本地日期的运行。定稿保存日报并准备图文计划；
+整期交付要求全部讲稿批次通过并完成渲染。`edition-status --run RUN.json --require-complete`
+独立于报告状态检查待办。见[使用指南](usage.md)。
 
-日报定稿会根据已保存日报及其索引准备新闻幻灯片。默认日报无论用量是否计量，都必须完成所有讲稿批次并渲染。报告保存状态与整期交付完成状态分开；使用 `edition-status --run RUN.json --require-complete` 动态验收。图文流候选覆盖整份已保存日报的精选事件与简报；同一原文合并并保留来源引用，再按模型已生成的重要性分数排序，
-默认选择最重要的 30 条，可用 `--max-news` 或 `--slides-max-news` 设置其他正整数，不按来源分配名额。
-未知发布日期保持未知，无图不影响入选。讲解写作分成有界批次并接收后，在线渲染会在配置媒体预算内
-读取公开原文页，补充页面提供的图片候选和原始 caption。有放映时，日报 HTML 在屏幕端以演示
-替代摘要并保留独立打开入口，打印时恢复摘要。日报 JSON/Markdown 保持不变。更新图片可复用
-已接受讲稿而不增加模型调用；两种写作模式均把索引关联的完整可用正文及提取状态、质量放入模型输入，不为预算截断正文，而以拆批与显式输入上限控制规模；离线渲染
-复用已有 deck 和本地图片，不访问网络。
-详见[新闻幻灯片工作流](news-slides.md)。
+图文流合并同一原文并保留来源引用，按模型生成的重要性默认选择前 50 条；
+`--max-news`／`--slides-max-news` 调整数量。准备阶段先补取选中新闻正文，再把完整可用正文放入有界写作包。
+输入未变时可复用已接受讲稿。独立 `slides prepare --index` 路径根据模型选定的条目 ID 直接制作图文流，
+省去日报写作。渲染附加公开网页图片及原始图注；离线渲染复用本地图片。见[新闻幻灯片](news-slides.md)。
 
-默认版本为 `daily`，每个本地日期复用一次运行，并冻结前 24 小时的采集窗口。
-模型基于完整讲解撰写简明 `video_tldr`，视频朗读标题和短稿。`slide_video` 读取已保存的 deck，
-调用本地语音程序，测量逐页音频，以同一时间轴驱动图片轮播和 MP4 编码。
-`video_runtime` 与 `qwen_runtime` 按操作系统和架构准备原生 Qwen3-TTS 1.7B Q8。
-新数据根使用 `assets/tts/reference/` 随包默认声线；用户可参照 `assets/tts/profile.example.json` 注册自定义录音和逐字文本，已有本机注册声线可继续使用。harness 优先使用通过合成探针的 GPU，
-不可用时回落 CPU，并记录实际后端。合成阶段复用本地证据、图片和音频。
-Qwen 按有界意群合成标题与短稿，匹配的原生音频缓存仍可复用；整页音频缓存跳过重复 PCM 拼接。
-视频截取原图文 HTML 画面，保留原文字、图片和分栏，仅在视频截图时将整个网页缩放至 140%，文字和图片一起放大；
-视频按原页序和每页原有图片顺序自动切换，音频时长决定页面停留时间。
-单页视频按原 HTML、页序、时长及渲染参数缓存；包含外部图片的页面重新渲染。
-阶段诊断与独立的音频、画面缓存计数反映实际执行量。
+视频导出读取已保存的 deck，并以 140% 整页缩放截取原 HTML。本地 Qwen3-TTS 1.7B Q8 朗读每页标题和
+`video_tldr`，实测音频决定页面停留及图片轮播。运行时自动准备原生程序和模型，默认使用随包参考声线，
+优先采用通过合成探针的 GPU，不可用时回落 CPU。音频和单页画面缓存用于后续导出。
 
-独立索引图文路径使用采集、正文提取与 `slides prepare --index`，无需日报写作或分析。宿主模型先判断索引候选的重要性并按序选择条目，再通过重复 `--item-id` 传入；未指定 ID 时仍支持来源顺序兼容路径。模型直接写目标语标题、摘要与讲稿，再生成独立演示，不更新日报投影。跨修订输入未变的已接受写作可复用，待写数与复用数分别报告。
+监控独立采集 RSS/Atom 与静态 HTML，聚类条目并记录来源健康，全程不调用模型。
+完整采集默认可从监控快照补充最多 30 条发现简报。首页使用 `assets/monitor/`。
+日报、事件及异步研究 API 提供已保存版本与 `platform/events.sqlite` 长期事件档案；
+研究任务由已配置宿主调用模型。见[采集与研究接口](platform.md)。
 
-默认研判由一个新上下文作者完成。并行研判可缩短写作等待，但会跨阶段重复共享输入，仅作为显式可选路径：`prepare-analysis --parallel` 冻结选题，`analysis-stage --stage domains` 准备三个独立领域包，`--stage synthesis` 准备综合包，`--stage assemble` 生成供 `assemble-authoring` 使用的原分析结果。每个 worker 仅以 packet 和绝对 CLI 启动新上下文。全局 `--compact` 压缩标准输出，持久化文件保持完整。
+研判默认由一个新上下文作者完成。可选 `prepare-analysis --parallel` 路径依次处理选题、
+三个领域、综合和组装，各阶段会重复读取共享输入。全局 `--compact` 压缩命令输出，保存文件保留完整内容。
 
 ## 代码地图
 
@@ -84,17 +77,17 @@ Qwen 按有界意群合成标题与短稿，匹配的原生音频缓存仍可复
 | --- | --- | --- |
 | 类型与 I/O | `models`、`storage`、`utils`、`runtime`、`access`、`localization`、`taxonomy` | 路径、枚举、原子写入、数据根绑定 |
 | 配置 | `config` | 来源、限额和运行选项 |
-| 采集 | `adapters`、`browser_collection`、`feeds`、`feed_content`、`prefetch`、`collector`、`clustering` | 抓取、规范化、保留来源状态和顺序 |
+| 采集 | `adapters`、`browser_collection`、`feeds`、`feed_content`、`prefetch`、`collector`、`clustering`、`article_time` | 抓取、保留精度的日期规范化、首次观测与榜单信号、来源状态和顺序 |
 | 采集诊断 | `collection_diagnostics` | 已配置来源覆盖、有界正文缺口建议和本地产物完整性 |
-| 证据 | `content`、`content_extraction`、`content_images`、`media`、`image_policy`、`monitor` | 结构化正文块、抽取质量、含上下文的配图候选、快照和证据关联 |
-| 写作 | `context`、`authoring`、`analysis_parallel`、`semantics`、`state` | 有界数据包、已接收批次、可选并行研判、连续状态和缓存 |
+| 证据 | `content`、`content_extraction`、`pdf_content`、`content_images`、`media`、`image_policy`、`monitor` | 结构化正文块、有界文本 PDF 证据、抽取质量、含上下文的配图候选、快照和证据关联 |
+| 写作 | `context`、`brief_selection`、`authoring`、`analysis_parallel`、`semantics`、`state` | 规范 URL 唯一简报名额、本源尾部补位与实际缺额、有界数据包、已接收批次、可选并行研判、连续状态和缓存 |
 | 报告契约 | `reporting` | 编译草稿、补齐证据、校验 Schema 及跨字段规则 |
 | 报告存储 | `reports` | 保存报告和评估、渲染 Markdown、更新派生状态 |
 | 新闻图文流 | `news_slides`、`slide_reuse`、`slide_images`、`slide_renderer` | 日报或独立索引的有界写作、已接受讲稿复用、原文图片补充与独立动态 HTML 放映 |
 | 配音视频 | `slide_video`、`voice_synthesis`、`speech_text`、`qwen_runtime`、`video_runtime` | 朗读规范化、本地 Qwen3 TTS、音画共用时间轴、原生工具准备和 MP4 导出 |
 | 实验讲解 | `narrative`、`narrative_contracts`、`narrative_store`、`narrative_verification`、`story_stream` | 不可变日报子产物、语言审核和解释图；实时新闻准入保持阻断 |
 | 实验研究 | `research`、`research_contracts`、`research_delivery` | 冻结正文块、本地问题检索、研究底稿和仅供预览的日报晚绑定；当前准入仍阻断 |
-| 交付 | `local_output`、`notion`、`dashboard` | HTML/PDF、远程副本和只读监控界面 |
+| 交付 | `local_output`、`notion`、`dashboard` | HTML/PDF、远程副本和原有采集监控、保留的日报／事件 API 与异步研究后端 |
 | 工作流 | `workflow` | 检查点、期限、恢复和评估调度 |
 | 用量与预算 | `llm_usage/`、`llm_budget`、`evaluation` | 不可变用量事件、派发预留和评估数据包 |
 | 宿主接入 | `hosts/`、`hermes_runner`、`usage_cli` | 可选宿主计量、启动器、Hook 和持久日志导入 |

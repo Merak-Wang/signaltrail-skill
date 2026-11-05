@@ -24,7 +24,7 @@ def _run(tmp_path: Path, *, batches=(1,), tail="completed", fail=False):
     index = write_json(data / "indexes" / "i1.json", {})
     plan = save_artifact(data, "status-slides", "slides-plan", {
         "selection_policy": "report-admitted-importance-v1",
-        "budget": {"max_news": 30},
+        "budget": {"max_news": 50},
     }, {"report": report, "index": index})
     html = report.with_name("morning-r1-slides.html")
     run = {

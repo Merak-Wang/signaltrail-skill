@@ -388,6 +388,8 @@ def test_picture_sources_choose_highest_effective_pixel_width_first(tmp_path):
     assert details[0]["url"] == "https://www.bbc.com/img/master.jpg?width=700&dpr=2"
     assert details[0]["variant"] == 0
     assert details[0]["caption"] == "Leaders arrive for the summit."
+    assert details[0]["pixel_density"] == 1
+    assert details[0]["responsive_group"].endswith("#image-0-source-1")
 
 
 def test_article_images_exclude_games_promotions_and_recommended_cards(tmp_path):
@@ -1059,3 +1061,131 @@ def test_enrichment_is_parallel_across_domains_and_serial_within_domain(
 
     assert maximum_active == 2
     assert maximum_by_domain["a.example"] == 1
+
+
+def test_explicit_table_header_semantics_and_article_cta_cleanup():
+    soup = BeautifulSoup(
+        '<div id="article"><p>The committee maintained the interest rate today.</p>'
+        '<span>Choose CNBC as your preferred source on Google and never miss news.</span>'
+        '<table><thead><tr><td>Period</td><td>Profit</td></tr></thead>'
+        '<tbody><tr><td>2026</td><td>10</td></tr></tbody></table></div>', "html.parser",
+    )
+    result = extract_document(soup, [])
+    assert result.status == "full_text"
+    assert "Choose CNBC" not in result.text
+    table = next(block for block in result.blocks if block["type"] == "table")
+    assert table["rows"][0][1]["header"] is True
+    assert table["rows"][1][1]["text"] == "10"
+
+
+def test_http_pdf_preserves_partial_text_with_page_provenance(tmp_path):
+    from io import BytesIO
+
+    from reportlab.pdfgen.canvas import Canvas
+
+    stream = BytesIO()
+    canvas = Canvas(stream)
+    for text in ("First page evidence: revenue rose 12 percent.",
+                 "Second page qualification: adjusted for exchange rates."):
+        canvas.drawString(40, 750, text)
+        canvas.showPage()
+    canvas.save()
+    item = _item()
+    transport = httpx.MockTransport(lambda _: httpx.Response(
+        200, content=stream.getvalue(), headers={"content-type": "application/pdf"},
+    ))
+    assert asyncio.run(_run_http_extraction(
+        [item], load_config(), tmp_path, transport=transport,
+    )) == []
+    assert item["content_status"] == "partial"
+    blocks = read_json(Path(item["metadata"]["content_blocks_path"]))
+    assert [block["page_number"] for block in blocks["blocks"]] == [1, 2]
+    assert "exchange rates" in blocks["blocks"][1]["text"]
+    assert blocks["source_metadata"]["url"] == item["url"]
+    assert blocks["quality"]["completeness_basis"] == "pdf_text_only"
+
+
+def test_empty_pdf_does_not_replace_existing_feed_evidence(tmp_path, monkeypatch):
+    from io import BytesIO
+
+    from pypdf import PdfWriter
+
+    from signaltrail import content
+
+    stream = BytesIO()
+    writer = PdfWriter()
+    writer.add_blank_page(width=600, height=800)
+    writer.write(stream)
+    item = _item()
+    feed = tmp_path / "feed.md"
+    feed.write_text("The source supplied this partial Feed evidence.", encoding="utf-8")
+    item.update(content_path=str(feed), content_status="partial", content_characters=47)
+    item["metadata"] = {"content_acquisition": "feed"}
+
+    async def fetch(items, config, data_dir):
+        transport = httpx.MockTransport(lambda _: httpx.Response(
+            200, content=stream.getvalue(), headers={"content-type": "application/pdf"},
+        ))
+        return await _run_http_extraction(items, config, data_dir, transport=transport)
+
+    monkeypatch.setattr(content, "_run_http_extraction", fetch)
+    asyncio.run(_extract_pipeline(
+        [item], load_config(), tmp_path, False, tmp_path / "profile", None,
+    ))
+    assert item["content_status"] == "partial"
+    assert item["content_path"] == str(feed)
+    assert item["metadata"]["content_acquisition"] == "feed"
+    assert item["metadata"]["content_attempts"][0]["status"] == "metadata_only"
+
+
+def test_fallback_preserves_liveblog_body_instead_of_short_summary(monkeypatch):
+    from signaltrail.content_extraction import extract_with_fallback
+
+    paragraphs = [f"Update {i}: diplomats reported changing terms and important conditions. " * 6
+                  for i in range(12)]
+    markup = "<main>" + "".join(f"<p>{text}</p>" for text in paragraphs) + "</main>"
+    monkeypatch.setattr("trafilatura.extract", lambda *args, **kwargs:
+                        f"<main><p>{paragraphs[0]}</p></main>")
+    result = extract_with_fallback(BeautifulSoup(markup, "html.parser"), [], fallback="trafilatura")
+    assert all(text.strip() in result.text for text in paragraphs)
+    assert result.quality["fallback"]["reason"] == "body_blocks_lost"
+    assert result.quality["fallback"]["body_block_retention"] < 0.1
+
+
+def test_fallback_can_add_real_body_to_broad_page(monkeypatch):
+    from signaltrail.content_extraction import extract_with_fallback
+
+    first = "The release specifies a phased rollout and the initial eligible markets."
+    added = "Commercial access starts next month, with exclusions for regulated deployments."
+    monkeypatch.setattr("trafilatura.extract", lambda *args, **kwargs:
+                        f"<main><p>{first}</p><p>{added}</p></main>")
+    result = extract_with_fallback(
+        BeautifulSoup(f"<main><p>{first}</p></main>", "html.parser"), [], fallback="trafilatura",
+    )
+    assert added in result.text
+    assert result.status == "partial"
+    assert result.quality["extractor"] == "trafilatura"
+    assert result.quality["fallback"]["body_block_retention"] == 1
+
+
+@pytest.mark.parametrize("installed,headed,expected", [
+    (True, False, "crawl4ai"), (False, False, "playwright"), (True, True, "playwright"),
+])
+def test_auto_browser_backend_uses_sdk_only_for_headless_dynamic_pages(
+    monkeypatch, installed, headed, expected,
+):
+    from signaltrail import content
+
+    calls = []
+
+    def load(name):
+        calls.append(name)
+        if not installed:
+            raise ImportError(name)
+        return object()
+
+    monkeypatch.setattr(content, "import_module", load)
+    assert content._resolve_browser_extractor("auto", headed) == expected
+    assert calls == ([] if headed else ["crawl4ai"])
+    assert content._resolve_browser_extractor("playwright", False) == "playwright"
+    assert content._resolve_browser_extractor("crawl4ai", True) == "crawl4ai"

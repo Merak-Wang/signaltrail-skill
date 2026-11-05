@@ -546,3 +546,63 @@ def test_rewritten_semantics_return_to_pending_until_re_evaluated(tmp_path: Path
     entry = load_semantic_cache(data_dir)[_item()["item_id"]]
     assert entry["state"] == "pending"
     assert entry["report_id"] == "daily-rewritten"
+
+def test_feed_tail_change_invalidates_cache_while_article_digest_takes_priority(tmp_path):
+    from signaltrail.feed_content import save_feed_content
+
+    item = _item("Shared beginning. " * 40)
+    prefix = item["description"][:600]
+    item["description"] = prefix
+    record = {"text": prefix + " Tail A", "blocks": [], "source_field": "encoded"}
+    item["metadata"].update(save_feed_content(
+        record, tmp_path, item["source_id"], item["item_id"], item["url"], "https://bbc.example/rss",
+    ))
+    report_id = "feed-evidence-cache"
+    update_semantic_cache_from_report({
+        "report_id": report_id, "generated_at": "2026-09-12T06:00:00+08:00",
+        "sections": [{"briefs": [_brief()]}],
+    }, {"items": [item]}, tmp_path)
+    _approve(report_id, tmp_path)
+    cache = load_semantic_cache(tmp_path)
+    assert reusable_semantic_brief(item, cache) is not None
+    before = deepcopy(item)
+    record["text"] = prefix + " Tail B"
+    item["metadata"].update(save_feed_content(
+        record, tmp_path, item["source_id"], item["item_id"], item["url"], "https://bbc.example/rss",
+    ))
+    assert item["description"] == before["description"]
+    assert semantic_fingerprint(item) != semantic_fingerprint(before)
+    assert reusable_semantic_brief(item, cache) is None
+    for candidate in (item, before):
+        candidate["metadata"]["content_text_sha256"] = sha256(b"same verified article").hexdigest()
+    assert semantic_fingerprint(item) == semantic_fingerprint(before)
+
+
+@pytest.mark.parametrize("published,signal", [
+    ("2026-11-02T05:00:00+08:00", {"discovery_signal": "rank_rise"}),
+    ("2026-11-02T05:00:00+08:00", {"discovery_signal": "reappeared"}),
+    ("2026-11-02T05:00:00+08:00", {"suggested_status": "WATCH"}),
+    ("2026-11-02", {"published_precision": "date"}),
+    (None, {}),
+])
+def test_watch_signals_survive_cached_fields_and_direct_model_drafts(published, signal):
+    from signaltrail.semantics import run_relative_brief_fields
+
+    item = {"item_id": "paper", "source_id": "research", "source_name": "Research",
+            "title": "A research paper returns to the ranking", "url": "https://example.org/paper",
+            "module": "technology", "category": "papers", "published_at": published,
+            "metadata": signal}
+    assert run_relative_brief_fields(item, "2026-11-02")["status"] == "WATCH"
+    flat = {**item, **signal, "metadata": {}}
+    assert run_relative_brief_fields(flat, "2026-11-02")["status"] == "WATCH"
+    for model_status in ("NEW", "UPD"):
+        report = {"schema_version": "2.0", "language": "en", "analyses": [], "sections": [
+            {"id": "technology.papers", "items": [], "briefs": [
+                {"item_id": "paper", "tldr": "The paper investigates a research question.",
+                 "importance": 80, "status": model_status}]}]}
+        index = {"date": "2026-11-02", "edition": "daily", "items": [item], "sources": []}
+        compile_report_data(report, index)
+        brief = next(b for s in report["sections"] for b in s["briefs"])
+        assert brief["status"] == "WATCH"
+    fresh = {**item, "published_at": "2026-11-02T05:00:00+08:00", "metadata": {}}
+    assert run_relative_brief_fields(fresh, "2026-11-02")["status"] == "NEW"

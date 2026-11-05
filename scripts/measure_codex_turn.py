@@ -41,7 +41,7 @@ def category(path: str, root: bool) -> str:
         return "root_coordination"
     if "accept_fix" in path:
         return "fault_recovery_code_fix"
-    if any(name in path for name in ("brief", "slides", "analysis")):
+    if any(name in path for name in ("brief", "slides", "analysis", "daily_run")):
         return "generation_agents"
     return "other_agents"
 
@@ -69,7 +69,10 @@ def summarize(records: list[dict]) -> dict:
     return result
 
 
-def measure(log_root: Path, root: str, turn: str, start: datetime, end: datetime) -> dict:
+def measure(
+    log_root: Path, root: str, turn: str, start: datetime, end: datetime,
+    *, per_request: bool = False,
+) -> dict:
     """以首条会话元数据建立血缘，再筛选和去重逐请求计量。"""
     files = []
     for path in sorted(log_root.rglob("*.jsonl")):
@@ -102,6 +105,7 @@ def measure(log_root: Path, root: str, turn: str, start: datetime, end: datetime
     seen = set()
     all_usage = []
     agents = []
+    requests = []
     for path, tid, _, agent_path in files:
         if tid not in descendants:
             continue
@@ -132,24 +136,36 @@ def measure(log_root: Path, root: str, turn: str, start: datetime, end: datetime
             if response is not None:
                 seen.add(response)
             usage = payload.get("usage")
-            selected.append((payload.get("turn_id"), usage if isinstance(usage, dict) else {}))
+            selected.append(
+                (payload.get("turn_id"), usage if isinstance(usage, dict) else {}, stamp)
+            )
         if selected:
             by_model = defaultdict(list)
-            for turn_id, usage in selected:
-                by_model[contexts.get(turn_id, "unknown")].append(usage)
-            usages = [usage for _, usage in selected]
+            agent_category = category(agent_path or "", tid == root)
+            for turn_id, usage, stamp in selected:
+                model = contexts.get(turn_id, "unknown")
+                by_model[model].append(usage)
+                if per_request:
+                    request_usage = summarize([usage])
+                    requests.append({
+                        "timestamp_utc": stamp.isoformat(),
+                        "category": agent_category,
+                        "model": model if model != "unknown" else None,
+                        "usage": {field: request_usage[field] for field in FIELDS},
+                    })
+            usages = [usage for _, usage, _ in selected]
             all_usage.extend(usages)
             agents.append(
                 {
-                    "category": category(agent_path or "", tid == root),
-                    "turn_count": len({t for t, _ in selected if t is not None}),
+                    "category": agent_category,
+                    "turn_count": len({t for t, _, _ in selected if t is not None}),
                     "models": {
                         model: summarize(values) for model, values in sorted(by_model.items())
                     },
                     "usage": summarize(usages),
                 }
             )
-    return {
+    result = {
         "start_utc": start.isoformat(),
         "end_utc": end.isoformat(),
         "wall_seconds": round((end - start).total_seconds(), 3),
@@ -157,6 +173,9 @@ def measure(log_root: Path, root: str, turn: str, start: datetime, end: datetime
         "total": summarize(all_usage),
         "agents": agents,
     }
+    if per_request:
+        result["requests"] = sorted(requests, key=lambda request: request["timestamp_utc"])
+    return result
 
 
 def main() -> None:
@@ -167,10 +186,14 @@ def main() -> None:
     parser.add_argument("--start", type=timestamp, required=True)
     parser.add_argument("--end", type=timestamp, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--per-request", action="store_true")
     args = parser.parse_args()
     if args.end < args.start:
         parser.error("--end must be at or after --start")
-    result = measure(args.log_root, args.root_thread_id, args.root_turn_id, args.start, args.end)
+    result = measure(
+        args.log_root, args.root_thread_id, args.root_turn_id, args.start, args.end,
+        per_request=args.per_request,
+    )
     with args.output.open("x", encoding="utf-8") as stream:
         json.dump(result, stream, ensure_ascii=False, indent=2)
         stream.write("\n")

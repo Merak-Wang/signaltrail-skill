@@ -14,6 +14,7 @@ from bs4 import BeautifulSoup
 
 from .access import classify_access_text, read_bounded_response
 from .adapters import is_eligible
+from .article_time import observe_items
 from .clustering import cluster_articles
 from .collection_diagnostics import source_coverage
 from .config import AppConfig, SourceConfig
@@ -297,7 +298,7 @@ async def _feed_phase(
             results = list(await asyncio.gather(*(bounded_feed(source, url) for url in urls)))
             # 只有没有条目且未遇限流/验证时才找替代入口，避免换通道重撞同一限制。
             if (source.feed_urls and config.monitor.auto_discover_feeds
-                    and not any(result.items for result in results)
+                    and not _has_current_feed_items(results)
                     and not any(result.status in {
                         SourceStatus.RATE_LIMITED, SourceStatus.VERIFICATION_REQUIRED,
                     } for result in results)):
@@ -318,6 +319,16 @@ async def _feed_phase(
     }
     write_json(registry_path, registry_payload)
     return dict(by_source), discovery_statuses, registry_payload
+
+
+def _has_current_feed_items(results: list[FeedFetchResult]) -> bool:
+    """处理：判断本轮是否已取得可阻止回退的有效 Feed 文章。
+    输入：各入口的状态、陈旧缓存标记和文章列表。
+    输出：只有非陈旧的成功或部分成功文章可阻止备用入口与 HTML 回退。
+    """
+    return any(result.items and not result.stale
+               and result.status in {SourceStatus.SUCCESS, SourceStatus.PARTIAL}
+               for result in results)
 
 
 def _source_status(
@@ -391,7 +402,8 @@ def _merge_source_items(
         for article in result.items:
             payload = article.to_dict()
             payload.setdefault("metadata", {})["feed_stale"] = result.stale
-            by_canonical[article.canonical_url] = payload
+            if article.canonical_url not in by_canonical or not result.stale:
+                by_canonical[article.canonical_url] = payload
     for result in html_results:
         for article in result.items:
             payload = article.to_dict()
@@ -408,8 +420,12 @@ def _merge_source_items(
                         "acquisition_method": "html",
                     }
                 )
-            by_canonical.setdefault(article.canonical_url, payload)
-    items = list(by_canonical.values())
+            previous = by_canonical.get(article.canonical_url)
+            if previous is None or previous.get("metadata", {}).get("feed_stale"):
+                by_canonical[article.canonical_url] = payload
+    items = sorted(by_canonical.values(), key=lambda item: bool(
+        item.get("metadata", {}).get("feed_stale"),
+    ))
     for rank, item in enumerate(items, start=1):
         metadata = item.setdefault("metadata", {})
         if isinstance(metadata, dict):
@@ -664,7 +680,7 @@ def refresh_monitor(
         and not any(result.status in {
             SourceStatus.RATE_LIMITED, SourceStatus.VERIFICATION_REQUIRED,
         } for result in feed_results.get(source.id, []))
-        and not any(result.items for result in feed_results.get(source.id, []))
+        and not _has_current_feed_items(feed_results.get(source.id, []))
     ]
     # 浏览器只兜底支持该采集方式且 Feed 无结果的来源，避免默认扩大昂贵路径。
     prefetched = (
@@ -702,6 +718,7 @@ def refresh_monitor(
             )
         )
 
+    observe_items(previous, fresh_items, generated_at)
     selected_ids = {source.id for source in sources}
     items = _merge_history_items(
         previous,
@@ -785,6 +802,9 @@ def refresh_monitor(
     }
     output = data_dir / "monitor" / "snapshot.json"
     write_json(output, snapshot)
+    from .events import sync_monitor_snapshot
+
+    sync_monitor_snapshot(data_dir, snapshot)
     return output
 
 
@@ -862,6 +882,10 @@ def load_monitor_results(
             items_by_source[str(row["source_id"])].append(article_from_dict(row))
     results: dict[str, SourceResult] = {}
     for source in sources:
+        row = source_rows.get(source.id, {})
+        checked = _parse_time(row.get("checked_at") or snapshot["generated_at"], timezone)
+        if checked is None or current - checked > timedelta(minutes=max_age_minutes):
+            continue
         # 复用前应用本轮来源规则，旧导航项不再占用目标数，缺口交由实时采集补齐。
         items = order_source_items(
             [
@@ -872,7 +896,6 @@ def load_monitor_results(
         )
         if not items:
             continue
-        row = source_rows.get(source.id, {})
         results[source.id] = SourceResult(
             source_id=source.id,
             source_name=source.name,

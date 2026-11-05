@@ -10,7 +10,10 @@ import shutil
 import sys
 import time
 import wave
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import ExitStack
 from pathlib import Path
+from threading import Lock
 
 from bs4 import BeautifulSoup
 
@@ -66,6 +69,7 @@ def render_video(
     device: str | None = None,
     voice: str | Path | None = None,
     reference_id: str | None = None,
+    title: str | None = None,
 ) -> dict:
     """处理：以实测口播时长驱动画面并复用未改变的页面。
     输入：已保存的新闻稿、输出路径和本地语音运行环境。
@@ -81,6 +85,7 @@ def render_video(
     diagnostics_path.write_text("[]", encoding="utf-8")
     record = json.loads(deck_path.read_text(encoding="utf-8"))
     deck = record.get("payload", record)
+    title = title or deck.get("video_title") or deck.get("title") or "News video"
     source_html, embedded = _source_slides_html(deck_path, data_dir)
     playback = source_html.read_text(encoding="utf-8")
     document = BeautifulSoup(playback, "html.parser")
@@ -116,30 +121,42 @@ def render_video(
     setup_seconds = time.perf_counter() - started
     started = time.perf_counter()
     playback_digest = hashlib.sha256(playback.encode("utf-8")).hexdigest()
+    for slide_node in source_slides:
+        slide_node.extract()
+    shell_digest = hashlib.sha256(str(document).encode("utf-8")).hexdigest()
     synthesizer = VoiceSynthesizer(
         runtime, data_dir / "video-runtime" / "voice-cache", threads=threads
     )
     timeline, offset = [], 0.0
     diagnostics = []
+    diagnostics_lock = Lock()
+    tts_seconds = 0.0
 
     def record_stage(stage: str, started_at: float, result: str, **details: object) -> None:
         """处理：保存已完成或失败的本地调用。
         输入：阶段、起始时间、结果及页和产物关联。
         输出：更新本次诊断文件供运行中查看。
         """
-        diagnostics.append(
-            {
-                "stage": stage,
-                **details,
-                "seconds": time.perf_counter() - started_at,
-                "result": result,
-            }
-        )
-        diagnostics_path.write_text(
-            json.dumps(diagnostics, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
+        with diagnostics_lock:
+            diagnostics.append(
+                {
+                    "stage": stage,
+                    **details,
+                    "seconds": time.perf_counter() - started_at,
+                    "result": result,
+                }
+            )
+            diagnostics_path.write_text(
+                json.dumps(diagnostics, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
 
-    for index, slide in enumerate(deck["slides"]):
+    def synthesize_page(index: int) -> tuple[Path, dict]:
+        """处理：单线程依次合成下一页，在主线程处理当前画面时预取。
+        输入：原稿页序和共享的语音缓存。
+        输出：已完成音频及实测时长；同一时刻只有一个原生语音调用。
+        """
+        nonlocal tts_seconds
+        slide = deck["slides"][index]
         brief = slide["video_tldr"].strip()
         # 短稿由模型阅读完整讲解后生成，音频缓存按标题与短稿定位。
         audio_key = hashlib.sha256(
@@ -156,18 +173,6 @@ def render_video(
                 "speech", page_started, "failed", event_id=slide["event_id"], output=str(wav)
             )
             raise
-        duration = math.ceil(speech["duration"] * 25) / 25
-        timeline.append(
-            {
-                "event_id": slide["event_id"],
-                "start": offset,
-                "duration": duration,
-                "text": f"{slide['title']}\n{brief}",
-                "audio": wav.name,
-                "provider": speech["provider"],
-                "voice_manifest": str(wav.with_suffix(".voice.json")),
-            }
-        )
         record_stage(
             "speech",
             page_started,
@@ -177,160 +182,204 @@ def render_video(
             page_cache_hit=speech.get("page_cache_hit", False),
         )
         _progress("speech", page=index + 1, pages=len(deck["slides"]), event_id=slide["event_id"])
-        offset += duration
-    tts_seconds = time.perf_counter() - started
+        tts_seconds += time.perf_counter() - page_started
+        return wav, speech
+
     render_seconds = encode_seconds = 0.0
     generated = reused = rendered = 0
     pages = []
-    for index, (_slide, entry, node) in enumerate(
-        zip(deck["slides"], timeline, source_slides, strict=True)
-    ):
-        count = max(1, len(node.select("[data-gallery] figure")))
-        # 非内嵌图像可能随网络或本地文件变化，不能仅凭 HTML 复用画面。
-        dynamic_images = any(
-            not str(image.get("src") or "").startswith("data:")
-            for image in node.select("[data-gallery] img")
-        )
-        key = hashlib.sha256(
-            (
-                playback_digest
-                + json.dumps(
-                    [
-                        "original-slides-v3",
-                        _VIDEO_ZOOM,
-                        str(source_html.resolve()),
-                        embedded,
-                        index,
-                        _VIDEO_VIEWPORT["width"],
-                        _VIDEO_VIEWPORT["height"],
-                        _VIDEO_DEVICE_SCALE,
-                        entry["duration"],
-                        25,
-                        "libx264",
-                        "ultrafast",
-                        "yuv420p",
-                        ffmpeg,
-                    ],
-                    ensure_ascii=False,
-                )
-            ).encode()
-        ).hexdigest()
-        pages.append((index, count, dynamic_images, work / f"{key}.mp4", entry))
-    pending = [(i, p) for i, p in enumerate(pages) if p[2] or not p[3].is_file()]
-    reused = len(pages) - len(pending)
-    for _, _, dynamic_images, clip, entry in pages:
-        if not dynamic_images and clip.is_file():
-            record_stage(
-                "reuse_page",
-                time.perf_counter(),
-                "reused",
-                event_id=entry["event_id"],
-                input=str(clip),
-                output=str(clip),
+    page = None
+    # 只预取下一页语音，主线程按页序消费，浏览器始终由同一线程持有。
+    with ThreadPoolExecutor(max_workers=1) as speech_pool, ExitStack() as browser_stack:
+        speech_future = speech_pool.submit(synthesize_page, 0) if deck["slides"] else None
+        for index, (slide, node) in enumerate(zip(deck["slides"], source_slides, strict=True)):
+            wav, speech = speech_future.result()
+            if index + 1 < len(deck["slides"]):
+                speech_future = speech_pool.submit(synthesize_page, index + 1)
+            brief = slide["video_tldr"].strip()
+            duration = math.ceil(speech["duration"] * 25) / 25
+            timeline.append(
+                {
+                    "event_id": slide["event_id"],
+                    "start": offset,
+                    "duration": duration,
+                    "text": f"{slide['title']}\n{brief}",
+                    "audio": wav.name,
+                    "provider": speech["provider"],
+                    "voice_manifest": str(wav.with_suffix(".voice.json")),
+                }
             )
-    if pending:
-        render_attempt = time.perf_counter()
-        active_event = None
-        phase = "render"
-        try:
-            from playwright.sync_api import sync_playwright
+            entry = timeline[-1]
+            offset += duration
+            count = max(1, len(node.select("[data-gallery] figure")))
+            # 非内嵌图像可能随网络或本地文件变化，不能仅凭 HTML 复用画面。
+            dynamic_images = any(
+                not str(image.get("src") or "").startswith("data:")
+                for image in node.select("[data-gallery] img")
+            )
+            settings = json.dumps(
+                        [
+                            "original-slides-v3",
+                            _VIDEO_ZOOM,
+                            str(source_html.resolve()),
+                            embedded,
+                            index,
+                            _VIDEO_VIEWPORT["width"],
+                            _VIDEO_VIEWPORT["height"],
+                            _VIDEO_DEVICE_SCALE,
+                            entry["duration"],
+                            25,
+                            "libx264",
+                            "ultrafast",
+                            "yuv420p",
+                            ffmpeg,
+                        ],
+                        ensure_ascii=False,
+                    )
+            legacy_key = hashlib.sha256((playback_digest + settings).encode()).hexdigest()
+            next_title = source_slides[(index + 1) % len(source_slides)].select_one("h2")
+            page_data = json.dumps([str(node), len(source_slides), next_title.get_text(strip=True)],
+                                   ensure_ascii=False)
+            key = hashlib.sha256((shell_digest + page_data + settings).encode()).hexdigest()
+            clip = work / f"{key}.mp4"
+            legacy_clip = work / f"{legacy_key}.mp4"
+            if not dynamic_images and not clip.exists() and legacy_clip.is_file():
+                try:
+                    os.link(legacy_clip, clip)
+                except OSError:
+                    shutil.copy2(legacy_clip, clip)
+            pages.append((index, count, dynamic_images, clip, entry))
+            if not dynamic_images and clip.is_file():
+                reused += 1
+                record_stage(
+                    "reuse_page", time.perf_counter(), "reused",
+                    event_id=entry["event_id"], input=str(clip), output=str(clip),
+                )
+                continue
+            render_attempt = time.perf_counter()
+            phase = "render"
+            try:
+                if page is None:
+                    from playwright.sync_api import sync_playwright
 
-            with sync_playwright() as browser_api:
-                executable_path = (
-                    os.environ.get("SIGNALTRAIL_BROWSER_EXECUTABLE")
-                    or browser_api.chromium.executable_path
-                )
-                _ensure_browser(None, executable_path=executable_path)
-                browser = browser_api.chromium.launch(executable_path=executable_path)
-                page = browser.new_page(
-                    viewport=_VIDEO_VIEWPORT, device_scale_factor=_VIDEO_DEVICE_SCALE
-                )
-                page.goto(
-                    source_html.resolve().as_uri() + ("?embed=1" if embedded else ""),
-                    wait_until="load",
-                )
-                page.evaluate("() => window.signaltrailPlayback.ready")
-                for index, (_, count, dynamic_images, clip, entry) in pending:
-                    active_event = entry["event_id"]
-                    if not dynamic_images and clip.is_file():
-                        reused += 1
+                    browser_api = browser_stack.enter_context(sync_playwright())
+                    executable_path = (
+                        os.environ.get("SIGNALTRAIL_BROWSER_EXECUTABLE")
+                        or browser_api.chromium.executable_path
+                    )
+                    _ensure_browser(None, executable_path=executable_path)
+                    browser = browser_api.chromium.launch(executable_path=executable_path)
+                    browser_stack.callback(browser.close)
+                    page = browser.new_page(
+                        viewport=_VIDEO_VIEWPORT, device_scale_factor=_VIDEO_DEVICE_SCALE
+                    )
+                    # 页面初始化后由 seek 等待当前图片，避免整份图文的远程资源阻塞启动。
+                    page.goto(
+                        source_html.resolve().as_uri() + ("?embed=1" if embedded else ""),
+                        wait_until="domcontentloaded",
+                        timeout=120_000,
+                    )
+                page_started = time.perf_counter()
+                frames = work / f"frames-{clip.stem}"
+                frames.mkdir(exist_ok=True)
+                for image in range(count):
+                    image_started = time.perf_counter()
+                    image_timed_out = page.evaluate(
+                        """async ([s, i]) => {
+                            let timer;
+                            try {
+                                return await Promise.race([
+                                    window.signaltrailPlayback.seek(s, i).then(() => false),
+                                    new Promise(resolve => {
+                                        timer = setTimeout(() => {
+                                            document.querySelectorAll(
+                                                '.slide.active figure.active img'
+                                            ).forEach(image => {
+                                                if (image.complete) return;
+                                                image.classList.add('broken');
+                                                image.closest('.image-frame')?.classList.add('has-error');
+                                                image.removeAttribute('srcset');
+                                                image.removeAttribute('src');
+                                            });
+                                            resolve(true);
+                                        }, 30000);
+                                    }),
+                                ]);
+                            } finally {
+                                clearTimeout(timer);
+                            }
+                        }""",
+                        [index, image],
+                    )
+                    if image_timed_out:
                         record_stage(
-                            "reuse_page",
-                            time.perf_counter(),
-                            "reused",
-                            event_id=entry["event_id"],
-                            input=str(clip),
-                            output=str(clip),
+                            "render_image", image_started, "timed_out",
+                            event_id=entry["event_id"], image=image + 1,
                         )
-                        continue
-                    page_started = time.perf_counter()
-                    frames = work / f"frames-{clip.stem}"
-                    frames.mkdir(exist_ok=True)
-                    for image in range(count):
-                        page.evaluate(
-                            "([s,i]) => window.signaltrailPlayback.seek(s,i)", [index, image]
-                        )
-                        page.wait_for_timeout(1100)
-                        page.screenshot(path=str(frames / f"{image:03}.png"))
-                    rendered += 1
-                    render_seconds += time.perf_counter() - page_started
-                    encode_started = time.perf_counter()
-                    phase = "encode"
-                    pending_clip = clip.with_name(clip.stem + ".pending.mp4")
-                    command = [
-                        ffmpeg,
-                        "-y",
-                        "-framerate",
-                        str(count / entry["duration"]),
-                        "-i",
-                        str(frames / "%03d.png"),
-                        "-vf",
-                        "tpad=stop_mode=clone:stop_duration=1",
-                        "-frames:v",
-                        str(round(entry["duration"] * 25)),
-                        "-r",
-                        "25",
-                        "-c:v",
-                        "libx264",
-                        "-preset",
-                        "ultrafast",
-                        "-pix_fmt",
-                        "yuv420p",
-                        str(pending_clip),
-                    ]
-                    try:
-                        _run(command)
-                        os.replace(pending_clip, clip)
-                    except Exception:
-                        record_stage(
-                            "encode_page",
-                            encode_started,
-                            "failed",
-                            event_id=entry["event_id"],
-                            input=str(frames),
-                            output=str(clip),
-                        )
-                        raise
-                    seconds = time.perf_counter() - encode_started
-                    encode_seconds += seconds
-                    generated += 1
+                    # 截图直接快进页面动画到终点，逐图省去固定过渡等待。
+                    page.screenshot(
+                        path=str(frames / f"{image:03}.png"), animations="disabled"
+                    )
+                rendered += 1
+                render_seconds += time.perf_counter() - page_started
+                encode_started = time.perf_counter()
+                phase = "encode"
+                pending_clip = clip.with_name(clip.stem + ".pending.mp4")
+                command = [
+                    ffmpeg,
+                    "-y",
+                    "-framerate",
+                    str(count / entry["duration"]),
+                    "-i",
+                    str(frames / "%03d.png"),
+                    "-vf",
+                    "tpad=stop_mode=clone:stop_duration=1",
+                    "-frames:v",
+                    str(round(entry["duration"] * 25)),
+                    "-r",
+                    "25",
+                    "-c:v",
+                    "libx264",
+                    "-preset",
+                    "ultrafast",
+                    "-pix_fmt",
+                    "yuv420p",
+                    str(pending_clip),
+                ]
+                try:
+                    _run(command)
+                    os.replace(pending_clip, clip)
+                except Exception:
                     record_stage(
                         "encode_page",
                         encode_started,
-                        "ok",
+                        "failed",
                         event_id=entry["event_id"],
                         input=str(frames),
                         output=str(clip),
                     )
-                    phase = "render"
-                    _progress(
-                        "encode_page", page=index + 1, pages=len(pages), event_id=entry["event_id"]
-                    )
-                browser.close()
-        except Exception:
-            if phase == "render":
-                record_stage("render", render_attempt, "failed", event_id=active_event)
-            raise
+                    raise
+                seconds = time.perf_counter() - encode_started
+                encode_seconds += seconds
+                generated += 1
+                record_stage(
+                    "encode_page",
+                    encode_started,
+                    "ok",
+                    event_id=entry["event_id"],
+                    input=str(frames),
+                    output=str(clip),
+                )
+                phase = "render"
+                _progress(
+                    "encode_page", page=index + 1, pages=len(deck["slides"]),
+                    event_id=entry["event_id"],
+                )
+            except Exception:
+                if phase == "render":
+                    record_stage("render", render_attempt, "failed", event_id=entry["event_id"])
+                raise
+    pipeline_seconds = time.perf_counter() - started
     encode_started = time.perf_counter()
     combined = work / "audio.wav"
     with wave.open(str(combined), "wb") as target:
@@ -366,6 +415,8 @@ def render_video(
                 "aac",
                 "-movflags",
                 "+faststart",
+                "-metadata",
+                f"title={title}",
                 str(pending_output),
             ]
         )
@@ -382,6 +433,7 @@ def render_video(
     )
     return {
         "video_path": str(output),
+        "title": title,
         "source_slides_html": str(source_html),
         "video_zoom": _VIDEO_ZOOM,
         "timeline_path": str(timeline_path),
@@ -402,6 +454,7 @@ def render_video(
         "tts_cache_hits": synthesizer.hits,
         "tts_page_cache_hits": synthesizer.page_hits,
         "tts_seconds": tts_seconds,
+        "pipeline_seconds": pipeline_seconds,
         "render_seconds": render_seconds,
         "encode_seconds": encode_seconds + concat_seconds,
         "concat_seconds": concat_seconds,

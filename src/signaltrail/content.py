@@ -7,9 +7,10 @@ import hashlib
 import html
 import json
 import time
+from importlib import import_module
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlsplit
+from urllib.parse import urljoin, urlsplit
 from uuid import uuid4
 
 import httpx
@@ -24,10 +25,12 @@ from .content_extraction import (
     extract_document,
     extract_with_fallback,
     input_fingerprint,
+    is_navigation_only,
 )
 from .content_images import article_image_candidates
 from .image_policy import normalize_image_candidates
 from .models import ContentStatus
+from .pdf_content import extract_pdf
 from .runtime import require_data_root_path
 from .storage import next_revision, write_bytes_atomic, write_immutable_json, write_text_atomic
 from .utils import now_iso, read_json, timestamp_slug, write_json
@@ -300,9 +303,15 @@ def _save_document(
     输入：当前条目、抽取结果、来源配置以及绑定的数据根。
     输出：条目获得质量记录及不可碰撞的正文路径；无有效正文时清除旧路径。
     """
+    if is_navigation_only(document.text):
+        document.text = ""
+        document.blocks = []
+        document.status = ContentStatus.METADATA_ONLY
+        document.quality["navigation_only"] = True
     item["content_status"] = document.status
     item["content_characters"] = len(document.text)
     metadata = item["metadata"]
+    metadata["content_needs_refresh"] = False
     metadata["content_selector"] = document.selector
     metadata["content_quality"] = document.quality
     metadata["content_input"] = document.provenance
@@ -350,12 +359,13 @@ def _apply_http_document(
     source: SourceConfig,
     body_html: str,
     final_url: str,
-    http_status: int,
+    http_status: int | None,
     config: AppConfig,
     data_dir: Path,
     *,
     truncated: bool = False,
     raw_content: bytes | None = None,
+    acquisition: str = "http",
 ) -> bool:
     """处理：应用惰性 HTTP 正文，并判断浏览器回退是否仍有价值。
     输入：
@@ -366,6 +376,7 @@ def _apply_http_document(
     - ``http_status``：页面最近一次 HTTP 状态码；无网络响应时可为空。
     - ``config``：已校验的应用配置；提供时区、来源策略、并发限制、预算和输出选项。
     - ``data_dir``：当前运行的唯一数据根；所有状态和版本化产物都必须位于其中。
+    - ``acquisition``：HTTP 或动态浏览器渠道；动态页面只保存抽取正文及指纹。
     输出：布尔判断；True 表示满足处理说明中的条件，False 表示不满足且不产生该结果。
     """
     metadata = item.setdefault("metadata", {})
@@ -385,12 +396,12 @@ def _apply_http_document(
     )
     metadata["content_http_status"] = http_status
     metadata["content_http_final_url"] = final_url
-    metadata["content_acquisition"] = "http"
+    metadata["content_acquisition"] = acquisition
     if challenge["required"] or challenge["rate_limited"]:
         item["content_status"] = ContentStatus.VERIFICATION_REQUIRED
         metadata["content_challenge"] = challenge
         return False
-    if http_status >= 400:
+    if http_status is not None and http_status >= 400:
         item["content_status"] = ContentStatus.FAILED
         metadata["content_error"] = f"HTTP {http_status}"
         return False
@@ -426,14 +437,19 @@ def _apply_http_document(
         item, str(document.source_metadata.get("published_at") or "")
     )
     document.provenance = input_fingerprint(
-        input_bytes, "decoded_html_utf8" if raw_content is None else "http_response_body",
+        input_bytes,
+        "visible_dom_utf8" if acquisition == "crawl4ai" else
+        "decoded_html_utf8" if raw_content is None else "http_response_body",
         truncated,
     )
     _apply_image_candidates(
         item, image_candidates, final_url,
         details=article_image_candidates(document, str(item.get("title") or ""), final_url),
     )
-    _save_document(item, document, source, config, data_dir, raw_content=input_bytes)
+    _save_document(
+        item, document, source, config, data_dir,
+        raw_content=input_bytes if acquisition == "http" else None,
+    )
     # 已明确截断的传输和订阅提示不会靠重开浏览器消除；其他正文缺口最多升级一次。
     return document.status != ContentStatus.FULL_TEXT and not truncated and not (
         document.quality.get("incomplete_marker") and document.status == ContentStatus.PARTIAL
@@ -476,6 +492,17 @@ async def _extract_http_one(
         async with client.stream("GET", str(item["url"])) as response:
             # 外部响应始终只按不可信数据解析；不会执行页面脚本或其中的文字指令。
             content_type = response.headers.get("content-type", "").casefold()
+            if response.status_code < 400 and "application/pdf" in content_type:
+                content, truncated = await _read_bounded_html(response)
+                document = extract_pdf(content, str(response.url), truncated=truncated)
+                metadata.update(
+                    content_acquisition="http", content_http_status=response.status_code,
+                    content_http_final_url=str(response.url),
+                )
+                _save_document(item, document, source, config, data_dir)
+                if document.quality.get("pdf_error"):
+                    metadata["content_error"] = document.quality["pdf_error"]
+                return False
             if response.status_code < 400 and content_type and not any(
                 marker in content_type
                 for marker in ("text/html", "application/xhtml+xml", "text/plain")
@@ -792,6 +819,59 @@ async def _extract_with_browser(
             await context.close()
 
 
+async def _extract_with_crawl4ai(
+    targets: list[dict[str, Any]], config: AppConfig, data_dir: Path, headed: bool,
+) -> None:
+    """处理：将动态页面交给可选浏览器后端，再复用现有正文质量和保存逻辑。
+    输入：HTTP 未补全的条目、并发配置与绑定数据根。
+    输出：原条目获得正文、图片和视频候选；访问失败继续保留明确状态。
+    """
+    from .crawl4ai_adapter import crawl_pages
+
+    pages = await crawl_pages(
+        [str(item["url"]) for item in targets],
+        timeout_ms=config.browser.navigation_timeout_ms,
+        concurrency=config.browser.global_concurrency,
+        per_domain_concurrency=config.browser.per_domain_concurrency,
+        headless=not headed,
+    )
+    for item, page in zip(targets, pages, strict=True):
+        source = config.source_by_id(str(item["source_id"]))
+        metadata = item.setdefault("metadata", {})
+        if not page["success"] and not page["html"]:
+            item["content_status"] = ContentStatus.FAILED
+            metadata.update(
+                content_acquisition="crawl4ai", content_http_status=page["status_code"],
+                content_error=page["error"] or "Dynamic page extraction failed",
+            )
+            continue
+        _apply_http_document(
+            item, source, page["html"], page["url"], page["status_code"],
+            config, data_dir, acquisition="crawl4ai",
+        )
+        # SDK 失败或访问受限的页面不提供媒体候选，避免把挑战页装饰图展示成新闻图。
+        if not page["success"] or item["content_status"] in {
+            ContentStatus.FAILED, ContentStatus.VERIFICATION_REQUIRED,
+        }:
+            if (not page["success"]
+                    and item["content_status"] != ContentStatus.VERIFICATION_REQUIRED):
+                item["content_status"] = ContentStatus.FAILED
+                metadata["content_error"] = page["error"] or "Dynamic page extraction failed"
+            continue
+        media = page["media"]
+        _apply_image_candidates(
+            item, [entry["src"] for entry in media.get("images", []) if entry.get("src")],
+            page["url"], details=metadata.get("image_candidate_details", []),
+        )
+        videos = [
+            {"url": urljoin(page["url"], entry["src"]), "source_url": page["url"]}
+            for entry in media.get("videos", []) if entry.get("src")
+            and urlsplit(urljoin(page["url"], entry["src"])).scheme in {"http", "https"}
+        ]
+        if videos:
+            metadata["video_candidates"] = videos
+
+
 def _has_reusable_content(item: dict[str, Any], data_dir: Path) -> bool:
     """处理：验证条目正文状态和数据根内文件，判断能否安全复用。
     输入：
@@ -803,6 +883,22 @@ def _has_reusable_content(item: dict[str, Any], data_dir: Path) -> bool:
         item.get("content_status") == ContentStatus.FULL_TEXT
         and not content_gaps(item, data_dir)
     )
+
+
+def _resolve_browser_extractor(mode: str, headed: bool) -> str:
+    """处理：只在需要动态正文时选择已安装 SDK，交互窗口继续使用 Playwright。
+    输入：显式后端或 auto，以及是否要求可见浏览器。
+    输出：单次浏览器尝试的后端；不启动浏览器或读取远程内容。
+    """
+    if mode != "auto":
+        return mode
+    if headed:
+        return "playwright"
+    try:
+        import_module("crawl4ai")
+    except ImportError:
+        return "playwright"
+    return "crawl4ai"
 
 
 async def _extract_pipeline(
@@ -850,21 +946,28 @@ async def _extract_pipeline(
         _retain_better_content(item, previous[id(item)], data_dir)
     http_seconds = time.perf_counter() - http_started
     browser_started = time.perf_counter()
+    browser_extractor = config.collection.browser_extractor
     if browser_targets:
+        browser_extractor = _resolve_browser_extractor(browser_extractor, headed)
         previous = {id(item): copy.deepcopy(item) for item in browser_targets}
         for item in browser_targets:
             _clear_content_attempt(item)
         try:
-            await _extract_with_browser(
-                browser_targets, config, data_dir, headed, profile, channel,
-            )
+            if browser_extractor == "crawl4ai":
+                await _extract_with_crawl4ai(browser_targets, config, data_dir, headed)
+            else:
+                await _extract_with_browser(
+                    browser_targets, config, data_dir, headed, profile, channel,
+                )
         except Exception as exc:
             # 浏览器启动失败不得撤销 HTTP 已保存的证据；保留失败尝试并继续产生索引。
             for item in browser_targets:
                 item["content_status"] = ContentStatus.FAILED
-                item.setdefault("metadata", {})["content_error"] = type(exc).__name__
+                item.setdefault("metadata", {})["content_error"] = f"{type(exc).__name__}: {exc}"
         for item in browser_targets:
-            attempts[id(item)].append(_content_attempt(item, "browser", data_dir))
+            attempts[id(item)].append(_content_attempt(
+                item, "crawl4ai" if browser_extractor == "crawl4ai" else "browser", data_dir,
+            ))
             _retain_better_content(item, previous[id(item)], data_dir)
     browser_seconds = time.perf_counter() - browser_started
     for item in targets:
@@ -883,7 +986,8 @@ async def _extract_pipeline(
                 "evidence_sufficient" if not unresolved else
                 access_gaps[0] if access_gaps else
                 "bounded_attempts_exhausted" if any(
-                    attempt["channel"] == "browser" for attempt in attempts[id(item)]
+                    attempt["channel"] in {"browser", "crawl4ai"}
+                    for attempt in attempts[id(item)]
                 ) else "no_permitted_escalation"
             ),
             "claim_sufficiency": "not_assessed",
@@ -897,6 +1001,7 @@ async def _extract_pipeline(
             for records in attempts.values() for attempt in records
         ),
         "browser_fallback": len(browser_targets),
+        "browser_extractor": browser_extractor,
         "complete": sum(
             item["metadata"]["content_completion"]["status"] == "complete" for item in targets
         ),
@@ -925,6 +1030,9 @@ def _reuse_feed_content(item: dict[str, Any], config: AppConfig, data_dir: Path)
     if not path.exists():
         return
     record = read_json(path)
+    if is_navigation_only(record["text"]):
+        metadata["feed_navigation_only"] = True
+        return
     document = ExtractedDocument(
         text=record["text"], selector="feed_content", blocks=record["blocks"],
         status=ContentStatus.PARTIAL, quality=record["quality"],
@@ -976,6 +1084,10 @@ def _retain_better_content(
     输入：当前尝试与此前条目的独立快照；比较文件有效性和显式结构缺口。
     输出：就地保留较可用的条目，失败尝试由流水线另行记录。
     """
+    # 同 URL 已更新时，新取得的部分正文也优先于旧版完整正文。
+    if ((previous.get("metadata") or {}).get("content_needs_refresh")
+            and has_local_content(item, data_dir)):
+        return
     # Feed 仅是源提供的片段；网页取得更多正文时，不能因结构缺口相同而退回短片段。
     if ((previous.get("metadata") or {}).get("content_acquisition") == "feed"
             and has_local_content(item, data_dir)

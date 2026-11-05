@@ -1,6 +1,6 @@
 # Documentation
 
-**Status:** Verified · **Owner:** Repository maintainers · **Last verified:** 2026-09-23
+**Status:** Verified · **Owner:** Repository maintainers · **Last verified:** 2026-11-02
 
 Start with the guide for the work you are doing. English engineering records have Chinese
 mirrors under [zh-CN/](zh-CN/README.md).
@@ -8,13 +8,16 @@ mirrors under [zh-CN/](zh-CN/README.md).
 | Guide | Covers |
 | --- | --- |
 | [Usage](usage.md) | Installation, data paths, language, sources, metered runs, recovery |
+| [Collection extensions and research APIs](platform.md) | Collection monitor, RSSHub/Crawl4AI, discovery briefs, and report/event/research APIs |
 | [Development](development.md) | Test selection, naming, code and documentation conventions |
 | [Architecture](../ARCHITECTURE.md) | Module ownership, state, files, model boundaries |
 | [Agent instructions](../AGENTS.md) | Rules for changing this repository |
 | [Experimental explainers](explainers.md) | Implemented commands, bilingual reviews, immutable stories and current-admission limits |
-| [News slides](news-slides.md) | Report and index-only visual streams; top-30 default, bounded writing, accepted narration reuse and per-batch cost gates |
+| [News slides](news-slides.md) | Report and index inputs, illustrated presentations, local video, and voice setup |
 | [Roadmap](roadmap.md) | Experimental explainer and research workflow; current-news admission and acceptance gaps |
 | [Technical debt](exec-plans/tech-debt-tracker.md) | Known implementation gaps and exit conditions |
+
+[Output examples](https://github.com/Merak-Wang/signaltrail-skill/blob/main/examples/README.en.md): current daily reports, illustrated slides, narrated video, and historical samples.
 
 ## Directory roles
 
@@ -24,7 +27,7 @@ mirrors under [zh-CN/](zh-CN/README.md).
 | `references/` | Detailed runtime policies and recovery instructions linked by the skill. |
 | `docs/research/` | Dated research and experimental proposals. |
 | `docs/exec-plans/` | Historical implementation records and the active technical-debt tracker. |
-| `examples/` | Historical report samples and synthetic test fixtures. |
+| `examples/` | Current and historical report, slide, and video examples; synthetic test fixtures. |
 | `evals/` | Skill trigger examples for evaluation. |
 | `tests/` | Behavior and regression tests for the maintained implementation. |
 
@@ -79,17 +82,3 @@ not current operating instructions. Their original verification dates do not exp
 - [2026-08-23 usage and optimization implementation](exec-plans/completed-2026-08-23-llm-usage-optimization-implementation.md)
 - [2026-08-05 report regeneration](exec-plans/completed-2026-08-05-morning-report-regeneration.md)
 - [Release history](../CHANGELOG.md) and [release notes](../RELEASE_NOTES.md)
-- [Example reports](https://github.com/Merak-Wang/signaltrail-skill/blob/main/examples/README.en.md): sanitized historical outputs
-
-Root `src/` is the only maintained implementation; the repository has no nested skill copy.
-`build/` and `dist/` are ignored release artifacts, excluded from current-document checks
-and generated only through an explicit build. Install the complete skill package with its resources.
-Local ignored audit notes are not public engineering records.
-
-Maintained records use Verified, Draft, or Active; completed records use Historical, and
-mechanical snapshots use Generated. Each maintained record states purpose, owner, and date.
-See [Development](development.md) for the maintenance rules and checks.
-
-For daily delivery, a saved report and a completed edition are separate states. The report can
-be handed off before the visual stream is ready; use `edition-status --run RUN.json
---require-complete` to check that required slides and other requested delivery work are complete.

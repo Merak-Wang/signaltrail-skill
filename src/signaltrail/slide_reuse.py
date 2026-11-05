@@ -10,8 +10,25 @@ from jsonschema import Draft202012Validator
 from .narrative_store import digest, load_artifact, parent_path
 
 
-def reusable_slides(reuse_plan: Path, model_inputs_by_id: dict[str, dict],
-                    data_dir: Path) -> list[dict]:
+def _story_input(model_input: dict) -> dict:
+    """处理：比较单条讲稿时去掉整期视频命名字段。
+    输入：旧写作包或当前单条包；故事证据和讲稿指令保持完整。
+    输出：仅排除独立视频标题任务的输入，避免改整期标题重写未变的讲稿。
+    """
+    if "video_title_context" not in model_input:
+        return model_input
+    result = deepcopy(model_input)
+    result.pop("video_title_context", None)
+    result.pop("video_title_instruction", None)
+    schema = result["output_schema"]
+    schema["properties"].pop("video_title", None)
+    schema["required"] = [field for field in schema["required"] if field != "video_title"]
+    return result
+
+
+def reusable_slides(
+    reuse_plan: Path, model_inputs_by_id: dict[str, dict], data_dir: Path
+) -> list[dict]:
     """处理：逐条比较旧稿的完整写作输入，复制语义完全相同的已接受讲稿。
     输入：明确旧计划、当前单条文字输入和数据根；图片与旧页面不参与匹配。
     输出：按当前候选顺序排列的讲稿副本，不创建缓存或旧修订父链。
@@ -43,7 +60,7 @@ def reusable_slides(reuse_plan: Path, model_inputs_by_id: dict[str, dict],
         if event_id not in accepted:
             continue
         slide, previous = accepted[event_id]
-        if digest(current) != digest(previous):
+        if digest(_story_input(current)) != digest(_story_input(previous)):
             continue
         if not isinstance(slide.get("video_tldr"), str) or not slide["video_tldr"].strip():
             continue

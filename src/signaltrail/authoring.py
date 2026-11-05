@@ -24,10 +24,10 @@ from .localization import (
     validate_output_language,
 )
 from .runtime import require_data_root_path
-from .semantics import run_relative_brief_fields, tldr_quality_issue
+from .semantics import brief_requires_watch, run_relative_brief_fields, tldr_quality_issue
 from .storage import write_immutable_json
 from .taxonomy import SECTION_ORDER_V13
-from .utils import now_iso, read_json, write_json
+from .utils import canonicalize_url, now_iso, read_json, write_json
 
 _ALLOWED_BRIEF_STATUSES = {"NEW", "UPD", "CONF", "REV", "WATCH", "CLOSED"}
 
@@ -798,15 +798,26 @@ def _read_bound_packet(batch: dict[str, Any], data_dir: Path) -> dict[str, Any]:
     return packet
 
 
-def _validate_session_binding(run: dict[str, Any], session: dict[str, Any], data_dir: Path) -> None:
-    """处理：在提交和恢复前拒绝旧尝试、旧情境和被替换的作者包。
-    输入：当前运行、已派发会话与唯一数据根。
-    输出：无返回值；仅允许同一证据版本继续使用已经完成的模型工作。
+def _validate_session_identity(
+    run: dict[str, Any], session: dict[str, Any], data_dir: Path,
+) -> Path:
+    """处理：核对会话所属情境和运行尝试，供同一次批量命令复用。
+    输入：当前运行、已读取会话与数据根。
+    输出：已绑定情境路径；不同运行尝试或情境直接拒绝。
     """
     path = require_data_root_path(Path(session["context_path"]), data_dir, "Authoring context")
     current = Path(run.get("artifacts", {}).get("context_path", path)).resolve()
     if (current != path or int(session.get("run_attempt", 1)) != int(run.get("attempt", 1))):
         raise RuntimeError("Authoring session belongs to a different run attempt or context")
+    return path
+
+
+def _validate_session_binding(run: dict[str, Any], session: dict[str, Any], data_dir: Path) -> None:
+    """处理：在提交和恢复前拒绝旧尝试、旧情境和被替换的作者包。
+    输入：当前运行、已派发会话与唯一数据根。
+    输出：无返回值；仅允许同一证据版本继续使用已经完成的模型工作。
+    """
+    path = _validate_session_identity(run, session, data_dir)
     if (session.get("context_sha256")
             and sha256(path.read_bytes()).hexdigest() != session["context_sha256"]):
         raise RuntimeError("Authoring context changed after dispatch")
@@ -878,6 +889,8 @@ def validate_authoring_batch(
         str(packet.get("output_language") or "zh-CN")
     )
     translation_field = translated_title_field(output_language)
+    window_end = (packet.get("collection_window") or {}).get("end")
+    reference_time = datetime.fromisoformat(window_end) if window_end else None
     for position, brief in enumerate(briefs):
         prefix = f"briefs[{position}]"
         item_id = str(brief.get("item_id") or "")
@@ -914,6 +927,19 @@ def validate_authoring_batch(
             errors.append(
                 f"{prefix}.status must be one of {sorted(_ALLOWED_BRIEF_STATUSES)}"
             )
+        if reference_time is not None and brief.get("status") == "NEW":
+            published = str(indexed.get("published_at") or "")
+            if brief_requires_watch(indexed) or len(published) == 10:
+                errors.append(
+                    f"{prefix}.status requires WATCH for this publication or listing signal"
+                )
+            else:
+                publication_time = datetime.fromisoformat(published.replace("Z", "+00:00"))
+                publication_time = publication_time.replace(
+                    tzinfo=publication_time.tzinfo or reference_time.tzinfo,
+                ).astimezone(reference_time.tzinfo)
+                if (reference_time.date() - publication_time.date()).days not in {0, 1}:
+                    errors.append(f"{prefix}.status NEW requires publication today or yesterday")
     return errors
 
 
@@ -1116,8 +1142,54 @@ def _normalize_analysis_narratives(payload: dict[str, Any]) -> dict[str, Any]:
     return normalized
 
 
+def brief_writing_style(output_language: str) -> str:
+    """处理：将简报的姓名、条件和事实表达要求压缩为作者可直接执行的风格提示。
+    输入：本期目标语言。
+    输出：与报告契约一致的简短写法，新包与历史包投影共用。
+    """
+    return localized(
+        output_language,
+        "用一段自然、紧凑的新闻语言说明主体、动作和影响，保留姓名、职务、关键数字、"
+        "时间、适用条件及计划或涉嫌等限定。每句提供有据的信息，短摘要聚焦事实。",
+        "Write one concise, natural news paragraph about the actor, action and impact. "
+        "Retain names, roles, key numbers, dates, conditions and qualifiers such as "
+        "planned or alleged. Ground each sentence in the evidence and focus short "
+        "summaries on facts.",
+    )
+
+
+def brief_authoring_input(packet_path: Path, data_dir: Path) -> dict[str, Any]:
+    """处理：从单个受限写作包投影作者所需输入，省去接收与调度字段。
+    输入：当前包路径和数据根；候选证据仅保留包内已列出的内容与路径。
+    输出：完整候选、风格、Schema 与草稿命令；旧包的非一一对应授权列表继续保留。
+    """
+    packet_path = require_data_root_path(packet_path, data_dir, "Authoring packet")
+    packet = read_json(packet_path)
+    result = {key: packet[key] for key in (
+        "batch_id", "edition", "date", "collection_window", "output_language",
+        "untrusted_data_notice", "task", "writing_style", "tool_policy", "repair_policy",
+        "output_schema", "candidates", "draft_result_path", "preflight_command",
+        "submission_command",
+    ) if key in packet}
+    if "preflight_command" not in result and result.get("submission_command"):
+        result["preflight_command"] = result["submission_command"] + " --check-only"
+    result.setdefault("writing_style", brief_writing_style(packet.get("output_language", "zh-CN")))
+    candidate_ids = [str(item["item_id"]) for item in packet["candidates"]]
+    authorized_ids = packet.get("author_item_ids", [])
+    if (candidate_ids != authorized_ids
+            or len(set(candidate_ids)) != len(candidate_ids)):
+        result["author_item_ids"] = authorized_ids
+        result["authoring_scope"] = "Author only author_item_ids, in their listed order."
+    else:
+        result["authoring_scope"] = "Author every candidate once, in the listed order."
+    if "output_schema" not in result and "required_output_fields" in packet:
+        result["required_output_fields"] = packet["required_output_fields"]
+    return result
+
+
 def check_authoring_batch(
     run: dict[str, Any], batch_id: str, input_path: Path, data_dir: Path,
+    *, _validated_session: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """处理：只读检查草稿与写作会话绑定及内容契约。
     输入：运行记录、批次 ID、草稿路径和数据根。
@@ -1129,10 +1201,13 @@ def check_authoring_batch(
         data_dir,
         "Authoring session",
     )
-    session = read_json(session_path)
+    session = read_json(session_path) if _validated_session is None else _validated_session
     if not isinstance(session, dict):
         raise ValueError("Authoring session must be a JSON object")
-    _validate_session_binding(run, session, data_dir)
+    if _validated_session is None:
+        _validate_session_binding(run, session, data_dir)
+    else:
+        _validate_session_identity(run, session, data_dir)
     batch = _batch_entry(session, batch_id)
     require_data_root_path(
         Path(str(batch["packet_path"])),
@@ -1165,6 +1240,7 @@ def submit_authoring_batch(
     batch_id: str,
     input_path: Path,
     data_dir: Path,
+    *, _validated_session: dict[str, Any] | None = None,
 ) -> Path:
     """处理：校验模型批次结果与当前授权包匹配后，创建不可变接收回执。
     输入：
@@ -1181,10 +1257,13 @@ def submit_authoring_batch(
         data_dir,
         "Authoring session",
     )
-    session = read_json(session_path)
+    session = read_json(session_path) if _validated_session is None else _validated_session
     if not isinstance(session, dict):
         raise ValueError("Authoring session must be a JSON object")
-    _validate_session_binding(run, session, data_dir)
+    if _validated_session is None:
+        _validate_session_binding(run, session, data_dir)
+    else:
+        _validate_session_identity(run, session, data_dir)
     batch = _batch_entry(session, batch_id)
     packet_path = require_data_root_path(
         Path(str(batch["packet_path"])),
@@ -1826,6 +1905,7 @@ def _merge_briefs(
     section_rows = {section_id: [] for section_id in SECTION_ORDER_V13}
     coverage_targets: dict[str, int] = {}
     missing_batch_ids = set(missing_batches)
+    selected_urls: set[str] = set()
     for plan in context.get("brief_plan", []):
         if not isinstance(plan, dict):
             continue
@@ -1838,13 +1918,25 @@ def _merge_briefs(
             for item_id in map(str, plan.get("default_item_ids", []))
             if item_id in available
         ]
+        unique = []
+        for brief in selected:
+            item = candidates.get(str(brief["item_id"]), {})
+            raw_url = item.get("canonical_url") or item.get("url")
+            url = canonicalize_url(raw_url) if raw_url else ""
+            if url and url in selected_urls:
+                continue
+            unique.append(brief)
+            if url:
+                selected_urls.add(url)
+        duplicate_count = len(selected) - len(unique)
+        selected = unique
         section_rows[section_id].extend(selected)
         coverage_targets[source_id] = (
             len(selected)
             if (str(plan.get("batch_id") or "") in missing_batch_ids
                 or any(batch_by_item.get(aliases.get(str(item_id), "")) in missing_batch_ids
                        for item_id in plan.get("default_item_ids", [])))
-            else int(plan.get("target_count", len(selected)))
+            else max(0, int(plan.get("target_count", len(selected))) - duplicate_count)
         )
     sections = [
         {"id": section_id, "briefs": section_rows[section_id], "items": []}
@@ -1928,6 +2020,9 @@ def _analysis_candidates(
                     "discovered_at": indexed.get("discovered_at"),
                     "content_status": indexed.get("content_status"),
                     "content_path": indexed.get("content_path"),
+                    **{key: indexed[key] for key in (
+                        "feed_content_path", "feed_content_characters", "feed_content_status",
+                    ) if indexed.get(key) is not None},
                     "content_observations": indexed.get("content_observations"),
                     "url": indexed.get("url"),
                 }
@@ -2336,6 +2431,9 @@ def prepare_analysis_packet(
             f"{localized(skeleton['language'], 'Chinese', 'English')}, including structured "
             "reader-facing fields such as stakeholder, position, interests, issue and "
             "source_of_difference; preserve proper names and technical terms. "
+            "For selected evidence, read content_path first, then the listed feed_content_path "
+            "JSON text/blocks, then public description. Feed fields are partial provider evidence "
+            "with unknown completeness, not verified article full text. "
             "Across the three analyses, cite evidence_item_ids from at least 60% of "
             "selected featured events, rounded up to the next whole event. "
             "For each lens, build the structured reasoning ledger first and then write "

@@ -166,6 +166,8 @@ def test_cli_external_evaluation_and_slides_complete_without_hermes(
                 for news in packet["model_input"]["news"]
             ]
         }
+        if "video_title" in packet["model_input"]["output_schema"]["required"]:
+            draft["video_title"] = "政策变化与市场影响：本期重点观察"
         write_json(draft_path, draft)
         assert cli.main([
             "slides", "submit", "--packet", packet_path,

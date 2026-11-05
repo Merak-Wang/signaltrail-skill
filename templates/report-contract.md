@@ -1,7 +1,7 @@
 # 结构化日报契约（schema 2.0）
 
 **状态：** 已验证机器相邻契约
-**最后对照 Schema/校验器：** 2026-09-20
+**最后对照 Schema/校验器：** 2026-11-02
 **文档入口：** [运行参考](../docs/README.md#runtime-references)
 
 输出 UTF-8 JSON。读取 packet 的 `output_language`：`zh-CN` 使用简体中文，`en` 使用英文；同一报告的标题、摘要、研判和评估建议不得混用输出语言。来源原题、URL、论文/项目名和技术术语可保留原文。Python 固定 schema/language/时间，生成报告、事件和分析 ID，并从索引补齐引用身份、access、来源排名、状态、计数和 `evaluation_status`。不要手工复制这些字段。
@@ -25,9 +25,11 @@ Schema，也不能放宽下列安全和状态边界。
 3. 研判。
 4. 质量评估与用户反馈（无评分时显示尚未评分；仅按用户明确要求启动质量评分）。
 
-七个 section 由 Python 按输出语言补齐并排序。渲染器按 brief 来源形成三级标题。精选 `items[]` 在每个 section 内按 `importance` 降序，不要求跨 section 全局降序。所有正式来源的 `report_target` 与 `report_max` 都是 15；成功来源有至少 15 个真实候选时必须交付当前索引顺序的前 15 条，候选不足时使用实际可用条目，不得设置固定分数淘汰线。默认 `collection.item_order: source` 使当前索引与报告采用来源原 Top1–15；`published_at` 使当前索引按有效发布时间从新到旧排列，缺失发布时间和时间并列时保持稳定输入顺序，再采用其前 15 条。两种模式都保留原始 `source_rank` 作为来源 Top 标签。普通 `briefs[]` 必须保持当前 index/`brief_plan` 选择顺序，不得按内部 `importance` 二次重排；`importance` 仍可用于精选事件与研判选择。
+七个 section 由 Python 按输出语言补齐并排序。渲染器按 brief 来源形成三级标题。精选 `items[]` 在每个 section 内按 `importance` 降序，不要求跨 section 全局降序。正式来源的 `report_target` 与 `report_max` 都是 15；Python 按来源与当前索引顺序分配唯一文章位置，同 canonical URL 只占一个位置，遇到重复从该来源尾部顺延补位；不足时使用实际可用数并记录 `shortfall_count`。同标题、不同地址的报道保留。默认 `collection.item_order: source` 保留来源原顺序；`published_at` 按有效发布时间从新到旧排列，缺失时间与并列时保持稳定输入顺序。两种模式和顺延补位都保留原始 `source_rank` 作为来源 Top 标签。普通 `briefs[]` 保持当前 `brief_plan` 的选择顺序，不按内部 `importance` 二次重排；`importance` 仍用于精选事件与研判选择。
 
-每个 brief author 逐项完成其 packet 的 `author_item_ids`，并只把一个符合 `output_schema` 的 JSON 对象写入 `draft_result_path`；Python 验证各批次、原样合并同语言的 `reusable_briefs` 并执行覆盖校验。`target_count` 是本来源最低覆盖数，`default_item_ids` 是本版唯一、确定且有序的普通 brief 边界。Python 不会用模板生成译题或 TL;DR；semantic cache 只可复用内容指纹、输出语言一致且独立评估已批准、并且仍位于对应 `brief_plan.default_item_ids` 内的旧 brief，不得用 Top15 之外的历史条目补位，草稿中越界的 item 也必须丢弃。
+候选的发表、更新和发现时间分别解释。纯日期与未知发表时间使用 `WATCH`。论文、项目的 `discovery_signal` 和 `signal_at` 表达本期榜单观察，`selection_reason` 说明选材依据；遵守 `suggested_status=WATCH`。旧论文再次上榜或排名上升可说明其研究价值与关注变化，保留原发表日期。三视角分析继续围绕可追溯证据形成独立判断。
+
+每个 brief author 逐项完成其 packet 的 `author_item_ids`，并只把一个符合 `output_schema` 的 JSON 对象写入 `draft_result_path`；Python 验证各批次、原样合并同语言的 `reusable_briefs` 并执行覆盖校验。`target_count` 是本来源最低覆盖数，`default_item_ids` 是本版唯一、确定且有序的普通 brief 边界。Python 不会用模板生成译题或 TL;DR；semantic cache 只可复用内容指纹、输出语言一致且独立评估已批准、并且仍位于对应 `brief_plan.default_item_ids` 内的旧 brief，不得用本轮计划之外的历史条目补位，草稿中越界的 item 也必须丢弃。
 
 每个 brief 与 analysis packet 都携带接收器实际执行的 `output_schema`。它是根级和嵌套字段、
 类型、枚举、长度及 `additionalProperties` 边界的权威契约；本文解释语义，但不能放宽该
@@ -113,7 +115,7 @@ analysis author 的输入只有 `prepare-analysis` 生成的 analysis packet，�
 }
 ```
 
-brief author 不输出 `title`；Python 从索引注入权威原题，避免模型逐条复制确定性文本。`zh-CN` 报告仅在 packet 的 `translation_required` 为 true 时填写自然、完整的 `title_zh`；`en` 报告同理填写 `title_en`。原题已经符合输出语言时不写译题字段，非当前语言的另一个译题字段也必须省略。不要添加 `[英]`、`[EN]`、`[中]`、`[ZH]`、来源名或截断原文。TL;DR 不得是“来源 X 报道”“详见原文链接”“正文/摘要未获取”、错误语言前缀、标题重复或其他占位文案。若索引已有 `full_text/partial`，读取 `content_path` 后总结；否则根据公开 `description`/摘要翻译并压缩；只有标题时，仅把标题明确表达的事实忠实改写成目标语言短句，不得添加标题外事实。访问状态只保存在 `source_ref.access` 或内部 `evidence_note`，不进入 TL;DR。
+brief author 不输出 `title`；Python 从索引注入权威原题，避免模型逐条复制确定性文本。`zh-CN` 报告仅在 packet 的 `translation_required` 为 true 时填写自然、完整的 `title_zh`；`en` 报告同理填写 `title_en`。原题已经符合输出语言时不写译题字段，非当前语言的另一个译题字段也必须省略。不要添加 `[英]`、`[EN]`、`[中]`、`[ZH]`、来源名或截断原文。TL;DR 不得是“来源 X 报道”“详见原文链接”“正文/摘要未获取”、错误语言前缀、标题重复或其他占位文案。优先读取已有 `content_path`；其次读取作者包列出的 `feed_content_path` JSON 中的 `text`／`blocks`，完整使用来源提供的 Feed 长字段，再使用公开 `description`／摘要。Feed 路径的 `feed_content_status=partial` 只描述该来源字段，完整性未知，不改变索引 `content_status`，也不视为网页全文；只有标题时，仅把标题明确表达的事实忠实改写成目标语言短句，不得添加标题外事实。访问状态只保存在 `source_ref.access` 或内部 `evidence_note`，不进入 TL;DR。
 
 `featured_event_id`、`source_ref`、`primary_source`、来源排名和可选 `image` 由 Python 补齐。analysis author 的草稿不得填写 `event_id`、`source_refs`、图片 URL 或本地路径；Python 只使用同一索引 item 已观察到的公开配图，安全下载后再进入图文流。`image.caption` 只保留该图片在新闻网站上的原文图注；无图注时为 `""`，不以标题或生成描述替代，不要求与报告语言一致。`items[]` 是证据与连续性层，通常 6—10 条、硬上限 12 条；普通 brief 不需要逐条研判。精选事件草稿只引用索引 item ID：
 

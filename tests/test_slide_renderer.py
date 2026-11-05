@@ -1,4 +1,5 @@
 from bs4 import BeautifulSoup
+from PIL import Image
 
 import signaltrail.slide_renderer as renderer
 from signaltrail.slide_renderer import render_slides_html
@@ -150,3 +151,32 @@ def test_local_image_is_loaded_once_per_render_and_refreshed_next_time(tmp_path,
 
     assert calls == 2
     assert first != second
+
+
+def test_cached_deck_keeps_highest_resolution_per_original_and_distinct_photos(tmp_path):
+    base = "https://global.unitednations.entermediadb.net/assets/"
+    images = [
+        {"url": base + "photo-a.jpg/image350x235cropped.jpg", "width": 350, "height": 235,
+         "local_path": "media/images/low.png", "caption": "Original publisher caption"},
+        {"url": base + "photo-b.jpg/image560x340cropped.jpg", "width": 560, "height": 340,
+         "local_path": "media/images/other.png", "caption": "Another photograph"},
+        {"url": base + "photo-a.jpg/image1170x530cropped.jpg", "width": 1170, "height": 530,
+         "local_path": "media/images/high.png", "caption": None},
+    ]
+    (tmp_path / "media/images").mkdir(parents=True)
+    for image in images:
+        Image.new("RGB", (image["width"], image["height"]), "blue").save(
+            tmp_path / image["local_path"]
+        )
+    deck = _deck()
+    deck["slides"][0]["images"] = images
+    soup = BeautifulSoup(render_slides_html(deck, tmp_path), "html.parser")
+    figures = soup.select(".gallery figure")
+
+    assert len(figures) == 2
+    assert [figure["data-original"] for figure in figures] == [
+        images[2]["url"], images[1]["url"],
+    ]
+    assert figures[0].select_one("figcaption").get_text() == "Original publisher caption"
+    assert all(figure.select_one("img")["src"].startswith("data:image/png;") for figure in figures)
+    assert deck["slides"][0]["images"] == images

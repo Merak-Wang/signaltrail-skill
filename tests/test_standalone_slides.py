@@ -33,11 +33,21 @@ def index_case(root, count=8):
 def write_packets(prepared, root):
     for path in prepared["packet_paths"]:
         packet = load_artifact(Path(path), root)["payload"]
-        draft = {"slides": [{"event_id": item["event_id"], "title": "目标语言标题",
-                             "summary": "来源明确说明这是计划中的变化。",
-                             "narration": "来源明确说明这是计划中的变化。" * 18,
-                             "video_tldr": "来源明确说明这是计划中的变化。",
-                             "perspectives": []} for item in packet["model_input"]["news"]]}
+        draft = {
+            "slides": [
+                {
+                    "event_id": item["event_id"],
+                    "title": "目标语言标题",
+                    "summary": "来源明确说明这是计划中的变化。",
+                    "narration": "来源明确说明这是计划中的变化。" * 18,
+                    "video_tldr": "来源明确说明这是计划中的变化。",
+                    "perspectives": [],
+                }
+                for item in packet["model_input"]["news"]
+            ]
+        }
+        if "video_title" in packet["model_input"]["output_schema"]["properties"]:
+            draft["video_title"] = "政策变化与科技进展：本期新闻观察"
         submit_slides(Path(path), draft, root)
 
 
@@ -100,6 +110,60 @@ def test_index_only_reads_selected_body_and_never_truncates(tmp_path):
     assert packet["model_input"]["news"][0]["evidence"][0]["body"] == body
 
 
+@pytest.mark.parametrize("navigation", [
+    "Comments",
+    "Article URL: https://example.com/0\n\n"
+    "Comments URL: https://news.ycombinator.com/item?id=50373308\n\n"
+    "Points: 49\n\n# Comments: 19",
+])
+def test_prepare_reports_legacy_navigation_evidence_before_dispatch(tmp_path, navigation):
+    path = index_case(tmp_path, 1)
+    index = json.loads(path.read_text(encoding="utf-8"))
+    item = index["items"][0]
+    item["description"] = navigation.replace("\n", " ")
+    item["content_status"] = "partial"
+    Path(item["content_path"]).write_text(
+        '---\ntitle: "Original title"\nsource: "Feed provider"\n---\n\n' + navigation,
+        encoding="utf-8",
+    )
+    write_json(path, index)
+    original = path.read_bytes()
+    with pytest.raises(ValueError, match="need article evidence") as caught:
+        prepare_slides(None, path, tmp_path)
+    details = json.loads(str(caught.value).split(": ", 1)[1])
+    assert details["original_index_path"] == str(path.resolve())
+    assert details["index_path"] == str(path.resolve())
+    assert details["evidence_gaps"] == [{"event_id": "index-item-0", "item_ids": ["item-0"],
+                                         "reason": "navigation_only"}]
+    assert not list(tmp_path.rglob("slides-packet-*.json"))
+    assert original == path.read_bytes()
+    item["description"] = "The bank kept its policy rate at 3%."
+    write_json(path, index)
+    prepared = prepare_slides(None, path, tmp_path)
+    packet = load_artifact(Path(prepared["packet_paths"][0]), tmp_path)["payload"]
+    evidence = packet["model_input"]["news"][0]["evidence"][0]
+    assert evidence["body"] == ""
+    assert evidence["description"] == item["description"]
+    assert evidence["content_status"] == "partial"
+
+
+def test_slide_body_omits_frontmatter_and_uses_saved_feed_text(tmp_path):
+    path = index_case(tmp_path, 2)
+    index = json.loads(path.read_text(encoding="utf-8"))
+    first, second = index["items"]
+    text = "The bank kept its policy rate at 3%."
+    Path(first["content_path"]).write_text(
+        '---\ntitle: "Original title"\nsource: "Feed provider"\n---\n\n' + text,
+        encoding="utf-8",
+    )
+    second.pop("content_path")
+    feed = write_json(tmp_path / "saved-feed.json", {"text": text})
+    second["metadata"]["feed_content_path"] = str(feed)
+    prepared = prepare_slides(None, write_json(path, index), tmp_path)
+    packet = load_artifact(Path(prepared["packet_paths"][0]), tmp_path)["payload"]
+    assert [row["evidence"][0]["body"] for row in packet["model_input"]["news"]] == [text, text]
+
+
 @pytest.mark.parametrize("field", ["sources", "images", "caption"])
 def test_index_draft_cannot_rewrite_python_fields(tmp_path, field):
     prepared = prepare_slides(None, index_case(tmp_path, 1), tmp_path)
@@ -131,11 +195,21 @@ def test_plain_cli_standalone_lifecycle_and_all_reused_render(tmp_path, monkeypa
     prepared = json.loads(capsys.readouterr().out)
     for number, path in enumerate(prepared["packet_paths"]):
         packet = load_artifact(Path(path), root)["payload"]
-        draft = {"slides": [{"event_id": item["event_id"], "title": "目标语言标题",
-                             "summary": "来源说明事件仍在计划中。",
-                             "narration": "来源明确说明这是计划中的变化。" * 18,
-                             "video_tldr": "来源明确说明这是计划中的变化。",
-                             "perspectives": []} for item in packet["model_input"]["news"]]}
+        draft = {
+            "slides": [
+                {
+                    "event_id": item["event_id"],
+                    "title": "目标语言标题",
+                    "summary": "来源说明事件仍在计划中。",
+                    "narration": "来源明确说明这是计划中的变化。" * 18,
+                    "video_tldr": "来源明确说明这是计划中的变化。",
+                    "perspectives": [],
+                }
+                for item in packet["model_input"]["news"]
+            ]
+        }
+        if "video_title" in packet["model_input"]["output_schema"]["properties"]:
+            draft["video_title"] = "政策变化与科技进展：本期新闻观察"
         draft_path = write_json(root / "drafts" / f"batch-{number}.json", draft)
         assert main(["slides", "submit", "--packet", path, "--input", str(draft_path)]) == 0
         assert Path(json.loads(capsys.readouterr().out)["artifact_path"]).is_file()
@@ -147,10 +221,10 @@ def test_plain_cli_standalone_lifecycle_and_all_reused_render(tmp_path, monkeypa
     assert all(Path(first[key]).is_file() for key in ("html_path", "json_path", "markdown_path"))
     assert not (root / "reports").exists()
 
-    next_index = write_json(root / "indexes" / "next-revision.json",
-                            json.loads(index_path.read_text(encoding="utf-8")))
-    assert main(["slides", "prepare", "--index", str(next_index),
-                 "--reuse-plan", plan_path]) == 0
+    next_index = write_json(
+        root / "indexes" / "next-revision.json", json.loads(index_path.read_text(encoding="utf-8"))
+    )
+    assert main(["slides", "prepare", "--index", str(next_index), "--reuse-plan", plan_path]) == 0
     reused = json.loads(capsys.readouterr().out)
     assert reused["packet_paths"] == []
     assert reused["reused_count"] == 2

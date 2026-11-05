@@ -1,238 +1,121 @@
 # Usage
 
-**Status:** Verified · **Owner:** Repository maintainers · **Last verified:** 2026-10-07
+**Status:** Verified · **Owner:** Repository maintainers · **Last verified:** 2026-11-02
 
-Use this guide after the [quick start](../README.en.md). It covers local configuration,
-host setup, and where to find a finished report. [中文](zh-CN/usage.md)
+Use this guide to configure an installed SignalTrail skill, choose sources and language, and find or resume an edition. Follow [SKILL.md](../SKILL.md) for the complete agent workflow. [中文](zh-CN/usage.md)
 
 ## Installation
 
-Install the checkout with `python -m pip install -e .`, then load its root `SKILL.md` in
-your agent. The Python import is `signaltrail`; its module entry point is
-`python -m signaltrail.cli`. Keep the checkout: configuration, schemas and templates are runtime
-inputs. `DAILY_INTEL_SKILL_DIR` remains accepted when launching outside the checkout.
+From the complete checkout or extracted skill package:
 
-The checkout maintains one root `src/`. A release build places the complete installable skill
-in `dist/signaltrail/`, including `SKILL.md`, source, configuration, schemas, templates, references,
-and assets. Install from the checkout or extracted package root. The installer can also sync
-the skill into a Hermes Skill directory for that host; this is optional. Virtual environments
-and runtime data are excluded. `-Editable` (Windows) or `--editable` (macOS/Linux) binds the
-Python installation to the original source directory for development. Both installation modes bind Python to their complete resource root with an editable install, so commands work from other working directories.
-Sync is incremental: existing files are updated and extra files in the target remain in place; the installer performs no cleanup. Back up locally customized configuration before updating, because matching resource files are overwritten.
+```sh
+python -m pip install -e .
+signaltrail --help
+```
 
-The Python distribution is now `signaltrail-skill`, replacing `daily-intelligence-skill`.
-The main command is `signaltrail`; new installations do not provide `daily-intel`. Update scripts
-and scheduled jobs to use the new command. Existing `DAILY_INTEL_*` environment variables and
-stored report IDs remain supported.
+Load the root `SKILL.md` in your agent. Keep the resource directory: configuration, templates, schemas, and assets are used at runtime. The Python distribution is `signaltrail-skill`, the command is `signaltrail`, and the module entry point is `python -m signaltrail.cli`.
 
-Windows can use system Edge. For browser collection on macOS or Linux, install Chromium
-in the same Python environment:
+The installation scripts can optionally sync a copy into a Hermes skill directory. Sync updates matching files and retains extra files; back up customized configuration before updating. `-Editable` on Windows or `--editable` on macOS/Linux uses the original checkout. See [Hermes integration](../references/hermes-integration.md) for host-specific setup.
+
+Windows can use system Edge. Install Chromium in the same Python environment for browser collection on macOS/Linux:
 
 ```sh
 python -m playwright install chromium
 ```
 
-On a new Debian or Ubuntu machine, `python -m playwright install-deps chromium` installs
-the system libraries and may require administrator access. Hermes-specific installation is
-described in [Hermes integration](../references/hermes-integration.md); Windows browser details
-are in [windows-setup.md](../references/windows-setup.md).
+Debian/Ubuntu may also require `python -m playwright install-deps chromium`.
 
-## Upgrade from an earlier version
+## Data and browser profile
 
-Stop active SignalTrail and Hermes jobs before upgrading. Uninstall the old Python distribution,
-then install from the new checkout. Existing Hermes data does not need to be moved; keep using its
-current absolute path explicitly and register it for later no-argument runs:
-
-Replace the example data and profile paths below with your existing absolute paths, whether
-their directory names are `daily-intelligence` or `signaltrail`.
-
-```powershell
-python -m pip uninstall daily-intelligence-skill
-python -m pip install -e .
-$env:SIGNALTRAIL_PROFILE_DIR = "$env:LOCALAPPDATA\hermes\browser-profiles\daily-intelligence"
-signaltrail --data-dir "$env:LOCALAPPDATA\hermes\daily-intelligence" data-root adopt
-signaltrail --data-dir "$env:LOCALAPPDATA\hermes\daily-intelligence" data-root status
-```
-
-On macOS/Linux, from the checkout or complete extracted package:
-
-```sh
-python -m pip uninstall daily-intelligence-skill
-python -m pip install -e .
-export SIGNALTRAIL_PROFILE_DIR="$HOME/.hermes/browser-profiles/daily-intelligence"
-signaltrail --data-dir "$HOME/.hermes/daily-intelligence" data-root adopt
-signaltrail --data-dir "$HOME/.hermes/daily-intelligence" data-root status
-```
-
-These commands keep existing data and profiles in place. `data-root adopt` records the selected
-root in the SignalTrail application's own data directory; it does not move or copy files. Keep
-passing the same `--data-dir` or set `SIGNALTRAIL_DATA_DIR`, and set the old profile explicitly
-with `SIGNALTRAIL_PROFILE_DIR` or `--profile-dir`. Update scheduled commands too.
-The environment assignments above apply to the current shell; save the profile setting in
-the scheduler's environment or pass `--profile-dir` in its command. Keep existing roots in
-place: moving a root across directories also requires its historical path mapping.
-
-## Data directories
-
-Pass `--data-dir DATA_DIR` before the subcommand, or set `SIGNALTRAIL_DATA_DIR`
-(the legacy `DAILY_INTEL_DATA_DIR` remains accepted). Without an explicit root, data defaults
-to `%LOCALAPPDATA%\signaltrail` on Windows and `${XDG_DATA_HOME:-~/.local/share}/signaltrail`
-on macOS/Linux. Set `SIGNALTRAIL_PROFILE_DIR` or pass `--profile-dir` to choose a browser profile;
-the default is `browser-profiles/signaltrail/` under the SignalTrail application data directory.
-For packaged installations launched outside the checkout, set `SIGNALTRAIL_SKILL_DIR` to the
-complete skill package directory when runtime resources cannot be found relative to the installed module.
+Pass `--data-dir` before the subcommand, or set `SIGNALTRAIL_DATA_DIR`. Defaults are `%LOCALAPPDATA%\signaltrail` on Windows and `${XDG_DATA_HOME:-~/.local/share}/signaltrail` on macOS/Linux. Set `SIGNALTRAIL_PROFILE_DIR` or use `--profile-dir` to choose a browser profile.
 
 ```sh
 signaltrail --data-dir DATA_DIR data-root status
+signaltrail --data-dir DATA_DIR data-root adopt
 ```
 
-An explicit `--data-dir` is used directly and is not registered automatically.
-`data-root adopt` records a root for later no-argument runs; its registry lives under the
-SignalTrail application data directory, never under Hermes home. Run files and referenced
-artifacts must belong to the same data root.
+`adopt` registers the existing directory for later runs without an explicit path. It keeps the files in place. Run manifests and their referenced artifacts must use the same data root. If resources cannot be found from an installation outside the checkout, set `SIGNALTRAIL_SKILL_DIR` to the complete skill directory.
 
-## Daily cadence
+<a id="upgrade-from-an-earlier-version"></a>
 
-SignalTrail generates one `daily` edition per day. `collect`, `build-context`, and `run-edition` default to `--edition daily`. The window used to assess news freshness covers the 24 hours before the run starts in the selected timezone. Source Top ordering and the existing candidate selection rules still apply. Schedule one invocation at a consistent local time and resume its `runs/DATE/daily.json` for recovery. Existing `morning` and `evening` runs retain their original windows and can still be resumed.
+When upgrading an earlier installation, stop active jobs, uninstall `daily-intelligence-skill`, and install the current package. Retain the old data and profile directories and pass their absolute paths. Legacy `DAILY_INTEL_*` environment variables and saved report IDs remain supported. Update scheduled commands to `signaltrail` and preserve their data/profile settings.
+
+## Daily run and language
 
 ```sh
 signaltrail --timezone Asia/Shanghai run-edition --edition daily
+signaltrail --timezone Asia/Shanghai run-edition --edition daily --language en
 ```
 
-## Language and source order
+The command prepares the run; the host agent completes selection and writing through the skill. A daily edition uses the 24 hours preceding its start in the chosen timezone. Schedule one run at a consistent local time and resume `runs/DATE/daily.json` after interruptions. `--restart` explicitly creates another attempt. Existing morning/evening runs can still be resumed.
 
-The default report language is `zh-CN`. Ask the agent for English, or pass `--language en`
-to `run-edition`. The command prepares the run; the agent still needs to complete writing
-through [SKILL.md](../SKILL.md). Set the default in `configs/sources.yaml`:
+Output defaults to `zh-CN`. Ask the agent for English, pass `--language en`, or set:
 
 ```yaml
 output:
   language: en
 ```
 
-Translated titles, summaries, analysis, and reading formats follow that language;
-original headlines remain unchanged.
+Titles, summaries, analysis, slides, and speech follow the selected language. Original headlines and source links remain available for reference.
 
-Edit [sources.yaml](../configs/sources.yaml) for formal reports and
-[discovery-sources.yaml](../configs/discovery-sources.yaml) for the monitor.
-Formal sources use `report_target: 15` and `report_max: 15`; fewer available candidates
-produce fewer summaries. Discovery sources use zero for both and never fill report quotas.
+## Sources and article evidence
 
-`collection.item_order: source` preserves the page, ranking, or feed order.
-`published_at` sorts the fetched index by valid publication time, newest first; missing
-and tied times retain their input order. A source can override `item_order` locally.
-Both modes preserve `source_rank`; summaries are not re-sorted by importance.
-Hugging Face Papers uses Trending order, which can include older papers.
+Edit [sources.yaml](../configs/sources.yaml) for core report sources and [discovery-sources.yaml](../configs/discovery-sources.yaml) for discovery feeds. Each core source has its own `report_target` and `report_max`. Discovery sources use zero targets and can contribute to the shared supplementary pool, controlled by `collection.discovery_brief_limit` (default 30). See [collection extensions](platform.md) for configuration.
 
-The discovery catalog adds TASS, Bank of Russia, Xinhua English, China MFA remarks,
-MOFCOM press conferences and UN meeting coverage. Anadolu, IRNA and WAM remain disabled
-until this deployment can fetch usable items. ReliefWeb remains a documented candidate
-pending its approved API appname. See the [probe record](research/2026-09-20-collection-improvements.md).
-Source `origin_scope`, `coverage_regions` and `publisher_group` distinguish organization origin,
-coverage and publisher grouping; they do not certify independent evidence.
+`collection.item_order: source` preserves page, ranking, or feed order. `published_at` orders valid publication times newest first, retaining input order for ties and unknown dates. A source can override this setting. Publisher rank remains in `metadata.source_rank`; ranking sources such as Hugging Face Papers retain their discovery semantics.
 
-Feed long content is saved separately while descriptions remain capped at 600 characters.
-Only selected enrichment items load those records as partial evidence. Browser fallback uses
-one persistent context with bounded concurrent pages; optional `ready_selector` replaces the
-generic readiness check, and explicit `wait_ms` takes precedence. No collection step calls a model.
+Core-source cache reuse requires current coverage in the frozen collection window. Collection places in-window core items before unknown-date or historical items. Brief planning uses each canonical URL once and refills duplicate positions from later unique articles in the same source, preserving source targets and publisher rank. The supplementary discovery pool deduplicates against these selected core articles.
 
-To fetch selected article bodies from an existing index, run `extract-content` with the exact
-item IDs. This creates a new enriched index revision under the same data root; it does not edit
-the input index. Use the returned path in later authoring steps. A visible browser and persistent
-profile can be supplied when a publisher requires interactive verification:
+Date-only publication values keep day precision and receive `WATCH`, as do unknown publication times. Source updates and first discovery remain separate fields. Older papers and repositories can enter the research radar through current listing, return, ranking-rise, or revision signals as `WATCH`; ordinary refreshes preserve the original signal time.
+
+Article text is the first evidence choice, followed by saved Feed text/blocks and short descriptions. Packets expose Feed material as partial evidence with its own path and status. Enrichment suggestions weigh importance, observed gaps, available evidence, and source/domain diversity. Trafilatura now supplies a default local fallback with body-retention checks. Text PDFs retain page numbers and partial status. Fetch selected article bodies explicitly with:
 
 ```sh
 signaltrail --data-dir DATA_DIR extract-content --index INDEX.json --item-id ITEM_ID
 signaltrail --data-dir DATA_DIR extract-content --index INDEX.json --item-id ITEM_ID --headed --profile-dir PROFILE_DIR
 ```
 
-## Hermes metering (optional)
+Extraction creates an enriched index revision. Use the returned path in later steps. Collection keeps login, challenge, rate-limit, and failure states visible. Use `verify-pending` for interactive browser verification. The [editorial policy](../references/editorial-policy.md) covers source selection and evidence handling.
 
-For the audited Hermes 0.21 integration, start the host through:
+## Collection monitor
+
+```sh
+signaltrail --data-dir DATA_DIR refresh-monitor
+signaltrail --data-dir DATA_DIR serve --open
+```
+
+The optional local monitor shows collected news, story clusters, source health, and pending verification. Collection and clustering use no model calls. Its server defaults to read-only operation without periodic collection. The daily workflow runs on demand and delivers report HTML/PDF, slides, and optional video. See [collection extensions and research APIs](platform.md).
+
+## Host usage and optional scoring
+
+Brief authors read `signaltrail --data-dir DATA_DIR brief-input --packet PACKET.json` once. Its single-line input retains complete candidate evidence, order, writing style, schema, and draft/preflight commands. Matching candidate IDs replace the repeated authorization list; distinct legacy authorizations remain explicit. Evidence paths are read as needed.
+
+Brief packets carry the edition date and frozen collection window. Authors assess importance from this edition's developments, impact, and timeliness, preserving original publication dates and observed listing changes for older research. Major ongoing impact can still justify a high score. For packets with a frozen end time, validation requires a precise publication time today or yesterday for `NEW`, and uses `WATCH` for unknown dates, date-only values, and research listing signals. Coordinated workers run `preflight_command` and return drafts for coordinator submission with `submit-authoring-batch --all`. Standalone workers follow the coordinator's submission instruction. Older packets support preflight by appending `--check-only` to `submission_command`.
+
+Any capable host agent can drive the writing packets. Runs without an audited usage adapter record `unmetered` coverage and `null` usage totals. For audited Hermes metering, launch through:
 
 ```sh
 signaltrail-hermes run --ledger DATA_DIR --hermes-python HERMES_PYTHON --prompt-file PROMPT.txt --timeout 3600
 ```
 
-Replace the uppercase placeholders with paths. `HERMES_PYTHON` is the Hermes virtual
-environment's Python with SignalTrail installed; `PROMPT.txt` contains the report request.
-Optional `--provider` and `--model` select the route.
+The launcher begins metering before model work and reconciles supported calls with host counters. `--provider` and `--model` choose the route. Read [usage metering](../references/llm-usage.md) for coverage and other host imports, and [Hermes integration](../references/hermes-integration.md) for setup.
 
-This entry point starts metering before model work, includes workers and supported auxiliary
-calls, and supports explicitly requested independent scoring in a separate task. It checks host counters
-before sealing. Missing observations remain partial. Direct Hermes CLI and legacy Cron
-do not automatically receive the same coverage. See [usage metering](../references/llm-usage.md)
-for exact limits and Codex/OpenClaw imports.
+Independent quality scoring is optional. Add `--evaluate` to `finalize-edition` or `complete-edition-tail` to request it. The default external backend returns a dossier and submission command for an independent agent. Use `--evaluation-backend hermes` to select Hermes scheduling. The run retains this request during recovery. An unscored brief remains outside the approved semantic cache.
 
-Authoring status also shows bounded delegation metrics for its child batches. Hermes reports the
-prompt token count with cache tokens included, while this callback does not expose the uncached
-input and cache buckets separately. The host-reported total may also be absent, so the view marks
-coverage `exact`, `partial`, or `unobservable` from reported totals. It excludes coordinator,
-auxiliary, and evaluator calls; use the sealed usage task summary for the whole run.
+Default analysis uses one fresh-context packet. `prepare-analysis --parallel` offers a staged path: selection, three domain packets, synthesis, then assembly. It can reduce authoring wait while repeating more shared input. Follow the returned commands and [runbook](../references/runbook.md). Use global `--compact` before a subcommand to shorten stdout while keeping saved artifacts complete.
 
-Other agents can drive the same writing packets. Without an audited usage adapter, the run
-remains usable but has explicit `unmetered` coverage and null token totals. A host without
-automatic evaluator scheduling dispatches the dossier itself and calls `finalize-evaluation`
-only when the user requests quality scoring.
-
-Quality scoring is off by default. To request it for one edition, add `--evaluate` to
-`finalize-edition` or `complete-edition-tail`. The run retains the request for tail recovery;
-ordinary finalization and PDF delivery create no evaluator task. Existing scores remain
-available. Unscored briefs stay outside the approved semantic cache, so future reports may
-need more fresh writing. Structural and evidence validation still run normally.
-
-The default evaluation backend is external. An independent Agent that did not write the report
-can read the dossier and submit a score; if no independent evaluator is available, leave scoring
-pending. To use Hermes instead, explicitly pass `--evaluation-backend hermes`. With `--evaluate`,
-the tail creates the hash-bound dossier and `edition-status`
-returns its path, a draft path, and the exact `finalize-evaluation` command. The external
-evaluator reads the dossier and writes the draft, then runs that command. External mode does
-not schedule Hermes or create an evaluator usage task; completion is recorded only after the
-draft passes `finalize-evaluation`. External handoff has one attempt and is not automatically
-redispatched on recovery.
-
-Use global `--compact` before the subcommand for bounded CLI stdout; saved JSON, Markdown, HTML and packet files remain complete. Keep the same absolute CLI invocation for every isolated worker.
-
-The brief repair budget limits new model repairs; a completed valid draft can still be validated and accepted after the budget is exhausted.
-
-Default analysis uses one packet in a fresh context to avoid repeated shared input. To reduce authoring wait time, opt into `prepare-analysis --parallel`; complete the returned selection packet, then run `analysis-stage --run RUN.json --stage domains`. Complete the three domain packets in parallel, run `--stage synthesis` and complete its packet, then run `--stage assemble` to write the original `analysis_result_path`. Continue with `assemble-authoring`. This optional path uses more total input tokens because stages repeat shared material. Each task starts in a fresh context containing only its packet and absolute CLI. Overlap media prefetch with brief writing and PDF tail work with slide writing; wait for tail completion before rendering.
-
-Observation signals specify the object, any review time present in evidence, and the direction that changes the judgment. Synthesis follows concrete cross-domain transmission mechanisms; unconnected domains remain independent.
-
-## Reports and recovery
+## Outputs and recovery
 
 | Under `DATA_DIR` | Contents |
 | --- | --- |
-| `reports/YYYY-MM-DD/EDITION-rN.json` and `.md` | Original versioned report |
-| Matching `.html` and `.pdf` | Reading and printing copies |
-| `reports/index.html` | Local report history |
-| `runs/YYYY-MM-DD/EDITION.json` | Current stage, artifact paths, errors, next commands |
-| `usage/` and `host-runs/` | Usage events and host launch receipts |
+| `reports/YYYY-MM-DD/EDITION-rN.json` and `.md` | Versioned report records |
+| Matching `.html` and `.pdf` | Reading and print copies |
+| `reports/index.html` | Report history |
+| `runs/YYYY-MM-DD/EDITION.json` | Stage, artifacts, errors, and next commands |
+| `usage/` and `host-runs/` | Usage records and host launch receipts |
 
-The workflow also writes a portable desktop HTML copy with available validated images embedded.
-It returns HTML first, then finishes PDF, requested Notion delivery, and requested scoring in a retryable
-tail. The default PDF soft size budget is 50 MiB; exceeding it records a warning.
+The workflow returns HTML first and creates a portable desktop copy with available images embedded. A retryable tail handles PDF, requested Notion delivery, and requested scoring. The default PDF size budget is 50 MiB; an oversized file records a warning.
 
-Images retain the news site's caption in its original language. The report's `image.caption`
-is an empty string when no caption is available; headlines, alt text, and generated descriptions
-are never used as substitutes. Image credits remain separate from captions.
+Report HTML embeds the rendered slides, with a separate open link; video export adds playback in the same area. Printing restores the report summary. Each daily edition requires rendered slides. Use `edition-status --run RUN.json --require-complete` to check the complete delivery. See [slides and video](news-slides.md).
 
-The HTML reader uses a three-column masthead with the report date, edition, and recorded
-generation time. White pages, black text, and red source rules frame a continuous news list.
-When an animated slide projection exists, the screen layout embeds it in the former “today's
-summary” area and keeps a button to open the standalone HTML; print hides the deck and restores
-the summary. Without a slide projection, the ordinary summary remains in place. The original
-floating directory retains its expand/collapse and scroll tracking behavior. Search, archive/PDF
-links, and the sources/status entry remain available. See the [slide guide](news-slides.md).
-
-Read the run manifest before retrying. Use its `tail.command` for pending delivery work.
-Never edit status JSON or delete a lock while its process is active. Detailed stage recovery
-is in the [runbook](../references/runbook.md).
-
-Collection keeps login, challenge, rate-limit, and failure states visible. To handle a pending
-source interactively, run `verify-pending` when you are ready for a browser window.
-Unattended runs must not pass `--open-verification`.
-
-Notion is optional and requires explicit `--publish` plus credentials configured through
-[Notion setup](../references/notion-setup.md). Local reports remain available when remote
-delivery fails.
+Before retrying, read the run manifest and use its exact `tail.command` for pending delivery. The [runbook](../references/runbook.md) gives stage-specific recovery steps. Notion publishing requires explicit `--publish` and [configured credentials](../references/notion-setup.md).

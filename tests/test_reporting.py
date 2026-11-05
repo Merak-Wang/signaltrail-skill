@@ -1641,3 +1641,25 @@ def test_report_rejects_claimed_access_not_present_in_index(tmp_path: Path):
     errors, _warnings = validate_report_data(report, index)
 
     assert any("does not match index content_status" in error for error in errors)
+
+
+def test_compiler_deduplicates_old_draft_urls_but_retains_independent_reporting():
+    items = [{"item_id": key, "source_id": source, "source_name": source,
+              "title": "Two sources report the same event", "url": url,
+              "module": "technology", "category": "papers", "metadata": {"source_rank": 1}}
+             for key, source, url in (("a", "source-a", "https://example.org/paper"),
+                                      ("b", "source-b", "http://www.example.org/paper?utm_source=x"),
+                                      ("c", "source-b", "https://other.org/report"))]
+    index = {"date": "2026-11-02", "edition": "daily", "items": items,
+             "sources": [{"source_id": key, "source_name": key, "status": "success"}
+                         for key in ("source-a", "source-b")]}
+    report = {"schema_version": "2.0", "language": "en", "analyses": [], "sections": [
+        {"id": "technology.papers", "briefs": [
+            {"item_id": key, "tldr": "The report describes a research finding.",
+             "importance": 70, "status": "WATCH"} for key in ("a", "b", "c")], "items": []}]}
+    warnings = compile_report_data(report, index, brief_plan_item_ids={
+        "source-a": ["a"], "source-b": ["b", "c"],
+    })
+    assert [b["item_id"] for s in report["sections"] for b in s["briefs"]] == ["a", "c"]
+    assert any("duplicate brief canonical URL" in warning for warning in warnings)
+    assert len(index["items"]) == 3

@@ -3,6 +3,7 @@
 import argparse
 from pathlib import Path
 
+from .platform import add_platform_parser
 from .research import add_research_parser
 from .slides import add_slides_parser
 
@@ -58,8 +59,11 @@ def _common_parser() -> argparse.ArgumentParser:
     parser.add_argument("--config", type=Path, help="Path to sources.yaml")
     parser.add_argument("--data-dir", type=Path, help="Runtime data directory")
     parser.add_argument("--timezone", help="IANA timezone overriding sources.yaml")
-    parser.add_argument("--compact", action="store_true",
-                        help="Print short edition receipts; full results remain in saved artifacts")
+    parser.add_argument(
+        "--compact",
+        action="store_true",
+        help="Print short edition receipts; full results remain in saved artifacts",
+    )
     return parser
 
 
@@ -119,7 +123,7 @@ def build_parser() -> argparse.ArgumentParser:
     serve = sub.add_parser(
         "serve",
         aliases=["serve-monitor"],
-        help="Serve the read-only local intelligence desk",
+        help="Serve the personal news platform with events, follows and research",
     )
     serve.add_argument("--host", default="127.0.0.1")
     serve.add_argument("--port", type=int, default=8765)
@@ -133,7 +137,15 @@ def build_parser() -> argparse.ArgumentParser:
         "--refresh-minutes",
         type=int,
         default=0,
-        help="Refresh in the background at this interval; zero keeps the server read-only",
+        help="Refresh news every N minutes; default: 0 (read-only, no automatic collection)",
+    )
+    serve.add_argument(
+        "--no-auto-research",
+        action="store_true",
+        help="Disable research triggered by new evidence in followed events",
+    )
+    serve.add_argument(
+        "--research-command", help="Research host command (default: available Hermes host)"
     )
 
     imported = sub.add_parser("import-legacy", help="Import the existing browser-link JSON")
@@ -265,6 +277,8 @@ def build_parser() -> argparse.ArgumentParser:
         help="Start one timed authoring session and assign deterministic batch result paths",
     )
     begin.add_argument("--run", type=Path, required=True)
+    begin.add_argument("--refresh-context", action="store_true",
+                       help="Rebuild authoring packets from the frozen index")
 
     submit = sub.add_parser(
         "submit-authoring-batch",
@@ -274,8 +288,14 @@ def build_parser() -> argparse.ArgumentParser:
     submit.add_argument("--batch-id")
     submit.add_argument("--result", type=Path)
     submit.add_argument("--all", action="store_true", help="Check all assigned drafts")
-    submit.add_argument("--check-only", action="store_true",
-                        help="Validate without writing receipts")
+    submit.add_argument(
+        "--check-only", action="store_true", help="Validate without writing receipts"
+    )
+
+    brief_input = sub.add_parser(
+        "brief-input", help="Read one compact, complete brief writing input",
+    )
+    brief_input.add_argument("--packet", type=Path, required=True)
 
     metrics = sub.add_parser(
         "record-authoring-metrics",
@@ -301,12 +321,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="Merge accepted brief batches and write a compact analysis packet",
     )
     prepare_analysis.add_argument("--run", type=Path, required=True)
-    prepare_analysis.add_argument("--parallel", action="store_true",
-                                  help="Prepare staged selection, parallel domains, and synthesis")
+    prepare_analysis.add_argument(
+        "--parallel",
+        action="store_true",
+        help="Prepare staged selection, parallel domains, and synthesis",
+    )
     analysis_stage = sub.add_parser("analysis-stage", help="Advance staged analysis writing")
     analysis_stage.add_argument("--run", type=Path, required=True)
-    analysis_stage.add_argument("--stage", choices=["domains", "synthesis", "assemble"],
-                                required=True)
+    analysis_stage.add_argument(
+        "--stage", choices=["domains", "synthesis", "assemble"], required=True
+    )
     prepare_analysis.add_argument(
         "--allow-degraded",
         action="store_true",
@@ -328,11 +352,15 @@ def build_parser() -> argparse.ArgumentParser:
     )
     finalize.add_argument("--run", type=Path, required=True)
     finalize.add_argument("--report", type=Path, required=True)
-    finalize.add_argument("--slides-exclude-event-id", action="append",
-                          help="Exclude specified slide events before filling the story limit")
     finalize.add_argument(
-        "--slides-max-news", type=int,
-        help="Maximum report stories to include in the visual stream (default: 30)",
+        "--slides-exclude-event-id",
+        action="append",
+        help="Exclude specified slide events before filling the story limit",
+    )
+    finalize.add_argument(
+        "--slides-max-news",
+        type=int,
+        help="Maximum report stories to include in the visual stream (default: 50)",
     )
     finalize.add_argument(
         "--publish",
@@ -353,11 +381,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="Return after local HTML; finish PDF and requested delivery/scoring later",
     )
     finalize.add_argument(
-        "--evaluate", action="store_true",
+        "--evaluate",
+        action="store_true",
         help="Explicitly request independent quality scoring (off by default)",
     )
     finalize.add_argument(
-        "--evaluation-backend", choices=("hermes", "external"),
+        "--evaluation-backend",
+        choices=("hermes", "external"),
         help="Evaluation backend when --evaluate is requested (defaults to external)",
     )
 
@@ -369,11 +399,13 @@ def build_parser() -> argparse.ArgumentParser:
     tail.add_argument("--publish", action="store_true")
     tail.add_argument("--notion-config", type=Path)
     tail.add_argument(
-        "--evaluate", action="store_true",
+        "--evaluate",
+        action="store_true",
         help="Explicitly request independent quality scoring (off by default)",
     )
     tail.add_argument(
-        "--evaluation-backend", choices=("hermes", "external"),
+        "--evaluation-backend",
+        choices=("hermes", "external"),
         help="Evaluation backend when --evaluate is requested (defaults to external)",
     )
 
@@ -381,8 +413,11 @@ def build_parser() -> argparse.ArgumentParser:
         "edition-status", help="Show whether the saved report and requested delivery are complete"
     )
     edition_status.add_argument("--run", type=Path, required=True)
-    edition_status.add_argument("--require-complete", action="store_true",
-                                help="Exit nonzero while any declared delivery step is pending")
+    edition_status.add_argument(
+        "--require-complete",
+        action="store_true",
+        help="Exit nonzero while any declared delivery step is pending",
+    )
 
     save = sub.add_parser(
         "save-report", help="Persist JSON/Markdown and configured local reading formats"
@@ -399,4 +434,5 @@ def build_parser() -> argparse.ArgumentParser:
     evaluation.add_argument("--publish", action="store_true")
     evaluation.add_argument("--notion-config", type=Path)
 
+    add_platform_parser(sub)
     return parser

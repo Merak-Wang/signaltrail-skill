@@ -150,11 +150,7 @@ def test_public_markdown_hygiene_patterns_cover_session_and_personal_paths():
     )
 
 
-def test_readme_showcase_assets_match_the_current_schema_v20_gallery():
-    readmes = [
-        (ROOT / "README.md").read_text(encoding="utf-8"),
-        (ROOT / "README.en.md").read_text(encoding="utf-8"),
-    ]
+def test_historical_showcase_assets_match_the_schema_v20_gallery():
     expected_images = {
         "morning-report-preview.png": (1440, 1200),
         "analysis-synthesis-preview.png": (1440, 1200),
@@ -167,7 +163,6 @@ def test_readme_showcase_assets_match_the_current_schema_v20_gallery():
         with Image.open(image_path) as preview:
             assert preview.size == expected_size
             preview.verify()
-        assert all(filename in readme for readme in readmes)
 
     gallery_path = ROOT / "examples" / "reports" / "2026-08-25-morning-r1.html"
     gallery = gallery_path.read_text(encoding="utf-8")

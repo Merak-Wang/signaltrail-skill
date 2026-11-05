@@ -9,6 +9,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 from .config import project_root
+from .image_policy import select_image_variants
 from .local_output import _embedded_image_sources
 
 _ASSET_DIR = project_root() / "assets" / "news-slides"
@@ -77,6 +78,7 @@ def _gallery_markup(images: list[dict], labels: tuple, data_dir: Path | None,
     输入：新闻图片记录、本地缓存目录、页面序号和本次渲染图片 URI 缓存；不改写图注。
     输出：有图时返回切换图集，无图时返回明确标注的排版示意图形。
     """
+    images = select_image_variants(images, data_dir=data_dir)
     figures = []
     for entry in images:
         local_path = str(entry.get("local_path") or "").replace("\\", "/")

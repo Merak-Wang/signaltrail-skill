@@ -23,7 +23,12 @@ from .localization import (
     translated_title,
     translated_title_field,
 )
-from .semantics import reusable_semantic_brief, semantic_fingerprint, tldr_quality_issue
+from .semantics import (
+    brief_requires_watch,
+    reusable_semantic_brief,
+    semantic_fingerprint,
+    tldr_quality_issue,
+)
 from .state import stable_analysis_id
 from .taxonomy import (
     SECTION_ID_ALIASES_V15,
@@ -1010,6 +1015,7 @@ def compile_report_data(
     compiled_sections: list[dict[str, Any]] = []
     event_by_item: dict[str, str] = {}
     used_brief_ids: set[str] = set()
+    used_brief_urls: set[str] = set()
     for section_id in SECTION_ORDER_V13:
         module, category = section_id.split(".", 1)
         section = provided_sections.get(section_id, {})
@@ -1032,9 +1038,17 @@ def compile_report_data(
             if item_id and item_id in used_brief_ids:
                 warnings.append(f"omitted duplicate brief item_id {item_id!r}")
                 continue
+            indexed = indexed_items.get(item_id, {})
+            raw_url = indexed.get("canonical_url") or indexed.get("url")
+            url = canonicalize_url(raw_url) if raw_url else ""
+            if url and url in used_brief_urls:
+                warnings.append(f"omitted duplicate brief canonical URL for {item_id!r}")
+                continue
             deduplicated_briefs.append(brief)
             if item_id:
                 used_brief_ids.add(item_id)
+            if url:
+                used_brief_urls.add(url)
         section["briefs"] = deduplicated_briefs
         for brief in section["briefs"]:
             item_id = str(brief.get("item_id", ""))
@@ -1065,6 +1079,8 @@ def compile_report_data(
                 indexed.get("published_at"),
                 str(index.get("timezone", "Asia/Shanghai")),
             )
+            if brief_requires_watch(indexed):
+                brief["status"] = "WATCH"
             if brief.get("status") == "NEW":
                 age = (
                     (date.fromisoformat(str(report["date"])) - published).days

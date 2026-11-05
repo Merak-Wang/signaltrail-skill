@@ -147,6 +147,8 @@ def test_daily_report_links_to_rendered_visual_edition(tmp_path: Path):
     toc_first = soup.select_one(".toc-link")
     assert toc_first["href"] == "#visual-briefing"
     assert toc_first.get_text() == "日报图文流与视频"
+    assert soup.select_one("#slides-embed-title").get_text() == report["title"]
+    assert soup.select_one(".slides-embed-description").get_text() == "日报图文流与视频"
     frame = soup.select_one(".slides-embed iframe")
     assert frame["src"] == "morning-r1-slides.html?embed=1"
     assert frame.has_attr("allowfullscreen")
@@ -435,9 +437,7 @@ def test_masthead_uses_recorded_time_without_assuming_beijing(timestamp, expecte
     assert "<script>bad</script>" not in rendered
 
 
-def test_video_entry_uses_deck_report_parent_and_survives_projection_refresh(
-    tmp_path, monkeypatch
-):
+def test_video_entry_uses_deck_report_parent_and_survives_projection_refresh(tmp_path, monkeypatch):
     import json
     from types import SimpleNamespace
 
@@ -463,12 +463,29 @@ def test_video_entry_uses_deck_report_parent_and_survives_projection_refresh(
     initial = BeautifulSoup(Path(outputs["html_path"]).read_text(encoding="utf-8"), "html.parser")
     assert initial.select_one(".video-entry") is None
     plan = save_artifact(data_dir, "slides-test", "slides-plan", {}, {"report": report_path})
-    deck = save_artifact(data_dir, "slides-test", "slides-deck",
-                         {"report_id": "different-from-parent"}, {"plan": plan})
+    deck = save_artifact(
+        data_dir,
+        "slides-test",
+        "slides-deck",
+        {"report_id": "different-from-parent", "video_title": "模型编写的整期视频标题"},
+        {"plan": plan},
+    )
     video = data_dir / "video dir" / "news #1.mp4"
     video.parent.mkdir()
     video.write_bytes(b"video")
-    player = refresh_report_video_entry(deck, video, data_dir, config=config)
+    model_player = refresh_report_video_entry(deck, video, data_dir, config=config)
+    assert (
+        BeautifulSoup(model_player.read_text(encoding="utf-8"), "html.parser").h1.get_text()
+        == "模型编写的整期视频标题"
+    )
+    model_report = BeautifulSoup(
+        Path(outputs["html_path"]).read_text(encoding="utf-8"), "html.parser"
+    )
+    assert (
+        model_report.select_one(".slides-embed-heading h2").get_text() == "模型编写的整期视频标题"
+    )
+    video_title = '能源与AI：本期 <观察> "重点"'
+    player = refresh_report_video_entry(deck, video, data_dir, config=config, title=video_title)
     assert player == report_dir / "morning-r1-video.html"
     player_html = BeautifulSoup(player.read_text(encoding="utf-8"), "html.parser")
     assert player_html.select_one("video[controls]")["src"] == "../../video%20dir/news%20%231.mp4"
@@ -477,7 +494,10 @@ def test_video_entry_uses_deck_report_parent_and_survives_projection_refresh(
     )
     assert report_html.body.find(recursive=False).get("class") != ["video-entry"]
     heading = report_html.select_one(".slides-embed-heading")
-    assert heading.select_one("h2").get_text() == "日报图文流与视频"
+    assert heading.select_one("h2").get_text() == video_title
+    assert heading.select_one(".slides-embed-description").get_text() == "日报图文流与视频"
+    assert player_html.select_one("h1").get_text() == video_title
+    assert player_html.select_one('meta[name="signaltrail-video-title"]')["content"] == video_title
     assert heading.select_one(".video-entry")["href"] == player.name
     assert heading.select_one("[data-open-slides]").has_attr("hidden")
     assert report_html.select_one("[data-video-frame]").has_attr("hidden")
@@ -488,6 +508,10 @@ def test_video_entry_uses_deck_report_parent_and_survives_projection_refresh(
     refresh_report_slides_entry(report_path, slides, data_dir)
     rebuilt = BeautifulSoup(Path(outputs["html_path"]).read_text(encoding="utf-8"), "html.parser")
     assert rebuilt.select_one(".video-entry")["href"] == player.name
+    assert rebuilt.select_one("#slides-embed-title").get_text() == video_title
+    refresh_report_video_entry(deck, video, data_dir, config=config)
+    preserved = BeautifulSoup(player.read_text(encoding="utf-8"), "html.parser")
+    assert preserved.h1.get_text() == video_title
     write_local_outputs(report, data_dir, config)
     assert BeautifulSoup(desktop.read_text(encoding="utf-8"), "html.parser").select_one(
         ".video-entry")["href"] == player.resolve().as_uri()
@@ -519,4 +543,5 @@ def test_video_entry_english_localization():
         "html.parser",
     )
     assert soup.select_one(".video-entry").get_text() == "Open video"
-    assert soup.select_one("#slides-embed-title").get_text() == "Daily news slides and video"
+    assert soup.select_one("#slides-embed-title").get_text() == report["title"]
+    assert soup.select_one(".slides-embed-description").get_text() == "Daily news slides and video"

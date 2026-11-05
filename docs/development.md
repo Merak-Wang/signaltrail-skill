@@ -1,6 +1,6 @@
 # Development
 
-**Status:** Verified · **Owner:** Repository maintainers · **Last verified:** 2026-09-23
+**Status:** Verified · **Owner:** Repository maintainers · **Last verified:** 2026-11-02
 
 This guide covers local changes and test selection. Read [architecture](../ARCHITECTURE.md)
 for code ownership and [AGENTS.md](../AGENTS.md) for invariants. [中文](zh-CN/development.md)
@@ -22,14 +22,6 @@ git diff --check
 Unit tests use temporary data roots and fake network/host responses. They need no production
 data, browser login, Notion credentials, or model calls. CI runs on Windows and Ubuntu with
 Python 3.11 and 3.12. Run a focused group while editing, then the full gate before submitting.
-
-The coordinator context projection keeps candidate order and selection evidence while omitting
-`url`, `image_url`, and `discovered_at`. The authoritative context remains complete, and brief
-packets are built from it independently.
-
-Hermes can reuse a request ID across retries. The observer pairs each attempt's hooks using
-the request ID and host start time, then reconciles successful calls and known tokens with
-the host database. A matching database total does not make missing failed-call usage exact.
 
 | Change | Focused tests |
 | --- | --- |

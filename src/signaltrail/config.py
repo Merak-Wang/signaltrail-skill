@@ -43,6 +43,7 @@ class SourceConfig:
     - ``origin_scope``、``coverage_regions``、``publisher_group``：机构来源、报道范围和出版组。
     - ``ready_selector``：索引就绪元素；未配置时使用适配器默认检查。
     - ``feed_urls``：显式配置的 RSS/Atom 地址，按优先级尝试并与发现缓存合并。
+    - ``rsshub_route``：当前实例上的 RSSHub 路由；初始化时追加到原生 Feed 之后。
     - ``monitor_enabled``：是否允许零模型监控器刷新该来源。
     - ``refresh_interval_minutes``：来源或 Feed 的最小刷新间隔；未到期时可复用缓存。
     - ``feed_item_limit``：单个来源 Feed 最多保留的条目数；为空时使用监控默认值。
@@ -76,6 +77,7 @@ class SourceConfig:
     coverage_regions: list[str] = field(default_factory=list)
     publisher_group: str | None = None
     feed_urls: list[str] = field(default_factory=list)
+    rsshub_route: str | None = None
     monitor_enabled: bool = True
     refresh_interval_minutes: int | None = None
     feed_item_limit: int | None = None
@@ -151,12 +153,26 @@ class CollectionConfig:
       Top 顺序，``published_at`` 按可用发布时间倒序。
     - ``fallback_extractor``：none 保留基线；trafilatura 允许本地备用抽取。
     - ``retain_public_html``：是否留存无登录 HTTP 的有界原响应；浏览器 DOM 不留存。
+    - ``browser_extractor``：HTTP 不足时 auto 优先已安装 Crawl4AI，交互窗口使用 Playwright。
+    - ``discovery_brief_limit``：发现来源共用的日报简报名额，零表示关闭补充选材。
     输出：构造后的采集排序配置；AppConfig 会把该默认值补到所有正式与发现来源。
     """
 
     item_order: str = "source"
-    fallback_extractor: str = "none"
+    fallback_extractor: str = "trafilatura"
     retain_public_html: bool = False
+    browser_extractor: str = "auto"
+    discovery_brief_limit: int = 30
+
+
+@dataclass(slots=True)
+class RSSHubConfig:
+    """处理：保存 RSSHub 实例入口，供来源路由生成订阅地址。
+    输入：用户配置的实例地址；空字符串表示未配置 RSSHub。
+    输出：独立实例配置，既有原生 Feed 无需依赖该服务。
+    """
+
+    base_url: str = ""
 
 
 @dataclass(slots=True)
@@ -341,6 +357,7 @@ class AppConfig:
     - ``media``：报告图片下载、缓存、安全和总量预算配置。
     - ``monitor``：零模型监控的刷新、并发、缓存和聚类配置。
     - ``monitor_sources``：发现来源配置列表；与核心来源分开以避免改变报告配额。
+    - ``rsshub``：自托管或显式选择的 RSSHub 实例入口。
     输出：构造后的 ``AppConfig`` 实例或枚举定义；其字段和方法共同承担上述职责。
     """
     timezone: str
@@ -352,6 +369,7 @@ class AppConfig:
     media: MediaConfig = field(default_factory=MediaConfig)
     monitor: MonitorConfig = field(default_factory=MonitorConfig)
     monitor_sources: list[SourceConfig] = field(default_factory=list)
+    rsshub: RSSHubConfig = field(default_factory=RSSHubConfig)
 
     def __post_init__(self) -> None:
         """处理：把全局采集排序默认值解析到每个未覆盖的来源。
@@ -361,6 +379,16 @@ class AppConfig:
         """
         validate_collection_config(self.collection)
         for source in [*self.sources, *self.monitor_sources]:
+            if source.rsshub_route:
+                base = self.rsshub.base_url.rstrip("/")
+                parsed = urlsplit(base)
+                if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+                    raise ValueError("rsshub.base_url must be an HTTP(S) instance URL")
+                route = source.rsshub_route
+                if not route.startswith("/") or route.startswith("//"):
+                    raise ValueError("rsshub_route must start with a single slash")
+                # 原生 Feed 保持配置顺序，RSSHub 路由追加为补充订阅入口。
+                source.feed_urls = list(dict.fromkeys([*source.feed_urls, base + route]))
             if source.item_order is None:
                 source.item_order = self.collection.item_order
             if source.item_order not in ITEM_ORDER_VALUES:
@@ -438,6 +466,11 @@ def validate_collection_config(collection: CollectionConfig) -> CollectionConfig
         raise ValueError("collection.item_order must be one of: source, published_at")
     if collection.fallback_extractor not in {"none", "trafilatura"}:
         raise ValueError("collection.fallback_extractor must be one of: none, trafilatura")
+    if collection.browser_extractor not in {"auto", "playwright", "crawl4ai"}:
+        raise ValueError("collection.browser_extractor must be one of: auto, playwright, crawl4ai")
+    if (type(collection.discovery_brief_limit) is not int
+            or not 0 <= collection.discovery_brief_limit <= 120):
+        raise ValueError("collection.discovery_brief_limit must be an integer from 0 through 120")
     if not isinstance(collection.retain_public_html, bool):
         raise ValueError("collection.retain_public_html must be a boolean")
     return collection
@@ -575,6 +608,7 @@ def load_config(path: Path | None = None, timezone: str | None = None) -> AppCon
         media=media,
         monitor=monitor,
         monitor_sources=monitor_sources,
+        rsshub=RSSHubConfig(**raw.get("rsshub", {})),
     )
 
 

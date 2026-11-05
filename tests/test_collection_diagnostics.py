@@ -92,7 +92,8 @@ def test_context_exposes_gap_plan_without_reordering_or_expanding_candidates(tmp
     config.sources = config.sources[:1]
     source = config.sources[0]
     index = {"date": "2026-09-11", "edition": "morning", "items": [
-        {"item_id": f"id-{i}", "source_id": source.id, "title": f"Title {i}"}
+        {"item_id": f"id-{i}", "source_id": source.id, "title": f"Title {i}",
+         "url": f"https://example.org/article/{i}"}
         for i in range(30)
     ], "sources": [{"source_id": source.id, "status": "success"}]}
     path = write_json(tmp_path / "index.json", index)
@@ -143,3 +144,17 @@ def test_quality_limits_reach_brief_and_analysis_inputs(tmp_path):
         "briefs": [{"item_id": "story", "importance": 70}],
     }], result, 1)
     assert selected[0]["content_observations"] == observations
+
+
+def test_enrichment_prioritizes_observed_gaps_and_deduplicates_exact_url(tmp_path):
+    items = [
+        {"item_id": "feed", "source_id": "a", "url": "https://a/one", "importance": 50,
+         "metadata": {"feed_content_characters": 5000}},
+        {"item_id": "duplicate", "source_id": "b", "url": "https://a/one"},
+        {"item_id": "table", "source_id": "c", "url": "https://c/one", "importance": 90,
+         "metadata": {"content_quality": {"numeric_tables_without_headers": ["table"]}}},
+    ]
+    plan = enrichment_plan(items, [], tmp_path, 2)
+    assert [x["item_id"] for x in plan["actions"]] == ["table", "feed"]
+    assert plan["actions"][0]["priority_components"]["structural_gap"] == 3
+    assert plan["claim_sufficiency"] == "not_assessed"

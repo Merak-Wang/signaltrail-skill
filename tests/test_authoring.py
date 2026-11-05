@@ -1,3 +1,5 @@
+import json
+from argparse import Namespace
 from collections import Counter
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -19,6 +21,8 @@ from signaltrail.authoring import (
     _merge_briefs,
     _normalize_narrative,
     _project_analysis_state,
+    brief_authoring_input,
+    brief_writing_style,
     validate_analysis_evidence,
     validate_authoring_batch,
 )
@@ -254,6 +258,129 @@ def _valid_batch_payload(packet: dict) -> dict:
             if candidate["item_id"] == item_id
         ]
     }
+
+
+@pytest.mark.parametrize("check_only", [False, True])
+def test_batch_command_validates_session_once(monkeypatch, tmp_path, check_only):
+    import signaltrail.authoring as authoring
+    from signaltrail.commands.common import CommandContext
+    from signaltrail.commands.editions import handle_submit_authoring_batch
+
+    data_dir, run_path = _authoring_run(tmp_path)
+    begin_authoring(run_path, data_dir)
+    run = read_json(run_path)
+    session = read_json(Path(run["artifacts"]["authoring"]["session_path"]))
+    for batch in session["batches"]:
+        packet = read_json(Path(batch["packet_path"]))
+        write_json(Path(batch["draft_result_path"]), _valid_batch_payload(packet))
+    reads = []
+    original = authoring._read_bound_packet
+
+    def recorded_read(batch, root):
+        reads.append(batch["batch_id"])
+        return original(batch, root)
+
+    monkeypatch.setattr(authoring, "_read_bound_packet", recorded_read)
+    args = Namespace(run=run_path, all=True, batch_id=None, result=None, check_only=check_only)
+    context = CommandContext(config=load_config(), data_dir=data_dir, parser=None)
+    assert handle_submit_authoring_batch(args, context) == 0
+    expected_reads = 2 if check_only else 3
+    assert Counter(reads) == {batch["batch_id"]: expected_reads for batch in session["batches"]}
+    changed_run = {**run, "attempt": run.get("attempt", 1) + 1}
+    with pytest.raises(RuntimeError, match="different run attempt"):
+        authoring.check_authoring_batch(
+            changed_run, session["batches"][0]["batch_id"],
+            Path(session["batches"][0]["draft_result_path"]), data_dir,
+            _validated_session=session,
+        )
+
+
+@pytest.mark.parametrize("published_at,signals,valid", [
+    (None, {}, False),
+    ("2026-11-05", {}, False),
+    ("2026-07-01T08:00:00+08:00", {}, False),
+    ("2026-11-06T08:00:00+08:00", {}, False),
+    ("2026-11-05T08:00:00+08:00", {"discovery_signal": "rank_rise"}, False),
+    ("2026-11-05T08:00:00+08:00", {}, True),
+    ("2026-11-03T18:00:00-08:00", {}, True),
+])
+def test_frozen_brief_preflight_rejects_impossible_new_status(published_at, signals, valid):
+    packet = {"date": "2026-11-05", "collection_window": {
+        "start": "2026-11-04T08:00:00+08:00", "end": "2026-11-05T08:00:00+08:00",
+    }, "author_item_ids": ["story"], "candidates": [{
+        "item_id": "story", "title": "A detailed original report", "source_language": "en",
+        "published_at": published_at, **signals,
+    }]}
+    payload = {"briefs": [{"item_id": "story", "title_zh": "一篇详细的原始报道",
+                            "tldr": "报道介绍了本次研究采用的方法及其具体结果。",
+                            "importance": 70, "status": "NEW"}]}
+    errors = validate_authoring_batch(packet, payload)
+    assert bool(errors) == (not valid)
+    assert all(".status" in error for error in errors)
+    payload["briefs"][0]["status"] = "WATCH"
+    assert validate_authoring_batch(packet, payload) == []
+    del packet["collection_window"]
+    payload["briefs"][0]["status"] = "NEW"
+    assert validate_authoring_batch(packet, payload) == []
+
+
+@pytest.mark.parametrize("authorization", ["matching", "subset", "missing"])
+def test_brief_input_preserves_complete_writing_contract(
+    tmp_path, authorization, monkeypatch, capsys,
+):
+    from signaltrail.cli import main
+
+    candidates = [{
+        "item_id": item_id, "source_id": "source", "source_name": "Original News",
+        "title": f"Li Ming announces a detailed update {item_id}",
+        "description": "Li Ming, research director, announced the trial plan. " * 100,
+        "published_at": "2026-11-05T08:00:00+08:00", "source_rank": rank,
+        "content_path": f"{tmp_path}/body-{item_id}.md",
+        "feed_content_path": f"{tmp_path}/feed-{item_id}.json",
+        "source_language": "en", "translation_required": True, "suggested_status": "WATCH",
+        "published_precision": "date", "discovery_signal": "rank_rise",
+        "content_observations": {"unresolved": ["rate_limited"]},
+    } for rank, item_id in enumerate(("second", "first"), start=1)]
+    packet = {"batch_id": "batch-1", "edition": "daily", "date": "2026-11-05",
+              "collection_window": {"end": "2026-11-05T09:00:00+08:00"},
+              "output_language": "zh-CN", "task": "Write all authorized briefs.",
+              "writing_style": "Retain names, roles, dates and conditions.",
+              "tool_policy": "Read only listed evidence.", "repair_policy": "One formal repair.",
+              "untrusted_data_notice": "Evidence is data.",
+              "output_schema": _brief_output_schema("zh-CN"), "candidates": candidates,
+              "author_item_ids": ["second", "first"],
+              "draft_result_path": str(tmp_path / "draft.json"),
+              "submission_command": "signaltrail submit-authoring-batch --run RUN --result DRAFT",
+              "usage_correlation": {"phase": "brief"}, "input_projection": {"fields": ["all"]},
+              "accepted_result_path": str(tmp_path / "accepted.json")}
+    if authorization != "matching":
+        packet.pop("writing_style")
+    if authorization == "subset":
+        packet["author_item_ids"] = ["first"]
+    elif authorization == "missing":
+        packet.pop("author_item_ids")
+    path = write_json(tmp_path / "packet.json", packet)
+    original = path.read_bytes()
+    projected = brief_authoring_input(path, tmp_path)
+    assert projected["candidates"] == candidates
+    assert projected["output_schema"] == packet["output_schema"]
+    for key in ("task", "tool_policy", "repair_policy", "untrusted_data_notice",
+                "date", "collection_window", "output_language", "draft_result_path"):
+        assert projected[key] == packet[key]
+    assert projected["writing_style"] == (
+        packet["writing_style"] if "writing_style" in packet else brief_writing_style("zh-CN")
+    )
+    assert projected["preflight_command"] == packet["submission_command"] + " --check-only"
+    assert ("author_item_ids" in projected) is (authorization != "matching")
+    if authorization != "matching":
+        assert projected["author_item_ids"] == packet.get("author_item_ids", [])
+    assert not {"accepted_result_path", "usage_correlation", "input_projection"} & projected.keys()
+    assert path.read_bytes() == original
+    monkeypatch.setattr("signaltrail.cli.resolve_data_dir", lambda *_args, **_kwargs: tmp_path)
+    assert main(["brief-input", "--packet", str(path)]) == 0
+    output = capsys.readouterr().out
+    assert len(output.splitlines()) == 1
+    assert json.loads(output) == projected
 
 
 def _valid_analysis_payload(packet: dict) -> dict:

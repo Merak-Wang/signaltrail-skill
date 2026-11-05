@@ -9,6 +9,7 @@ from urllib.parse import urljoin, urlsplit
 
 from playwright.sync_api import Page
 
+from .article_time import normalize_time
 from .config import SourceConfig
 from .image_policy import normalize_image_candidates, srcset_candidates
 from .models import ArticleItem
@@ -24,7 +25,38 @@ _LOW_INFORMATION_TITLES = {
     "publications",
     "read more",
     "view all comments",
+    "overlay link",
+    "about us",
+    "who we are",
+    "programs",
+    "careers & culture",
+    "nato headquarters",
+    "français",
+    "register",
+    "media contacts",
+    "catalyst lab",
+    "microsoft teams",
 }
+
+
+def is_article_link(title: str, url: str) -> bool:
+    """处理：排除导航标题、栏目入口和被当作标题的网址。
+    输入：采集得到的链接标题与原始地址。
+    输出：文章候选判断，供新采集和历史新闻展示共用。
+    """
+    title = clean_title(title)
+    if title.casefold() in _LOW_INFORMATION_TITLES or title.startswith(("http://", "https://")):
+        return False
+    path = urlsplit(url).path.lower().rstrip("/")
+    return not (
+        not path
+        or re.search(
+            r"/(?:programs|about|about-us|who-we-are|contact|contacts|careers|search|register)(?:/[^/]+)?$"
+            r"|/(?:news|events)/all$|/(?:ext/en/home|ext/en/news|en/search)$"
+            r"|/research-area/[^/]+$",
+            path,
+        )
+    )
 
 
 BROWSER_ROWS_JS = """anchors => anchors.map(a => ({
@@ -114,6 +146,8 @@ def is_eligible(source: SourceConfig, title: str, url: str) -> bool:
     输出：布尔判断；True 表示满足处理说明中的条件，False 表示不满足且不产生该结果。
     """
     title = clean_title(title)
+    if not is_article_link(title, url):
+        return False
     if len(title) < 8 or not url.startswith(("http://", "https://")):
         return False
     filter_url = url_for_source_filter(url)
@@ -136,10 +170,7 @@ def is_eligible(source: SourceConfig, title: str, url: str) -> bool:
         return False
     return not (
         source.article_patterns
-        and not any(
-            re.search(pattern, filter_url, re.I)
-            for pattern in source.article_patterns
-        )
+        and not any(re.search(pattern, filter_url, re.I) for pattern in source.article_patterns)
     )
 
 
@@ -182,6 +213,9 @@ def _published_at(value: str, url: str, discovered_at: str | None = None) -> str
       调用方据此继续相邻阶段或识别无结果状态。
     """
     text = clean_title(value)
+    normalized = normalize_time(text)
+    if normalized:
+        return normalized
     for candidate in (text, url):
         for pattern in (
             r"\b(20\d{2})[-/](0?[1-9]|1[0-2])[-/](0?[1-9]|[12]\d|3[01])\b",
@@ -191,9 +225,11 @@ def _published_at(value: str, url: str, discovered_at: str | None = None) -> str
             if not match:
                 continue
             try:
-                return datetime(
-                    int(match.group(1)), int(match.group(2)), int(match.group(3))
-                ).date().isoformat()
+                return (
+                    datetime(int(match.group(1)), int(match.group(2)), int(match.group(3)))
+                    .date()
+                    .isoformat()
+                )
             except ValueError:
                 continue
     relative = re.search(
@@ -244,9 +280,7 @@ def collect_browser_index(
       每项包含稳定 ID、来源身份、规范 URL、时间和可用元数据，
       并保持当前处理定义的筛选与排序语义。
     """
-    rows = page.locator("a[href]").evaluate_all(
-        BROWSER_ROWS_JS
-    )
+    rows = page.locator("a[href]").evaluate_all(BROWSER_ROWS_JS)
     return browser_items_from_rows(rows, source, discovered_at, page.url)
 
 
@@ -285,16 +319,28 @@ def browser_items_from_rows(
             raw_candidates = list(raw_candidates)
             for image in image_sources:
                 if isinstance(image, dict):
-                    raw_candidates.extend([
-                        *srcset_candidates(image.get("srcset")),
-                        image.get("current_src"), image.get("data_original"),
-                        image.get("data_src"), image.get("data_lazy_src"), image.get("src"),
-                    ])
+                    raw_candidates.extend(
+                        [
+                            *srcset_candidates(image.get("srcset")),
+                            image.get("current_src"),
+                            image.get("data_original"),
+                            image.get("data_src"),
+                            image.get("data_lazy_src"),
+                            image.get("src"),
+                        ]
+                    )
             article.metadata["image_source_observations"] = [
-                {key: image.get(key) for key in (
-                    "current_src", "natural_width", "natural_height", "srcset",
-                )}
-                for image in image_sources if isinstance(image, dict)
+                {
+                    key: image.get(key)
+                    for key in (
+                        "current_src",
+                        "natural_width",
+                        "natural_height",
+                        "srcset",
+                    )
+                }
+                for image in image_sources
+                if isinstance(image, dict)
             ]
         image_candidates = normalize_image_candidates(
             [*raw_candidates, row.get("image_url")],
@@ -336,9 +382,7 @@ def arxiv_items_from_rows(
         article = _article(source, title, url, discovered_at)
         if article.canonical_url in seen:
             continue
-        article.published_at = _published_at(
-            row.get("date_text", ""), url, discovered_at
-        )
+        article.published_at = _published_at(row.get("date_text", ""), url, discovered_at)
         article.description = clean_title(row.get("description", ""))
         seen.add(article.canonical_url)
         items.append(article)
@@ -359,9 +403,7 @@ def collect_arxiv_index(
     - ``discovered_at``：本轮发现时间的 ISO 字符串；在缺少发布时间时作为可追溯时间。
     输出：从页面提取并规范化的 arXiv 文章条目列表；直接供来源采集结果和根级索引使用。
     """
-    rows = page.locator("dl#articles dt, dl dt").evaluate_all(
-        ARXIV_ROWS_JS
-    )
+    rows = page.locator("dl#articles dt, dl dt").evaluate_all(ARXIV_ROWS_JS)
     return arxiv_items_from_rows(rows, source, discovered_at)
 
 
@@ -396,9 +438,7 @@ def collect_latest_year_index(
       每项包含稳定 ID、来源身份、规范 URL、时间和可用元数据，
       并保持当前处理定义的筛选与排序语义。
     """
-    rows = page.locator("a[href]").evaluate_all(
-        YEAR_ROWS_JS
-    )
+    rows = page.locator("a[href]").evaluate_all(YEAR_ROWS_JS)
     year_url = latest_year_url(rows)
     response = page.goto(year_url, wait_until="domcontentloaded", timeout=45_000)
     if response is None or not response.ok:
@@ -438,9 +478,7 @@ def twz_items_from_rows(
                 datetime.strptime(posted.group(1), "%b %d, %Y").date().isoformat()
             )
         else:
-            article.published_at = _published_at(
-                row.get("card_text", ""), url, discovered_at
-            )
+            article.published_at = _published_at(row.get("card_text", ""), url, discovered_at)
         article.description = clean_title(row.get("description", ""))
         seen.add(article.canonical_url)
         items.append(article)
@@ -463,9 +501,7 @@ def collect_twz_index(
       每项包含稳定 ID、来源身份、规范 URL、时间和可用元数据，
       并保持当前处理定义的筛选与排序语义。
     """
-    rows = page.locator("h3").evaluate_all(
-        TWZ_ROWS_JS
-    )
+    rows = page.locator("h3").evaluate_all(TWZ_ROWS_JS)
     return twz_items_from_rows(rows, source, discovered_at)
 
 
@@ -489,7 +525,9 @@ def collect_weibo_api(
 
 
 def weibo_items_from_payload(
-    payload: dict, source: SourceConfig, discovered_at: str,
+    payload: dict,
+    source: SourceConfig,
+    discovered_at: str,
 ) -> list[ArticleItem]:
     """处理：将微博公开接口的词条转换为有序候选，保留热度和置顶信息。
     输入：页面 JSON、来源配置和观察时间。

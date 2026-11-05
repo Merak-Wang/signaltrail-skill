@@ -3,10 +3,21 @@
 from argparse import Namespace
 from collections.abc import Callable
 
-from . import editions, explainers, monitor, reports, research, slides, sources, verification
+from . import (
+    editions,
+    explainers,
+    monitor,
+    platform,
+    reports,
+    research,
+    slides,
+    sources,
+    verification,
+)
 from .common import CommandContext
 
 HANDLERS: dict[str, Callable[[Namespace, CommandContext], int]] = {
+    "platform-research": platform.handle_platform_research,
     "slides": slides.handle_slides,
     "research": research.handle_research,
     "explainer": explainers.handle_explainer,
@@ -23,6 +34,7 @@ HANDLERS: dict[str, Callable[[Namespace, CommandContext], int]] = {
     "enrich-edition": editions.handle_enrich_edition,
     "begin-authoring": editions.handle_begin_authoring,
     "submit-authoring-batch": editions.handle_submit_authoring_batch,
+    "brief-input": editions.handle_brief_input,
     "record-authoring-metrics": editions.handle_record_authoring_metrics,
     "authoring-status": editions.handle_authoring_status,
     "prefetch-media": editions.handle_prefetch_media,

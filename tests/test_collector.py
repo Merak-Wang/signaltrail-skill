@@ -409,3 +409,115 @@ def test_multi_page_source_can_sort_by_publication_without_losing_top_rank(
         "news-1",
     ]
     assert [item.metadata["source_rank"] for item in result.items] == [4, 2, 3]
+
+
+def test_frozen_window_refreshes_old_cache_and_preserves_original_rank(monkeypatch, tmp_path):
+    from datetime import datetime
+
+    from signaltrail.collector import _current_monitor_items
+
+    config = load_config()
+    source = replace(config.source_by_id("bbc_world"), explore_urls=[], max_items=3,
+                     report_target=1, report_max=1)
+    window = (datetime.fromisoformat("2026-11-01T06:00:00+08:00"),
+              datetime.fromisoformat("2026-11-02T06:00:00+08:00"))
+
+    def item(name, date, **metadata):
+        return ArticleItem(item_id=name, source_id=source.id, source_name=source.name,
+                           title=name, url=f"https://bbc.com/{name}",
+                           canonical_url=f"https://bbc.com/{name}",
+                           discovered_at="2026-11-02T05:00:00+08:00",
+                           published_at=date, metadata=metadata)
+
+    old = item("old", "2026-10-01T05:00:00+08:00")
+    fresh = item("fresh", "2026-11-02T05:00:00+08:00")
+    stale = item("stale", fresh.published_at, feed_stale=True)
+    retained = item("retained", fresh.published_at, retained_from_previous_snapshot=True)
+    assert _current_monitor_items([old, fresh, stale, retained], source, window) == [fresh]
+    assert _current_monitor_items([old], replace(source, role="discovery"), window) == [old]
+    cache = SourceResult(source.id, source.name, source.url, "success",
+                         "2026-11-02T05:30:00+08:00", items=[old])
+    calls = []
+
+    def refresh(*args):
+        calls.append(True)
+        return replace(cache, items=[old, fresh])
+
+    monkeypatch.setattr("signaltrail.collector.collect_one", refresh)
+    result = collect_source(None, source, config, tmp_path, monitor_result=cache, window=window)
+    assert calls == [True]
+    assert [i.item_id for i in result.items] == ["fresh", "old"]
+    assert [i.metadata["source_rank"] for i in result.items] == [2, 1]
+    fresh.metadata["source_rank"] = 50
+    calls.clear()
+    result = collect_source(None, source, config, tmp_path,
+                            monitor_result=replace(cache, items=[old, fresh]), window=window)
+    assert calls == []
+    assert result.items[0].metadata["source_rank"] == 50
+    calls.clear()
+    result = collect_source(None, source, config, tmp_path,
+                            monitor_result=replace(cache, items=[old, stale, retained]),
+                            window=window)
+    assert calls == [True]
+    assert [i.item_id for i in result.items] == ["fresh", "old"]
+    monkeypatch.setattr("signaltrail.collector.collect_one", lambda *args: replace(
+        cache, status="failed", items=[], error="HTTP 503"))
+    result = collect_source(None, source, config, tmp_path, monitor_result=cache, window=window)
+    assert result.status == "failed"
+    assert result.items == []
+
+
+def test_live_item_recovers_matching_current_feed_without_changing_rank(monkeypatch, tmp_path):
+    from datetime import datetime
+
+    from signaltrail.utils import write_json
+
+    config = load_config()
+    source = replace(config.source_by_id("bbc_world"), explore_urls=[], max_items=3,
+                     report_target=2, report_max=2)
+    window = (datetime.fromisoformat("2026-11-01T06:00:00+08:00"),
+              datetime.fromisoformat("2026-11-02T06:00:00+08:00"))
+    live = ArticleItem("one", source.id, source.name, "Title", "https://bbc.com/a",
+                       "https://bbc.com/a", "2026-11-02T05:00:00+08:00",
+                       published_at="2026-11-02T05:00:00+08:00")
+    feed = write_json(tmp_path / "feed.json", {"source_id": source.id, "item_id": "one",
+                      "url": live.url, "text": "A substantive article summary."})
+    cached = replace(live, description="A substantive article summary.", metadata={
+        "feed_content_path": str(feed), "feed_content_sha256": "hash",
+        "feed_content_characters": 30,
+    })
+    cache = SourceResult(source.id, source.name, source.url, "success", "now", items=[cached])
+    monkeypatch.setattr("signaltrail.collector.collect_one", lambda *args: replace(
+        cache, items=[live]))
+    result = collect_source(None, source, config, tmp_path, monitor_result=cache, window=window)
+    assert result.items[0].description == cached.description
+    assert result.items[0].metadata["feed_content_path"] == str(feed)
+    assert result.items[0].metadata["source_rank"] == 1
+    assert live.description == "" and live.metadata == {}
+    assert result.items[0].published_at == live.published_at
+
+    old_live = replace(live, published_at="2026-10-01T05:00:00+08:00")
+    old_cache = replace(cached, published_at=old_live.published_at)
+    monkeypatch.setattr("signaltrail.collector.collect_one", lambda *args: replace(
+        cache, items=[old_live]))
+    result = collect_source(None, source, config, tmp_path,
+                            monitor_result=replace(cache, items=[old_cache]), window=window)
+    assert result.items[0].description == cached.description
+    assert result.items[0].published_at == old_live.published_at
+    assert [item.item_id for item in result.items] == ["one"]
+    monkeypatch.setattr("signaltrail.collector.collect_one", lambda *args: replace(
+        cache, items=[live]))
+
+    for altered in (replace(cached, source_id="other"),
+                    replace(cached, item_id="other"),
+                    replace(cached, metadata={**cached.metadata, "feed_stale": True})):
+        result = collect_source(None, source, config, tmp_path,
+                                monitor_result=replace(cache, items=[altered]), window=window)
+        assert result.items[0].description == ""
+    write_json(feed, {"source_id": source.id, "item_id": "one", "url": live.url,
+                      "text": "Comments"})
+    navigation = replace(cached, description="Comments")
+    result = collect_source(None, source, config, tmp_path,
+                            monitor_result=replace(cache, items=[navigation]), window=window)
+    assert result.items[0].description == ""
+    assert "feed_content_path" not in result.items[0].metadata

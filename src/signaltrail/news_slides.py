@@ -13,14 +13,42 @@ from urllib.parse import parse_qs, parse_qsl, urlsplit
 from jsonschema import Draft202012Validator
 
 from .config import AppConfig, MediaConfig, project_root
-from .image_policy import filter_editorial_templates, normalize_image_candidates
-from .localization import translated_title
+from .content_extraction import is_navigation_only, strip_content_frontmatter
+from .image_policy import (
+    filter_editorial_templates,
+    normalize_image_candidates,
+    select_image_variants,
+)
+from .localization import source_matches_output_language, translated_title
 from .narrative_store import digest, file_ref, load_artifact, parent_path, save_artifact
 from .runtime import require_data_root_path
 from .storage import exclusive_lock
 from .utils import TRACKING_QUERY_PREFIXES, read_json_object, write_text_atomic
 
 DOMAINS = ("geopolitics", "markets", "ai_technology")
+VIDEO_TITLE_POLICY = "selected-leads-v1"
+
+
+class SlideEvidenceError(ValueError):
+    """处理：携带正文补全后的索引与缺证事件，供日报入口保存恢复位置。
+    输入：本次准备的原始、富化索引路径及缺证事件。
+    输出：可读错误和结构化恢复字段，不创建写作包。
+    """
+
+    def __init__(self, original_index_path: Path, index_path: Path, evidence_gaps: list[dict]):
+        """处理：把富化结果和逐事件缺口绑定到可读错误。
+        输入：本次调用前后的索引路径与缺证列表。
+        输出：日报入口可直接保存的恢复位置和事件标识。
+        """
+        self.original_index_path = original_index_path.resolve()
+        self.index_path = index_path.resolve()
+        self.evidence_gaps = evidence_gaps
+        super().__init__("Selected slide events need article evidence: " + json.dumps({
+            "original_index_path": str(self.original_index_path),
+            "index_path": str(self.index_path), "evidence_gaps": evidence_gaps,
+        }, ensure_ascii=False))
+
+
 # 同一图片的响应式变体只差路径变换段的发布方 CDN。
 _CLOUDINARY_STYLE_HOSTS = {"dam.mediacorp.sg"}
 OUTPUT_SCHEMA = {
@@ -45,9 +73,14 @@ INDEX_OUTPUT_SCHEMA["properties"]["slides"]["items"]["properties"].update({
 })
 
 
-def select_index_news(index: dict, *, min_importance: int = 0,
-                      item_ids: list[str] | None = None, max_news: int = 30,
-                      exclude_event_ids: list[str] | None = None) -> list[dict]:
+def select_index_news(
+    index: dict,
+    *,
+    min_importance: int = 0,
+    item_ids: list[str] | None = None,
+    max_news: int = 50,
+    exclude_event_ids: list[str] | None = None,
+) -> list[dict]:
     """处理：按来源排名轮转索引或保留手选顺序，合并原文并排除指定事件后截取。
     输入：规范索引、手选条目和数量限制；不虚构重要性分数。
     输出：入选原文身份与完整来源引用，供后续只读加载证据。
@@ -116,9 +149,30 @@ def _article_evidence(event: dict, indexed: dict, data_dir: Path) -> list[dict]:
                 path = data_dir / path
             body = require_data_root_path(path, data_dir, "Slide evidence").read_text(
                 encoding="utf-8")
+            body = strip_content_frontmatter(body)
+        description = item.get("description") or ""
+        navigation_only = bool(metadata.get("feed_navigation_only"))
+        if is_navigation_only(body):
+            navigation_only = True
+            body = ""
+        if is_navigation_only(description):
+            navigation_only = True
+            description = ""
+        if not body and metadata.get("feed_content_path"):
+            path = require_data_root_path(
+                Path(metadata["feed_content_path"]), data_dir, "Slide Feed evidence",
+            )
+            if path.is_file():
+                feed_text = read_json_object(path, "Feed evidence").get("text") or ""
+                if is_navigation_only(feed_text):
+                    navigation_only = True
+                else:
+                    body = feed_text
         evidence.append({"item_id": item["item_id"],
                          "title": item.get("title") or ref.get("title", ""),
-                         "description": item.get("description", ""), "body": body,
+                         "description": description, "body": body,
+                         **({"content_gap": "navigation_only"}
+                            if navigation_only and not (body or description) else {}),
                          "content_status": item.get("content_status", "not_fetched"),
                          "content_quality": metadata.get("content_quality"),
                          "content_completion": metadata.get("content_completion")})
@@ -151,9 +205,15 @@ def _source_story_identity(url: str) -> tuple | None:
     return host, parts.path, query
 
 
-def select_news(report: dict, index: dict, *, min_importance: int = 0,
-                item_ids: list[str] | None = None, max_news: int = 30,
-                exclude_event_ids: list[str] | None = None) -> list[dict]:
+def select_news(
+    report: dict,
+    index: dict,
+    *,
+    min_importance: int = 0,
+    item_ids: list[str] | None = None,
+    max_news: int = 50,
+    exclude_event_ids: list[str] | None = None,
+) -> list[dict]:
     """处理：合并日报中的精选事件与简报，去重并排除指定事件后按重要性截取。
     输入：已存日报、权威索引及可选 ID、分数门槛和条数上限；不按日期二次裁剪。
     输出：日报内按重要性稳定排序的至多 max_news 条新闻，来源时间保持原值。
@@ -244,10 +304,12 @@ def _merge_image_detail(known: dict, new: dict) -> dict:
     return merged
 
 
-def _news_images(event: dict, briefs: dict, indexed: dict) -> list[dict]:
+def _news_images(
+    event: dict, briefs: dict, indexed: dict, *, preserve_variants: bool = False,
+) -> list[dict]:
     """处理：合并新闻封面、页面元数据和正文图片并优先保留清晰版本。
     输入：事件来源、报告缓存图片和索引记录的原图注、尺寸及正文位置。
-    输出：按封面和正文顺序排列的关联图片；无图注保持空值。
+    输出：按封面和正文顺序排列的关联图片；下载阶段可保留尺寸变体作失败回退。
     """
     images, seen = [], set()
     for ref in event["source_refs"]:
@@ -395,7 +457,7 @@ def _news_images(event: dict, briefs: dict, indexed: dict) -> list[dict]:
                 continue
             if re.search(r"\b(?:logo|logos|favicon|icon|avatar)\b", alt.casefold()):
                 continue
-            identity = _image_identity(url)
+            identity = (url,) if preserve_variants else _image_identity(url)
             previous = by_url.get(identity)
             if previous is None:
                 by_url[identity] = candidate
@@ -414,7 +476,7 @@ def _news_images(event: dict, briefs: dict, indexed: dict) -> list[dict]:
         for candidate in by_url.values():
             is_body = candidate.get("provenance") == "article_body"
             position = candidate.get("position")
-            if is_body and position is not None:
+            if is_body and position is not None and not preserve_variants:
                 if (position not in body_by_position
                         or quality(candidate) > quality(body_by_position[position])):
                     body_by_position[position] = candidate
@@ -616,13 +678,62 @@ def _model_input(candidates: list[dict], style: str, language: str, mode: str = 
     }
 
 
-def prepare_slides(report_path: Path | None, index_path: Path, data_dir: Path, *,
-                   min_importance: int = 0, item_ids: list[str] | None = None,
-                   max_news: int = 30, exclude_event_ids: list[str] | None = None,
-                   batch_size: int = 5, max_input_tokens: int | None = None,
-                   max_output_tokens: int = 4000, language: str | None = None,
-                   reuse_plan: Path | None = None, config: AppConfig | None = None,
-                   resume_plan: bool = False) -> dict:
+def _batch_model_input(
+    candidates: list[dict], style: str, language: str, mode: str, video_context: dict | None = None
+) -> dict:
+    """处理：在首个已有讲稿任务中同时编写整期视频标题。
+    输入：批次证据与入选头条的简短上下文；后续批次不重复取名。
+    输出：包含独立视频标题字段和命名指导的既有写作包，不增加专门模型调用。
+    """
+    model_input = _model_input(candidates, style, language, mode)
+    if video_context is None:
+        return model_input
+    schema = deepcopy(model_input["output_schema"])
+    schema["required"].append("video_title")
+    schema["properties"]["video_title"] = {
+        "type": "string",
+        "minLength": 8,
+        "maxLength": 100,
+    }
+    model_input.update(
+        output_schema=schema,
+        video_title_context=video_context,
+        video_title_instruction=(
+            "Also write one video_title for the whole selected edition, distinct from the "
+            "report title and per-story slide titles. Use the supplied lead stories: put a "
+            "concrete actor, change and supported impact near the beginning. Choose one or "
+            "two important developments that give viewers a clear reason to watch. For "
+            "independent events use parallel clauses or a 'this edition' framing; never "
+            "invent one causal story connecting them. Do not turn uncertainty into certainty "
+            "or imply a broader attack, crisis or consequence than the evidence supports. "
+            "Avoid generic hooks such as 'today's top 50 global news'; story count, date and "
+            "branding may be a short suffix. Aim for 18–30 Chinese characters or 6–12 English "
+            "words, using the packet language; these are editorial targets, not platform "
+            "limits. Prefer accuracy over a forced length. No sensational superlatives, "
+            "manufactured urgency, empty suspense, all-caps or emoji. Return video_title "
+            "beside slides in this same JSON; do not add a separate model call."
+        ),
+    )
+    return model_input
+
+
+def prepare_slides(
+    report_path: Path | None,
+    index_path: Path,
+    data_dir: Path,
+    *,
+    min_importance: int = 0,
+    item_ids: list[str] | None = None,
+    max_news: int = 50,
+    exclude_event_ids: list[str] | None = None,
+    batch_size: int = 5,
+    max_input_tokens: int | None = None,
+    max_output_tokens: int = 4000,
+    language: str | None = None,
+    reuse_plan: Path | None = None,
+    config: AppConfig | None = None,
+    resume_plan: bool = False,
+) -> dict:
     """处理：按重要性截取日报新闻并按每批输入与输出预留分包。
     输入：明确日报/索引修订、可选分数门槛、手选 ID、数量上限和批次成本约束。
     输出：补齐正文后的版本化索引、不可变计划及写作包；不调用模型。
@@ -630,6 +741,7 @@ def prepare_slides(report_path: Path | None, index_path: Path, data_dir: Path, *
     if (batch_size < 1 or (max_input_tokens is not None and max_input_tokens < 1)
             or max_output_tokens < 1 or max_news < 1):
         raise ValueError("Batch size and token limits must be positive")
+    original_index_path = index_path
     index = read_json_object(index_path, "Index")
     report = read_json_object(report_path, "Report") if report_path else None
     if report and language and language != report.get("language", "zh-CN"):
@@ -676,6 +788,17 @@ def prepare_slides(report_path: Path | None, index_path: Path, data_dir: Path, *
               if report else {})
     candidates = ([_candidate(e, report, briefs, indexed, data_dir) for e in events] if report else
                   [_index_candidate(e, indexed, data_dir) for e in events])
+    evidence_gaps = [
+        {"event_id": candidate["event_id"], "item_ids": [
+            row["item_id"] for row in candidate["evidence"]
+        ], "reason": "navigation_only"}
+        for candidate in candidates
+        if any(row.get("content_gap") == "navigation_only" for row in candidate["evidence"])
+        and not any(row["body"].strip() or row["description"].strip()
+                    for row in candidate["evidence"])
+    ]
+    if evidence_gaps:
+        raise SlideEvidenceError(original_index_path, index_path, evidence_gaps)
     style = (project_root() / "templates/news-slide-style/SKILL.md").read_text(encoding="utf-8")
     language = language or (report.get("language", "zh-CN") if report else "zh-CN")
     if language not in {"zh-CN", "en"}:
@@ -703,21 +826,35 @@ def prepare_slides(report_path: Path | None, index_path: Path, data_dir: Path, *
             old = load_artifact(reuse_plan, data_dir, kind="slides-plan")
             previous = old["payload"]
             budget = previous["budget"]
-            if ([{k: v for k, v in item.items() if k != "existing_narration"}
-                 for item in previous["news"]] ==
-                [{k: v for k, v in item.items() if k != "existing_narration"}
-                 for item in candidates]
-                    and previous.get("exclude_event_ids", [])
-                    == sorted(set(exclude_event_ids or []))
-                    and previous.get("model_input_template") == _model_input(
-                        [], style, language, mode)
-                    and all(budget[key] == value for key, value in (
-                        ("batch_size", batch_size), ("max_news", max_news),
-                        ("max_input_tokens", budget["max_input_tokens"] if automatic_input_budget
-                         else max_input_tokens),
-                        ("max_output_tokens", max_output_tokens)))
-                    and old["parents"].get("report") == (
-                        file_ref(report_path, data_dir) if report_path else None)):
+            if (
+                [
+                    {k: v for k, v in item.items() if k != "existing_narration"}
+                    for item in previous["news"]
+                ]
+                == [
+                    {k: v for k, v in item.items() if k != "existing_narration"}
+                    for item in candidates
+                ]
+                and previous.get("exclude_event_ids", []) == sorted(set(exclude_event_ids or []))
+                and previous.get("model_input_template") == _model_input([], style, language, mode)
+                and previous.get("video_title_policy") == VIDEO_TITLE_POLICY
+                and all(
+                    budget[key] == value
+                    for key, value in (
+                        ("batch_size", batch_size),
+                        ("max_news", max_news),
+                        (
+                            "max_input_tokens",
+                            budget["max_input_tokens"]
+                            if automatic_input_budget
+                            else max_input_tokens,
+                        ),
+                        ("max_output_tokens", max_output_tokens),
+                    )
+                )
+                and old["parents"].get("report")
+                == (file_ref(report_path, data_dir) if report_path else None)
+            ):
                 # 内容、指令和预算相同则沿用原计划，保留已渲染页面与提交进度。
                 packets = [next(reuse_plan.parent.glob(f"slides-packet-{number}-r*.json"))
                            for number in range(1, len(previous["batches"]) + 1)]
@@ -735,21 +872,58 @@ def prepare_slides(report_path: Path | None, index_path: Path, data_dir: Path, *
         }, data_dir)
     reused_ids = {slide["event_id"] for slide in reused}
     pending = [c for c in candidates if c["event_id"] not in reused_ids]
+    video_context = {
+        "story_count": len(candidates),
+        "lead_stories": [
+            {
+                "event_id": candidate["event_id"],
+                "title": candidate.get("title") or candidate["sources"][0]["title"],
+                "summary": candidate.get("summary")
+                or candidate["evidence"][0].get("description", ""),
+            }
+            for candidate in candidates[:6]
+        ],
+        "other_selected_headlines": [
+            candidate.get("title") or candidate["sources"][0]["title"]
+            for candidate in candidates[6:18]
+        ],
+    }
+    if automatic_input_budget and pending:
+        max_input_tokens = max(
+            max_input_tokens,
+            estimate_tokens(_batch_model_input(pending[:1], style, language, mode, video_context))
+            + 512,
+        )
     output_reserve = 700 if report else 1000
+    title_reserve = 128
     batches, current = [], []
     for candidate in pending:
         proposed = [*current, candidate]
-        proposed_limit = (max(64000, *(single_input_tokens[c["event_id"]] for c in proposed))
-                          if automatic_input_budget else max_input_tokens)
-        if current and (len(proposed) > batch_size
-                        or len(proposed) * output_reserve > max_output_tokens
-                        or estimate_tokens(_model_input(proposed, style, language, mode)) + 512
-                        > proposed_limit):
+        proposed_limit = max_input_tokens
+        if current and (
+            len(proposed) > batch_size
+            or len(proposed) * output_reserve > max_output_tokens
+            or estimate_tokens(
+                _batch_model_input(
+                    proposed, style, language, mode, video_context if not batches else None
+                )
+            )
+            + 512
+            > proposed_limit
+        ):
             batches.append(current)
             current = []
         current.append(candidate)
-        if (estimate_tokens(_model_input(current, style, language, mode)) + 512 > max_input_tokens
-                or len(current) * output_reserve > max_output_tokens):
+        if (
+            estimate_tokens(
+                _batch_model_input(
+                    current, style, language, mode, video_context if not batches else None
+                )
+            )
+            + 512
+            > max_input_tokens
+            or len(current) * output_reserve > max_output_tokens
+        ):
             raise ValueError(
                 f"News {candidate['event_id']} cannot fit a batch; increase token limits "
                 f"to include the complete article bodies; reuse enriched index {index_path}"
@@ -757,26 +931,50 @@ def prepare_slides(report_path: Path | None, index_path: Path, data_dir: Path, *
     if current:
         batches.append(current)
     payload = {
-        "title": (report["title"] if report else
-                  ("新闻图文流" if language == "zh-CN" else "News slides")),
-        "report_id": report["report_id"] if report else None, "language": language,
+        "title": (
+            report["title"] if report else ("新闻图文流" if language == "zh-CN" else "News slides")
+        ),
+        "report_id": report["report_id"] if report else None,
+        "language": language,
         "as_of": report["generated_at"] if report else index.get("generated_at"),
-        "news": candidates, "input_mode": mode,
+        "news": candidates,
+        "input_mode": mode,
         "model_input_template": _model_input([], style, language, mode),
+        "video_title_policy": VIDEO_TITLE_POLICY,
         "reused_slides": reused,
         "exclude_event_ids": sorted(set(exclude_event_ids or [])),
-        "selection_policy": ("report-admitted-importance-v1" if report else
-                             "index-selected-items-v1" if item_ids else "index-source-rank-v1"),
+        "selection_policy": (
+            "report-admitted-importance-v1"
+            if report
+            else "index-selected-items-v1"
+            if item_ids
+            else "index-source-rank-v1"
+        ),
         "publication_date": report["date"] if report else index.get("date"),
         "timezone": (report or {}).get("timezone") or index.get("timezone") or "Asia/Shanghai",
         "batches": [[c["event_id"] for c in batch] for batch in batches],
-        "budget": {"max_input_tokens": max_input_tokens, "max_output_tokens": max_output_tokens,
-                   "batch_size": batch_size, "max_news": max_news,
-                   "max_model_calls_per_batch": 1,
-                   "estimation": "utf8_bytes_divided_by_two_plus_512_input_reserve",
-                   "input_tokens": None, "output_tokens": None, "cost_usd": None},
+        "budget": {
+            "max_input_tokens": max_input_tokens,
+            "max_output_tokens": max_output_tokens,
+            "batch_size": batch_size,
+            "max_news": max_news,
+            "max_model_calls_per_batch": 1,
+            "estimation": "utf8_bytes_divided_by_two_plus_512_input_reserve",
+            "input_tokens": None,
+            "output_tokens": None,
+            "cost_usd": None,
+        },
         "style": style,
     }
+    if reuse_plan and not pending:
+        previous = load_artifact(reuse_plan, data_dir, kind="slides-plan")["payload"]
+        if [c["event_id"] for c in previous["news"]] == [c["event_id"] for c in candidates]:
+            titles = [
+                load_artifact(path, data_dir)["payload"]["draft"].get("video_title")
+                for path in sorted(reuse_plan.parent.glob("slides-result-1-r*.json"))
+            ]
+            if previous.get("video_title") or any(titles):
+                payload["video_title"] = previous.get("video_title") or next(t for t in titles if t)
     parents = {"index": index_path}
     if report_path:
         parents["report"] = report_path
@@ -786,23 +984,43 @@ def prepare_slides(report_path: Path | None, index_path: Path, data_dir: Path, *
     plan = save_artifact(data_dir, session, "slides-plan", payload,
                          parents)
     packets = []
+    packet_inputs = []
     for number, batch in enumerate(batches, 1):
-        model_input = _model_input(batch, style, language, mode)
-        packet = save_artifact(data_dir, session, f"slides-packet-{number}", {
-            "batch_id": number, "model_input": model_input,
-            "budget": {**payload["budget"],
-                       "estimated_input_tokens": estimate_tokens(model_input) + 512,
-                       "reserved_output_tokens": len(batch) * output_reserve},
-        }, {"plan": plan})
+        model_input = _batch_model_input(
+            batch, style, language, mode, video_context if number == 1 else None
+        )
+        packet_inputs.append(model_input)
+        packet = save_artifact(
+            data_dir,
+            session,
+            f"slides-packet-{number}",
+            {
+                "batch_id": number,
+                "model_input": model_input,
+                "budget": {
+                    **payload["budget"],
+                    "estimated_input_tokens": estimate_tokens(model_input) + 512,
+                    "reserved_output_tokens": len(batch) * output_reserve,
+                    "video_title_reserved_tokens": title_reserve if number == 1 else 0,
+                },
+            },
+            {"plan": plan},
+        )
         packets.append(str(packet))
-    return {"plan_path": str(plan), "packet_paths": packets, "news_count": len(candidates),
-            "index_path": str(index_path),
-            "batch_count": len(batches), "budget": payload["budget"],
-            "reused_count": len(reused), "pending_news_count": len(pending),
-            "estimated_input_tokens": sum(
-                estimate_tokens(_model_input(batch, style, language, mode)) + 512
-                for batch in batches),
-            "reserved_output_tokens": len(pending) * output_reserve}
+    return {
+        "plan_path": str(plan),
+        "packet_paths": packets,
+        "news_count": len(candidates),
+        "index_path": str(index_path),
+        "batch_count": len(batches),
+        "budget": payload["budget"],
+        "reused_count": len(reused),
+        "pending_news_count": len(pending),
+        "estimated_input_tokens": sum(
+            estimate_tokens(model_input) + 512 for model_input in packet_inputs
+        ),
+        "reserved_output_tokens": len(pending) * output_reserve,
+    }
 
 
 def check_slides(packet_path: Path, draft: dict, data_dir: Path) -> list[str]:
@@ -818,9 +1036,17 @@ def check_slides(packet_path: Path, draft: dict, data_dir: Path) -> list[str]:
     if packet["kind"] != f"slides-packet-{number}":
         raise ValueError("Expected a slide authoring packet")
     item_schema = payload["model_input"]["output_schema"]["properties"]["slides"]["items"]
-    schema = Draft202012Validator(
+    output_schema = deepcopy(
         INDEX_OUTPUT_SCHEMA if "title" in item_schema["properties"] else OUTPUT_SCHEMA
     )
+    if "video_title" in payload["model_input"]["output_schema"]["properties"]:
+        output_schema["properties"]["video_title"] = {
+            "type": "string",
+            "minLength": 8,
+            "maxLength": 100,
+        }
+        output_schema["required"].append("video_title")
+    schema = Draft202012Validator(output_schema)
     errors = ["Invalid slide draft at " + ".".join(map(str, error.absolute_path)) + ": "
               + error.message for error in schema.iter_errors(draft)]
     slides = draft.get("slides", []) if isinstance(draft, dict) else []
@@ -832,6 +1058,11 @@ def check_slides(packet_path: Path, draft: dict, data_dir: Path) -> list[str]:
     if len(ids) != len(set(ids)) or set(ids) != news.keys():
         errors.append("Each assigned news event must appear exactly once")
     language = payload["model_input"]["language"]
+    video_title = draft.get("video_title") if isinstance(draft, dict) else None
+    if isinstance(video_title, str) and not source_matches_output_language(
+        None, video_title, language
+    ):
+        errors.append("video_title must use the packet output language")
     for position, slide in enumerate(slides):
         if not isinstance(slide, dict):
             continue
@@ -944,8 +1175,13 @@ def _deck_markdown(deck: dict) -> str:
     return "\n".join(lines)
 
 
-def render_slides(plan_path: Path, data_dir: Path, *, refresh_images: bool = True,
-                  media_config: MediaConfig | None = None) -> dict:
+def render_slides(
+    plan_path: Path,
+    data_dir: Path,
+    *,
+    refresh_images: bool = True,
+    media_config: MediaConfig | None = None,
+) -> dict:
     """处理：合并全部讲稿，筛选当天来源并补取公开配图，生成动态 HTML。
     输入：已完成计划和媒体配置；离线模式复用本计划最近保存的图片。
     输出：独立 HTML 与不可变 JSON/Markdown 路径，重排样式不需要模型。
@@ -959,9 +1195,11 @@ def render_slides(plan_path: Path, data_dir: Path, *, refresh_images: bool = Tru
         raise ValueError(f"Pending slide batches: {status['pending_batches']}")
     plan = load_artifact(plan_path, data_dir, kind="slides-plan")
     authored = {s["event_id"]: s for s in plan["payload"].get("reused_slides", [])}
+    video_title = plan["payload"].get("video_title")
     parents = {"plan": plan_path}
     for number, path in enumerate(status["completed_paths"], 1):
         result = load_artifact(Path(path), data_dir)
+        video_title = result["payload"]["draft"].get("video_title") or video_title
         authored.update({s["event_id"]: s for s in result["payload"]["draft"]["slides"]})
         parents[f"batch-{number}"] = Path(path)
     payload = plan["payload"]
@@ -988,7 +1226,12 @@ def render_slides(plan_path: Path, data_dir: Path, *, refresh_images: bool = Tru
             image_metrics = saved.get("image_enrichment")
         for item in news:
             item["images"] = filter_editorial_templates(item["images"])
+    for item in news:
+        # 旧稿离线改版同样合并原图的尺寸派生，避免低清缓存重新进入新版图集。
+        item["images"] = select_image_variants(item["images"], data_dir=data_dir)
     deck = {k: payload[k] for k in ("title", "report_id", "language", "as_of")}
+    if video_title:
+        deck["video_title"] = video_title
     deck.update(publication_date=payload.get("publication_date", report.get("date")),
                 timezone=timezone)
     deck["slides"] = [{k: c[k] for k in ("event_id", "title", "summary", "sources", "images")

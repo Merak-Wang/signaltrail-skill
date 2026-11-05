@@ -160,6 +160,71 @@ def _news() -> list[dict]:
     }]
 
 
+def test_disabled_enrichment_collapses_cached_sizes_without_network(tmp_path):
+    news = _news()
+    base = "https://cdn.defenseone.com/media/img/photo/"
+    news[0]["images"] = [
+        {"url": base + "large.jpg", "width": 618, "height": 284},
+        {"url": base + "open-graph.jpg", "width": 400, "height": 400},
+        {"url": base + "860x394.jpg", "width": 860, "height": 394},
+    ]
+
+    result, metrics = enrich_slide_images(news, tmp_path, MediaConfig(enabled=False))
+
+    assert [image["url"] for image in result[0]["images"]] == [base + "860x394.jpg"]
+    assert metrics["sources_fetched"] == metrics["images_downloaded"] == 0
+    assert metrics["images_deduplicated"] == 2
+    assert len(news[0]["images"]) == 3
+
+
+@pytest.mark.parametrize("high_fails", [False, True])
+def test_downloads_highest_size_first_and_only_falls_back_after_failure(
+    monkeypatch, tmp_path, high_fails,
+):
+    base = "https://global.unitednations.entermediadb.net/assets/"
+    high = base + "photo.jpg/image1170x530cropped.jpg"
+    low = base + "photo.jpg/image350x235cropped.jpg"
+    other = base + "different.jpg/image560x340cropped.jpg"
+    candidates = [
+        {"url": low, "width": 350, "height": 235, "caption": "Original photo"},
+        {"url": other, "width": 560, "height": 340},
+        {"url": high, "width": 1170, "height": 530},
+    ]
+    monkeypatch.setattr("signaltrail.slide_images._read_page", lambda *_: (
+        candidates, "https://news.example/story",
+    ))
+    requests = []
+
+    def download(rows, *_args, **_kwargs):
+        urls = [url for url, _ in rows]
+        requests.append(urls)
+        result = {}
+        for url in urls:
+            if url == high and high_fails:
+                result[url] = ImageDownloadError("high resolution unavailable")
+                continue
+            candidate = next(image for image in candidates if image["url"] == url)
+            result[url] = DownloadedImage(
+                source_url=url, resolved_url=url,
+                local_path=f"media/{len(requests)}-{len(result)}.jpg",
+                content_type="image/jpeg", sha256=url, byte_size=500,
+                width=candidate["width"], height=candidate["height"], reused=False,
+            )
+        return result
+
+    monkeypatch.setattr("signaltrail.slide_images._download_image_batch", download)
+    news = _news()
+    news[0]["images"] = []
+    output, metrics = enrich_slide_images(news, tmp_path, MediaConfig(global_concurrency=4))
+
+    assert set(requests[0]) == {high, other}
+    assert requests[1:] == ([[low]] if high_fails else [])
+    images = output[0]["images"]
+    assert {image["url"] for image in images} == {low if high_fails else high, other}
+    assert metrics["images_downloaded"] == 2
+    assert len(metrics["image_failures"]) == int(high_fails)
+
+
 def test_page_reader_uses_article_picture_srcset_and_ignores_related_images(monkeypatch):
     markup = b"""<html><head><meta property="og:image" content="/hero-wide.jpg"></head><body>
       <article><h1>Trump and Xi</h1><p>Trump will meet Xi Jinping in Beijing.</p>
@@ -529,6 +594,7 @@ def test_existing_small_variant_merges_with_new_large_variant(monkeypatch, tmp_p
         "declared_width": "1400", "declared_height": "800", "caption": "原文图注",
     }], article))
     def download_batch(rows, *_args, **_kwargs):
+        assert rows == [(large, article)]
         return {large: DownloadedImage(
             source_url=large, resolved_url=large, local_path="media/images/new-full.jpg",
             content_type="image/jpeg", sha256="new-full", byte_size=500,

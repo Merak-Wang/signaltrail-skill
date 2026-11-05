@@ -1,6 +1,6 @@
 # 开发指南
 
-**状态：** 已验证 · **负责人：** 仓库维护者 · **最后验证：** 2026-09-23
+**状态：** 已验证 · **负责人：** 仓库维护者 · **最后验证：** 2026-11-02
 
 本文说明本地开发和测试选择。代码归属见[架构](ARCHITECTURE.md)，不变量见
 [agent-instructions.md](agent-instructions.md)。[English](../development.md)
@@ -21,12 +21,6 @@ git diff --check
 
 单元测试使用临时数据目录和模拟的网络、宿主响应，不需要生产数据、浏览器登录、Notion 凭据或
 模型调用。CI 覆盖 Windows、Ubuntu 和 Python 3.11、3.12。编辑时运行相关测试，提交前运行全量检查。
-
-协调器 Context 投影保留候选顺序和选题证据，只省略 `url`、`image_url` 与 `discovered_at`。
-完整权威 Context 不变，Brief packet 仍独立由权威 Context 构建。
-
-Hermes 重试可能复用请求 ID。观察器用请求 ID 和宿主开始时间配对每次尝试的 hook，
-再用成功调用数和已知 token 与宿主数据库对账。数据库总量匹配不代表失败调用的缺失用量已知。
 
 | 改动 | 相关测试 |
 | --- | --- |

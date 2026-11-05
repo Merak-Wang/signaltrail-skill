@@ -948,6 +948,7 @@ def render_report_html(
     research_relations: list[dict[str, Any]] | None = None,
     slides_href: str | None = None,
     video_href: str | None = None,
+    video_title: str | None = None,
 ) -> str:
     """处理：把已验证报告、来源证据和本地图片投影为可离线阅读的完整 HTML。
     输入：
@@ -960,6 +961,7 @@ def render_report_html(
     - ``pdf_href``：同版本 PDF 的受控相对链接；为空时不渲染。
     - ``slides_href``：同版本图文放映 HTML 的相对路径或本地文件 URI；存在时嵌入演示并保留新标签入口。
     - ``video_href``：同版本视频播放器页面的相对路径或本地 URI。
+    - ``video_title``：本期视频主题标题；旧播放器使用日报标题。
     输出：“把已验证报告、来源证据和本地图片投影为可离线阅读的完整 HTML”得到的规范字符串，
       供调用方存储、比较或展示。
     """
@@ -1094,9 +1096,11 @@ def render_report_html(
     slides_embed = (
         '<section class="slides-embed" id="visual-briefing" '
         'aria-labelledby="slides-embed-title">'
-        f'<div class="slides-embed-heading"><h2 id="slides-embed-title">'
+        f'<div class="slides-embed-heading"><div><h2 id="slides-embed-title">'
+        f'{_escape(video_title or report.get("title"))}'
+        '</h2><p class="slides-embed-description">'
         f'{_escape(localized(language, "日报图文流与视频", "Daily news slides and video"))}'
-        '</h2><div class="slides-embed-actions">'
+        '</p></div><div class="slides-embed-actions">'
         f'<a href="{_escape(slides_href)}" target="_blank" rel="noopener noreferrer">'
         f'{_escape(localized(language, "独立打开演示 ↗", "Open presentation ↗"))}'
         f'</a>{video_link}</div></div>'
@@ -1176,6 +1180,7 @@ a{{color:var(--blue);text-decoration:none}}a:hover{{text-decoration:underline}}.
 .masthead{{padding:0;border-bottom:0}}
 .slides-embed{{margin:0 0 24px;padding:clamp(16px,2.4vw,28px);border:1px solid #d7d7d7;border-radius:14px;background:#fff;box-shadow:0 8px 24px rgba(30,30,30,.05)}}
 .slides-embed-heading{{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:14px}}
+.slides-embed-description{{margin:6px 0 0;color:var(--muted);font-size:13px}}
 .slides-embed-heading h2{{margin:0;font:700 clamp(22px,3vw,30px)/1.25 Georgia,"Noto Serif CJK SC",serif;color:#1c2422}}
 .slides-embed-actions{{display:flex;align-items:center;gap:16px;flex-wrap:wrap}}
 .slides-embed-heading a,.slides-embed-heading button{{color:#b6472f;font-size:14px;font-weight:700;font-family:inherit}}
@@ -1888,6 +1893,20 @@ def _available_video_player(player: Path) -> bool:
     return path.is_file()
 
 
+def _saved_video_title(player: Path) -> str | None:
+    """处理：读取播放器保存的主题标题，供日报重建沿用。
+    输入：同版本播放器页面路径。
+    输出：已保存标题；旧播放器或尚未导出视频时为空。
+    """
+    from bs4 import BeautifulSoup
+
+    if not player.is_file():
+        return None
+    document = BeautifulSoup(player.read_text(encoding="utf-8"), "html.parser")
+    title = document.select_one('meta[name="signaltrail-video-title"]')
+    return str(title["content"]) if title else None
+
+
 def write_desktop_html(
     report: dict[str, Any],
     data_dir: Path,
@@ -1930,12 +1949,14 @@ def write_desktop_html(
             pdf_href=pdf_path.resolve().as_uri(),
             slides_href=slides_path.resolve().as_uri() if slides_path.is_file() else None,
             video_href=video_path.resolve().as_uri() if _available_video_player(video_path) else None,
+            video_title=_saved_video_title(video_path),
         ),
     )
 
 
 def refresh_report_video_entry(
     deck_path: Path, video_path: Path, data_dir: Path, *, config: OutputConfig | None = None,
+    title: str | None = None,
 ) -> Path | None:
     """处理：沿图文稿父级定位日报并更新播放器和日报入口。
     输入：已保存图文稿、本地成品视频与其数据根。
@@ -1963,9 +1984,11 @@ def refresh_report_video_entry(
     except ValueError:
         source = video_path.as_uri()
     language = report.get("language") or "zh-CN"
-    title = "今日日报视频" if is_chinese_output(language) else "Today’s news video"
+    title = (title or _saved_video_title(player) or deck["payload"].get("video_title")
+             or deck["payload"].get("title") or report["title"])
     document = f'''<!doctype html><html lang="{_escape(language)}"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>{_escape(title)}</title>
+<meta name="signaltrail-video-title" content="{_escape(title)}">
 <script>if(new URLSearchParams(location.search).has('embed'))document.documentElement.classList.add('embed')</script>
 <style>html.embed main{{max-width:none;padding:0}}html.embed h1,html.embed p{{display:none}}body{{margin:0;background:#111;color:#fff;font:16px sans-serif}}main{{max-width:1200px;margin:auto;padding:24px}}video{{display:block;width:100%;height:auto;background:#000}}a{{color:#fff}}</style>
 </head><body><main><h1>{_escape(title)}</h1><video controls preload="metadata" src="{_escape(source)}"></video>
@@ -1977,7 +2000,7 @@ def refresh_report_video_entry(
     write_text_atomic(report_html, render_report_html(
         report, evaluation, include_pdf_link=report_html.with_suffix(".pdf").is_file(),
         media_path_prefix="../..", slides_href=slides_path.name if slides_path.is_file() else None,
-        video_href=player.name,
+        video_href=player.name, video_title=title,
     ))
     config = config or load_config().output
     desktop = resolve_desktop_directory(config) / (
@@ -2007,6 +2030,7 @@ def refresh_report_slides_entry(report_path: Path, slides_path: Path, data_dir: 
             include_pdf_link=(report_html.with_suffix(".pdf").is_file()),
             media_path_prefix="../..",
             slides_href=slides_href,
+            video_title=_saved_video_title(report_html.with_name(report_html.stem + "-video.html")),
             video_href=(report_html.stem + "-video.html"
                         if _available_video_player(report_html.with_name(report_html.stem + "-video.html"))
                         else None),
@@ -2070,6 +2094,7 @@ def write_local_outputs(
                 evaluation,
                 include_pdf_link="pdf" in config.formats,
                 media_path_prefix="../..",
+                video_title=_saved_video_title(report_dir / f"{stem}-video.html"),
                 video_href=(f"{stem}-video.html"
                             if _available_video_player(report_dir / f"{stem}-video.html") else None),
                 slides_href=(

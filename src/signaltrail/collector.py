@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 from dataclasses import replace
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -10,6 +11,8 @@ from playwright.sync_api import BrowserContext, Page
 
 from .access import CHALLENGE_TEXTS, classify_access_text
 from .adapters import collect_candidates, is_eligible
+from .article_time import in_window, observe_items
+from .brief_selection import select_brief_items
 from .browser_collection import collect_browser_pages
 from .config import (
     AppConfig,
@@ -18,28 +21,71 @@ from .config import (
     resolve_profile_dir,
     source_urls,
 )
+from .content_extraction import is_navigation_only
+from .discovery_selection import select_discovery_items
 from .models import SourceResult, SourceStatus, order_source_items
 from .monitor import load_monitor_results
 from .prefetch import page_needs_browser, prefetch_browser_pages
 from .storage import next_revision, write_immutable_json
-from .utils import now_iso, read_json, timestamp_slug, today_str, write_json
+from .utils import canonicalize_url, now_iso, read_json, timestamp_slug, today_str, write_json
 
 __all__ = ["CHALLENGE_TEXTS", "is_eligible"]
 
 
-def _current_monitor_items(items: list[Any]) -> list[Any]:
-    """处理：从监控缓存中排除仅为历史连续性保留、但本轮未再次观测到的条目。
-    输入：
-    - ``items``：监控快照转换出的文章对象；metadata 可能带历史保留标记。
-    输出：仅包含当前监控刷新实际观测到的条目；历史项不能虚增正式采集的目标覆盖数。
+def _within_window(item: Any, start: datetime, end: datetime) -> bool:
+    """处理：用来源实际发布日期判断本期窗口，不以采集时间代替。
+    输入：文章与冻结的日报起止时间。
+    输出：仅有效且明确位于窗口内的日期返回真。
+    """
+    return in_window(item.published_at, start, end)
+
+
+def _current_monitor_items(
+    items: list[Any], source: SourceConfig | None = None,
+    window: tuple[datetime, datetime] | None = None,
+) -> list[Any]:
+    """处理：排除陈旧、历史保留缓存，并按冻结窗口计算可替代实时抓取的候选。
+    输入：监控文章、来源排序语义与可选日报窗口。
+    输出：当前有效候选；发现榜单保留排名含义，未知日期不伪装为新鲜。
     """
     return [
-        item
-        for item in items
-        if not bool(
-            getattr(item, "metadata", {}).get("retained_from_previous_snapshot")
-        )
+        item for item in items
+        if not item.metadata.get("retained_from_previous_snapshot")
+        and not item.metadata.get("feed_stale")
+        and (window is None or (source is not None and source.role == "discovery")
+             or not item.published_at or _within_window(item, *window))
     ]
+
+
+def _merge_monitor_evidence(item: Any, cached: Any, data_dir: Path) -> Any:
+    """处理：用同源同文章的当前 Feed 补充实时条目。
+    输入：实时条目、监控条目和内容文件所在数据根。
+    输出：保留实时排名、日期和访问状态的条目副本。
+    """
+    if (item.source_id, item.item_id, item.canonical_url) != (
+        cached.source_id, cached.item_id, cached.canonical_url
+    ):
+        return item
+    metadata = dict(item.metadata)
+    description = item.description
+    if not description and cached.description and not is_navigation_only(cached.description):
+        description = cached.description
+    path = cached.metadata.get("feed_content_path")
+    if path and not metadata.get("feed_content_path"):
+        try:
+            feed_path = Path(path).resolve()
+            feed_path.relative_to(data_dir.resolve())
+            record = read_json(feed_path)
+            if (record.get("source_id") == item.source_id
+                    and record.get("item_id") == item.item_id
+                    and canonicalize_url(record.get("url", "")) == item.canonical_url
+                    and record.get("text") and not is_navigation_only(record["text"])):
+                for key in ("feed_content_path", "feed_content_sha256", "feed_content_characters"):
+                    if key in cached.metadata:
+                        metadata[key] = cached.metadata[key]
+        except (OSError, ValueError, TypeError, KeyError):
+            pass
+    return replace(item, description=description, metadata=metadata)
 
 
 def detect_challenge(page: Page, http_status: int | None) -> dict[str, Any]:
@@ -190,6 +236,7 @@ def collect_source(
     prefetched_pages: dict[tuple[str, str], SourceResult] | None = None,
     monitor_result: SourceResult | None = None,
     browser_results: dict[tuple[str, str], SourceResult] | None = None,
+    *, window: tuple[datetime, datetime] | None = None,
 ) -> SourceResult:
     """处理：采集单个来源的主页和扩展页，并合并预取、监控或浏览器结果。
     输入：
@@ -199,19 +246,24 @@ def collect_source(
     - ``data_dir``：当前运行的唯一数据根；所有状态和版本化产物都必须位于其中。
     - ``prefetched_pages``：HTTP 预取阶段按来源与 URL 保存的页面结果；可避免再次导航。
     - ``monitor_result``：零模型监控器为同一来源生成的结果；采集阶段可复用其条目和状态。
+    - ``window``：本期冻结窗口；用于缓存刷新判断和候选的新鲜度分区。
     输出：供索引汇总的来源采集结果；包含明确状态、错误或挑战信息、页面元数据和规范文章条目。
     """
     prefetch_supplied = prefetched_pages is not None
     prefetched_pages = prefetched_pages or {}
+    cache_result = replace(
+        monitor_result, items=_current_monitor_items(monitor_result.items),
+    ) if monitor_result is not None else None
     if monitor_result is not None:
         # 监控快照会为仪表盘保留历史项；日报只能复用本轮刷新仍实际可见的候选。
         monitor_result = replace(
             monitor_result,
-            items=_current_monitor_items(monitor_result.items),
+            items=_current_monitor_items(monitor_result.items, source, window),
         )
     target = max(1, min(source.report_target, source.max_items))
     monitor_sufficient = bool(
-        monitor_result and len(monitor_result.items) >= target
+        monitor_result and monitor_result.status in {SourceStatus.SUCCESS, SourceStatus.PARTIAL}
+        and len(monitor_result.items) >= target
     )
     page_results: list[SourceResult] = [monitor_result] if monitor_result else []
     urls = [] if monitor_sufficient else source_urls(source, data_dir)
@@ -245,12 +297,12 @@ def collect_source(
         if result is not monitor_result and result.items
     ]
     ranked_results = live_results or page_results
-    cache_fallback = monitor_result if live_results and monitor_result else None
+    cache_fallback = cache_result if live_results and cache_result else None
     # 多个实时页面仍按页轮询，避免第一个宽泛页面在达到上限前挤掉后续专题页面。
     seen: set[str] = set()
     items = []
     position = 0
-    collect_all_ranked_candidates = source.item_order == "published_at"
+    collect_all_ranked_candidates = source.item_order == "published_at" or window is not None
     while collect_all_ranked_candidates or len(items) < source.max_items:
         added = False
         for result in ranked_results:
@@ -268,6 +320,9 @@ def collect_source(
         if not added and all(position >= len(result.items) for result in ranked_results):
             break
     if cache_fallback is not None:
+        current_cache = {item.canonical_url: item for item in cache_fallback.items}
+        items = [_merge_monitor_evidence(item, current_cache[item.canonical_url], data_dir)
+                 if item.canonical_url in current_cache else item for item in items]
         for item in cache_fallback.items:
             if item.canonical_url in seen:
                 continue
@@ -276,8 +331,18 @@ def collect_source(
             if not collect_all_ranked_candidates and len(items) >= source.max_items:
                 break
     for source_rank, item in enumerate(items, start=1):
-        item.metadata["source_rank"] = source_rank
-    items = order_source_items(items, source.item_order)[: source.max_items]
+        if monitor_sufficient:
+            item.metadata.setdefault("source_rank", source_rank)
+        else:
+            # 实时多页轮询建立统一名次；纯缓存复用保留 Feed 中的原始名次。
+            item.metadata["source_rank"] = source_rank
+    items = order_source_items(items, source.item_order)
+    if window is not None and source.role != "discovery":
+        items = [item for item in items if not item.published_at or in_window(
+            item.published_at, datetime.min.replace(tzinfo=window[1].tzinfo), window[1],
+        )]
+        items.sort(key=lambda item: not _within_window(item, *window))
+    items = items[: source.max_items]
     statuses = {result.status for result in page_results}
     if items and statuses <= {SourceStatus.SUCCESS, SourceStatus.NO_ITEMS}:
         status = SourceStatus.SUCCESS
@@ -346,6 +411,7 @@ def collect_sources(
     temporary: bool = False,
     *,
     date_value: str | None = None,
+    collection_window: dict[str, str] | None = None,
 ) -> Path:
     """处理：按并发预算采集选定来源，并为每个来源保留成功、空、失败或挑战状态。
     输入：
@@ -359,6 +425,7 @@ def collect_sources(
     - ``revision``：目标产物修订号；为空时由持久化层选择下一个不可变版本。
     - ``temporary``：是否生成重试或验证用的临时索引，而不是正式不可变索引。
     - ``date_value``：调用方冻结的日报日期；采集跨午夜时保持运行与索引日期一致。
+    - ``collection_window``：本期冻结窗口；核心来源据此刷新缓存、优先新报道，发现池仅选窗内条目。
     输出：指向“按并发预算采集选定来源，
       并为每个来源保留成功、空、失败或挑战状态”所生成、定位或确认产物的本地路径。
     """
@@ -375,18 +442,28 @@ def collect_sources(
     profile = resolve_profile_dir(config, profile_dir)
     profile.mkdir(parents=True, exist_ok=True)
     channel = resolve_browser_channel(config, browser_channel)
+    discovery_sources = [
+        source for source in config.monitor_sources if source.enabled
+    ] if not only_source_ids and config.collection.discovery_brief_limit else []
     monitor_results = load_monitor_results(
         data_dir,
-        selected,
+        [*selected, *discovery_sources],
         config.timezone,
         config.monitor.snapshot_max_age_minutes,
     )
+    frozen = collection_window or {}
+    end = datetime.fromisoformat(frozen.get("end") or now_iso(config.timezone))
+    start = datetime.fromisoformat(frozen["start"]) if frozen.get("start") else (
+        end - timedelta(hours=24)
+    )
+    window = (start, end)
     html_sources = [
         source
         for source in selected
         if (
-            len(_current_monitor_items(monitor_results[source.id].items))
+            len(_current_monitor_items(monitor_results[source.id].items, source, window))
             if source.id in monitor_results
+            and monitor_results[source.id].status in {SourceStatus.SUCCESS, SourceStatus.PARTIAL}
             else 0
         )
         < max(1, min(source.report_target, source.max_items))
@@ -406,10 +483,27 @@ def collect_sources(
     results = [
         collect_source(
             None, source, config, data_dir, prefetched_pages,
-            monitor_results.get(source.id), browser_results,
+            monitor_results.get(source.id), browser_results, window=window,
         )
         for source in selected
     ]
+    core_items = [item for result in results for item in result.items]
+    core_brief_ids = {item["item_id"] for item in select_brief_items(
+        [item.to_dict() for item in core_items], {source.id: source for source in selected},
+    )}
+    allocations = select_discovery_items(
+        monitor_results, discovery_sources,
+        [item for item in core_items if item.item_id in core_brief_ids],
+        limit=config.collection.discovery_brief_limit, start=start, end=end,
+    )
+    allocated_sources = []
+    for source in discovery_sources:
+        items = allocations.get(source.id)
+        if items:
+            results.append(replace(monitor_results[source.id], items=items))
+            allocated_sources.append(replace(
+                source, report_target=len(items), report_max=len(items),
+            ))
 
     return write_results_index(
         results,
@@ -430,8 +524,9 @@ def collect_sources(
                 **source.origin_metadata,
                 "module": source.module,
                 "category": source.category,
+                **({"selection_scope": "discovery_shared"} if source.id in allocations else {}),
             }
-            for source in selected
+            for source in [*selected, *allocated_sources]
         },
         revision=revision,
         temporary=temporary,
@@ -481,6 +576,18 @@ def write_results_index(
         resolved_revision = revision or next_revision(index_dir, edition)
         output = index_dir / f"{edition}-r{resolved_revision}.json"
 
+    prior_path = data_dir / "monitor" / "snapshot.json"
+    if not prior_path.exists():
+        prior_path = data_dir / "indexes" / "latest.json"
+    previous = read_json(prior_path) if prior_path.exists() else {}
+    for result in results:
+        rows = [item.to_dict() for item in result.items]
+        observe_items(previous, rows, result.collected_at or generated_at, preserve_signals=True)
+        for item, row in zip(result.items, rows, strict=True):
+            item.published_at = row["published_at"]
+            item.metadata.update(row["metadata"])
+            if not item.published_at or item.metadata.get("published_precision") == "date":
+                item.metadata.setdefault("suggested_status", "WATCH")
     payload = {
         "schema_version": "1.1",
         "index_id": (

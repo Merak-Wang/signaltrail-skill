@@ -203,6 +203,12 @@ def test_monitor_snapshot_is_zero_token_and_reusable_by_editions(tmp_path: Path)
     assert cell["item_count"] == 0
     assert cell["status"] == "not_observed"
     assert cell["source_statuses"]["monitor_example"] == "partial"
+    # 局部刷新只更新全局时间，不能让未刷新来源的旧记录重新变新。
+    failed_refresh["sources"][0]["checked_at"] = "2026-07-23T10:00:00+08:00"
+    write_json(output, failed_refresh)
+    assert load_monitor_results(tmp_path, config.sources, config.timezone,
+                                max_age_minutes=90, now=now.replace(hour=11)) == {}
+
 
 
 def test_monitor_cache_honors_source_or_publication_order(tmp_path: Path):
@@ -614,5 +620,78 @@ def test_dashboard_serves_snapshot_read_only(tmp_path: Path):
     assert response.status_code == 200
     assert response.json()["token_usage"] == 0
     assert page.status_code == 200
-    assert "日报情报台" in page.text
+    assert '<script src="/app.js"' in page.text
     assert "Content-Security-Policy" in page.headers
+
+
+def test_serve_without_snapshot_does_not_start_automatic_refresh(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+
+    from signaltrail import dashboard
+    from signaltrail.commands.parser import build_parser
+
+    assert build_parser().parse_args(["serve"]).refresh_minutes == 0
+    assert not (tmp_path / "monitor" / "snapshot.json").exists()
+    server = Mock()
+    server.server_address = ("127.0.0.1", 8766)
+    monkeypatch.setattr(dashboard, "create_monitor_server", Mock(return_value=server))
+    monkeypatch.setattr("signaltrail.platform_research.ResearchService", Mock())
+    thread = Mock()
+    refresh = Mock()
+    monkeypatch.setattr(
+        dashboard, "threading", SimpleNamespace(Event=threading.Event, Thread=thread),
+    )
+    monkeypatch.setattr(dashboard, "refresh_monitor", refresh)
+    dashboard.serve_monitor(load_config(), tmp_path)
+    thread.assert_not_called()
+    refresh.assert_not_called()
+    server.serve_forever.assert_called_once()
+
+
+def test_stale_feed_cache_allows_alternative_feed_and_html_refresh(monkeypatch, tmp_path):
+    from signaltrail.feeds import FeedFetchResult
+
+    config = _config()
+    source = config.sources[0]
+    original_url = source.feed_urls[0]
+    alternate_url = "https://news.example/alternate.xml"
+    old = ArticleItem(item_id="same-story", source_id=source.id, source_name=source.name,
+                      title="Previously cached public announcement",
+                      url="https://news.example/story", canonical_url="https://news.example/story",
+                      discovered_at="2026-11-02T08:00:00+08:00")
+    fresh = replace(old, title="Current public announcement with new evidence")
+    feed_calls = []
+    html_calls = []
+
+    async def fetch(_client, _source, url, *_args, **_kwargs):
+        feed_calls.append(url)
+        return FeedFetchResult(source.id, source.name, url, "partial" if url == original_url
+                               else "success", "2026-11-02T09:00:00+08:00",
+                               [old] if url == original_url else [fresh],
+                               stale=url == original_url)
+
+    async def discover(*_args):
+        return [alternate_url], "success", None, None
+
+    def html(sources, *_args):
+        html_calls.extend(item.id for item in sources)
+        return {(source.id, source.url): SourceResult(
+            source.id, source.name, source.url, "success", "2026-11-02T09:00:00+08:00",
+            items=[fresh],
+        )}
+
+    monkeypatch.setattr("signaltrail.monitor.fetch_feed", fetch)
+    monkeypatch.setattr("signaltrail.monitor._discover_one", discover)
+    monkeypatch.setattr("signaltrail.monitor.prefetch_browser_pages", html)
+    for mode in ("alternate", "html"):
+        config.monitor.auto_discover_feeds = mode == "alternate"
+        config.monitor.html_fallback = True
+        feed_calls.clear()
+        html_calls.clear()
+        snapshot = read_json(refresh_monitor(config, tmp_path / mode, include_discovery=False))
+        assert feed_calls == ([original_url, alternate_url] if mode == "alternate"
+                              else [original_url])
+        assert html_calls == ([] if mode == "alternate" else [source.id])
+        assert snapshot["items"][0]["title"] == fresh.title
+        assert not snapshot["items"][0]["metadata"].get("feed_stale")

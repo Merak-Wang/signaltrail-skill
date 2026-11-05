@@ -1,6 +1,6 @@
 # Roadmap: news explainers and illustrated reading
 
-**Status:** Active · **Owner:** Repository maintainers · **Last verified:** 2026-09-23
+**Status:** Active · **Owner:** Repository maintainers · **Last verified:** 2026-11-02
 
 This roadmap tracks the experimental report-derived explainer and illustrated research workflow.
 The regular daily report and animated HTML news slides are separate, implemented user-facing
@@ -118,7 +118,7 @@ revision. Targeted wording repair does not authorize extra research by the write
 | N1. Script foundation — experimental implementation | One-chapter prototype, then edition packet/claim ledger and immutable script | Parent/schema binding, authorization, time semantics, replay, interruption, collision tests |
 | N2. Verification and reading — experimental implementation | Independent reviews, language revisions, bilingual consistency, current receipts, explanation in the analysis area | Complete assertion/required-fact coverage, no language drift or critical failure, equivalent reading meaning |
 | N3. Illustrated reading — experimental implementation; this upgrade's endpoint | Card review, story manifest, asset provenance, local HTML/Markdown | Every card/visual traces to accepted claims; fallback, mobile layout, accessibility, correction propagation |
-| N4. Live acceptance — planned | Three consecutive N1–N3 editions across at least two hosts | At least one morning and one evening; frozen quality, token, and time criteria |
+| N4. Live acceptance — planned | Three consecutive N1–N3 editions across at least two hosts | Daily editions on different dates; frozen quality, token, and time criteria |
 | V1. Speech and video — next upgrade | Authorized speech, actual subtitle timing, reproducible video | Separate playback, alignment, provenance, rights, and recovery acceptance |
 
 N1 samples do not establish edition acceptance. N2 text can ship once its own gates pass; N3 is

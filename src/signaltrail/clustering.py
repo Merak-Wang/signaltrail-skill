@@ -67,6 +67,7 @@ class _UnionFind:
     - ``size``：并查集需要管理的候选数量；初始化时每个下标独立成组。
     输出：构造后的 ``_UnionFind`` 实例或枚举定义；其字段和方法共同承担上述职责。
     """
+
     def __init__(self, size: int) -> None:
         """处理：初始化当前实例及其内部状态。
         输入：
@@ -114,9 +115,7 @@ def _normalized_title(value: str) -> str:
     输出：“统一标题大小写、空白和标点，保留可比较字符”得到的规范字符串，
       供调用方存储、比较或展示。
     """
-    return " ".join(
-        re.sub(r"[^\w\u3400-\u9fff]+", " ", (value or "").casefold()).split()
-    )
+    return " ".join(re.sub(r"[^\w\u3400-\u9fff]+", " ", (value or "").casefold()).split())
 
 
 def lexical_tokens(value: str) -> list[str]:
@@ -163,14 +162,9 @@ def lexical_vector(value: str, dimensions: int = 512) -> dict[int, float]:
     """
     tokens = lexical_tokens(value)
     features = [f"u:{token}" for token in tokens]
-    features.extend(
-        f"b:{left}|{right}" for left, right in zip(tokens, tokens[1:], strict=False)
-    )
+    features.extend(f"b:{left}|{right}" for left, right in zip(tokens, tokens[1:], strict=False))
     compact = re.sub(r"\s+", "", _normalized_title(value))
-    features.extend(
-        f"c:{compact[index:index + 3]}"
-        for index in range(max(0, len(compact) - 2))
-    )
+    features.extend(f"c:{compact[index : index + 3]}" for index in range(max(0, len(compact) - 2)))
     vector: defaultdict[int, float] = defaultdict(float)
     for feature in features:
         position, sign = _hash_feature(feature, dimensions)
@@ -221,7 +215,7 @@ def _containment_match(left: str, right: str) -> bool:
     left_compact = re.sub(r"\s+", "", _normalized_title(left))
     right_compact = re.sub(r"\s+", "", _normalized_title(right))
     shorter, longer = sorted((left_compact, right_compact), key=len)
-    return len(shorter) >= 14 and shorter in longer
+    return len(shorter) >= 24 and len(shorter) / max(1, len(longer)) >= 0.65 and shorter in longer
 
 
 def _role_score(item: dict[str, Any]) -> int:
@@ -232,9 +226,7 @@ def _role_score(item: dict[str, Any]) -> int:
     """
     metadata = item.get("metadata", {}) if isinstance(item.get("metadata"), dict) else {}
     role = str(metadata.get("role") or "discovery")
-    return {"primary": 10, "evidence": 8, "corroboration": 7, "discovery": 4}.get(
-        role, 4
-    )
+    return {"primary": 10, "evidence": 8, "corroboration": 7, "discovery": 4}.get(role, 4)
 
 
 def _tier(item: dict[str, Any]) -> int:
@@ -358,17 +350,27 @@ def cluster_articles(
             and abs((left_time - right_time).total_seconds()) > 96 * 3600
         ):
             continue
-        canonical_match = (
-            left_item.get("canonical_url")
-            and left_item.get("canonical_url") == right_item.get("canonical_url")
-        )
+        canonical_match = left_item.get("canonical_url") and left_item.get(
+            "canonical_url"
+        ) == right_item.get("canonical_url")
         shared_tokens = token_sets[left] & token_sets[right]
+        if (
+            not canonical_match
+            and min(len(token_sets[left]), len(token_sets[right])) < 4
+            and _normalized_title(str(left_item.get("title") or ""))
+            != _normalized_title(str(right_item.get("title") or ""))
+        ):
+            continue
         if not canonical_match and len(shared_tokens) < 2:
             continue
         similarity = cosine_similarity(vectors[left], vectors[right])
-        if canonical_match or similarity >= threshold or _containment_match(
-            str(left_item.get("title") or ""),
-            str(right_item.get("title") or ""),
+        if (
+            canonical_match
+            or similarity >= threshold
+            or _containment_match(
+                str(left_item.get("title") or ""),
+                str(right_item.get("title") or ""),
+            )
         ):
             union.union(left, right)
 
@@ -408,9 +410,7 @@ def cluster_articles(
         parsed_times = [
             parsed for item in grouped_items if (parsed := _parse_time(item)) is not None
         ]
-        prior_count = sum(
-            str(item.get("item_id")) in prior_item_ids for item in grouped_items
-        )
+        prior_count = sum(str(item.get("item_id")) in prior_item_ids for item in grouped_items)
         if len(source_ids) >= 3:
             phase = "confirmed"
         elif prior_count and prior_count < len(grouped_items):
@@ -429,9 +429,7 @@ def cluster_articles(
             "module": representative.get("module"),
             "category": representative.get("category"),
             "phase": phase,
-            "importance": _cluster_importance(
-                grouped_items, generated, prior_item_ids
-            ),
+            "importance": _cluster_importance(grouped_items, generated, prior_item_ids),
             "first_seen_at": min(
                 (str(item.get("discovered_at")) for item in grouped_items),
                 default=generated_at,
@@ -444,11 +442,7 @@ def cluster_articles(
                 max(parsed_times).isoformat(timespec="seconds") if parsed_times else None
             ),
             "image_url": next(
-                (
-                    str(item.get("image_url"))
-                    for item in grouped_items
-                    if item.get("image_url")
-                ),
+                (str(item.get("image_url")) for item in grouped_items if item.get("image_url")),
                 None,
             ),
         }

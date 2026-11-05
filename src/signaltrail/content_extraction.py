@@ -31,6 +31,33 @@ _INCOMPLETE = re.compile(
 )
 
 
+def strip_content_frontmatter(text: str) -> str:
+    """处理：去掉本地正文 Markdown 的 YAML 头，保留完整文章文本。
+    输入：保存的正文视图或普通文本。
+    输出：正文部分；普通文本保持原样。
+    """
+    newline = "\r\n" if text.startswith("---\r\n") else "\n"
+    boundary = newline + "---" + newline
+    if text.startswith("---" + newline) and boundary in text[3 + len(newline):]:
+        return text.split(boundary, 1)[1].lstrip("\r\n")
+    return text
+
+
+def is_navigation_only(text: str) -> bool:
+    """处理：识别只有评论入口、原文链接和榜单评分的 Feed 字段。
+    输入：Feed 文本、压缩描述或历史正文 Markdown。
+    输出：纯导航返回真；含实质短句的文本继续保留。
+    """
+    text = strip_content_frontmatter(text).strip()
+    text = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", text)
+    remaining = re.sub(
+        r"(?:Article|Comments)\s+URL:\s*https?://\S+"
+        r"|Points:\s*\d+|#\s*Comments:\s*\d+|\bComments\b",
+        "", text, flags=re.I,
+    )
+    return bool(text) and not remaining.strip(" \t\r\n|-")
+
+
 @dataclass
 class ExtractedDocument:
     """处理：承载选中正文、结构块和抽取质量，隔离访问结果与完整性推断。
@@ -83,7 +110,10 @@ def document_blocks(root: Tag) -> list[dict[str, Any]]:
             rows = [
                 [
                     {
-                        "text": _inline_text(cell), "header": cell.name == "th",
+                        "text": _inline_text(cell),
+                        "header": (cell.name == "th" or cell.find_parent("thead") is not None
+                                   or cell.get("scope") in {"row", "col", "rowgroup", "colgroup"}
+                                   or cell.get("role") in {"columnheader", "rowheader"}),
                         "rowspan": str(cell.get("rowspan", "1")),
                         "colspan": str(cell.get("colspan", "1")),
                     }
@@ -143,6 +173,10 @@ def document_blocks(root: Tag) -> list[dict[str, Any]]:
         flush()
 
     visit(root)
+    # 发布商推广可能是直接文本或嵌套行内节点，统一在块边界去除精确 CTA。
+    blocks = [block for block in blocks if not re.match(
+        r"^Choose CNBC as your preferred source on Google\b", block["text"],
+    )]
     for position, block in enumerate(blocks, 1):
         block["block_id"] = f"block-{position}"
     return blocks
@@ -163,7 +197,8 @@ def extract_document(
     # body/main 是宽泛兜底；配置中提前列出它们也不能压过实际 article。
     ordered = list(dict.fromkeys([
         *(selector for selector in selectors if selector not in {"body", "main", "html"}),
-        "article", '[itemprop="articleBody"]', "div.article", "#blogpage .content",
+        "article", '[itemprop="articleBody"]', ".ArticleBody-articleBody", ".group#article-body",
+        "#article", "div.article", "#blogpage .content",
         "main", "body",
     ]))
     for priority, selector in enumerate(ordered):
@@ -302,11 +337,29 @@ def extract_with_fallback(
     ):
         attempt["reason"] = "table_retention_unconfirmed"
         return baseline
-    if baseline.status != ContentStatus.METADATA_ONLY and (
-        len(candidate.text) > len(baseline.text)
-        or candidate.quality.get("link_density", 1) > baseline.quality.get("link_density", 0)
-    ):
-        return baseline
+    if baseline.status != ContentStatus.METADATA_ONLY:
+        candidate_text = re.sub(r"\s+", " ", candidate.text).strip().casefold()
+        paragraphs = [
+            re.sub(r"\s+", " ", block["text"]).strip().casefold()
+            for block in baseline.blocks
+            if block["type"] not in {"heading", "table"} and len(block["text"]) >= 40
+        ]
+        total = sum(map(len, paragraphs))
+        retained = sum(len(text) for text in paragraphs if text in candidate_text)
+        retention = retained / total if total else 1.0
+        attempt["body_block_retention"] = round(retention, 4)
+        # 备用器可补出更多文字，但不能靠删掉大半正文把 liveblog 压成短摘要。
+        if retention < 0.7:
+            attempt["reason"] = "body_blocks_lost"
+            return baseline
+        old_density = baseline.quality.get("link_density", 0)
+        new_density = candidate.quality.get("link_density", 1)
+        if new_density > old_density + 0.05:
+            attempt["reason"] = "increased_link_noise"
+            return baseline
+        if len(candidate.text) == len(baseline.text) and new_density >= old_density:
+            attempt["reason"] = "no_observed_gain"
+            return baseline
     candidate.status = ContentStatus.PARTIAL
     candidate.source_metadata = source_metadata
     candidate.quality.update(

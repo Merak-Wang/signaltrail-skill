@@ -469,6 +469,57 @@ def test_materialize_report_images_prioritizes_importance_and_records_budget(
     }
 
 
+@pytest.mark.parametrize("high_fails", [False, True])
+def test_materialize_downloads_one_highest_photo_variant_with_fallback_and_cache(
+    monkeypatch, tmp_path, high_fails,
+):
+    report = _report()
+    second = deepcopy(report["sections"][0]["briefs"][0])
+    second["item_id"] = "second"
+    report["sections"][0]["briefs"].append(second)
+    base = "https://cdn.arstechnica.net/wp-content/uploads/2026/11/photo"
+    small, large = base + "-8x6.jpg", base + "-16x12.jpg"
+    index = {"items": [
+        {"item_id": report["sections"][0]["briefs"][0]["item_id"], "image_url": small},
+        {"item_id": "second", "image_url": large},
+    ]}
+    calls = []
+
+    def download(url, root, _config, **_kwargs):
+        calls.append(url)
+        if url == large and high_fails:
+            raise ImageDownloadError("Highest version unavailable")
+        width, height = (16, 12) if url == large else (8, 6)
+        output = BytesIO()
+        Image.new("RGB", (width, height), (80, 140, 190)).save(output, format="PNG")
+        content = output.getvalue()
+        digest = hashlib.sha256(content).hexdigest()
+        local = f"media/images/{digest}.png"
+        path = root / local
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(content)
+        return DownloadedImage(url, url, local, "image/png", digest, len(content),
+                               width, height, False)
+
+    monkeypatch.setattr(media_module, "download_image", download)
+    config = MediaConfig()
+    assert materialize_report_images(report, index, tmp_path, config, downloader=download) == []
+    assert calls == ([large, small] if high_fails else [large])
+    expected = small if high_fails else large
+    assert [row["image"]["source_url"] for row in report["sections"][0]["briefs"]] == [
+        expected, expected,
+    ]
+    assert len(list((tmp_path / "media" / "images").glob("*.png"))) == 1
+    # 新一轮只见低清地址时，也复用此前确认的同原图高清缓存。
+    cached_report = _report()
+    cached_index = {"items": [index["items"][0]]}
+    assert materialize_report_images(
+        cached_report, cached_index, tmp_path, config, downloader=download,
+    ) == []
+    assert calls == ([large, small] if high_fails else [large])
+    assert cached_report["sections"][0]["briefs"][0]["image"]["source_url"] == expected
+
+
 def test_materialize_report_images_tries_later_candidates_after_a_failure(
     tmp_path: Path,
 ):

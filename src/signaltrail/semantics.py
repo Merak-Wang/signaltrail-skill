@@ -153,8 +153,26 @@ def semantic_fingerprint(item: dict[str, Any]) -> str:
     if isinstance(content_digest, str) and re.fullmatch(r"[0-9a-f]{64}", content_digest):
         payload.pop("content_path")
         payload["content_text_sha256"] = content_digest
+    else:
+        feed_digest = metadata.get("feed_content_sha256") or item.get("feed_content_sha256")
+        if isinstance(feed_digest, str) and re.fullmatch(r"[0-9a-f]{64}", feed_digest):
+            payload["feed_content_sha256"] = feed_digest
     encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def brief_requires_watch(item: dict[str, Any]) -> bool:
+    """处理：把研究观察、日期精度不足和未知发布时间统一限制为观察状态。
+    输入：规范索引 metadata 或已扁平化的写作候选时间信号。
+    输出：真表示本条不能因缓存复用或模型输出被标为新发表或更新新闻。
+    """
+    metadata = item.get("metadata") or {}
+    suggested = item.get("suggested_status") or metadata.get("suggested_status")
+    signal = item.get("discovery_signal") or metadata.get("discovery_signal")
+    precision = item.get("published_precision") or metadata.get("published_precision")
+    return (suggested == "WATCH" or signal in {
+        "bootstrap_watch", "new_listing", "reappeared", "rank_rise", "updated",
+    } or precision == "date" or _coerce_date(item.get("published_at")) is None)
 
 
 def run_relative_brief_fields(
@@ -211,6 +229,8 @@ def run_relative_brief_fields(
         + (6 if previously_reported else 15),
     )
     status = ("UPD" if previously_reported else "NEW") if age_days in {0, 1} else "WATCH"
+    if brief_requires_watch(item):
+        status = "WATCH"
     return {"importance": importance, "status": status}
 
 

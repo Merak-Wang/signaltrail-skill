@@ -104,7 +104,8 @@ def handle_begin_authoring(args: argparse.Namespace, context: CommandContext) ->
     输出：向标准输出报告操作结果，并返回供终端或宿主判断成败的退出码。
     """
     data_dir = context.data_dir
-    output = begin_authoring(args.run, data_dir)
+    output = begin_authoring(args.run, data_dir, config=context.config,
+                             refresh_context=args.refresh_context)
     print_command_result(read_json_object(output, "Command result"), context, output)
     return 0
 
@@ -163,7 +164,9 @@ def handle_submit_authoring_batch(args: argparse.Namespace, context: CommandCont
                        "expected_path": str(existing), "accepted_path": str(existing),
                        "errors": []}
             else:
-                row = check_authoring_batch(run, batch_id, draft_path, data_dir)
+                row = check_authoring_batch(
+                    run, batch_id, draft_path, data_dir, _validated_session=session,
+                )
         except (ValueError, KeyError, OSError, RuntimeError) as exc:
             row = {"batch_id": batch_id, "draft_path": str(draft_path),
                    "expected_path": str(batch["result_path"]), "errors": [str(exc)]}
@@ -174,7 +177,8 @@ def handle_submit_authoring_batch(args: argparse.Namespace, context: CommandCont
             if not row["errors"] and not row.get("accepted_path"):
                 try:
                     path = accept_authoring_batch(run_path, row["batch_id"],
-                                                  Path(row["draft_path"]), data_dir)
+                                                  Path(row["draft_path"]), data_dir,
+                                                  _validated_session=session)
                     row["accepted_path"] = str(path)
                     accepted.append(str(path))
                 except (ValueError, KeyError, OSError, RuntimeError) as exc:
@@ -186,6 +190,18 @@ def handle_submit_authoring_batch(args: argparse.Namespace, context: CommandCont
                 "pending": pending, "invalid": invalid,
                 "expected_paths": [row["expected_path"] for row in rows], "batches": rows})
     return 1 if invalid else 0
+
+
+def handle_brief_input(args: argparse.Namespace, context: CommandContext) -> int:
+    """处理：一次输出独立简报作者所需的单行输入。
+    输入：指定的受限包路径和当前数据根。
+    输出：完整 Schema、候选证据和预检命令，不修改运行或接收结果。
+    """
+    from ..authoring import brief_authoring_input
+    from .common import print_json
+
+    print_json(brief_authoring_input(args.packet, context.data_dir), indent=None)
+    return 0
 
 
 def handle_record_authoring_metrics(args: argparse.Namespace, context: CommandContext) -> int:

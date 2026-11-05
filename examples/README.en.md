@@ -1,35 +1,28 @@
 # Examples
 
-**Status:** Current generated presentation and synthetic test fixtures
-**Last verified:** 2026-09-24
-
 [简体中文](README.md) | [English](README.en.md)
 
-This directory provides a generated daily report and its illustrated presentation, a historical daily report, and synthetic test data.
+## November 2, 2026 daily report
 
-## Current complete daily report: September 23, 2026 morning report
+This generated edition contains 402 briefs, 8 featured events and 28 sources, with a 50-page illustrated presentation and a complete Chinese narrated video.
 
-[Download the report and embedded presentation ZIP](https://github.com/Merak-Wang/signaltrail-skill/raw/refs/heads/main/examples/reports/2026-09-23-morning-r1.zip), extract it, and open `morning-r1.html` in a browser. The ZIP includes all news items, sources, three-perspective analysis and synthesis, plus the companion presentation HTML so the embedded view works.
+| Sample | How to use it |
+| --- | --- |
+| [Report and slides ZIP](reports/2026-11-02-daily-r1.zip) | Extract and open `2026-11-02-daily-r1.html` |
+| [Report HTML](reports/2026-11-02-daily-r1.html) | Read the news, three perspectives and synthesis; the embedded presentation needs the companion slides HTML |
+| [Slides HTML](reports/2026-11-02-daily-r1-slides.html) | Open in a browser and use the arrow keys to move between stories |
+| [Complete MP4 video](reports/2026-11-02-daily-r1-video.mp4) | 16 min 11 sec, 1920×1080, about 21 MiB |
 
-[Download the report HTML only](https://github.com/Merak-Wang/signaltrail-skill/raw/refs/heads/main/examples/reports/2026-09-23-morning-r1.html) (the standalone file may not load the companion embedded presentation).
+The ZIP includes the report, slides and video player. Save the MP4 beside the extracted files to open the video from the report.
+News images are embedded; source links open the original publishers. The sample video includes all 50 pages and is compressed at 10 fps for download.
 
-## Current illustrated presentation: September 23, 2026 morning report
+[![Chinese narrated video](../assets/readme/daily-video-preview.png)](reports/2026-11-02-daily-r1-video.mp4)
 
-[Download the September 23 morning slides HTML](https://github.com/Merak-Wang/signaltrail-skill/raw/refs/heads/main/examples/reports/2026-09-23-morning-r1-slides.html) for this actually generated presentation, showing 41 stories.
-Download the file and open it in a browser; remote original images may require an internet connection.
+## Historical samples
 
-## Historical complete report: August 25, 2026 morning r1
+- [September 23, 2026 morning report and slides ZIP](reports/2026-09-23-morning-r1.zip)
+- [August 25, 2026 morning report HTML](reports/2026-08-25-morning-r1.html)
 
-[Download the August 25 morning r1 HTML](https://github.com/Merak-Wang/signaltrail-skill/raw/refs/heads/main/examples/reports/2026-08-25-morning-r1.html) as a historical complete report example, not the current illustrated presentation.
-Download and open it in a browser; remote images are hosted by external sources, may change over time, and may require internet access.
+## Test fixtures
 
-This historical page shows the older reader design; its original content is unchanged.
-
-## Synthetic fixtures
-
-`sample_input.json` and `sample_report.json` support automated tests, compatibility
-validation, and output rendering; neither represents the current report contract.
-
-- People, organizations, events, dates, and analysis are synthetic.
-- `news.example` and `wire.example` are reserved example domains, not publishers.
-- Fixtures support engineering validation and carry no factual or editorial authority.
+`sample_input.json` and `sample_report.json` contain synthetic data for automated tests. People, organizations, events and analysis are fictional; `news.example` and `wire.example` are reserved example domains.

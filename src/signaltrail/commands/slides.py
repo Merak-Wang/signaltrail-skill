@@ -34,12 +34,14 @@ def add_slides_parser(sub: argparse._SubParsersAction) -> None:
                          help="Exclude an event before selecting the top stories; repeatable")
     prepare.add_argument("--min-importance", type=int, default=0,
                          help="Optional importance cutoff; index mode requires supplied scores")
-    prepare.add_argument("--max-news", type=int, default=30,
-                         help="Maximum stories by report importance or index rank (default: 30)")
+    prepare.add_argument("--max-news", type=int, default=50,
+                         help="Maximum stories by report importance or index rank (default: 50)")
     prepare.add_argument("--batch-size", type=int, default=5)
     prepare.add_argument("--max-input-tokens", type=int,
                          help="Hard input limit; default targets 64000 and expands for one article")
     prepare.add_argument("--max-output-tokens", type=int, default=4000)
+    author_input = stages.add_parser("input", help="Read one complete, compact writing input")
+    author_input.add_argument("--packet", type=Path, required=True)
     submit = stages.add_parser("submit", help="Accept and reuse one authored batch")
     submit.add_argument("--packet", type=Path)
     submit.add_argument("--input", type=Path)
@@ -47,6 +49,7 @@ def add_slides_parser(sub: argparse._SubParsersAction) -> None:
     submit.add_argument("--draft-dir", type=Path, help="Directory of batch-N-draft.json files")
     submit.add_argument("--check-only", action="store_true", help="Validate without saving results")
     video = stages.add_parser("video", help="Export locally narrated MP4 from a saved deck")
+    video.add_argument("--title", help="Topic-specific title for this video")
     video.add_argument("--voice")
     video.add_argument("--reference-id")
     video.add_argument("--deck", type=Path, required=True)
@@ -79,6 +82,16 @@ def handle_slides(args: argparse.Namespace, context: CommandContext) -> int:
     """
     try:
         match args.action:
+            case "input":
+                from ..narrative_store import load_artifact
+
+                packet = load_artifact(args.packet, context.data_dir)
+                payload = packet["payload"]
+                if packet["kind"] != f"slides-packet-{payload['batch_id']}":
+                    raise ValueError("Expected a slide authoring packet")
+                # 只向作者输出一次完整模型输入，父计划与程序计量留在已绑定产物中。
+                print_json(payload["model_input"], indent=None)
+                return 0
             case "voice-setup":
                 from ..video_runtime import register_voice
                 result = {"profile": str(register_voice(args.profile, context.data_dir,
@@ -94,11 +107,13 @@ def handle_slides(args: argparse.Namespace, context: CommandContext) -> int:
                 result = render_video(args.deck, args.output, args.model_dir, context.data_dir,
                                       ffmpeg=args.ffmpeg, threads=args.threads,
                                       tts_executable=args.tts_executable, device=args.device,
-                                      voice=args.voice, reference_id=args.reference_id)
+                                      voice=args.voice, reference_id=args.reference_id,
+                                      title=args.title)
                 from ..local_output import refresh_report_video_entry
                 player = refresh_report_video_entry(args.deck, Path(result["video_path"]),
                                                     context.data_dir,
-                                                    config=context.config.output)
+                                                    config=context.config.output,
+                                                    title=result["title"])
                 if player:
                     result["report_video_path"] = str(player)
             case "prepare":

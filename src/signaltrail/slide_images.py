@@ -14,7 +14,12 @@ from .access import classify_access_text
 from .config import MediaConfig
 from .content_extraction import extract_document
 from .content_images import article_image_candidates
-from .image_policy import filter_editorial_templates, normalize_image_candidates
+from .image_policy import (
+    filter_editorial_templates,
+    image_variant_groups,
+    normalize_image_candidates,
+    select_image_variants,
+)
 from .media import (
     DownloadedImage,
     ImageDownloadError,
@@ -182,12 +187,18 @@ def enrich_slide_images(
     """
     from copy import deepcopy
 
-    from .news_slides import _image_identity, _news_images
+    from .news_slides import _news_images
 
     enriched = deepcopy(news)
     if not config.enabled:
+        deduplicated = 0
+        for item in enriched:
+            images = item.get("images", [])
+            item["images"] = select_image_variants(images, data_dir=data_dir)
+            deduplicated += len(images) - len(item["images"])
         return enriched, {
             "sources_fetched": 0, "images_downloaded": 0, "images_reused": 0,
+            "images_deduplicated": deduplicated,
             "source_failures": [], "image_failures": [],
         }
     source_rows = {}
@@ -260,14 +271,9 @@ def enrich_slide_images(
 
     # 用现有合并规则折叠原图、已缓存图与刚抽出的高清变体。
     all_urls: dict[str, tuple[dict[str, Any], str]] = {}
-    fallbacks: dict[tuple[str, tuple], list[dict[str, Any]]] = {}
     for item in enriched:
         refs, indexed, briefs = [], {}, {}
         source_urls = [str(source.get("url") or "") for source in item.get("sources", [])]
-        for image in item.get("images", []):
-            if image.get("url") and image.get("local_path"):
-                key = (item["event_id"], _image_identity(str(image["url"])))
-                fallbacks.setdefault(key, []).append(image.copy())
         for index, source in enumerate(item.get("sources", [])):
             item_id = f"{item['event_id']}:{index}"
             source_url = str(source.get("url") or "")
@@ -289,7 +295,7 @@ def enrich_slide_images(
             }
             briefs[item_id] = {"primary_source": {"name": source.get("name", "")}}
         event = {"source_refs": refs}
-        merged = _news_images(event, briefs, indexed)
+        merged = _news_images(event, briefs, indexed, preserve_variants=True)
         item["images"] = filter_editorial_templates(merged)
         source_url = source_urls[0] if source_urls else ""
         for candidate in item["images"]:
@@ -300,93 +306,103 @@ def enrich_slide_images(
 
     cache = _load_image_cache(data_dir)
     resolved: dict[str, DownloadedImage | Exception] = {}
-    download_rows = []
-    used_bytes = 0
-    used_images = 0
+    groups = image_variant_groups([candidate for candidate, _ in all_urls.values()])
+    pending_groups = list(enumerate(groups))
+    selected: dict[int, dict] = {}
+    used_bytes = used_images = 0
     counted_digests: set[str] = set()
-    for url, (_candidate, referer) in all_urls.items():
-        if _candidate.get("local_path"):
-            digest = str(_candidate.get("sha256") or _candidate.get("local_path"))
-            if digest not in counted_digests:
-                used_bytes += int(_candidate.get("byte_size") or 0)
-                counted_digests.add(digest)
-                used_images += 1
-            continue
-        cached = _cached_download(url, cache["entries"].get(url), data_dir, config)
-        if isinstance(cached, DownloadedImage):
-            resolved[url] = cached
-            if cached.sha256 not in counted_digests:
-                used_bytes += cached.byte_size
-                counted_digests.add(cached.sha256)
-                used_images += 1
-        elif cached is None:
-            download_rows.append((url, referer))
-        else:
-            resolved[url] = cached
-    cursor = 0
     with ExitStack() as resources:
         shared: dict[str, Any] = {}
-        while cursor < len(download_rows):
-            remaining = config.max_total_bytes - used_bytes
-            available_images = config.max_images_per_report - used_images
-            if remaining <= 0 or available_images <= 0:
-                break
-            available = len(download_rows) - cursor
-            batch_limit = min(config.global_concurrency, available, available_images)
-            # 每张候选按本批剩余额度均分，保证并行响应总量不越过报告预算。
-            rows = download_rows[cursor:cursor + batch_limit]
-            per_image_limit = min(config.max_image_bytes, remaining // len(rows))
-            if per_image_limit <= 0:
-                break
-            batch_results = _download_image_batch(
-                rows, data_dir, config, per_image_limit, download_image,
-                resources=resources, shared=shared,
-            )
-            for url, _referer in rows:
-                value = batch_results.get(
-                    url, ImageDownloadError("image download produced no result")
+        while pending_groups:
+            download_rows = []
+            retry_groups = []
+            for group_id, candidates in pending_groups:
+                candidate = candidates[0]
+                url = candidate["url"]
+                cached = (None if candidate.get("local_path") else
+                          _cached_download(url, cache["entries"].get(url), data_dir, config))
+                if candidate.get("local_path") or isinstance(cached, DownloadedImage):
+                    if isinstance(cached, DownloadedImage):
+                        resolved[url] = cached
+                        candidate = _attach_download(candidate, cached)
+                        digest, size = cached.sha256, cached.byte_size
+                    else:
+                        digest = str(candidate.get("sha256") or candidate["local_path"])
+                        size = int(candidate.get("byte_size") or 0)
+                    selected[group_id] = select_image_variants([candidate, *candidates[1:]])[0]
+                    if digest not in counted_digests:
+                        used_bytes += size
+                        used_images += 1
+                        counted_digests.add(digest)
+                elif cached is None:
+                    download_rows.append((group_id, candidates))
+                else:
+                    resolved[url] = cached
+                    if len(candidates) > 1:
+                        retry_groups.append((group_id, candidates[1:]))
+            cursor = 0
+            while cursor < len(download_rows):
+                remaining = config.max_total_bytes - used_bytes
+                available_images = config.max_images_per_report - used_images
+                if remaining <= 0 or available_images <= 0:
+                    break
+                batch_limit = min(config.global_concurrency,
+                                  len(download_rows) - cursor, available_images)
+                batch = download_rows[cursor:cursor + batch_limit]
+                rows = [(candidates[0]["url"], all_urls[candidates[0]["url"]][1])
+                        for _, candidates in batch]
+                per_image_limit = min(config.max_image_bytes, remaining // len(rows))
+                if per_image_limit <= 0:
+                    break
+                # 每族本轮只下载最高一档，不同原图继续并发；失败族下一轮再尝试低一档。
+                batch_results = _download_image_batch(
+                    rows, data_dir, config, per_image_limit, download_image,
+                    resources=resources, shared=shared,
                 )
-                resolved[url] = value
-                cache["entries"][url] = (
-                    _cache_success(value)
-                    if isinstance(value, DownloadedImage) else _cache_failure(value, config)
-                )
-                if isinstance(value, DownloadedImage) and value.sha256 not in counted_digests:
-                    used_bytes += value.byte_size
-                    counted_digests.add(value.sha256)
-                    used_images += 1
-            _write_image_cache(data_dir, cache)
-            cursor += len(rows)
+                for group_id, candidates in batch:
+                    url = candidates[0]["url"]
+                    value = batch_results.get(
+                        url, ImageDownloadError("image download produced no result")
+                    )
+                    resolved[url] = value
+                    cache["entries"][url] = (
+                        _cache_success(value)
+                        if isinstance(value, DownloadedImage) else _cache_failure(value, config)
+                    )
+                    if isinstance(value, DownloadedImage):
+                        candidate = _attach_download(candidates[0], value)
+                        selected[group_id] = select_image_variants([candidate, *candidates[1:]])[0]
+                        if value.sha256 not in counted_digests:
+                            used_bytes += value.byte_size
+                            used_images += 1
+                            counted_digests.add(value.sha256)
+                    elif len(candidates) > 1:
+                        retry_groups.append((group_id, candidates[1:]))
+                _write_image_cache(data_dir, cache)
+                cursor += len(batch)
+            pending_groups = retry_groups
+    chosen_by_url = {
+        image["url"]: selected.get(group_id, group[0])
+        for group_id, group in enumerate(groups) for image in group
+    }
 
-    image_failures: list[dict[str, str]] = []
+    image_failures = [
+        {"url": url, "reason": f"{type(value).__name__}: {value}"}
+        for url, value in resolved.items() if isinstance(value, Exception)
+    ]
     downloaded_urls: set[str] = set()
     reused_urls: set[str] = set()
-    failed_urls: set[str] = set()
     deduplicated = 0
     for item in enriched:
         kept: list[dict] = []
         seen_digests: set[str] = set()
         for candidate in item.get("images", []):
+            source_url = candidate.get("source_url")
+            candidate = chosen_by_url.get(candidate["url"], candidate).copy()
+            if source_url:
+                candidate["source_url"] = source_url
             url = candidate["url"]
             value = resolved.get(url)
-            if isinstance(value, Exception):
-                if url not in failed_urls:
-                    image_failures.append({
-                        "url": url, "reason": f"{type(value).__name__}: {value}"
-                    })
-                    failed_urls.add(url)
-                alternatives = fallbacks.get(
-                    (item["event_id"], _image_identity(url)), []
-                )
-                if alternatives:
-                    # 高清变体下载失败时，以已缓存的同一原图变体继续展示。
-                    candidate = max(
-                        alternatives,
-                        key=lambda image: int(image.get("width") or 0)
-                        * int(image.get("height") or 0),
-                    )
-                    url = candidate["url"]
-                    value = resolved.get(url)
             if isinstance(value, DownloadedImage):
                 candidate.update(_attach_download(candidate, value))
                 (reused_urls if value.reused else downloaded_urls).add(url)
@@ -415,7 +431,8 @@ def enrich_slide_images(
                 and 0 < int(image.get("width") or 0) <= 128
                 and 0 < int(image.get("height") or 0) <= 128
             )]
-        item["images"] = kept
+        item["images"] = select_image_variants(kept, data_dir=data_dir)
+        deduplicated += len(kept) - len(item["images"])
     return enriched, {
         "sources_fetched": len(page_results), "images_downloaded": len(downloaded_urls),
         "images_reused": len(reused_urls), "images_deduplicated": deduplicated,

@@ -66,6 +66,52 @@ def test_rss_parser_preserves_time_image_and_missing_time_fallback():
     assert items[1].discovered_at == "2026-07-24T10:00:00+08:00"
 
 
+def test_feed_promotions_and_repeated_templates_do_not_become_news_covers(tmp_path):
+    titles = [
+        "Central bank announces interest rate changes",
+        "New telescope photographs distant stellar nursery",
+        "Coastal storm closes schools and railway services",
+    ]
+    entries = []
+    for index, title in enumerate(titles):
+        entries.append(f"""<item><title>{title}</title>
+          <link>https://news.example/article-{index}</link><description><![CDATA[
+          <p>Detailed original report explaining the news and its consequences.</p>
+          <img src="https://images.tmtpost.com/uploads/images/2023/tkrss/rotating{index}.png">
+          <img src="https://pansci.asia/wp-content/uploads/2025/12/新書上市-BN.png">
+          <img src="https://news.example/shared-template.png">
+          {('<img src="https://news.example/article-photo.jpg">' if index == 0 else "")}
+          ]]></description></item>""")
+    items = parse_feed_document(
+        ("<rss><channel>" + "".join(entries) + "</channel></rss>").encode(),
+        _source(),
+        "https://news.example/feed.xml",
+        "2026-07-24T10:00:00+08:00",
+        "Asia/Shanghai",
+        max_items=10,
+        data_dir=tmp_path,
+    )
+    assert items[0].image_url == "https://news.example/article-photo.jpg"
+    assert items[1].image_url is items[2].image_url is None
+    related = "".join(
+        f"""<item><title>Central bank announces interest rate changes update {index}</title>
+      <link>https://news.example/related-{index}</link><description><![CDATA[
+      <p>Detailed original report.</p><img src="https://news.example/shared-event.jpg">
+      ]]></description></item>"""
+        for index in range(3)
+    )
+    same_event = parse_feed_document(
+        ("<rss><channel>" + related + "</channel></rss>").encode(),
+        _source(),
+        "https://news.example/feed.xml",
+        "2026-07-24T10:00:00+08:00",
+        "Asia/Shanghai",
+        max_items=10,
+        data_dir=tmp_path,
+    )
+    assert all(item.image_url == "https://news.example/shared-event.jpg" for item in same_event)
+
+
 def test_atom_parser_drops_future_dated_entry_and_keeps_provider():
     atom = b"""<?xml version="1.0" encoding="utf-8"?>
     <feed xmlns="http://www.w3.org/2005/Atom">
@@ -112,8 +158,12 @@ def test_feed_update_does_not_replace_or_invent_publication_time():
       </entry>
     </feed>"""
     items = parse_feed_document(
-        atom, _source(), "https://news.example/atom.xml", "2026-09-27T10:00:00+08:00",
-        "Asia/Shanghai", max_items=10,
+        atom,
+        _source(),
+        "https://news.example/atom.xml",
+        "2026-09-27T10:00:00+08:00",
+        "Asia/Shanghai",
+        max_items=10,
     )
     assert items[0].published_at == "2026-09-24T09:00:00+08:00"
     assert items[1].published_at is None
@@ -173,8 +223,12 @@ def test_feed_html_image_prefers_srcset_over_low_resolution_src():
         <img src='/small.jpg' srcset='/large.jpg 2x, /small.jpg 1x'>
       ]]></description></item></channel></rss>"""
     items = parse_feed_document(
-        rss, _source(), "https://news.example/rss.xml", "2026-09-11T06:00:00+08:00",
-        "Asia/Shanghai", max_items=10,
+        rss,
+        _source(),
+        "https://news.example/rss.xml",
+        "2026-09-11T06:00:00+08:00",
+        "Asia/Shanghai",
+        max_items=10,
     )
     assert items[0].image_url == "https://news.example/large.jpg"
 
@@ -198,9 +252,7 @@ def test_conditional_feed_cache_reuses_304_items(tmp_path: Path):
         return httpx.Response(304)
 
     async def run() -> tuple:
-        async with httpx.AsyncClient(
-            transport=httpx.MockTransport(handler)
-        ) as client:
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
             first = await fetch_feed(
                 client,
                 _source(),
@@ -235,8 +287,13 @@ def test_conditional_feed_cache_reuses_304_items(tmp_path: Path):
 
 def _parse_saved(content, tmp_path):
     return parse_feed_document(
-        content, _source(), "https://news.example/rss.xml", "2026-09-20T10:00:00+08:00",
-        "Asia/Shanghai", max_items=10, data_dir=tmp_path,
+        content,
+        _source(),
+        "https://news.example/rss.xml",
+        "2026-09-20T10:00:00+08:00",
+        "Asia/Shanghai",
+        max_items=10,
+        data_dir=tmp_path,
     )[0]
 
 
@@ -273,7 +330,12 @@ def test_long_feed_content_preserves_tail_without_expanding_candidates(tmp_path)
     assert "Only valid under controlled conditions." in read_json(path)["text"]
     compact = _compact_candidates({"items": [first.to_dict()]}, 25, {_source().id: 15}, set())
     assert compact[0]["description"] == first.description
-    assert "feed_content_path" not in compact[0]
+    assert compact[0]["feed_content_path"] == str(path)
+    assert compact[0]["feed_content_status"] == "partial"
+    assert compact[0]["feed_content_characters"] == len(record["text"])
+    assert compact[0]["content_status"] == "not_fetched"
+    assert not compact[0].get("content_path")
+    assert "text" not in compact[0]
     assert "blocks" not in compact[0]
 
 
@@ -303,46 +365,86 @@ def test_atom_xhtml_preserves_nested_images_caption_and_xml_base(tmp_path):
     assert record["quality"]["article_completeness"] == "unknown"
 
 
-@pytest.mark.parametrize("kind, value, expected", [
-    ("text", "Use &lt;limit&gt; literally in text.", "Use <limit> literally in text."),
-    ("html", "&lt;p&gt;An actual &lt;b&gt;HTML&lt;/b&gt; paragraph.&lt;/p&gt;",
-     "An actual HTML paragraph."),
-])
+@pytest.mark.parametrize(
+    "kind, value, expected",
+    [
+        ("text", "Use &lt;limit&gt; literally in text.", "Use <limit> literally in text."),
+        (
+            "html",
+            "&lt;p&gt;An actual &lt;b&gt;HTML&lt;/b&gt; paragraph.&lt;/p&gt;",
+            "An actual HTML paragraph.",
+        ),
+    ],
+)
 def test_atom_text_and_html_have_distinct_semantics(tmp_path, kind, value, expected):
-    item = _parse_saved(f"""<feed xmlns="http://www.w3.org/2005/Atom"><entry>
+    item = _parse_saved(
+        f"""<feed xmlns="http://www.w3.org/2005/Atom"><entry>
       <title>A report with typed Atom content</title><link href="https://news.example/story"/>
-      <content type="{kind}">{value}</content></entry></feed>""", tmp_path)
+      <content type="{kind}">{value}</content></entry></feed>""",
+        tmp_path,
+    )
     assert read_json(Path(item.metadata["feed_content_path"]))["text"] == expected
 
 
 def test_feed_preserves_declared_encoding_and_missing_body(tmp_path):
-    rss = '''<?xml version="1.0" encoding="iso-8859-1"?><rss><channel><item>
+    rss = """<?xml version="1.0" encoding="iso-8859-1"?><rss><channel><item>
       <title>Café publishes a detailed research update</title><link>https://news.example/cafe</link>
-      <description>Résumé of the café's observations.</description></item></channel></rss>'''
+      <description>Résumé of the café's observations.</description></item></channel></rss>"""
     assert "Résumé" in _parse_saved(rss.encode("iso-8859-1"), tmp_path).description
-    empty = _parse_saved("""<rss><channel><item><title>Report without supplied body content</title>
-      <link>https://news.example/empty</link></item></channel></rss>""", tmp_path)
+    empty = _parse_saved(
+        """<rss><channel><item><title>Report without supplied body content</title>
+      <link>https://news.example/empty</link></item></channel></rss>""",
+        tmp_path,
+    )
     assert "feed_content_path" not in empty.metadata
     assert empty.content_status == "not_fetched"
 
 
 def test_image_only_feed_keeps_picture_without_claiming_body(tmp_path):
-    item = _parse_saved("""<rss><channel><item><title>Report with only a supplied image</title>
+    item = _parse_saved(
+        """<rss><channel><item><title>Report with only a supplied image</title>
       <link>https://news.example/picture</link><description><![CDATA[
       <picture><source data-srcset="/large.jpg 1600w"><img src="/small.jpg"></picture>
-      ]]></description></item></channel></rss>""", tmp_path)
+      ]]></description></item></channel></rss>""",
+        tmp_path,
+    )
     assert item.image_url == "https://news.example/large.jpg"
     assert not item.description
     assert "feed_content_path" not in item.metadata
 
 
+@pytest.mark.parametrize("markup,navigation_only", [
+    ('<a href="https://lobste.rs/s/example">Comments</a>', True),
+    ('<p>Article URL: <a href="https://news.example/story">https://news.example/story</a></p>'
+     '<p>Comments URL: https://news.ycombinator.com/item?id=50373308</p>'
+     '<p>Points: 49</p><p># Comments: 19</p>', True),
+    ('<p>The bank kept its policy rate at 3%.</p>', False),
+    ('<p>Comments on the draft are open until Friday.</p>'
+     '<a href="https://news.example/comments">Comments</a>', False),
+])
+def test_feed_navigation_is_not_saved_as_article_body(tmp_path, markup, navigation_only):
+    item = _parse_saved(
+        '<rss><channel><item><title>A detailed public report</title>'
+        '<link>https://news.example/story</link><description><![CDATA['
+        + markup + ']]></description></item></channel></rss>', tmp_path,
+    )
+    assert bool(item.description) == (not navigation_only)
+    assert ("feed_content_path" in item.metadata) == (not navigation_only)
+    assert bool(item.metadata.get("feed_navigation_only")) == navigation_only
+
+
 def test_failed_refresh_remains_stale_during_backoff(tmp_path):
-    responses = iter([
-        httpx.Response(200, text="""<rss><channel><item>
+    responses = iter(
+        [
+            httpx.Response(
+                200,
+                text="""<rss><channel><item>
           <title>A valid cached public report</title><link>https://news.example/story</link>
-          </item></channel></rss>"""),
-        httpx.Response(429, headers={"Retry-After": "600"}),
-    ])
+          </item></channel></rss>""",
+            ),
+            httpx.Response(429, headers={"Retry-After": "600"}),
+        ]
+    )
 
     async def run():
         transport = httpx.MockTransport(lambda _: next(responses))

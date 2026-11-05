@@ -12,6 +12,7 @@ from .image_policy import (
     is_editorial_template,
     normalize_image_candidates,
     srcset_candidates,
+    srcset_image_variants,
 )
 
 
@@ -62,6 +63,7 @@ _NON_BODY_CONTAINER_TOKENS = {
     "sidebar", "widget", "entry-pagination",
     "author", "avatar", "logo",
     "archive-post", "archive-image",
+    "qrcode", "qr-code", "app-download", "download-app",
 }
 
 
@@ -152,6 +154,20 @@ def article_image_candidates(
         )
         overlap = len(title_terms & _terms(f"{alt} {caption}"))
         picture = node.find_parent("picture")
+        responsive = {}
+        responsive_nodes = [*picture.select("source"), node] if picture else [node]
+        for number, responsive_node in enumerate(responsive_nodes):
+            variants = srcset_image_variants(
+                responsive_node.get("srcset") or responsive_node.get("data-srcset"),
+            )
+            group = f"{base_url}#image-{position}-source-{number}"
+            for entry in variants:
+                responsive[urljoin(base_url, entry["url"])] = {
+                    **{key: value for key, value in entry.items() if key != "url"},
+                    "responsive_group": group,
+                }
+            if variants and responsive_node is node and node.get("src"):
+                responsive.setdefault(urljoin(base_url, node["src"]), {"responsive_group": group})
         picture_urls = [
             url for source in picture.select("source")
             for url in srcset_candidates(source.get("srcset") or source.get("data-srcset"))
@@ -185,6 +201,7 @@ def article_image_candidates(
                 "declared_width": str(node.get("width") or ""),
                 "declared_height": str(node.get("height") or ""),
                 "position": position, "variant": variant,
+                **responsive.get(url, {}),
             })
     return sorted(filter_editorial_templates(candidates), key=lambda entry: (
         -entry["relevance_score"], -bool(entry["caption"]), entry["position"], entry["variant"],

@@ -4,7 +4,7 @@ import hashlib
 import math
 import time
 import xml.etree.ElementTree as ET
-from contextlib import suppress
+from collections import defaultdict
 from dataclasses import asdict, dataclass, fields
 from datetime import UTC, datetime, timedelta
 from email.utils import parsedate_to_datetime
@@ -18,6 +18,8 @@ from bs4 import BeautifulSoup
 
 from .access import classify_access_text
 from .adapters import is_eligible
+from .article_time import normalize_time
+from .clustering import cosine_similarity, lexical_vector
 from .config import SourceConfig
 from .feed_content import entry_content, save_feed_content, xml_context
 from .image_policy import normalize_image_candidates
@@ -27,6 +29,37 @@ from .utils import canonicalize_url, clean_title, item_id, read_json, write_json
 _ARTICLE_FIELDS = {field.name for field in fields(ArticleItem)}
 _FEED_ROOTS = {"feed", "rss", "rdf", "rdf:rdf"}
 _IMAGE_EXTENSIONS = (".avif", ".gif", ".jpeg", ".jpg", ".png", ".webp")
+
+
+def _remove_repeated_feed_templates(items: list[ArticleItem], records: dict[str, dict]) -> None:
+    """处理：从同源不同新闻中剔除反复出现且无图注的固定配图。
+    输入：单次Feed解析的文章和正文图片候选。
+    输出：正文候选与首图同步更新；相近标题的同事件复用图保留。
+    """
+    occurrences = defaultdict(list)
+    for item in items:
+        for image in records.get(item.item_id, {}).get("images", []):
+            occurrences[image["url"]].append((item, image))
+    rejected = set()
+    for url, rows in occurrences.items():
+        if len({item.canonical_url for item, _ in rows}) < max(3, math.ceil(len(items) * 0.4)):
+            continue
+        if any(image.get("alt") or image.get("caption") for _, image in rows):
+            continue
+        titles = [lexical_vector(item.title) for item, _ in rows]
+        if any(cosine_similarity(titles[0], title) < 0.35 for title in titles[1:]):
+            rejected.add(url)
+    for item in items:
+        record = records.get(item.item_id)
+        if record:
+            record["images"] = [image for image in record["images"] if image["url"] not in rejected]
+        candidates = [
+            url
+            for url in item.metadata.get("image_candidates", [item.image_url])
+            if url and url not in rejected
+        ]
+        item.image_url = candidates[0] if candidates else None
+        item.metadata["image_candidates"] = candidates
 
 
 @dataclass(slots=True)
@@ -49,6 +82,7 @@ class FeedFetchResult:
     - ``next_refresh_at``：按检查时间和间隔计算的下一次允许刷新时间。
     输出：构造后的 ``FeedFetchResult`` 实例或枚举定义；其字段和方法共同承担上述职责。
     """
+
     source_id: str
     source_name: str
     feed_url: str
@@ -132,33 +166,11 @@ def _parse_datetime(value: str, timezone: str) -> datetime | None:
     输出：封装“把 Feed 日期文本解析并统一到配置时区”业务结果的 ``datetime | None`` 对象；
       调用方据此继续相邻阶段或识别无结果状态。
     """
-    text = clean_title(value)
-    if not text:
+    normalized = normalize_time(clean_title(value), timezone)
+    if normalized is None:
         return None
-    parsed: datetime | None = None
-    with suppress(TypeError, ValueError, OverflowError):
-        parsed = parsedate_to_datetime(text)
-    if parsed is None:
-        candidate = text.replace("Z", "+00:00")
-        try:
-            parsed = datetime.fromisoformat(candidate)
-        except ValueError:
-            for date_format in (
-                "%Y-%m-%d",
-                "%Y/%m/%d",
-                "%Y-%m-%d %H:%M:%S",
-                "%Y/%m/%d %H:%M:%S",
-            ):
-                try:
-                    parsed = datetime.strptime(text, date_format)
-                    break
-                except ValueError:
-                    continue
-    if parsed is None:
-        return None
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=UTC)
-    return parsed.astimezone(ZoneInfo(timezone))
+    parsed = datetime.fromisoformat(normalized)
+    return parsed.replace(tzinfo=parsed.tzinfo or ZoneInfo(timezone))
 
 
 def _entry_link(node: ET.Element, feed_url: str) -> str:
@@ -184,8 +196,10 @@ def _entry_link(node: ET.Element, feed_url: str) -> str:
 
 
 def _entry_image_candidates(
-    node: ET.Element, contexts: dict[ET.Element, tuple[str, str]],
-    article_url: str, feed_url: str,
+    node: ET.Element,
+    contexts: dict[ET.Element, tuple[str, str]],
+    article_url: str,
+    feed_url: str,
 ) -> list[str]:
     """处理：读取 Feed 媒体附件，按节点继承的 base 解析图片地址。
     输入：条目 XML、继承上下文、文章与订阅地址；正文配图由内容结构器处理。
@@ -199,10 +213,14 @@ def _entry_image_candidates(
         medium = child.get("medium", "").lower()
         if url and (
             name in {"thumbnail", "image"}
-            or (name in {"content", "enclosure"} and (
-                media_type.startswith("image/") or medium == "image"
-                or url.lower().split("?", 1)[0].endswith(_IMAGE_EXTENSIONS)
-            ))
+            or (
+                name in {"content", "enclosure"}
+                and (
+                    media_type.startswith("image/")
+                    or medium == "image"
+                    or url.lower().split("?", 1)[0].endswith(_IMAGE_EXTENSIONS)
+                )
+            )
         ):
             base = urljoin(feed_url, contexts[child][0]) if contexts[child][0] else article_url
             candidates.append(urljoin(base, url))
@@ -243,8 +261,7 @@ def looks_like_feed(content: bytes | str, content_type: str = "") -> bool:
     if any(marker in normalized for marker in ("<rss", "<feed", "<rdf:rdf")):
         return True
     return any(
-        marker in content_type.lower()
-        for marker in ("application/rss+xml", "application/atom+xml")
+        marker in content_type.lower() for marker in ("application/rss+xml", "application/atom+xml")
     )
 
 
@@ -275,9 +292,7 @@ def parse_feed_document(
     if _local_name(root.tag) not in _FEED_ROOTS:
         raise ValueError(f"Unsupported feed root element: {_local_name(root.tag)!r}")
     contexts = xml_context(root)
-    entry_nodes = [
-        node for node in root.iter() if _local_name(node.tag) in {"entry", "item"}
-    ]
+    entry_nodes = [node for node in root.iter() if _local_name(node.tag) in {"entry", "item"}]
     observed = _parse_datetime(collected_at, timezone)
     if observed is None:
         observed = datetime.now(ZoneInfo(timezone))
@@ -291,8 +306,15 @@ def parse_feed_document(
         if not is_eligible(source, title, url):
             continue
         # 按发布时间字段优先级读取；更新时间不能使旧文重新成为当天新闻。
-        published_text = next((value for name in ("pubdate", "published", "issued", "date")
-                               if (value := _direct_text(node, name))), "")
+        published_text = next(
+            (
+                value
+                for name in ("pubdate", "published", "issued", "date")
+                if (value := _direct_text(node, name))
+            ),
+            "",
+        )
+        published_value = normalize_time(published_text, timezone)
         published = _parse_datetime(published_text, timezone)
         if published is not None and published > observed + timedelta(hours=1):
             continue
@@ -300,10 +322,13 @@ def parse_feed_document(
         if canonical in seen:
             continue
         content_record = entry_content(node, contexts, url, feed_url)
-        image_candidates = normalize_image_candidates([
-            *(image["url"] for image in (content_record or {}).get("images", [])),
-            *_entry_image_candidates(node, contexts, url, feed_url),
-        ], url)
+        image_candidates = normalize_image_candidates(
+            [
+                *(image["url"] for image in (content_record or {}).get("images", [])),
+                *_entry_image_candidates(node, contexts, url, feed_url),
+            ],
+            url,
+        )
         provider_name, provider_url = _provider(node)
         article = ArticleItem(
             item_id=item_id(source.id, canonical),
@@ -317,7 +342,7 @@ def parse_feed_document(
             category=source.category,
             description=clean_title(content_record["text"])[:600] if content_record else "",
             published_at=(
-                published.isoformat(timespec="seconds") if published is not None else None
+                published_value
             ),
             original_provider=provider_name,
             image_url=image_candidates[0] if image_candidates else None,
@@ -331,15 +356,19 @@ def parse_feed_document(
                 "acquisition_method": "feed",
                 "feed_url": feed_url,
                 "publication_time_missing": published is None,
-                **({"original_provider_url": provider_url} if provider_url else {}),
-                **(
-                    {"image_candidates": image_candidates}
-                    if len(image_candidates) > 1
-                    else {}
+                "published_raw": published_text,
+                "published_precision": (
+                    "date" if published_value and len(published_value) == 10
+                    else "datetime" if published_value else None
                 ),
+                "updated_at": normalize_time(_direct_text(node, "updated", "modified"), timezone),
+                **({"feed_navigation_only": True}
+                   if (content_record or {}).get("quality", {}).get("navigation_only") else {}),
+                **({"original_provider_url": provider_url} if provider_url else {}),
+                **({"image_candidates": image_candidates} if len(image_candidates) > 1 else {}),
             },
         )
-        if content_record and content_record["text"] and data_dir is not None:
+        if content_record and content_record["text"]:
             content_record["language"] = content_record["language"] or source.language
             content_records[article.item_id] = content_record
         seen.add(canonical)
@@ -349,13 +378,20 @@ def parse_feed_document(
     for source_rank, item in enumerate(items, start=1):
         item.metadata["source_rank"] = source_rank
     selected = order_source_items(items, source.item_order)[:max_items]
+    _remove_repeated_feed_templates(selected, content_records)
     if data_dir is not None:
         for article in selected:
             if article.item_id in content_records:
-                article.metadata.update(save_feed_content(
-                    content_records[article.item_id], data_dir, source.id,
-                    article.item_id, article.url, feed_url,
-                ))
+                article.metadata.update(
+                    save_feed_content(
+                        content_records[article.item_id],
+                        data_dir,
+                        source.id,
+                        article.item_id,
+                        article.url,
+                        feed_url,
+                    )
+                )
     return selected
 
 
@@ -380,13 +416,12 @@ def discover_feed_urls(html: str, base_url: str) -> list[str]:
         parsed = urlsplit(resolved)
         path = parsed.path.lower().rstrip("/")
         anchor_hint = any(
-            marker in link.get_text(" ", strip=True).lower()
-            for marker in ("rss", "atom", "feed")
+            marker in link.get_text(" ", strip=True).lower() for marker in ("rss", "atom", "feed")
         )
-        declared = (
-            "alternate" in rel
-            and media_type in {"application/rss+xml", "application/atom+xml"}
-        )
+        declared = "alternate" in rel and media_type in {
+            "application/rss+xml",
+            "application/atom+xml",
+        }
         endpoint_shape = (
             path.endswith(("/feed", "/rss", ".atom", ".rss", ".xml"))
             or "/rss/" in path
@@ -406,7 +441,20 @@ def article_from_dict(payload: dict[str, Any]) -> ArticleItem:
     - ``payload``：上游传入的结构化对象；函数只读取处理说明列出的受支持字段。
     输出：可进入规范来源索引的文章条目；包含稳定 ID、来源身份、规范 URL、时间和可用元数据。
     """
-    return ArticleItem(**{key: value for key, value in payload.items() if key in _ARTICLE_FIELDS})
+    article = ArticleItem(
+        **{key: value for key, value in payload.items() if key in _ARTICLE_FIELDS}
+    )
+    candidates = normalize_image_candidates(
+        [
+            article.image_url,
+            *article.metadata.get("image_candidates", []),
+        ],
+        article.url,
+    )
+    article.image_url = candidates[0] if candidates else None
+    if "image_candidates" in article.metadata:
+        article.metadata["image_candidates"] = candidates
+    return article
 
 
 def _cache_path(data_dir: Path, feed_url: str) -> Path:
@@ -444,11 +492,7 @@ def _cached_items(cache: dict[str, Any]) -> list[ArticleItem]:
       并保持当前处理定义的筛选与排序语义。
     """
     rows = cache.get("items", [])
-    return [
-        article_from_dict(row)
-        for row in rows
-        if isinstance(row, dict) and row.get("item_id")
-    ]
+    return [article_from_dict(row) for row in rows if isinstance(row, dict) and row.get("item_id")]
 
 
 def _retry_after_seconds(value: str | None) -> int | None:
@@ -567,17 +611,13 @@ async def fetch_feed(
                 async for chunk in response.aiter_bytes():
                     total += len(chunk)
                     if total > max_bytes:
-                        raise ValueError(
-                            f"Feed exceeds configured {max_bytes}-byte safety limit"
-                        )
+                        raise ValueError(f"Feed exceeds configured {max_bytes}-byte safety limit")
                     chunks.append(chunk)
                 content = b"".join(chunks)
     except Exception as exc:
         cached = _cached_items(cache)
         failures = int(cache.get("consecutive_failures", 0)) + 1
-        next_refresh_at = _next_refresh(
-            checked_at, refresh_interval_minutes, failures
-        )
+        next_refresh_at = _next_refresh(checked_at, refresh_interval_minutes, failures)
         error = f"{type(exc).__name__}: {exc}"
         write_json(
             _cache_path(data_dir, feed_url),
@@ -656,9 +696,7 @@ async def fetch_feed(
         items = _cached_items(cache)
     elif status_code >= 400:
         status = (
-            SourceStatus.VERIFICATION_REQUIRED
-            if challenge.get("required")
-            else SourceStatus.FAILED
+            SourceStatus.VERIFICATION_REQUIRED if challenge.get("required") else SourceStatus.FAILED
         )
         error = f"HTTP {status_code}"
         items = _cached_items(cache)
@@ -666,9 +704,7 @@ async def fetch_feed(
         content, response.headers.get("content-type", "")
     ):
         status = (
-            SourceStatus.VERIFICATION_REQUIRED
-            if challenge.get("required")
-            else SourceStatus.FAILED
+            SourceStatus.VERIFICATION_REQUIRED if challenge.get("required") else SourceStatus.FAILED
         )
         error = "Response is HTML/challenge content, not RSS or Atom"
         items = _cached_items(cache)
@@ -716,9 +752,7 @@ async def fetch_feed(
         "etag": etag,
         "last_modified": last_modified,
         "checked_at": checked_iso,
-        "last_success_at": (
-            checked_iso if not failed else cache.get("last_success_at")
-        ),
+        "last_success_at": (checked_iso if not failed else cache.get("last_success_at")),
         "next_refresh_at": next_refresh_at,
         "consecutive_failures": failures,
         "items": [item.to_dict() for item in items],

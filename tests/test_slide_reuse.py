@@ -97,9 +97,21 @@ def test_revision_and_image_change_reuse_all_and_replay_stably(tmp_path):
     old = prepare_slides(report, index, tmp_path)
     packet = Path(old["packet_paths"][0])
     event_id = load_artifact(packet, tmp_path)["payload"]["model_input"]["news"][0]["event_id"]
-    submit_slides(packet, {"slides": [{"event_id": event_id,
-        "narration": "这是来源已经确认的变化。" * 20,
-        "video_tldr": "来源已经确认这项变化。", "perspectives": []}]}, tmp_path)
+    submit_slides(
+        packet,
+        {
+            "video_title": "重要变化与政策影响：本期新闻观察",
+            "slides": [
+                {
+                    "event_id": event_id,
+                    "narration": "这是来源已经确认的变化。" * 20,
+                    "video_tldr": "来源已经确认这项变化。",
+                    "perspectives": [],
+                }
+            ],
+        },
+        tmp_path,
+    )
     revised = read_json(report)
     revised.update({"revision": 2, "report_id": "daily-2026-10-07-morning-r2"})
     report2 = write_json(tmp_path / "reports/r2.json", revised)
@@ -122,16 +134,34 @@ def test_workflow_prepares_new_revision_with_the_known_old_plan(tmp_path, locati
     old = prepare_slides(report, index, tmp_path)
     packet = Path(old["packet_paths"][0])
     event_id = load_artifact(packet, tmp_path)["payload"]["model_input"]["news"][0]["event_id"]
-    submit_slides(packet, {"slides": [{"event_id": event_id,
-        "narration": "这是来源已经确认的变化。" * 20,
-        "video_tldr": "来源已经确认这项变化。", "perspectives": []}]}, tmp_path)
+    submit_slides(
+        packet,
+        {
+            "video_title": "重要变化与政策影响：本期新闻观察",
+            "slides": [
+                {
+                    "event_id": event_id,
+                    "narration": "这是来源已经确认的变化。" * 20,
+                    "video_tldr": "来源已经确认这项变化。",
+                    "perspectives": [],
+                }
+            ],
+        },
+        tmp_path,
+    )
     revised = read_json(report)
     revised.update({"revision": 2, "report_id": "daily-2026-10-07-morning-r2"})
     report2 = write_json(tmp_path / "reports/r2.json", revised)
-    run = {"status": "finalizing", "date": revised["date"], "edition": revised["edition"],
-           "data_root": str(tmp_path), "artifacts": {
-               "json_path": str(report2), "index_path": str(index),
-           }}
+    run = {
+        "status": "finalizing",
+        "date": revised["date"],
+        "edition": revised["edition"],
+        "data_root": str(tmp_path),
+        "artifacts": {
+            "json_path": str(report2),
+            "index_path": str(index),
+        },
+    }
     run["artifacts"][location] = old if location == "slides" else {"slides": old}
     run_path = write_json(tmp_path / "runs/morning.json", run)
     _prepare_edition_slides(run, run_path, tmp_path)

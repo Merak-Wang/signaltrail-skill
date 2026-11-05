@@ -20,7 +20,12 @@ import httpx
 from PIL import Image, ImageStat, UnidentifiedImageError
 
 from .config import MediaConfig
-from .image_policy import is_placeholder_image_url, normalize_image_candidates
+from .image_policy import (
+    image_variant_groups,
+    image_variant_key,
+    is_placeholder_image_url,
+    normalize_image_candidates,
+)
 from .storage import write_bytes_atomic
 from .utils import read_json, write_json
 
@@ -786,7 +791,11 @@ def _indexed_image_candidates(indexed: dict[str, Any]) -> list[str]:
         metadata_candidates = metadata.get("image_candidates")
         if isinstance(metadata_candidates, list):
             values.extend(metadata_candidates)
-    return normalize_image_candidates(values)
+    details = {
+        row["url"]: row for row in (metadata or {}).get("image_candidate_details", [])
+    }
+    images = [{**details.get(url, {}), "url": url} for url in normalize_image_candidates(values)]
+    return [row["url"] for group in image_variant_groups(images) for row in group]
 
 
 def materialize_report_images(
@@ -879,10 +888,27 @@ def _materialize_report_images(
     cache_enabled = downloader is download_image
     cache = _load_image_cache(data_dir) if cache_enabled else {"entries": {}}
     cache_entries = cache["entries"]
+    image_details = {}
+    for _order, _brief, indexed, urls in candidates:
+        details = {row["url"]: row for row in
+                   (indexed.get("metadata") or {}).get("image_candidate_details", [])}
+        for url in urls:
+            image_details.setdefault(url, {**details.get(url, {}), "url": url})
+    selected_keys = {image_variant_key(url) for url in image_details}
+    for url, entry in cache_entries.items():
+        if (isinstance(entry, dict) and entry.get("status") == "success"
+                and image_variant_key(url) in selected_keys):
+            image_details[url] = {**image_details.get(url, {}), "url": url,
+                                  "width": entry.get("width"), "height": entry.get("height")}
+    variant_urls = {}
+    for group in image_variant_groups(list(image_details.values())):
+        urls = list(dict.fromkeys(row["url"] for row in group))
+        for url in urls:
+            variant_urls[url] = urls
     cache_warning_emitted = False
     shared: dict[str, Any] = {}
 
-    def resolve_rows(
+    def resolve_exact_rows(
         rows: list[tuple[str, str | None]],
         max_bytes: int,
     ) -> None:
@@ -950,6 +976,33 @@ def _materialize_report_images(
                     f"{type(exc).__name__}: {exc}"
                 )
                 cache_warning_emitted = True
+
+    def resolve_rows(rows: list[tuple[str, str | None]], max_bytes: int) -> None:
+        """处理：同一原图只尝试最高尺寸，失败后按组降级并共享成功缓存。
+        输入：当前新闻候选 URL、Referer 与剩余预算。
+        输出：全部同图候选指向已成功取得的最高版本，避免跨新闻重复下载缩略图。
+        """
+        pending = {}
+        for url, referer in rows:
+            urls = variant_urls.get(url, [url])
+            pending.setdefault(urls[0], (urls, referer))
+        while pending:
+            attempts = []
+            for key, (urls, referer) in list(pending.items()):
+                success = next((resolved_by_url[url] for url in urls
+                                if isinstance(resolved_by_url.get(url), DownloadedImage)), None)
+                if success is not None:
+                    for url in urls:
+                        resolved_by_url[url] = success
+                    del pending[key]
+                    continue
+                unresolved = next((url for url in urls if url not in resolved_by_url), None)
+                if unresolved is None:
+                    del pending[key]
+                else:
+                    attempts.append((unresolved, referer))
+            if attempts:
+                resolve_exact_rows(attempts, max_bytes)
 
     cursor = 0
     prefetched_until = 0

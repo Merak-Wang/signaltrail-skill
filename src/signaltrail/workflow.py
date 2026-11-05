@@ -36,6 +36,7 @@ from .llm_usage.models import safe_label
 from .local_output import write_local_outputs
 from .localization import localized
 from .media import prefetch_index_images
+from .monitor import _parse_time as _monitor_time
 from .monitor import fresh_monitor_snapshot_path, refresh_monitor
 from .notion import publish_report, sync_user_feedback
 from .reports import save_report
@@ -218,13 +219,27 @@ def get_edition_status(run_path: Path, data_dir: Path) -> dict[str, Any]:
         }
     else:
         evaluation_action = None
-    if slides_artifact.get("status") == "failed" and not (
+    if slides_artifact.get("status") == "failed" and slides_artifact.get("evidence_gaps"):
+        replacement_ids = sorted(set(exclude_event_ids) | {
+            row["event_id"] for row in slides_artifact["evidence_gaps"]
+        })
+        slides.update(
+            status="evidence_required", error=slides_artifact.get("error"),
+            evidence_gaps=slides_artifact["evidence_gaps"],
+            index_path=slides_artifact["index_path"],
+            next_action=_slides_finalize_retry(
+                run_path, report_path, data_dir, int(slides_artifact.get("max_news", 50)),
+                replacement_ids,
+            ) if report_exists else None,
+        )
+        pending_steps.append("slides_prepare")
+    elif slides_artifact.get("status") == "failed" and not (
         plan_path and plan_path.is_file()
     ):
         slides["status"] = "prepare_failed"
         slides["error"] = slides_artifact.get("error")
         slides["next_action"] = (_slides_finalize_retry(
-            run_path, report_path, data_dir, int(slides_artifact.get("max_news", 30)),
+            run_path, report_path, data_dir, int(slides_artifact.get("max_news", 50)),
             exclude_event_ids
         ) if report_exists else None)
         pending_steps.append("slides_prepare")
@@ -236,7 +251,7 @@ def get_edition_status(run_path: Path, data_dir: Path) -> dict[str, Any]:
             html_path = report_path.with_name(
                 f"{run['edition']}-r{revision}-slides.html"
             )
-            max_news = int(slides_artifact.get("max_news", 30))
+            max_news = int(slides_artifact.get("max_news", 50))
             if not _slides_plan_matches_selection(plan_path, max_news, data_dir, exclude_event_ids):
                 slides = {"status": "stale_plan", "pending_batches": [],
                           "news_count": slide_status["news_count"],
@@ -272,7 +287,7 @@ def get_edition_status(run_path: Path, data_dir: Path) -> dict[str, Any]:
     elif plan_path and plan_path.is_file():
         slides["status"] = "unavailable"
     else:
-        max_news = int(slides_artifact.get("max_news", 30))
+        max_news = int(slides_artifact.get("max_news", 50))
         slides["status"] = (
             "prepare_failed" if slides_artifact.get("status") == "failed" else "missing_plan"
         )
@@ -1274,7 +1289,8 @@ def _adopt_locked_index(
     return run_path
 
 
-def begin_authoring(run_path: Path, data_dir: Path) -> Path:
+def begin_authoring(run_path: Path, data_dir: Path, *, config: AppConfig | None = None,
+                    refresh_context: bool = False) -> Path:
     """处理：为当前运行创建写作会话并登记全部批次产物路径。
     输入：
     - ``run_path``：运行清单 JSON 路径；记录当前阶段、产物血缘、截止时间和恢复动作。
@@ -1296,12 +1312,24 @@ def begin_authoring(run_path: Path, data_dir: Path) -> Path:
         _lock_payload(edition, now_iso(str(run.get("timezone", "Asia/Shanghai")))),
     ):
         run = _reload_locked_run(run_path, run, data_dir)
+        _require_llm_budget(run, run_path, data_dir, "brief_wave")
+        if refresh_context:
+            if config is None:
+                raise ValueError("Configuration is required to refresh authoring context")
+            index_path = require_data_root_path(
+                Path(str(run["artifacts"]["index_path"])), data_dir, "Edition index"
+            )
+            context_config = replace(config, output=replace(
+                config.output, language=str(run.get("output_language") or "zh-CN")
+            ))
+            refreshed = build_context(index_path, context_config, data_dir, edition,
+                                      collection_window=run.get("collection_window"))
+            run["artifacts"]["context_path"] = str(refreshed)
         context_path = require_data_root_path(
             Path(str(run["artifacts"]["context_path"])),
             data_dir,
             "Authoring context",
         )
-        _require_llm_budget(run, run_path, data_dir, "brief_wave")
         session_path = begin_authoring_session(run, context_path, data_dir)
         run["artifacts"]["authoring"] = {
             "session_path": str(session_path),
@@ -1325,6 +1353,7 @@ def accept_authoring_batch(
     batch_id: str,
     result_path: Path,
     data_dir: Path,
+    *, _validated_session: dict[str, Any] | None = None,
 ) -> Path:
     """处理：校验并持久化一个模型写作批次的不可变回执。
     输入：
@@ -1344,7 +1373,9 @@ def accept_authoring_batch(
     lock_path = data_dir / "locks" / f"{run['date']}-{run['edition']}.lock"
     with exclusive_lock(lock_path, _lock_payload(str(run["edition"]), now_iso("Asia/Shanghai"))):
         run = _reload_locked_run(run_path, run, data_dir)
-        return submit_authoring_batch(run, batch_id, result_path, data_dir)
+        return submit_authoring_batch(
+            run, batch_id, result_path, data_dir, _validated_session=_validated_session,
+        )
 
 
 def accept_authoring_metrics(
@@ -1684,9 +1715,31 @@ def prepare_edition(
                         config.monitor.snapshot_max_age_minutes,
                     )
                     monitor_reused = monitor_path is not None
-                if config.monitor.refresh_before_edition and monitor_path is None:
+                missing_sources: set[str] = set()
+                if monitor_path is not None:
+                    snapshot = read_json_object(monitor_path, "Monitor snapshot")
+                    observed = {row["source_id"]: row for row in snapshot["sources"]}
+                    current = _monitor_time(now_iso(config.timezone), config.timezone)
+                    max_age = timedelta(minutes=config.monitor.snapshot_max_age_minutes)
+                    for source in config.all_monitor_sources:
+                        if not source.enabled:
+                            continue
+                        row = observed.get(source.id, {})
+                        checked = _monitor_time(
+                            row.get("checked_at") or snapshot["generated_at"], config.timezone,
+                        )
+                        if (not row or checked is None or current - checked > max_age
+                                or not set(source.feed_urls).issubset(row.get("feed_urls", []))):
+                            missing_sources.add(source.id)
+
+                if config.monitor.refresh_before_edition and (
+                    monitor_path is None or missing_sources
+                ):
                     try:
-                        monitor_path = refresh_monitor(config, data_dir)
+                        monitor_path = (
+                            refresh_monitor(config, data_dir, only_source_ids=missing_sources)
+                            if monitor_path is not None else refresh_monitor(config, data_dir)
+                        )
                         monitor_refreshed = True
                     except Exception as exc:
                         monitor_warning = f"{type(exc).__name__}: {exc}"
@@ -1698,6 +1751,7 @@ def prepare_edition(
                 headed=headed,
                 profile_dir=profile_dir,
                 browser_channel=browser_channel,
+                collection_window=run["collection_window"],
             )
             index = read_json_object(index_path, "Collected index")
             source_rows = [
@@ -2066,13 +2120,20 @@ def _prepare_edition_slides(run: dict, run_path: Path, data_dir: Path,
     输出：将计划与 packet 路径或准备错误写入运行产物，不调用模型。
     """
     artifacts = run.setdefault("artifacts", {})
-    slides_max_news = int(artifacts.get("slides", {}).get("max_news", 30))
+    slides_max_news = int(artifacts.get("slides", {}).get("max_news", 50))
     exclude_event_ids = artifacts.get("slides", {}).get("exclude_event_ids", [])
     plan_path = artifacts.get("slides", {}).get("plan_path")
     reuse_plan = plan_path or artifacts.get("previous_report", {}).get("slides", {}).get(
         "plan_path"
     )
     index_path = Path(str(artifacts["index_path"]))
+    previous_slides = artifacts.get("slides", {})
+    if (previous_slides.get("source_index_path") == str(artifacts["index_path"])
+            and previous_slides.get("report_path") == str(artifacts["json_path"])
+            and previous_slides.get("index_path")):
+        index_path = require_data_root_path(
+            Path(previous_slides["index_path"]), data_dir, "Enriched slide index",
+        )
     if reuse_plan:
         try:
             from .narrative_store import load_artifact, parent_path
@@ -2086,7 +2147,7 @@ def _prepare_edition_slides(run: dict, run_path: Path, data_dir: Path,
         except (ValueError, KeyError, OSError):
             reuse_plan = None
     try:
-        from .news_slides import prepare_slides
+        from .news_slides import SlideEvidenceError, prepare_slides
 
         result = prepare_slides(
             Path(str(artifacts["json_path"])),
@@ -2099,15 +2160,24 @@ def _prepare_edition_slides(run: dict, run_path: Path, data_dir: Path,
         )
         artifacts["slides"] = {
             **result, "source_index_path": str(artifacts["index_path"]),
+            "report_path": str(artifacts["json_path"]),
             "max_news": slides_max_news, "exclude_event_ids": exclude_event_ids,
             "status": "prepared",
         }
     except Exception as exc:
         artifacts["slides"] = {
+            **previous_slides,
             "status": "failed",
             "max_news": slides_max_news, "exclude_event_ids": exclude_event_ids,
             "error": f"{type(exc).__name__}: {exc}",
         }
+        if isinstance(exc, SlideEvidenceError):
+            artifacts["slides"].update(
+                index_path=str(exc.index_path),
+                original_index_path=str(exc.original_index_path),
+                source_index_path=str(artifacts["index_path"]),
+                report_path=str(artifacts["json_path"]), evidence_gaps=exc.evidence_gaps,
+            )
     _update_run(
         run_path,
         run,
@@ -2122,9 +2192,18 @@ def _slides_next_action(run: dict, run_path: Path, data_dir: Path) -> str:
     输出：要求重试准备、完成写作渲染或确认已完成的下一步提示。
     """
     slides = run.get("artifacts", {}).get("slides", {})
+    if slides.get("status") == "failed" and slides.get("evidence_gaps"):
+        excluded = sorted(set(slides.get("exclude_event_ids", [])) | {
+            row["event_id"] for row in slides["evidence_gaps"]
+        })
+        command = _slides_finalize_retry(
+            run_path, Path(str(run["artifacts"]["json_path"])), data_dir,
+            int(slides.get("max_news", 50)), excluded,
+        )
+        return "Replace the events listed in artifacts.slides.evidence_gaps using " + command
     plan = slides.get("plan_path")
     if not plan or not Path(str(plan)).is_file():
-        slides_max_news = int(slides.get("max_news", 30))
+        slides_max_news = int(slides.get("max_news", 50))
         command = _slides_finalize_retry(
             run_path, Path(str(run["artifacts"]["json_path"])), data_dir, slides_max_news,
             slides.get("exclude_event_ids", [])
@@ -2219,7 +2298,7 @@ def finalize_edition(
     - ``media_config``：图片下载、格式、安全、缓存和报告预算配置。
     - ``defer_tail``：是否把 PDF、Notion 和独立评估移到可恢复的后台尾阶段。
     - ``evaluate``：仅在用户明确要求时开启质量评分；请求随本轮运行保留。
-    - ``slides_max_news``：显式更换图文数量上限；省略时沿用运行清单中的值或默认 30。
+    - ``slides_max_news``：显式更换图文数量上限；省略时沿用运行清单中的值或默认 50。
     - ``slides_exclude_event_ids``：显式排除事件后补位；省略时沿用本期选择。
     - ``evaluation_backend``：选择评分后端；单独指定不会开启评分。
     - ``app_config``：正式命令的来源配置，供图文写作前补齐原文。
@@ -2231,7 +2310,7 @@ def finalize_edition(
     current_slide_options = run.get("artifacts", {}).get("slides", {})
     slides_max_news = int(
         slides_max_news if slides_max_news is not None
-        else current_slide_options.get("max_news", 30)
+        else current_slide_options.get("max_news", 50)
     )
     slides_exclude_event_ids = sorted(set(
         slides_exclude_event_ids if slides_exclude_event_ids is not None

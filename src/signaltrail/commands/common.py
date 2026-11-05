@@ -35,11 +35,12 @@ def print_json(payload: object, *, indent: int | None = 2) -> None:
     - ``indent``：调用命令选择的缩进；None 用于紧凑的单行结果。
     输出：标准输出中的 JSON；宿主可直接解析，函数不写入运行文件。
     """
-    rendered = json.dumps(payload, ensure_ascii=False, indent=indent)
+    separators = (",", ":") if indent is None else None
+    rendered = json.dumps(payload, ensure_ascii=False, indent=indent, separators=separators)
     try:
         rendered.encode(sys.stdout.encoding or "utf-8")
     except UnicodeEncodeError:
-        rendered = json.dumps(payload, ensure_ascii=True, indent=indent)
+        rendered = json.dumps(payload, ensure_ascii=True, indent=indent, separators=separators)
     print(rendered)
 
 
@@ -50,6 +51,39 @@ def print_json_file(path: Path) -> None:
     输出：标准输出中的 JSON，便于宿主取得下一步命令与产物路径。
     """
     print_json(read_json(path))
+
+
+def _selection_summary(run: dict) -> dict:
+    """处理：从已保存的索引和协调包提取正文补充选择所需的小回执。
+    输入：待选择版次的运行清单；路径指向原有不可变文件。
+    输出：冻结窗口、来源状态和最多十二条建议，不新增文件或请求。
+    """
+    artifacts = run.get("artifacts", {})
+    try:
+        context_path = artifacts.get("coordinator_path") or artifacts["context_path"]
+        coordinator = read_json(Path(context_path))
+        index = read_json(Path(artifacts["index_path"]))
+    except (KeyError, OSError, ValueError, TypeError):
+        return {}
+    sources = index.get("sources", [])
+    problems = [{"source_id": row.get("source_id"), "status": row.get("status")}
+                for row in sources if row.get("status") not in {"success", "no_items"}]
+    candidates = {row.get("item_id"): row for row in coordinator.get("candidate_items", [])}
+    actions = coordinator.get("enrichment_plan", {}).get("actions", [])[:12]
+    suggestions = []
+    for action in actions:
+        candidate = candidates.get(action.get("item_id"), {})
+        suggestions.append({
+            "item_id": action.get("item_id"), "source_id": action.get("source_id"),
+            "title": candidate.get("title"), "description": candidate.get("description", "")[:600],
+            "url": candidate.get("canonical_url"), "domain": action.get("domain"),
+            "missing": action.get("missing_claim_or_field"),
+            "priority": action.get("priority"),
+            "priority_components": action.get("priority_components"),
+        })
+    return {"collection_window": run.get("collection_window"),
+            "source_count": len(sources), "problem_source_count": len(problems),
+            "problem_sources": problems, "suggestions": suggestions}
 
 
 def print_command_result(payload: dict, context: CommandContext,
@@ -94,6 +128,8 @@ def print_command_result(payload: dict, context: CommandContext,
         return result
 
     result = project(payload)
+    if payload.get("status") == "awaiting_selection" and (selection := _selection_summary(payload)):
+        result["selection"] = selection
     if artifact_path is not None:
         result = {"artifact_path": str(artifact_path), **result}
     print_json(result, indent=None)

@@ -12,7 +12,7 @@ from urllib.parse import urljoin
 
 from bs4 import BeautifulSoup
 
-from .content_extraction import extract_document
+from .content_extraction import extract_document, is_navigation_only
 from .content_images import article_image_candidates
 from .image_policy import srcset_candidates
 from .storage import write_immutable_json
@@ -111,6 +111,10 @@ def entry_content(
             image["provenance"] = "feed_content"
         if not document.text and not images:
             continue
+        navigation_only = is_navigation_only(document.text)
+        if navigation_only:
+            document.text = ""
+            document.blocks = []
         # 保存的是源提供的字段，不据其长度或 article 包装推断文章全文。
         document.quality.update(
             region="provider_candidate",
@@ -119,6 +123,8 @@ def entry_content(
             article_completeness="unknown",
         )
         document.quality.pop("candidates", None)
+        if navigation_only:
+            document.quality["navigation_only"] = True
         candidates.append(
             {
                 "format": "atom" if atom else "rss",

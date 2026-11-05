@@ -1,3 +1,4 @@
+import json
 from copy import deepcopy
 from pathlib import Path
 
@@ -45,9 +46,20 @@ def slide_case(tmp_path):
 
 def author_packet(path, root):
     packet = load_artifact(Path(path), root)["payload"]
-    return {"slides": [{"event_id": c["event_id"], "narration": "这是来源中已经确认的变化。" * 18,
-                       "video_tldr": "这是来源中已经确认的变化。",
-                        "perspectives": []} for c in packet["model_input"]["news"]]}
+    draft = {
+        "slides": [
+            {
+                "event_id": c["event_id"],
+                "narration": "这是来源中已经确认的变化。" * 18,
+                "video_tldr": "这是来源中已经确认的变化。",
+                "perspectives": [],
+            }
+            for c in packet["model_input"]["news"]
+        ]
+    }
+    if "video_title" in packet["model_input"]["output_schema"]["properties"]:
+        draft["video_title"] = "重要政策变化与技术进展：本期新闻观察"
+    return draft
 
 
 def test_selection_includes_more_than_twelve_and_manual_ids_override(slide_case):
@@ -254,20 +266,24 @@ def test_selection_limits_after_importance_sort_and_deduplication(slide_case):
     assert len(selected[0]["source_refs"]) == 2
 
 
-def test_selection_defaults_to_thirty_and_accepts_custom_limit(slide_case):
+def test_selection_defaults_to_fifty_and_accepts_custom_limit(slide_case):
     _, _, _, report, index = slide_case
     for number in range(16, 55):
         brief = deepcopy(report["sections"][0]["briefs"][0])
         brief["item_id"] = f"extra-{number}"
         brief["event_id"] = f"brief-extra-{number}"
         brief["importance"] = 100 - number
-        brief["source_ref"] = {**brief["source_ref"], "item_id": brief["item_id"],
-                               "url": f"https://example.com/{number}"}
+        brief["source_ref"] = {
+            **brief["source_ref"],
+            "item_id": brief["item_id"],
+            "url": f"https://example.com/{number}",
+        }
         report["sections"][0]["briefs"].append(brief)
-        index["items"].append({"item_id": brief["item_id"], "published_at": None,
-                                "url": brief["source_ref"]["url"]})
+        index["items"].append(
+            {"item_id": brief["item_id"], "published_at": None, "url": brief["source_ref"]["url"]}
+        )
 
-    assert len(select_news(report, index)) == 30
+    assert len(select_news(report, index)) == 50
     assert len(select_news(report, index, max_news=7)) == 7
     with pytest.raises(ValueError, match="max_news must be positive"):
         select_news(report, index, max_news=0)
@@ -294,7 +310,7 @@ def test_prepare_batches_by_size_and_budget_and_reuses_inputs(slide_case):
     assert prepare_slides(report, index, root, batch_size=3, max_output_tokens=1400) == result
     for packet_path in result["packet_paths"]:
         packet = load_artifact(Path(packet_path), root)["payload"]
-        assert len(packet["model_input"]["news"]) == 2
+        assert 1 <= len(packet["model_input"]["news"]) <= 2
         assert "images" not in packet["model_input"]["news"][0]
         assert packet["budget"]["estimated_input_tokens"] <= 12000
         assert packet["budget"]["reserved_output_tokens"] <= 1400
@@ -304,6 +320,27 @@ def test_prepare_batches_by_size_and_budget_and_reuses_inputs(slide_case):
     with pytest.raises(ValueError, match="cannot fit"):
         prepare_slides(report, index, root, max_output_tokens=699)
     assert before == (report.read_bytes(), index.read_bytes())
+
+
+def test_first_existing_packet_authors_video_title_without_changing_report_title(slide_case):
+    root, report_path, index_path, report, _ = slide_case
+    prepared = prepare_slides(report_path, index_path, root, max_news=6, batch_size=3)
+    packets = [load_artifact(Path(path), root)["payload"] for path in prepared["packet_paths"]]
+    assert "video_title" in packets[0]["model_input"]["output_schema"]["required"]
+    assert "video_title" not in packets[1]["model_input"]["output_schema"]["properties"]
+    assert packets[0]["model_input"]["video_title_context"]["story_count"] == 6
+    first = Path(prepared["packet_paths"][0])
+    missing = author_packet(first, root)
+    missing.pop("video_title")
+    with pytest.raises(ValueError, match="video_title"):
+        submit_slides(first, missing, root)
+    for path in prepared["packet_paths"]:
+        submit_slides(Path(path), author_packet(path, root), root)
+    output = render_slides(Path(prepared["plan_path"]), root, refresh_images=False)
+    deck = load_artifact(Path(output["json_path"]), root)["payload"]
+    assert deck["video_title"] == "重要政策变化与技术进展：本期新闻观察"
+    assert deck["title"] == report["title"]
+    assert json.loads(report_path.read_text(encoding="utf-8")) == report
 
 
 def test_submit_rejects_missing_events_invented_perspectives_and_bad_lengths(slide_case):
@@ -365,6 +402,8 @@ def test_all_batches_required_then_render_preserves_original_report(slide_case):
 
 
 def test_render_fetches_images_once_and_offline_reuses_them(slide_case, monkeypatch):
+    from signaltrail.narrative_store import save_artifact
+
     root, report, index, _, _ = slide_case
     result = prepare_slides(report, index, root, item_ids=["item-0"])
     for packet in result["packet_paths"]:
@@ -382,12 +421,19 @@ def test_render_fetches_images_once_and_offline_reuses_them(slide_case, monkeypa
     monkeypatch.setattr("signaltrail.slide_images.enrich_slide_images", enrich)
     plan = Path(result["plan_path"])
     output = render_slides(plan, root)
+    legacy = load_artifact(Path(output["json_path"]), root)
+    base = "https://global.unitednations.entermediadb.net/assets/photo.jpg/"
+    legacy["payload"]["slides"][0]["images"].extend([
+        {"url": base + "image350x235cropped.jpg", "width": 350, "height": 235, "caption": None},
+        {"url": base + "image1170x530cropped.jpg", "width": 1170, "height": 530, "caption": None},
+    ])
+    save_artifact(root, legacy["session"], "slides-deck", legacy["payload"], {})
     replay = render_slides(plan, root, refresh_images=False)
     assert replay["json_path"] != output["json_path"]
     assert calls == [["event-0"]]
     deck = load_artifact(Path(replay["json_path"]), root)["payload"]
     assert [image["url"] for image in deck["slides"][0]["images"]] == [
-        "https://example.com/high.jpg"]
+        "https://example.com/high.jpg", base + "image1170x530cropped.jpg"]
     assert deck["slides"][0]["images"][0]["width"] == 1400
     assert deck["image_enrichment"] == {"sources_fetched": 1}
 
@@ -927,16 +973,16 @@ def test_excluded_story_is_replaced_and_accepted_writing_is_reused(slide_case):
     assert select_news(report, index, max_news=3)[1]["event_id"] == "brief-item-1"
 
 
-def test_exclusion_keeps_default_thirty_and_rejects_unknown_ids(slide_case):
+def test_exclusion_keeps_default_fifty_and_rejects_unknown_ids(slide_case):
     _, _, _, report, index = slide_case
     for number in range(16, 55):
         brief = deepcopy(report["sections"][0]["briefs"][-1])
-        brief.update(item_id=f"item-{number}", importance=90-number)
+        brief.update(item_id=f"item-{number}", importance=90 - number)
         brief["source_ref"].update(item_id=f"item-{number}", url=f"https://example.com/{number}")
         report["sections"][0]["briefs"].append(brief)
     selected = select_news(report, index, exclude_event_ids=["brief-item-1"])
-    assert len(selected) == 30
-    assert selected[-1]["event_id"] == "brief-item-30"
+    assert len(selected) == 50
+    assert selected[-1]["event_id"] == "brief-item-50"
     with pytest.raises(ValueError, match="Excluded event IDs.*unknown"):
         select_news(report, index, exclude_event_ids=["unknown"])
     from signaltrail.news_slides import select_index_news
@@ -1014,7 +1060,7 @@ def test_slide_preflight_valid_draft_is_pending_until_submission(slide_case):
     assert result["batches"][0]["accepted_path"] == result["accepted"][0]
 
 
-def test_offline_first_render_filters_plan_images(slide_case):
+def test_promotional_images_removed_before_offline_render(slide_case):
     root, report_path, index_path, report, _ = slide_case
     report["sections"][0]["briefs"][0]["image"] = {
         "url": "https://www.yicai.com/img/article_float_qq.a1.png",
@@ -1025,7 +1071,7 @@ def test_offline_first_render_filters_plan_images(slide_case):
     for packet in prepared["packet_paths"]:
         submit_slides(Path(packet), author_packet(packet, root), root)
     plan = load_artifact(Path(prepared["plan_path"]), root)["payload"]
-    assert plan["news"][0]["images"]
+    assert plan["news"][0]["images"] == []
     output = render_slides(Path(prepared["plan_path"]), root, refresh_images=False)
     deck = load_artifact(Path(output["json_path"]), root)["payload"]
     assert deck["slides"][0]["images"] == []

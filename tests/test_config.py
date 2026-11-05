@@ -140,7 +140,7 @@ def test_collection_extractor_and_retention_are_opt_in(tmp_path):
     path = tmp_path / "sources.yaml"
     path.write_text("sources: []\n", encoding="utf-8")
     config = load_config(path)
-    assert config.collection.fallback_extractor == "none"
+    assert config.collection.fallback_extractor == "trafilatura"
     assert config.collection.retain_public_html is False
     path.write_text("collection:\n  fallback_extractor: trafilatura\n"
                     "  retain_public_html: true\nsources: []\n", encoding="utf-8")
@@ -155,9 +155,10 @@ def test_monitor_expands_sources_without_changing_newspaper_quotas():
     assert len(config.sources) == 32
     assert all(source.report_target == 15 for source in config.sources)
     assert all(source.report_max == 15 for source in config.sources)
-    assert len(config.monitor_sources) == 60
-    assert sum(source.enabled for source in config.monitor_sources) == 57
-    assert len(config.all_monitor_sources) == 92
+    assert len(config.monitor_sources) == 95
+    assert sum(source.enabled for source in config.monitor_sources) == 92
+    assert len(config.all_monitor_sources) == 127
+    assert sum(source.enabled for source in config.all_monitor_sources) == 124
     assert all(source.report_target == 0 for source in config.monitor_sources)
     assert config.budget.max_agent_tokens == 10_000_000
     assert config.budget.max_fulltext_per_run == 12

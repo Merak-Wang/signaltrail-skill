@@ -1,204 +1,121 @@
 # 使用说明
 
-**状态：** 已验证 · **负责人：** 仓库维护者 · **最后验证：** 2026-10-07
+**状态：** 已验证 · **负责人：** 仓库维护者 · **最后验证：** 2026-11-02
 
-完成[快速开始](../../README.md)后，用本文配置本地运行、宿主接入和报告目录。
-[English](../usage.md)
+本文说明安装后的本地配置、来源与语言选择，以及报告查看和恢复。完整的 Agent 工作流程见 [SKILL.md](../../SKILL.md)。[English](../usage.md)
 
 ## 安装
 
-在仓库运行 `python -m pip install -e .`，然后让智能体加载根目录的 `SKILL.md`。
-Python 导入包为 `signaltrail`，模块入口为 `python -m signaltrail.cli`。保留仓库目录：来源配置、
-Schema 和模板也是运行输入。从仓库外启动完整安装包时，可用 `SIGNALTRAIL_SKILL_DIR`
-指定包目录；旧变量 `DAILY_INTEL_SKILL_DIR` 仍兼容。
+在完整仓库或解压后的 Skill 包目录运行：
 
-仓库仅维护根目录的一份 `src/`。发布构建在 `dist/signaltrail/` 中生成完整安装包，包含
-`SKILL.md`、源码、配置、Schema、模板、参考资料和资源。从仓库或解压后的完整包根目录运行
-安装脚本；同步到 Hermes 是可选宿主安装，Python 项目可独立使用。脚本排除虚拟环境和
-运行数据。开发时使用 `-Editable`（Windows）或 `--editable`（macOS/Linux），
-Python 安装则关联原始源码目录。两种安装模式都以 editable 安装绑定完整资源根，确保从其他工作目录启动时仍能定位配置、Schema 和模板。
-同步采用增量复制：更新同名文件并保留目标目录额外文件，不执行清理。更新前备份自行修改的配置，同名资源文件仍会被覆盖。
+```sh
+python -m pip install -e .
+signaltrail --help
+```
 
-Python 发行包现在为 `signaltrail-skill`，替代旧 `daily-intelligence-skill`。
-主命令统一为 `signaltrail`，新安装不再提供 `daily-intel`。已有 Shell 脚本和定时任务需改用新命令。
-旧 `DAILY_INTEL_*` 环境变量和已存报告 ID 继续兼容。
+在宿主 Agent 中加载根目录 `SKILL.md`。配置、模板、Schema 和资源会在运行时读取，需保留完整目录。Python 分发包名为 `signaltrail-skill`，命令为 `signaltrail`，模块入口为 `python -m signaltrail.cli`。
 
-Windows 可以使用系统 Edge。macOS 或 Linux 的浏览器采集需要在同一 Python 环境安装 Chromium：
+安装脚本可选同步到 Hermes Skill 目录。同步更新同名文件并保留额外文件，更新前备份自定义配置。Windows 的 `-Editable` 或 macOS/Linux 的 `--editable` 使用原始仓库。宿主设置见 [Hermes 集成](../../references/hermes-integration.md)。
+
+Windows 可使用系统 Edge；macOS/Linux 的浏览器采集需在同一 Python 环境安装 Chromium：
 
 ```sh
 python -m playwright install chromium
 ```
 
-全新的 Debian 或 Ubuntu 还需运行 `python -m playwright install-deps chromium` 安装系统库，
-该步骤可能需要管理员权限。Hermes 专用安装见[可选集成参考](../../references/hermes-integration.md)；
-Windows 浏览器细节见[安装参考](../../references/windows-setup.md)。
+Debian/Ubuntu 可能还需执行 `python -m playwright install-deps chromium`。
 
-## 从旧版升级
+## 数据目录与浏览器配置
 
-升级前先停止 SignalTrail 与 Hermes 任务。卸载旧 Python 发行包，再从新仓库安装。
-无需移动已有 Hermes 数据；继续显式使用它的绝对路径，并登记为以后无参数运行时的默认根。
-Windows 示例：
-
-将下列示例中的数据与 Profile 路径替换为实际既有的绝对路径；目录名可以是
-`daily-intelligence` 或 `signaltrail`。
-
-```powershell
-python -m pip uninstall daily-intelligence-skill
-python -m pip install -e .
-$env:SIGNALTRAIL_PROFILE_DIR = "$env:LOCALAPPDATA\hermes\browser-profiles\daily-intelligence"
-signaltrail --data-dir "$env:LOCALAPPDATA\hermes\daily-intelligence" data-root adopt
-signaltrail --data-dir "$env:LOCALAPPDATA\hermes\daily-intelligence" data-root status
-```
-
-macOS/Linux 示例（在仓库或完整解压包目录运行）：
-
-```sh
-python -m pip uninstall daily-intelligence-skill
-python -m pip install -e .
-export SIGNALTRAIL_PROFILE_DIR="$HOME/.hermes/browser-profiles/daily-intelligence"
-signaltrail --data-dir "$HOME/.hermes/daily-intelligence" data-root adopt
-signaltrail --data-dir "$HOME/.hermes/daily-intelligence" data-root status
-```
-
-以上命令原地保留旧数据和 Profile。`data-root adopt` 在 SignalTrail 应用目录登记所选根，
-不移动或复制文件。后续继续传同一个 `--data-dir` 或设置 `SIGNALTRAIL_DATA_DIR`；
-并用 `SIGNALTRAIL_PROFILE_DIR` 或 `--profile-dir` 指向旧 Profile。还需更新定时任务命令。
-以上环境变量赋值只作用于当前 Shell；调度任务应保存 Profile 环境变量或在命令中传入
-`--profile-dir`。保留现有根目录：跨目录移动数据根还需要历史路径映射。
-
-## 数据目录
-
-在子命令前传入 `--data-dir DATA_DIR`，或设置 `SIGNALTRAIL_DATA_DIR`（旧变量
-`DAILY_INTEL_DATA_DIR` 仍兼容）。Windows 默认使用 `%LOCALAPPDATA%\signaltrail`；
-macOS/Linux 默认使用 `${XDG_DATA_HOME:-~/.local/share}/signaltrail`。
-Profile 可由 `SIGNALTRAIL_PROFILE_DIR` 或 `--profile-dir` 指定；默认位于 SignalTrail
-应用目录的 `browser-profiles/signaltrail/`。完整包从仓库外启动且无法定位资源时，设置
-`SIGNALTRAIL_SKILL_DIR`。
+在子命令前传入 `--data-dir`，或设置 `SIGNALTRAIL_DATA_DIR`。默认目录为 Windows 的 `%LOCALAPPDATA%\signaltrail`，macOS/Linux 的 `${XDG_DATA_HOME:-~/.local/share}/signaltrail`。用 `SIGNALTRAIL_PROFILE_DIR` 或 `--profile-dir` 指定浏览器配置目录。
 
 ```sh
 signaltrail --data-dir DATA_DIR data-root status
+signaltrail --data-dir DATA_DIR data-root adopt
 ```
 
-显式 `--data-dir` 直接选定根，不会自动登记。`data-root adopt` 将根登记，供以后未指定目录时使用；
-登记位于 SignalTrail 应用目录，不在 Hermes home。运行清单和引用的产物必须属于同一数据根。
+`adopt` 将现有目录登记为后续默认数据根，文件保留原位。运行清单及其引用产物应属于同一数据根。若从仓库外运行时找不到资源，将 `SIGNALTRAIL_SKILL_DIR` 指向完整 Skill 目录。
 
-## 每日一次的日报
+<a id="从旧版升级"></a>
 
-SignalTrail 每天生成一次 `daily` 日报。`collect`、`build-context` 和 `run-edition` 默认使用 `--edition daily`，用于时效性判断的窗口为所选时区内本次运行开始前的 24 小时，候选保留既有来源 Top 顺序与选取规则。定时任务每天在固定时间运行一次；重试和修订继续使用当日 `runs/DATE/daily.json`。已有 `morning`、`evening` 运行保留原采集窗口并支持恢复。
+升级旧安装时，先停止活动任务，卸载 `daily-intelligence-skill`，再安装当前包。保留原数据与浏览器目录，继续传入其绝对路径。旧 `DAILY_INTEL_*` 环境变量和报告 ID 仍受支持。定时任务改用 `signaltrail`，并保留数据和浏览器配置。
+
+## 日报与语言
 
 ```sh
 signaltrail --timezone Asia/Shanghai run-edition --edition daily
+signaltrail --timezone Asia/Shanghai run-edition --edition daily --language en
 ```
 
-## 语言与来源顺序
+命令准备运行，宿主 Agent 按 Skill 完成选题和写作。日报采用所选时区中开始前 24 小时的窗口。每天固定时间运行一次，中断后恢复 `runs/DATE/daily.json`；明确使用 `--restart` 才创建新尝试。已有晨报和晚报仍可恢复。
 
-默认报告语言是 `zh-CN`。可以向智能体要求英文，或给 `run-edition` 传入 `--language en`。
-该命令只准备运行，智能体仍需按 [SKILL.md](../../SKILL.md) 完成写作。
-长期默认值在 `configs/sources.yaml` 中设置：
+默认输出 `zh-CN`。可直接要求 Agent 输出英文，传入 `--language en`，或在配置中设置：
 
 ```yaml
 output:
   language: en
 ```
 
-译题、摘要、分析和阅读格式采用所选语言，新闻原题保留不变。
+标题、摘要、分析、图文讲解和语音使用所选语言，原始标题与来源链接保留供查阅。
 
-正式报告修改 [sources.yaml](../../configs/sources.yaml)，监控发现来源修改
-[discovery-sources.yaml](../../configs/discovery-sources.yaml)。正式来源使用
-`report_target: 15` 和 `report_max: 15`，候选不足时按实际数量生成。
-发现来源这两个值均为零，不补充正式报告配额。
+## 来源与正文证据
 
-`collection.item_order: source` 保留网页、榜单或 Feed 的原始顺序；`published_at` 按已抓取索引中
-有效发布时间从新到旧排列，缺失和并列时间保持输入顺序。来源可用自己的 `item_order` 覆盖全局值。
-两种模式均保留 `source_rank`，普通摘要不再按重要性排序。
-Hugging Face Papers 使用 Trending 顺序，其中可能包含较早发表的论文。
+在 [sources.yaml](../../configs/sources.yaml) 配置核心日报来源，在 [discovery-sources.yaml](../../configs/discovery-sources.yaml) 配置发现源。核心来源分别设置 `report_target` 和 `report_max`；发现源目标为零，可进入由 `collection.discovery_brief_limit` 控制的共享补充池，默认 30 条。配置说明见[采集扩展](platform.md)。
 
-发现目录新增 TASS、俄罗斯央行、新华社英文、外交部发言人、商务部发布会和联合国会议报道。
-Anadolu、IRNA 和 WAM 在本部署能够取得有效条目前保持禁用；ReliefWeb 在取得已批准的 API appname
-前只保留为文档候选。详情见[入口实测记录](research/2026-09-20-collection-improvements.md)。
-来源字段 origin_scope、coverage_regions、publisher_group 分开记录机构来源、报道范围和出版组，
-不代表这些材料互相独立或已完成事实核验。
+`collection.item_order: source` 保留页面、榜单或 Feed 顺序；`published_at` 按有效发布时间从新到旧排序，相同或未知时间保留输入顺序。来源可以单独覆盖设置。原站排名保留在 `metadata.source_rank`；Hugging Face Papers 等榜单来源沿用发现排名语义。
 
-Feed 长内容单独保存，列表描述仍最多 600 字符，仅被选中富化的条目加载为部分正文证据。
-浏览器回退在一个持久化会话内有界并发；可选 ready_selector 指定就绪元素，显式 wait_ms 优先。
-采集环节不调用模型。
+核心来源缓存复用要求冻结窗口内有当前覆盖。采集后，核心来源将窗口内条目排在未知日期或历史条目前。简报编排按 canonical URL 只占一个位置，遇到重复从同一来源后续唯一文章补位，保留来源名额和原始排名。补充发现池与这些已选核心文章去重。
 
-从已有索引提取指定新闻正文时，使用 `extract-content` 并明确传入条目 ID。命令会在同一数据根
-创建富化后的新索引修订，不会改写输入索引；后续写作使用命令返回的新路径。若来源要求交互验证，
-可以打开浏览器并指定持久化 Profile：
+纯日期保留日粒度，与未知发表时间一样使用 `WATCH`。来源修订和首次发现时间分别保存。旧论文和仓库可以凭本期新上榜、重新上榜、排名上升或修订信号进入研究雷达，状态为 `WATCH`；普通刷新沿用原信号时间。
+
+写作证据依次使用文章正文、已保存的 Feed 文本／结构块、短描述。写作包为 Feed 材料提供独立路径和部分证据状态。补证建议综合重要度、可观察缺口、已有材料以及来源和领域分散度。Trafilatura 已作为默认本地备用器，并检查正文保留情况。文本 PDF 保留页码，状态为部分证据。可显式补取指定条目的正文：
 
 ```sh
 signaltrail --data-dir DATA_DIR extract-content --index INDEX.json --item-id ITEM_ID
 signaltrail --data-dir DATA_DIR extract-content --index INDEX.json --item-id ITEM_ID --headed --profile-dir PROFILE_DIR
 ```
 
-## Hermes 完整计量入口
+提取生成新的增强索引修订，后续步骤使用返回路径。采集保留登录、验证、限流和失败状态；交互验证用 `verify-pending`。来源选择与证据处理见[编辑策略](../../references/editorial-policy.md)。
 
-针对已审计的 Hermes 0.21 接入，使用：
+## 采集监控
+
+```sh
+signaltrail --data-dir DATA_DIR refresh-monitor
+signaltrail --data-dir DATA_DIR serve --open
+```
+
+可选的本地监控展示新闻、事件聚类、来源健康和待验证项，采集与聚类无需模型调用。服务默认只读，不启动定时采集。日报按需生成，交付 HTML／PDF、幻灯片及可选视频。见[采集扩展与研究接口](platform.md)。
+
+## 宿主用量与可选评分
+
+简报作者只需读取一次 `signaltrail --data-dir DATA_DIR brief-input --packet PACKET.json`。单行输入保留完整候选证据、顺序、写作风格、Schema 与草稿及预检命令；候选 ID 与授权逐项相同时省去重复授权列表，旧包中的独立授权继续明示。正文按已列出的证据路径按需读取。
+
+简报包携带日报日期与冻结采集窗口。作者结合本期新增进展、影响和时效评估重要性，旧研究保留原始发表时间与真实上榜变化，有据的重大持续影响仍可支持高分。对携带冻结结束时间的包，校验要求 `NEW` 有当天或前一天的明确发布时间，未知日期、纯日期与研究上榜信号使用 `WATCH`。协作作者执行 `preflight_command` 后交回草稿，由协调者通过 `submit-authoring-batch --all` 接收；独立作者按协调者指示提交。旧包可在 `submission_command` 后加 `--check-only` 进行预检。
+
+具备写作能力的宿主 Agent 均可处理写作包。没有审计适配器时，运行记录为 `unmetered`，用量总计为 `null`。Hermes 的审计计量通过以下入口启动：
 
 ```sh
 signaltrail-hermes run --ledger DATA_DIR --hermes-python HERMES_PYTHON --prompt-file PROMPT.txt --timeout 3600
 ```
 
-将大写占位符替换为路径。`HERMES_PYTHON` 是已安装 SignalTrail 的 Hermes 虚拟环境 Python，
-`PROMPT.txt` 包含本次报告请求；可用 `--provider` 和 `--model` 选择供应商和模型。
+启动器在模型工作前开始计量，并与宿主计数核对受支持调用。`--provider` 和 `--model` 选择路由。覆盖范围和其他宿主导入见[用量说明](../../references/llm-usage.md)，安装见 [Hermes 集成](../../references/hermes-integration.md)。
 
-此入口在模型启动前接通计量，包含工作线程及支持的辅助调用，并支持用单独任务执行用户要求的质量评分。
-封账前核对宿主计数，缺失观测保持 partial。直接 Hermes CLI 和旧 Cron 不会自动获得同等覆盖。
-写作状态也会展示子批次的委派计量。Hermes 在该回调中报告的 prompt token 数包含缓存 token，
-而回调没有分别提供未缓存输入和缓存桶。宿主报告总量也可能缺失，因此状态按批次总量覆盖标为
-`exact`、`partial` 或 `unobservable`。这组数据只覆盖写作子任务，不包括 coordinator、辅助请求和
-评估器调用；整次运行应以封存的 usage task 摘要为准。
-具体限制及 Codex/OpenClaw 导入见[用量说明](../../references/llm-usage.md)。
+独立质量评分按需开启：为 `finalize-edition` 或 `complete-edition-tail` 加上 `--evaluate`。默认外部后端返回 dossier 和提交命令，交由独立 Agent 评分；`--evaluation-backend hermes` 使用 Hermes 调度。恢复时沿用已记录的评分请求。未评分简报保留在已批准语义缓存之外。
 
-其他 Agent 也可以处理相同写作包。没有已审计适配器时，运行仍可使用，但明确标为
-`unmetered`，token 总量为 null。
+默认分析使用一个新上下文包。`prepare-analysis --parallel` 提供分阶段路径：选题、三个领域分析、综合、组装；它可缩短写作等待，但会重复输入共享材料。按返回命令和[运行手册](../../references/runbook.md)执行。子命令前加全局 `--compact` 可缩短标准输出，保存产物仍完整。
 
-质量评分默认关闭。用户明确要求时，在 `finalize-edition` 或 `complete-edition-tail` 加
-`--evaluate`，请求随本轮运行保留，供后台收尾和恢复使用。普通定稿和 PDF 交付不会创建评分任务。
-已有评分继续保留；未评分摘要不进入已批准的语义缓存，因此后续日报可能需要增加重新写作量。
-结构和证据校验仍正常运行。
-
-默认评估 backend 为 external。用户明确要求评分时，`--evaluate` 会生成绑定报告哈希的 dossier。
-交由未参与报告写作的独立 Agent 只读 dossier，写出每个维度的 `id`、1–5 整数 `score` 和目标语言
-`finding`，再执行 `edition-status` 返回的精确 `finalize-evaluation` 命令。若没有独立评估器，保留
-pending。此路径不派发 Hermes，也不创建虚假的评估用量任务。只有草稿通过校验并保存后才记为完成。
-有意使用 Hermes 时显式传入 `--evaluation-backend hermes`；Hermes 接入见[参考](../../references/hermes-integration.md)。
-
-子命令前加全局 `--compact` 可压缩 CLI 标准输出；保存的 JSON、Markdown、HTML 与 packet 保持完整。所有隔离 worker 使用同一绝对 CLI。
-
-brief 修复预算限制新一轮模型修复；预算耗尽后，已完成的合法草稿仍可通过校验并接收。
-
-默认研判使用一个新上下文作者完成原 analysis 包，避免多阶段重复输入。需要缩短写作等待时显式运行 `prepare-analysis --parallel`，先完成返回的 selection 包，再运行 `analysis-stage --run RUN.json --stage domains` 并行完成三个领域包；随后运行 `--stage synthesis` 完成综合包，运行 `--stage assemble` 写入原 `analysis_result_path`，继续 `assemble-authoring`。该可选路径会因多阶段重复共享材料增加总输入 token。每任务使用仅含 packet 与绝对 CLI 的新上下文。媒体预取与简报写作并行，PDF tail 与图文写作并行；tail 退出后再渲染。
-
-观察信号写明对象、证据已有的复核时间和改变判断的方向；综合围绕具体跨域传导机制，无证据联系的领域保持独立。
-
-## 报告与恢复
+## 产物与恢复
 
 | `DATA_DIR` 下的路径 | 内容 |
 | --- | --- |
-| `reports/YYYY-MM-DD/EDITION-rN.json` 和 `.md` | 版本化原始报告 |
+| `reports/YYYY-MM-DD/EDITION-rN.json` 和 `.md` | 版本化日报记录 |
 | 同名 `.html` 和 `.pdf` | 阅读与打印副本 |
-| `reports/index.html` | 本地报告历史 |
-| `runs/YYYY-MM-DD/EDITION.json` | 当前阶段、产物路径、错误和后续命令 |
-| `usage/` 和 `host-runs/` | 用量事件和宿主启动回执 |
+| `reports/index.html` | 日报历史 |
+| `runs/YYYY-MM-DD/EDITION.json` | 阶段、产物、错误和后续命令 |
+| `usage/` 和 `host-runs/` | 用量记录与宿主启动回执 |
 
-工作流还会生成便携桌面 HTML，嵌入已取得并验证的图片。HTML 先返回，PDF、已请求的 Notion
-交付和用户明确要求的评分随后在可重试的后台流程完成。PDF 默认软体积预算为 50 MiB，超出会记录警告。
+流程先返回 HTML，并生成内嵌可用图片的便携桌面副本。PDF、请求的 Notion 发布和评分由可重试尾任务完成。PDF 默认大小预算为 50 MiB，超出时记录警告。
 
-图片保留新闻网站的原文图注及其语言；未取得图注时，报告的 `image.caption` 保存为空字符串，
-不以新闻标题、alt 文本或生成描述替代。图片来源署名与图注分别保存。
+日报 HTML 内嵌已渲染幻灯片并提供独立链接；视频导出后在同一区域播放。打印恢复日报摘要。每期日报都要求完成幻灯片渲染，用 `edition-status --run RUN.json --require-complete` 检查整期交付。见[幻灯片与视频](news-slides.md)。
 
-HTML 阅读页采用三栏报头，展示报告日期、版次和实际记录的生成时间；白底黑字与红色来源横线
-组织整期连续新闻。若已有动态幻灯片，屏幕上会在原“今日摘要”区域嵌入演示，并保留独立打开
-HTML 的按钮；打印时隐藏演示并恢复摘要。没有幻灯片时继续显示普通摘要。原悬浮目录保留展开、
-收起和滚动定位；搜索、日报中心、PDF 和来源状态入口仍可使用。详见[幻灯片指南](news-slides.md)。
-
-重试前先读运行清单；尚未完成的交付执行其中的 `tail.command`。
-不要手改状态 JSON，也不要在进程活动时删除锁。各阶段恢复方法见[运行手册](../../references/runbook.md)。
-
-采集会保留登录、验证挑战、限流和失败状态。准备好操作浏览器时，用 `verify-pending`
-处理待验证来源。无人值守运行不得传入 `--open-verification`。
-
-Notion 为可选项，需要显式 `--publish` 和[配置凭据](../../references/notion-setup.md)。
-远程交付失败时，本地报告仍然可用。
+重试前先读取运行清单，待交付工作使用其真实 `tail.command`。各阶段恢复见[运行手册](../../references/runbook.md)。Notion 发布需要显式 `--publish` 和[已配置的凭据](../../references/notion-setup.md)。
