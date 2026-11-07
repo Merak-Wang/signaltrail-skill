@@ -27,8 +27,8 @@ research analyses receive `RA-` IDs and evidence receives `RE-` IDs. Native ledg
 language scripts and isolated reviews are reused. Research inference cannot borrow the daily
 report's analysis IDs or evidence outside its own premises.
 
-Writing loads only the requested [Chinese](../../templates/research-style-zh.md) or
-[English](../../templates/research-style-en.md) card. Optional tables register every header, cell and
+Writing loads only the requested Chinese or
+English card. Optional tables register every header, cell and
 editorial caption as a reviewable segment. Original constructed tables have a null publisher caption.
 No external documentary images are admitted. A single-language story can use its exact supporting
 review; bilingual acceptance still requires the bilingual receipt.
@@ -102,4 +102,4 @@ historical research sources, not a live news edition. Automated targeted web res
 republication attribution, metered host dispatch, external-photo admission, and three-edition live
 acceptance remain open. Current-news mode stays blocked. See TD-038 and TD-041 in the
 [debt tracker](../exec-plans/tech-debt-tracker.md) and the
-[runtime procedure](../../references/research-workflow.md).
+runtime procedure.

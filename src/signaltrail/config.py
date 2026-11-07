@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 import sys
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
@@ -54,8 +54,8 @@ class SourceConfig:
     - ``explore_urls``：除来源主页外需要采集的专题或栏目页 URL。
     - ``content_selectors``：按优先级寻找文章正文的 CSS 选择器。
     - ``max_items``：本步骤允许处理或返回的最大条目数；同时受全局预算限制。
-    - ``report_target``：正常报告希望从该来源选入的条目数。
-    - ``report_max``：该来源在单份报告中允许出现的最大条目数。
+    - ``report_target``：旧目标配置，保留元数据；当日日报以实际合格数量为准。
+    - ``report_max``：旧上限配置，保留元数据；不截断当日来源Top。
     - ``wait_ms``：显式固定等待毫秒数（含 0）；为空时按就绪条件等待。
     - ``item_order``：可选来源级排序覆盖；为空时继承全局采集配置。
     输出：构造后的 ``SourceConfig`` 实例或枚举定义；其字段和方法共同承担上述职责。
@@ -88,6 +88,7 @@ class SourceConfig:
     explore_urls: list[str] = field(default_factory=list)
     content_selectors: list[str] = field(default_factory=lambda: ["article", "main"])
     max_items: int = 60
+    collect_all_items: bool = False
     report_target: int = 15
     report_max: int = 15
     wait_ms: int | None = None
@@ -129,6 +130,7 @@ class BrowserConfig:
     - ``collection_global_concurrency``：无脚本正文 HTTP 提取的全局并发上限。
     - ``collection_per_domain_concurrency``：无脚本正文 HTTP 提取的同域并发上限。
     - ``http_prefetch_timeout_ms``：无脚本 HTTP 预取单次等待上限，单位为毫秒。
+    - ``http_prefetch_max_bytes``：HTTP 索引页面解压后的读取上限。
     - ``navigation_timeout_ms``：浏览器页面导航等待上限，单位为毫秒。
     - ``default_wait_ms``：来源未指定固定等待时，就绪检查的最长等待毫秒数。
     输出：构造后的 ``BrowserConfig`` 实例或枚举定义；其字段和方法共同承担上述职责。
@@ -141,6 +143,7 @@ class BrowserConfig:
     collection_global_concurrency: int = 8
     collection_per_domain_concurrency: int = 2
     http_prefetch_timeout_ms: int = 15000
+    http_prefetch_max_bytes: int = 8 * 1024 * 1024
     navigation_timeout_ms: int = 45000
     default_wait_ms: int = 3500
 
@@ -154,7 +157,6 @@ class CollectionConfig:
     - ``fallback_extractor``：none 保留基线；trafilatura 允许本地备用抽取。
     - ``retain_public_html``：是否留存无登录 HTTP 的有界原响应；浏览器 DOM 不留存。
     - ``browser_extractor``：HTTP 不足时 auto 优先已安装 Crawl4AI，交互窗口使用 Playwright。
-    - ``discovery_brief_limit``：发现来源共用的日报简报名额，零表示关闭补充选材。
     输出：构造后的采集排序配置；AppConfig 会把该默认值补到所有正式与发现来源。
     """
 
@@ -162,7 +164,6 @@ class CollectionConfig:
     fallback_extractor: str = "trafilatura"
     retain_public_html: bool = False
     browser_extractor: str = "auto"
-    discovery_brief_limit: int = 30
 
 
 @dataclass(slots=True)
@@ -223,6 +224,7 @@ class MediaConfig:
     - ``max_images_per_report``：单份报告允许成功附加的图片数量上限。
     - ``max_image_bytes``：单张图片允许下载和保存的最大字节数。
     - ``max_total_bytes``：单份报告全部唯一图片允许占用的总字节预算。
+    - ``prefetch_max_total_bytes``：写作期间允许预取的新图片字节预算，已有缓存不占用额度。
     - ``max_image_pixels``：图片解码后的最大总像素数。
     - ``request_timeout_seconds``：一次 HTTP 请求或整段下载允许等待的秒数。
     - ``max_redirects``：图片下载允许跟随的最大重定向次数；每跳都会重新校验。
@@ -235,7 +237,8 @@ class MediaConfig:
     enabled: bool = True
     max_images_per_report: int = 1000
     max_image_bytes: int = 8 * 1024 * 1024
-    max_total_bytes: int = 80 * 1024 * 1024
+    max_total_bytes: int = 250 * 1024 * 1024
+    prefetch_max_total_bytes: int = 250 * 1024 * 1024
     max_image_pixels: int = 25_000_000
     request_timeout_seconds: float = 10.0
     max_redirects: int = 5
@@ -325,6 +328,8 @@ def validate_media_config(media: MediaConfig) -> MediaConfig:
         )
     if media.max_total_bytes < media.max_image_bytes:
         raise ValueError("media.max_total_bytes must be at least media.max_image_bytes")
+    if media.prefetch_max_total_bytes < media.max_image_bytes:
+        raise ValueError("media.prefetch_max_total_bytes must be at least media.max_image_bytes")
     if media.max_image_pixels <= 0:
         raise ValueError("media.max_image_pixels must be positive")
     if media.request_timeout_seconds <= 0:
@@ -356,7 +361,7 @@ class AppConfig:
     - ``output``：本地 HTML、PDF、桌面复制和打开行为配置。
     - ``media``：报告图片下载、缓存、安全和总量预算配置。
     - ``monitor``：零模型监控的刷新、并发、缓存和聚类配置。
-    - ``monitor_sources``：发现来源配置列表；与核心来源分开以避免改变报告配额。
+    - ``monitor_sources``：扩展来源配置列表；通过report_sources与正式来源一同进入日报。
     - ``rsshub``：自托管或显式选择的 RSSHub 实例入口。
     输出：构造后的 ``AppConfig`` 实例或枚举定义；其字段和方法共同承担上述职责。
     """
@@ -409,6 +414,17 @@ class AppConfig:
         raise KeyError(f"Unknown source: {source_id}")
 
     @property
+    def report_sources(self) -> list[SourceConfig]:
+        """处理：将启用来源纳入既有栏目；同一来源只采集一次。
+        输入：正式配置与扩展来源配置，元数据保持原样。
+        输出：按配置顺序排列的来源，正式配置优先同ID实现。
+        """
+        ordered = {}
+        for source in [*self.sources, *self.monitor_sources]:
+            ordered.setdefault(source.id, source)
+        return [replace(source, collect_all_items=True) for source in ordered.values()]
+
+    @property
     def all_monitor_sources(self) -> list[SourceConfig]:
         """处理：返回全部需要监控的来源配置。
         输入：
@@ -420,7 +436,7 @@ class AppConfig:
         """
         seen: set[str] = set()
         sources: list[SourceConfig] = []
-        for source in [*self.sources, *self.monitor_sources]:
+        for source in self.report_sources:
             if source.id in seen or not source.monitor_enabled:
                 continue
             seen.add(source.id)
@@ -468,9 +484,6 @@ def validate_collection_config(collection: CollectionConfig) -> CollectionConfig
         raise ValueError("collection.fallback_extractor must be one of: none, trafilatura")
     if collection.browser_extractor not in {"auto", "playwright", "crawl4ai"}:
         raise ValueError("collection.browser_extractor must be one of: auto, playwright, crawl4ai")
-    if (type(collection.discovery_brief_limit) is not int
-            or not 0 <= collection.discovery_brief_limit <= 120):
-        raise ValueError("collection.discovery_brief_limit must be an integer from 0 through 120")
     if not isinstance(collection.retain_public_html, bool):
         raise ValueError("collection.retain_public_html must be a boolean")
     return collection
@@ -526,10 +539,9 @@ def _validate_source(source: SourceConfig, budget: BudgetConfig) -> None:
         parsed = urlsplit(feed_url)
         if parsed.scheme not in {"http", "https"} or not parsed.netloc:
             raise ValueError(f"Invalid feed URL for {source.id!r}: {feed_url!r}")
-    if not 0 <= source.report_target <= source.report_max <= budget.report_items_per_source:
+    if not 0 <= source.report_target <= source.report_max:
         raise ValueError(
-            f"Invalid report target for {source.id!r}: require 0 <= report_target <= "
-            f"report_max <= {budget.report_items_per_source}"
+            f"Invalid report target for {source.id!r}: require 0 <= report_target <= report_max"
         )
 
 
@@ -563,9 +575,9 @@ def load_config(path: Path | None = None, timezone: str | None = None) -> AppCon
     config_path = path or project_root() / "configs" / "sources.yaml"
     raw: dict[str, Any] = yaml.safe_load(config_path.read_text(encoding="utf-8"))
     browser = BrowserConfig(**raw.get("browser", {}))
-    collection = validate_collection_config(
-        CollectionConfig(**raw.get("collection", {}))
-    )
+    collection_values = dict(raw.get("collection", {}))
+    collection_values.pop("discovery_brief_limit", None)
+    collection = validate_collection_config(CollectionConfig(**collection_values))
     budget = BudgetConfig(**raw.get("budget", {}))
     output_values = dict(raw.get("output", {}))
     output_values.setdefault("copy_html_to_desktop", True)
@@ -589,12 +601,6 @@ def load_config(path: Path | None = None, timezone: str | None = None) -> AppCon
             )
             for item in _load_source_rows(bundle_path)
         ]
-    configured_ids = [source.id for source in [*sources, *monitor_sources]]
-    duplicate_ids = sorted(
-        source_id for source_id in set(configured_ids) if configured_ids.count(source_id) > 1
-    )
-    if duplicate_ids:
-        raise ValueError(f"Duplicate source IDs across core and monitor sources: {duplicate_ids}")
     for source in monitor_sources:
         _validate_source(source, budget)
     configured_timezone = timezone or raw.get("timezone", "Asia/Shanghai")

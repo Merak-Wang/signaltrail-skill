@@ -1,10 +1,10 @@
-# Collection extensions and research APIs
+# Collection extensions and archive APIs
 
 When live collection and the current monitor snapshot contain the same source and canonical article, live ranking and access status remain authoritative. Missing descriptions and matching, substantive Feed content can be reused from the snapshot; stale or navigation-only evidence is excluded.
 
 **Status:** Verified · **Owner:** Repository maintainers · **Last verified:** 2026-11-02
 
-This guide covers the local collection monitor, supplementary discovery sources, RSSHub, Crawl4AI, and report, event, and research APIs for integrations. [中文](zh-CN/platform.md)
+This guide covers the local collection monitor, supplementary discovery sources, RSSHub, Crawl4AI, and report and event APIs for integrations. [中文](zh-CN/platform.md)
 
 ## Collection monitor and report delivery
 
@@ -19,37 +19,14 @@ Use the same absolute data root as the report workflow. The default URL is `http
 
 Original titles and the selected output-language translations, summaries, and analysis follow the saved report contract. Versioned JSON/Markdown remain authoritative. Published report HTML, PDF, slides, and video continue through their existing workflow and delivery paths.
 
-The report catalog APIs `/api/editions` and `/api/edition`, persistent events, follows, and research backend are available for client integrations. Report language selection returns actual generated versions; a missing language version returns `unavailable` with the requested selection and available editions.
+The report catalog APIs `/api/editions` and `/api/edition`, persistent events and follows are available for client integrations. Report language selection returns actual generated versions; a missing language version returns `unavailable` with the requested selection and available editions.
 
-Persistent events, articles, follows, and research records are stored in `DATA_DIR/platform/events.sqlite`. Archive synchronization reuses complete monitor groups, including their configured clustering threshold and story identities, and clusters only articles whose groups are missing or contain filtered navigation links. The retained event API can project report evidence, titles, summaries, and analysis when the report and event are linked.
+Persistent events, articles and follows are stored in `DATA_DIR/platform/events.sqlite`. Archive synchronization reuses complete monitor groups, including their configured clustering threshold and story identities, and clusters only articles whose groups are missing or contain filtered navigation links. The retained event API can project report evidence, titles, summaries, and analysis when the report and event are linked.
 
-## Research an event
-
-The retained research API accepts an archived event, a question, an optional perspective, and a language. Task records expose queued/running/completed/failed states and the saved answer with its sources. Access research through the API or commands below. The research service freezes the event evidence for the local host; it runs one worker and reuses a matching active task. Research calls the host model; reading, feed collection, and event ranking do not call a model.
-
-By default the service reuses an installed Hermes command and its model configuration. Set `SIGNALTRAIL_RESEARCH_PROVIDER` and/or `SIGNALTRAIL_RESEARCH_MODEL` before starting `serve` to override the provider/model for the automatic Hermes research subprocess. Empty values inherit the existing Hermes configuration; the global Hermes configuration is unchanged. These overrides do not apply to `SIGNALTRAIL_RESEARCH_COMMAND`, whose argument array is supplied entirely by the user. Jobs record the selected backend and any explicit provider/model under `worker`. A custom local host can be selected using `SIGNALTRAIL_RESEARCH_COMMAND`, a JSON argv array containing `{packet}` and `{output}` placeholders. The command reads the UTF-8 JSON packet and writes the declared result JSON to the output path. Configure the command before starting `serve`.
-
-```text
-SIGNALTRAIL_RESEARCH_COMMAND=["your-agent-command","--packet","{packet}","--output","{output}"]
-SIGNALTRAIL_RESEARCH_TIMEOUT_SECONDS=180
-SIGNALTRAIL_RESEARCH_COOLDOWN_HOURS=6
-```
-
-An unavailable host leaves the task at `awaiting_model`, with its packet preserved for an external host. An explicit empty command array `[]` selects this external-host path. Task records keep execution errors and never present a failed or waiting task as a completed answer. Research results remain attached to their event.
-
-For an external skill host, list waiting jobs, read the returned frozen packet, write its declared result JSON, and submit it:
-
-```sh
-signaltrail --data-dir DATA_DIR platform-research list --status awaiting_model
-signaltrail --data-dir DATA_DIR platform-research submit --job JOB_ID --input RESULT.json
-signaltrail --data-dir DATA_DIR platform-research run --job JOB_ID
-```
-
-A running server also schedules research for followed events when substantive new evidence arrives, with a six-hour default cooldown. Identical evidence and repeated syndication do not trigger another analysis.
 
 ## Discovery source configuration
 
-The [discovery catalog](../configs/discovery-sources.yaml) covers international, domestic, markets, technology, and open-source news. Edit Feed addresses and `enabled` settings to change coverage; check actual availability in the monitor's source health. Discovery sources use `report_target: 0` and `report_max: 0`; sources selected for the shared pool receive the actual selected brief count in that edition.
+The [extension catalog](../configs/discovery-sources.yaml) covers international, domestic, markets, technology and open-source news. Enabled entries join the regular report sections; inspect actual source health for availability. Legacy zero target fields do not limit admission: the new edition policy records each source's actual current-day count.
 
 ## Collection window and source ordering
 
@@ -59,7 +36,7 @@ During an on-demand edition, a recent snapshot is also checked for newly enabled
 
 After collection, non-discovery sources place explicitly in-window items before unknown-date/history items, preserving order within each group and retaining publisher rank in `metadata.source_rank`. Sources whose role is `discovery`, such as paper and repository rankings, retain their ranking semantics. Core source targets stay unchanged.
 
-Brief planning allocates each canonical article URL once across sources. It scans the existing source order and fills a duplicate position with the next unique article from that source, preserving source targets, section allocation, and original publisher rank. The compact writing input includes these later candidates. `brief_plan.shortfall_count` records an actual shortage of unique articles. Different URLs remain separate evidence even when their titles or events are similar. The shared discovery pool deduplicates against the selected core articles; an unused tail candidate does not exclude a discovery article.
+Brief planning retains every eligible current-day article in each source's original Top order. Same-source canonical duplicates merge; cross-source entries retain their own IDs, references and ranks while sharing identical original writing. Original rank is preserved after filtering. Semantic multi-publisher event merging and impact ranking belong to the separate visual stream.
 
 Publication, revision, and observation have separate meanings. Dates are normalized from ISO, RFC, and explicit `YYYY/MM/DD` forms. A date without a time retains day precision in `metadata.published_precision`; `updated_at` records a source revision, while `first_discovered_at` records the earliest retained observation. Date-only candidates use calendar-day overlap with the frozen window and receive `published_date_overlap` and `WATCH`; unknown publication times also remain `WATCH`.
 
@@ -69,9 +46,9 @@ Saved Feed fields also remain available to brief and analysis authors through `f
 
 ## Use discovery sources in future daily editions
 
-`collection.discovery_brief_limit: 30` enables a shared supplementary brief pool for a new full collection/daily edition; set it to `0` to disable it (range `0..120`). The default 30 slots are allocated across international (15), markets (6), and technology (9), with at most two briefs per source. Unfilled slots are reassigned in international/markets/technology order.
+Enabled sources in both bundles enter the existing report sections. The current configuration has 32 core and 95 extension entries, with 92 extensions enabled: 127 unique IDs and 124 enabled sources. Each source contributes every verifiable original article published on the edition's Asia/Shanghai day before the frozen cutoff, in its original source Top order. Finite Feed/page responses are read completely within the configured byte/page boundaries. Unknown/older originals and ranking/submission times do not qualify. Same-source canonical duplicates merge; cross-source positions remain visible and identical writing can be reused. The old shared 30-slot pool and per-source 1/2/15 limits do not apply. Slides/video separately merge semantic events and order up to 50 by impact.
 
-Selection reuses a fresh monitor snapshot within the edition's frozen 24-hour window. News selection uses publication time or an overlapping publication date; research papers and projects may also qualify through a current ranking signal. Stale/retained records and explicitly future publications are excluded. Deduplication uses canonical URLs. Explicit source-targeted collection does not append this pool. Only selected discovery sources receive their actual one/two-brief policy in the new index, then enter the ordinary brief and three-perspective analysis workflow. Existing report versions remain unchanged.
+Anadolu Agency (`anadolu_en`), IRNA English (`irna_en`) and Emirates News Agency (`wam_en`) remain disabled. Their bundle comment says to keep unavailable candidates disabled until this deployment can extract items; individual historical failure details are unknown.
 
 ## Body enrichment
 
@@ -81,12 +58,7 @@ HTTP and browser extraction share concrete body-region selection and structured 
 
 Trafilatura is a base dependency and the default local fallback when the built-in extractor leaves gaps. Complete bodies skip the fallback. Specific body regions and tables are preserved; a replacement for an existing partial body must retain at least 70% of its substantial text blocks, weighted by characters. Candidates can add text, while excessive compression of a live report keeps the original body. `fallback_extractor: none` disables this comparison.
 
-For archived event research, a substantive change to a Feed, title, or description marks the associated body for refresh. Until refreshed, the current Feed or description supplies the packet. A successful new partial body replaces a stale full body; discovery-time changes alone leave the body reusable. Each research task freezes its own evidence packet.
 
-```yaml
-collection:
-  discovery_brief_limit: 30
-```
 
 ## RSSHub sources
 

@@ -83,7 +83,7 @@ def test_visible_verification_stops_immediately_when_rate_limited(monkeypatch):
 
     monkeypatch.setattr(
         "signaltrail.verification.detect_challenge",
-        lambda _page, _status: {"required": True, "rate_limited": True},
+        lambda _page, _status: {"required": False, "rate_limited": True},
     )
 
     result = wait_for_visible_verification([("reuters", Page(), 429)], 30)
@@ -115,7 +115,7 @@ def test_reuters_temporary_access_limit_is_detected_as_rate_limited():
 
     result = detect_challenge(Page(), 200)
 
-    assert result["required"] is True
+    assert result["required"] is False
     assert result["rate_limited"] is True
     assert result["matched_text"] == "temporarily limited"
 

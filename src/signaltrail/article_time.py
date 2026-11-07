@@ -9,6 +9,11 @@ from zoneinfo import ZoneInfo
 
 from .utils import canonicalize_url
 
+PLATFORM_PUBLICATION_SOURCES = frozenset({
+    "weibo_hot", "hacker_news", "lobsters", "huggingface_papers",
+    "papers_with_code", "github_trending", "google_news_china",
+})
+
 
 def normalize_time(value: str, timezone: str | tzinfo = "UTC") -> str | None:
     """处理：来源日期归一为 ISO，纯日期保留日粒度。
@@ -34,6 +39,68 @@ def normalize_time(value: str, timezone: str | tzinfo = "UTC") -> str | None:
     return parsed.replace(tzinfo=parsed.tzinfo or zone).astimezone(
         zone
     ).isoformat(timespec="seconds")
+
+
+def _declared_datetime(value: str) -> datetime | None:
+    """处理：解析来源明确日期，保留是否携带时区的区别。
+    输入：原网页或Feed原始日期字符串。
+    输出：未附加默认时区的时间，无法解析时为空。
+    """
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        try:
+            return parsedate_to_datetime(value)
+        except (ValueError, TypeError, OverflowError):
+            return None
+
+
+def uses_platform_publication_time(item: dict) -> bool:
+    """处理：区分平台提交时间与发布者原文时间。
+    输入：规范条目的来源身份与已有时间语义标记。
+    输出：仅真正聚合排名平台为真，不用discovery角色代替时间语义。
+    """
+    return (item.get("source_id") in PLATFORM_PUBLICATION_SOURCES
+            or (item.get("metadata") or {}).get("publication_time_kind") == "platform")
+
+
+def original_publication_time(item: dict, timezone: str = "Asia/Shanghai") -> str | None:
+    """处理：取得原文时间并保留日精度，发现平台时间不替代原文。
+    输入：规范条目与目标时区，原文日期来自已有来源元数据。
+    输出：规范发表时间或日期，原文日期未知时为空。
+    """
+    metadata = item.get("metadata") or {}
+    original = str((metadata.get("content_source") or {}).get("published_at") or "")
+    if uses_platform_publication_time(item):
+        return normalize_time(original, timezone)
+    feed_raw = str(metadata.get("published_raw") or "")
+    feed_time = _declared_datetime(feed_raw)
+    feed = (normalize_time(feed_raw, timezone) if feed_time and feed_time.tzinfo else
+            normalize_time(str(item.get("published_at") or ""), timezone))
+    page_time = _declared_datetime(original)
+    if page_time is None:
+        return feed
+    if len(original) == 10 or page_time.tzinfo:
+        return normalize_time(original, timezone)
+    if feed_time and feed_time.tzinfo:
+        # 同一发布者同一文章的Feed原始偏移可解释网页未标时区的本地钟面时间。
+        return normalize_time(page_time.replace(tzinfo=feed_time.tzinfo).isoformat(), timezone)
+    current = _declared_datetime(str(item.get("published_at") or ""))
+    if current and current.tzinfo:
+        return feed
+    return normalize_time(original, timezone)
+
+
+def published_on_date(item: dict, day: str, cutoff: str | None = None) -> bool:
+    """处理：按上海自然日和冻结上界筛选原文。
+    输入：规范文章、本版日期及可选截止时间。
+    输出：原文属于当日且未晚于冻结时刻时为真，未知日期排除。
+    """
+    stamp = original_publication_time(item)
+    end = normalize_time(cutoff or "", "Asia/Shanghai")
+    return bool(stamp and stamp[:10] == day and (
+        len(stamp) == 10 or not end or len(end) == 10
+        or datetime.fromisoformat(stamp) <= datetime.fromisoformat(end)))
 
 
 def in_window(value: str | None, start: datetime, end: datetime) -> bool:

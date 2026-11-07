@@ -578,6 +578,36 @@ def test_downloaded_body_image_drops_tiny_og_but_keeps_full_size_og(
     assert {image["url"] for image in result[0]["images"]} == {hero, body}
 
 
+@pytest.mark.parametrize("high_fails", [False, True])
+def test_bbc_hd_candidate_does_not_reuse_thumbnail_pixels(monkeypatch, tmp_path, high_fails):
+    article = "https://www.bbc.com/news/articles/story"
+    low = "https://ichef.bbci.co.uk/ace/standard/240/cpsprodpb/live/photo.jpg"
+    high = low.replace("/240/", "/1920/")
+    news = _news()
+    news[0]["sources"][0]["url"] = article
+    news[0]["images"] = [{"url": low, "source_url": article, "local_path": "thumb.png",
+                          "width": 240, "height": 135, "byte_size": 100}]
+    Image.new("RGB", (240, 135), "blue").save(tmp_path / "thumb.png")
+    monkeypatch.setattr("signaltrail.slide_images._read_page", lambda *_: ([], article))
+    calls = []
+
+    def download(rows, *_args, **_kwargs):
+        calls.extend(url for url, _referer in rows)
+        result = (ImageDownloadError("HD unavailable") if high_fails else
+                  DownloadedImage(high, high, "hd.png", "image/png", "hd", 500,
+                                  1600, 900, False))
+        if not high_fails:
+            Image.new("RGB", (1600, 900), "blue").save(tmp_path / "hd.png")
+        return {high: result}
+
+    monkeypatch.setattr("signaltrail.slide_images._download_image_batch", download)
+    enriched, _metrics = enrich_slide_images(news, tmp_path, MediaConfig())
+    assert calls == [high]
+    image = enriched[0]["images"][0]
+    assert image["url"] == (low if high_fails else high)
+    assert (image["width"], image["height"]) == ((240, 135) if high_fails else (1600, 900))
+
+
 def test_existing_small_variant_merges_with_new_large_variant(monkeypatch, tmp_path: Path):
     article = "https://news.example/story"
     small = "https://i.guim.co.uk/abc/photo.jpg?width=140&quality=80"

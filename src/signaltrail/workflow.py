@@ -219,7 +219,15 @@ def get_edition_status(run_path: Path, data_dir: Path) -> dict[str, Any]:
         }
     else:
         evaluation_action = None
-    if slides_artifact.get("status") == "failed" and slides_artifact.get("evidence_gaps"):
+    if slides_artifact.get("no_current_news"):
+        slides.update(status="prepare_failed", error=slides_artifact["error"],
+                      next_action=slides_artifact["next_action"])
+        pending_steps.append("slides_prepare")
+    elif slides_artifact.get("status") == "review_required":
+        slides.update(status="review_required", next_action=slides_artifact["next_action"],
+                      review=slides_artifact["review"])
+        pending_steps.append("slides_review")
+    elif slides_artifact.get("status") == "failed" and slides_artifact.get("evidence_gaps"):
         replacement_ids = sorted(set(exclude_event_ids) | {
             row["event_id"] for row in slides_artifact["evidence_gaps"]
         })
@@ -1244,6 +1252,7 @@ def _adopt_locked_index(
         str(index["edition"]),
         collection_window=run.get("collection_window"),
     )
+    collection_metrics = dict(run.get("artifacts", {}).get("collection_metrics", {}))
     was_published = run.get("status") in {
         RunStatus.COMPLETED,
         RunStatus.COMPLETED_PARTIAL,
@@ -1274,12 +1283,25 @@ def _adopt_locked_index(
     else:
         run.setdefault("artifacts", {})["index_path"] = str(index_path)
         run["artifacts"]["context_path"] = str(context_path)
+    source_rows = index.get("sources", [])
+    status_breakdown: dict[str, int] = {}
+    for row in source_rows:
+        status = str(row.get("status", "unknown"))
+        status_breakdown[status] = status_breakdown.get(status, 0) + 1
+    collection_metrics.update(source_count=len(source_rows),
+                              candidate_count=len(index.get("items", [])),
+                              status_breakdown=status_breakdown)
+    run["artifacts"]["collection_metrics"] = collection_metrics
     _update_run(
         run_path,
         run,
         RunStatus.AWAITING_SELECTION,
         updated_at=now_iso(config.timezone),
         artifacts=run["artifacts"],
+        pending_sources=[row["source_id"] for row in source_rows if row.get("status") in {
+            "failed", "verification_required", "rate_limited", "partial"}],
+        verification_sources=[row["source_id"] for row in source_rows if row.get("status") in {
+            "verification_required", "rate_limited"}],
         next_action=(
             "Create and publish a report revision from the verified-source context."
             if was_published
@@ -1646,6 +1668,10 @@ def prepare_edition(
             }:
                 return run_path
 
+        from .retention import cleanup_collection
+
+        retention = cleanup_collection(data_dir, apply=True)
+        retention.pop("candidate_paths")
         attempt = int(existing.get("attempt", 0)) + 1 if isinstance(existing, dict) else 1
         created_at = now_iso(config.timezone)
         run: dict[str, Any] = {
@@ -1676,6 +1702,7 @@ def prepare_edition(
                 + timedelta(seconds=config.budget.max_runtime_seconds)
             ).isoformat(timespec="seconds"),
             "artifacts": {},
+            "collection_retention": retention,
             "pending_sources": [],
             "error": None,
         }
@@ -1848,6 +1875,7 @@ def enrich_edition(
     headed: bool = False,
     profile_dir: Path | None = None,
     browser_channel: str | None = None,
+    slides_candidates: bool = False,
 ) -> Path:
     """处理：按预算提取正文，并生成新的不可变富化索引修订。
     输入：
@@ -1886,22 +1914,49 @@ def enrich_edition(
         index_path = require_data_root_path(
             Path(run["artifacts"]["index_path"]), data_dir, "Run index"
         )
+        pending = run.get("pending_enrichment")
+        if isinstance(pending, dict) and pending.get("slides_candidates"):
+            slides_candidates = True
+        candidate_receipt = None
+        if slides_candidates and run.get("status") != RunStatus.EXTRACTING_CONTENT:
+            from .collection_diagnostics import content_gaps
+            from .news_slides import review_candidates
+
+            index = read_json_object(index_path, "Run index")
+            indexed = {item["item_id"]: item for item in index["items"]}
+            review = review_candidates(None, index, 50)
+            candidate_ids = list(dict.fromkeys(
+                source["item_id"] for row in [*review["candidates"], *review["reserves"]]
+                for source in row["sources"]
+            ))
+            unknown = set(selected_ids) - indexed.keys()
+            if unknown:
+                raise ValueError("Items missing from canonical index: "
+                                 + ", ".join(sorted(unknown)))
+            queue = list(dict.fromkeys([*selected_ids, *candidate_ids]))
+            source_ids = {source.id for source in [*config.sources, *config.monitor_sources]}
+            selected_ids = [item_id for item_id in queue
+                            if indexed[item_id].get("source_id") in source_ids
+                            and content_gaps(indexed[item_id], data_dir)
+                            and ((indexed[item_id].get("metadata") or {}).get(
+                                "content_completion") or {}).get("status") != "with_gaps"]
+            candidate_receipt = {"candidate_count": len(queue),
+                                 "skipped_count": len(queue) - len(selected_ids)}
         previous_ids = list(run.get("artifacts", {}).get("selected_item_ids", []))
         requested_ids = [
             item_id
             for item_id in dict.fromkeys(selected_ids)
             if item_id not in previous_ids
         ]
-        remaining_budget = max(
-            0, config.budget.max_fulltext_per_run - len(previous_ids)
-        )
-        requested_limit = (
-            config.budget.max_fulltext_per_run if max_items is None else max_items
-        )
+        if candidate_receipt is not None:
+            candidate_receipt["skipped_count"] += len(selected_ids) - len(requested_ids)
+        requested_limit = (100 if slides_candidates else config.budget.max_fulltext_per_run
+                           ) if max_items is None else max_items
+        remaining_budget = (requested_limit if slides_candidates else max(
+            0, config.budget.max_fulltext_per_run - len(previous_ids)))
         if requested_limit < 0:
             raise ValueError("max_items cannot be negative")
         accepted_ids = requested_ids[: min(requested_limit, remaining_budget)]
-        pending = run.get("pending_enrichment")
         if run.get("status") == RunStatus.EXTRACTING_CONTENT:
             if not isinstance(pending, dict):
                 raise RuntimeError(
@@ -1918,6 +1973,7 @@ def enrich_edition(
                 raise ValueError("Enrichment input index changed after checkpoint binding")
             accepted_ids = pending["selected_ids"]
             requested_ids = pending["requested_ids"]
+            candidate_receipt = pending.get("candidate_receipt")
             checkpoint = require_data_root_path(
                 Path(pending["checkpoint_path"]), data_dir, "Content checkpoint"
             )
@@ -1936,6 +1992,8 @@ def enrich_edition(
                     "selected_ids": accepted_ids,
                     "requested_ids": requested_ids,
                     "original_selection": list(dict.fromkeys(selected_ids)),
+                    "candidate_receipt": candidate_receipt,
+                    "slides_candidates": slides_candidates,
                     "checkpoint_path": str((
                         data_dir / "content-checkpoints" / f"{uuid4().hex}.json"
                     ).resolve()),
@@ -1950,9 +2008,12 @@ def enrich_edition(
                     "Resume enrich-edition with this run and the original selection (or no IDs)."
                 ),
             )
+            extraction_config = (replace(config, budget=replace(
+                config.budget, max_fulltext_per_run=len(accepted_ids)))
+                if slides_candidates else config)
             index_path = extract_content(
                 index_path=index_path,
-                config=config,
+                config=extraction_config,
                 data_dir=data_dir,
                 selected_ids=accepted_ids,
                 max_items=len(accepted_ids),
@@ -1988,13 +2049,19 @@ def enrich_edition(
         enrichment = {
             "requested": len(requested_ids),
             "accepted": len(accepted_ids),
-            "hard_cap": config.budget.max_fulltext_per_run,
+            "hard_cap": (requested_limit if slides_candidates
+                         else config.budget.max_fulltext_per_run),
             "global_concurrency": config.browser.global_concurrency,
             "per_domain_concurrency": config.browser.per_domain_concurrency,
             **evidence,
         }
         if content_metrics:
             enrichment["pipeline"] = content_metrics
+        if candidate_receipt is not None:
+            enrichment["slides_candidates"] = {
+                **candidate_receipt, "supplemented_count": len(accepted_ids),
+                "remaining_count": len(requested_ids) - len(accepted_ids),
+            }
         run["artifacts"].update(
             {
                 "index_path": str(index_path),
@@ -2043,7 +2110,9 @@ def _coverage_targets_for_run(
         if isinstance(session, dict):
             values = session.get("coverage_targets")
     if not isinstance(values, dict):
-        return None
+        planned = brief_plan_item_ids_for_run(run, data_dir)
+        return ({source_id: len(item_ids) for source_id, item_ids in planned.items()}
+                if planned is not None else None)
     return {str(key): value for key, value in values.items()}
 
 
@@ -2114,7 +2183,9 @@ def _require_current_context_schema(
 
 
 def _prepare_edition_slides(run: dict, run_path: Path, data_dir: Path,
-                            config: AppConfig | None = None) -> None:
+                            config: AppConfig | None = None, *,
+                            review_explicit: bool = False,
+                            slides_reuse_plan: Path | None = None) -> None:
     """处理：从已保存报告和本轮索引准备默认图文流写作包。
     输入：运行清单、清单路径、数据根及正文提取配置。
     输出：将计划与 packet 路径或准备错误写入运行产物，不调用模型。
@@ -2123,18 +2194,55 @@ def _prepare_edition_slides(run: dict, run_path: Path, data_dir: Path,
     slides_max_news = int(artifacts.get("slides", {}).get("max_news", 50))
     exclude_event_ids = artifacts.get("slides", {}).get("exclude_event_ids", [])
     plan_path = artifacts.get("slides", {}).get("plan_path")
-    reuse_plan = plan_path or artifacts.get("previous_report", {}).get("slides", {}).get(
+    reuse_plan = slides_reuse_plan or plan_path or artifacts.get(
+        "previous_report", {}).get("slides", {}).get(
         "plan_path"
     )
     index_path = Path(str(artifacts["index_path"]))
     previous_slides = artifacts.get("slides", {})
+    review_path = previous_slides.get("review_path")
+    if plan_path and Path(str(plan_path)).is_file():
+        from .narrative_store import file_ref, load_artifact
+
+        try:
+            old = load_artifact(Path(plan_path), data_dir, kind="slides-plan")
+            bound_index = Path(previous_slides.get("index_path") or artifacts["index_path"])
+            matches = (
+                _slides_plan_matches_selection(Path(plan_path), slides_max_news, data_dir,
+                                               exclude_event_ids)
+                and old["parents"].get("report") == file_ref(Path(artifacts["json_path"]), data_dir)
+                and old["parents"].get("index") == file_ref(bound_index, data_dir)
+                and previous_slides.get("source_index_path", str(index_path)) == str(index_path)
+            )
+        except (ValueError, OSError):
+            matches = False
+        if matches and not review_path and slides_reuse_plan is None:
+            return
+        if not matches and not review_explicit:
+            review_path = None
+    if not review_path:
+        from .news_slides import review_candidates
+
+        review = review_candidates(read_json_object(Path(artifacts["json_path"]), "Report"),
+                                   read_json_object(index_path, "Index"), slides_max_news, data_dir)
+        action = (_slides_finalize_retry(run_path, Path(artifacts["json_path"]), data_dir,
+                                         slides_max_news, exclude_event_ids)
+                  + ' --slides-review "REVIEW.json"')
+        artifacts["slides"] = {"status": "review_required", "review": review,
+                               "max_news": slides_max_news, "next_action": action,
+                               "exclude_event_ids": exclude_event_ids}
+        if not review["eligible_count"]:
+            artifacts["slides"].update(status="failed", no_current_news=True,
+                                       error=review["message"], next_action=review["message"])
+        _update_run(run_path, run, RunStatus(run["status"]), artifacts=artifacts)
+        return
     if (previous_slides.get("source_index_path") == str(artifacts["index_path"])
             and previous_slides.get("report_path") == str(artifacts["json_path"])
             and previous_slides.get("index_path")):
         index_path = require_data_root_path(
             Path(previous_slides["index_path"]), data_dir, "Enriched slide index",
         )
-    if reuse_plan:
+    if reuse_plan and slides_reuse_plan is None:
         try:
             from .narrative_store import load_artifact, parent_path
 
@@ -2149,6 +2257,9 @@ def _prepare_edition_slides(run: dict, run_path: Path, data_dir: Path,
     try:
         from .news_slides import SlideEvidenceError, prepare_slides
 
+        decisions = read_json_object(Path(review_path), "Candidate review") if review_path else None
+        if decisions is not None and "selected_event_ids" not in decisions:
+            raise ValueError("Candidate review requires selected_event_ids")
         result = prepare_slides(
             Path(str(artifacts["json_path"])),
             index_path,
@@ -2156,13 +2267,14 @@ def _prepare_edition_slides(run: dict, run_path: Path, data_dir: Path,
             max_news=slides_max_news, exclude_event_ids=exclude_event_ids,
             reuse_plan=Path(str(reuse_plan)) if reuse_plan else None,
             config=config,
-            resume_plan=bool(plan_path),
+            resume_plan=bool(plan_path) and slides_reuse_plan is None,
+            review=decisions,
         )
         artifacts["slides"] = {
             **result, "source_index_path": str(artifacts["index_path"]),
             "report_path": str(artifacts["json_path"]),
             "max_news": slides_max_news, "exclude_event_ids": exclude_event_ids,
-            "status": "prepared",
+            "status": "prepared", "review_path": review_path,
         }
     except Exception as exc:
         artifacts["slides"] = {
@@ -2192,6 +2304,10 @@ def _slides_next_action(run: dict, run_path: Path, data_dir: Path) -> str:
     输出：要求重试准备、完成写作渲染或确认已完成的下一步提示。
     """
     slides = run.get("artifacts", {}).get("slides", {})
+    if slides.get("no_current_news"):
+        return slides["next_action"]
+    if slides.get("status") == "review_required":
+        return slides["next_action"]
     if slides.get("status") == "failed" and slides.get("evidence_gaps"):
         excluded = sorted(set(slides.get("exclude_event_ids", [])) | {
             row["event_id"] for row in slides["evidence_gaps"]
@@ -2251,7 +2367,8 @@ def _slides_plan_matches_selection(plan_path: Path, max_news: int, data_dir: Pat
     from .narrative_store import load_artifact
 
     payload = load_artifact(plan_path, data_dir, kind="slides-plan")["payload"]
-    return (payload.get("selection_policy") == "report-admitted-importance-v1"
+    return (payload.get("selection_policy") in {
+                "report-admitted-importance-v1", "edition-day-reviewed-v1"}
             and payload.get("budget", {}).get("max_news") == max_news
             and payload.get("exclude_event_ids", []) == sorted(set(exclude_event_ids or [])))
 
@@ -2283,6 +2400,8 @@ def finalize_edition(
     evaluate: bool = False,
     slides_max_news: int | None = None,
     slides_exclude_event_ids: list[str] | None = None,
+    slides_review: Path | None = None,
+    slides_reuse_plan: Path | None = None,
     evaluation_backend: str | None = None,
     app_config: AppConfig | None = None,
 ) -> Path:
@@ -2326,6 +2445,9 @@ def finalize_edition(
     lock_timestamp = now_iso(timezone)
     with exclusive_lock(lock_path, _lock_payload(edition, lock_timestamp)):
         run = _reload_locked_run(run_path, run, data_dir)
+        if slides_review is not None:
+            run.setdefault("artifacts", {}).setdefault("slides", {})["review_path"] = str(
+                slides_review.resolve())
         if evaluate or evaluation_backend:
             _update_run(
                 run_path, run, RunStatus(run["status"]),
@@ -2344,7 +2466,9 @@ def finalize_edition(
                     "max_news"
                 ] = slides_max_news
                 run["artifacts"]["slides"]["exclude_event_ids"] = slides_exclude_event_ids
-                _prepare_edition_slides(run, run_path, data_dir, app_config)
+                _prepare_edition_slides(run, run_path, data_dir, app_config,
+                                        review_explicit=slides_review is not None,
+                                        slides_reuse_plan=slides_reuse_plan)
             tail = run.get("tail", {})
             if isinstance(tail, dict) and tail.get("status") in {
                 "pending",
@@ -2475,7 +2599,9 @@ def finalize_edition(
                 "max_news"
             ] = slides_max_news
             run["artifacts"]["slides"]["exclude_event_ids"] = slides_exclude_event_ids
-            _prepare_edition_slides(run, run_path, data_dir, app_config)
+            _prepare_edition_slides(run, run_path, data_dir, app_config,
+                                        review_explicit=slides_review is not None,
+                                        slides_reuse_plan=slides_reuse_plan)
             artifacts = run["artifacts"]
         if defer_tail:
             # HTML 是前台交付物；PDF、Notion 与独立评估作为可重试尾部工作延后。

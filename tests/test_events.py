@@ -10,10 +10,7 @@ import pytest
 from signaltrail.dashboard import create_monitor_server
 from signaltrail.events import (
     get_event,
-    get_research_job,
     list_events,
-    list_research_jobs,
-    save_event_research,
     set_follow,
     sync_monitor_snapshot,
     update_event_articles,
@@ -59,12 +56,10 @@ def _snapshot(
 
 def test_event_retains_history_deduplicates_urls_and_preserves_research(tmp_path):
     sync_monitor_snapshot(tmp_path, _snapshot())
-    save_event_research(tmp_path, "story-one", {"id": "research-one", "status": "complete"})
     sync_monitor_snapshot(tmp_path, _snapshot("new-id", story_id="story-new"))
     detail = get_event(tmp_path, "story-one")
     assert detail["event"]["article_count"] == 1
     assert detail["articles"][0]["item_ids"] == ["new-id", "one"]
-    assert detail["research"][0]["id"] == "research-one"
     sync_monitor_snapshot(
         tmp_path,
         _snapshot("two", "https://example.com/two", "story-other", "Unrelated election result", 2),
@@ -140,11 +135,7 @@ def test_title_continuation_and_follow_filters(tmp_path):
 
 def test_event_http_routes_and_cross_origin_write_rejected(tmp_path):
     sync_monitor_snapshot(tmp_path, _snapshot())
-    job = {"job_id": "job-one", "status": "queued"}
-    research = Mock()
-    research.submit.return_value = job
-    research.get.return_value = job
-    server = create_monitor_server(tmp_path, port=0, quiet=True, research_service=research)
+    server = create_monitor_server(tmp_path, port=0, quiet=True)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     host, port = server.server_address[:2]
@@ -166,14 +157,12 @@ def test_event_http_routes_and_cross_origin_write_rejected(tmp_path):
             response = client.post(
                 "/api/events/story-one/research", json={"question": "What changed?"}
             )
-            assert response.status_code == 202
-            assert response.json()["job"] == job
-            assert client.get("/api/research/job-one").json()["job"] == job
+            assert response.status_code == 404
+            assert client.get("/api/research/job-one").status_code == 404
     finally:
         server.shutdown()
         server.server_close()
         thread.join()
-    research.close.assert_called_once()
 
 
 @pytest.mark.parametrize("headers,length", [
@@ -235,11 +224,6 @@ def test_report_analysis_only_matches_its_evidence_and_jobs_upsert(tmp_path):
         encoding="utf-8",
     )
     assert [row["claim"] for row in get_event(tmp_path, "story-one")["analyses"]] == ["Related"]
-    save_event_research(tmp_path, "story-one", {"job_id": "job-one", "status": "queued"})
-    save_event_research(tmp_path, "story-one", {"job_id": "job-one", "status": "awaiting_model"})
-    assert len(get_event(tmp_path, "story-one")["research"]) == 1
-    assert get_research_job(tmp_path, "job-one")["status"] == "awaiting_model"
-    assert len(list_research_jobs(tmp_path, "awaiting_model")) == 1
     assert list_events(tmp_path, limit=1, offset=1)["events"] == []
 
 
@@ -280,12 +264,9 @@ def test_later_shared_evidence_merges_archives_and_keeps_old_links(tmp_path):
     sync_monitor_snapshot(tmp_path, first)
     sync_monitor_snapshot(tmp_path, second)
     set_follow(tmp_path, "event", "story-two", True)
-    save_event_research(tmp_path, "story-two", {"job_id": "job-two", "status": "awaiting_model"})
     second["items"][0]["title"] = first["items"][0]["title"]
     combined = {**second, "items": first["items"] + second["items"], "clusters": []}
     sync_monitor_snapshot(tmp_path, combined)
     assert list_events(tmp_path)["total"] == 1
     assert get_event(tmp_path, "story-two")["event"]["event_id"] == "story-one"
     assert list_events(tmp_path, following=True)["total"] == 1
-    save_event_research(tmp_path, "story-two", {"job_id": "job-two", "status": "failed"})
-    assert get_research_job(tmp_path, "job-two")["event_id"] == "story-one"

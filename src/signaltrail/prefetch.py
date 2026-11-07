@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import re
+import ssl
 from collections import defaultdict
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlsplit
+from urllib.parse import urljoin, urlsplit
 
 import httpx
 from bs4 import BeautifulSoup, Tag
@@ -16,7 +19,6 @@ from .image_policy import is_placeholder_image_url, srcset_candidates
 from .models import SourceResult, SourceStatus
 from .utils import now_iso
 
-_MAX_HTML_BYTES = 2_000_000
 _USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
     "AppleWebKit/537.36 (KHTML, like Gecko) Edg/131.0 Safari/537.36"
@@ -118,6 +120,33 @@ def _html_index_document(
     return soup, title, rows
 
 
+def _yicai_publication_dates(
+    soup: BeautifulSoup, rows: list[dict[str, Any]], base_url: str,
+) -> None:
+    """处理：按文章 URL 关联 firstlist 的 CreateDate。
+    输入：解析后的页面、已有列表行和页面基准 URL。
+    输出：原地为匹配的列表行添加原始发布时间。
+    """
+    dates = {}
+    for script in soup.find_all("script"):
+        match = re.search(r"\bvar\s+firstlist\s*=\s*", script.string or "")
+        if not match:
+            continue
+        try:
+            records, _ = json.JSONDecoder().raw_decode(script.string[match.end():])
+        except (ValueError, TypeError):
+            continue
+        if not isinstance(records, list):
+            continue
+        for record in records:
+            if isinstance(record, dict) and record.get("url") and record.get("CreateDate"):
+                dates[urljoin(base_url, str(record["url"]))] = str(record["CreateDate"])
+    for row in rows:
+        date = dates.get(urljoin(base_url, row["href"]))
+        if date:
+            row["yicai_create_date"] = date
+
+
 async def _prefetch_one(
     client: httpx.AsyncClient,
     source: SourceConfig,
@@ -138,29 +167,52 @@ async def _prefetch_one(
     """
     collected_at = now_iso(config.timezone)
     domain = urlsplit(url).netloc.lower()
+    first_transport_error = None
     async with domain_limits[domain], global_limit:
-        try:
-            async with client.stream("GET", url) as response:
-                if response.status_code in {401, 403, 429}:
-                    content, truncated = b"", False
-                else:
-                    content, truncated = await read_bounded_response(response, _MAX_HTML_BYTES)
-        except Exception as exc:
-            return SourceResult(
-                source_id=source.id,
-                source_name=source.name,
-                source_url=url,
-                status=SourceStatus.FAILED,
-                collected_at=collected_at,
-                module=source.module,
-                category=source.category,
-                error=f"HTTP prefetch {type(exc).__name__}: {exc}",
-                challenge={"prefetch_error": True},
-            )
+        for attempt in range(1, 3):
+            try:
+                async with client.stream("GET", url) as response:
+                    limit = max(1, config.browser.http_prefetch_max_bytes)
+                    if response.status_code >= 400:
+                        limit = min(limit, 65536)
+                    content, truncated = await read_bounded_response(response, limit)
+                break
+            except Exception as exc:
+                error = f"HTTP prefetch {type(exc).__name__}: {exc}"
+                cause = exc
+                tls_error = False
+                while cause is not None:
+                    if isinstance(cause, ssl.SSLError) or (
+                        "certificate verify failed" in str(cause).lower()
+                    ):
+                        tls_error = True
+                        break
+                    cause = cause.__cause__ or cause.__context__
+                retryable = isinstance(exc, (
+                    httpx.ConnectError, httpx.ConnectTimeout, httpx.ReadError,
+                    httpx.RemoteProtocolError,
+                )) and not tls_error
+                if attempt == 1 and retryable:
+                    first_transport_error = error
+                    continue
+                return SourceResult(
+                    source_id=source.id,
+                    source_name=source.name,
+                    source_url=url,
+                    status=SourceStatus.FAILED,
+                    collected_at=collected_at,
+                    module=source.module,
+                    category=source.category,
+                    error=error,
+                    challenge={"prefetch_error": True, "attempt_count": attempt,
+                               "first_transport_error": first_transport_error},
+                )
 
     encoding = response.encoding or "utf-8"
     body = content.decode(encoding, errors="replace")
     soup, title, rows = _html_index_document(body)
+    if source.id == "yicai_economy":
+        _yicai_publication_dates(soup, rows, str(response.url))
     challenge = classify_access_text(
         response.status_code,
         title,
@@ -170,6 +222,9 @@ async def _prefetch_one(
             'iframe[title*="challenge" i]'
         )),
     )
+    challenge["attempt_count"] = attempt
+    if first_transport_error:
+        challenge["first_transport_error"] = first_transport_error
     if truncated:
         challenge["response_truncated"] = True
     if challenge["rate_limited"]:
@@ -198,7 +253,7 @@ async def _prefetch_one(
         final_url=str(response.url),
         http_status=response.status_code,
         error=(f"HTTP {response.status_code}" if response.status_code >= 400 else
-               f"Response truncated at {_MAX_HTML_BYTES} bytes" if truncated else None),
+               f"Response truncated at {limit} bytes" if truncated else None),
         challenge=challenge,
         items=items,
     )
@@ -282,8 +337,10 @@ def page_needs_browser(result: SourceResult | None) -> bool:
     if result is None:
         return True
     status = SourceStatus(result.status)
-    if status == SourceStatus.RATE_LIMITED or result.challenge.get("response_truncated"):
+    if status == SourceStatus.RATE_LIMITED:
         return False
+    if result.challenge.get("response_truncated"):
+        return True
     if status == SourceStatus.SUCCESS and result.items:
         return False
     return not (

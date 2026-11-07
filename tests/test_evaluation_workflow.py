@@ -361,11 +361,15 @@ def test_finalize_publish_only_schedules_requested_evaluation(
     data_dir = tmp_path / "data"
     report_path = write_json(
         data_dir / "reports" / "2026-07-15" / "morning-r1.json",
-        {"date": "2026-07-15", "edition": "morning"},
+        {"date": "2026-07-15", "edition": "morning", "sections": [{"items": [{
+            "event_id": "event-1", "title": "Policy update", "tldr": "A policy changed.",
+            "importance": 70, "source_refs": [{"item_id": "item-1"}]}]}]},
     )
     index_path = write_json(
         data_dir / "indexes" / "2026-07-15" / "morning-r1.json",
-        {"date": "2026-07-15", "edition": "morning"},
+        {"date": "2026-07-15", "edition": "morning", "items": [{
+            "item_id": "item-1", "title": "Policy update", "url": "https://example.com/1",
+            "published_at": "2026-07-15T01:00:00+08:00"}]},
     )
     run_path = write_json(
         data_dir / "runs" / "2026-07-15" / "morning.json",
@@ -398,6 +402,8 @@ def test_finalize_publish_only_schedules_requested_evaluation(
     )
 
     run = read_json(run_path)
+    assert run["artifacts"]["slides"]["status"] == "review_required"
+    assert run["artifacts"]["slides"]["review"]["eligible_count"] == 1
     assert run["status"] == RunStatus.COMPLETED
     if not evaluate:
         assert run["evaluation"]["status"] == "not_requested"
@@ -417,8 +423,14 @@ def test_finalize_retries_missing_evaluator_schedule_after_completed_publish(
     monkeypatch, tmp_path: Path
 ):
     data_dir = tmp_path / "data"
-    report_path = write_json(data_dir / "reports" / "report.json", {})
-    index_path = write_json(data_dir / "indexes" / "index.json", {})
+    report_path = write_json(data_dir / "reports" / "report.json", {
+        "date": "2026-07-15", "edition": "morning", "sections": [{"items": [{
+            "event_id": "event-1", "title": "Policy update", "tldr": "A policy changed.",
+            "importance": 70, "source_refs": [{"item_id": "item-1"}]}]}]})
+    index_path = write_json(data_dir / "indexes" / "index.json", {
+        "date": "2026-07-15", "edition": "morning", "items": [{
+            "item_id": "item-1", "title": "Policy update", "url": "https://example.com/1",
+            "published_at": "2026-07-15T01:00:00+08:00"}]})
     run_path = write_json(
         data_dir / "runs" / "2026-07-15" / "morning.json",
         {
@@ -447,4 +459,6 @@ def test_finalize_retries_missing_evaluator_schedule_after_completed_publish(
     )
 
     run = read_json(run_path)
+    assert run["artifacts"]["slides"]["status"] == "review_required"
+    assert run["artifacts"]["slides"]["review"]["eligible_count"] == 1
     assert run["evaluation"]["scheduler"]["detail"] == "job-recovered"

@@ -9,6 +9,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+import warnings
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
@@ -30,6 +31,8 @@ PACKAGE_FILES = {
     Path("pyproject.toml"),
     Path("scripts/build_hermes_skill.py"),
     Path("scripts/measure_codex_turn.py"),
+    Path("scripts/run_signaltrail.py"),
+    Path("scripts/build_qwen_worker.py"),
     Path("scripts/install.ps1"),
     Path("scripts/install.sh"),
 }
@@ -283,8 +286,7 @@ def replace_directory_atomically(staging: Path, output_dir: Path) -> None:
     输入：
     - ``staging``：已经完整构建并校验的暂存包目录；成功后原子替换正式输出。
     - ``output_dir``：待创建或替换的发布包目录。
-    输出：不返回新数据；完成“先构建完整暂存目录，再原子替换目标目录”，
-      副作用限于该处理声明的受控对象或产物。
+    输出：新包就位后将旧包移入回收站；回收失败时保留旧包并报告位置。
     """
     backup = output_dir.with_name(f".{SKILL_NAME}.previous")
     if backup.exists():
@@ -302,7 +304,17 @@ def replace_directory_atomically(staging: Path, output_dir: Path) -> None:
             os.replace(backup, output_dir)
         raise
     if moved_previous:
-        shutil.rmtree(backup)
+        try:
+            from send2trash import send2trash
+
+            send2trash(str(backup))
+        except (ImportError, OSError):
+            warnings.warn(
+                f"New package is ready at {output_dir}; previous package remains at {backup} "
+                "because recycling failed",
+                RuntimeWarning,
+                stacklevel=2,
+            )
 
 
 def build_package(

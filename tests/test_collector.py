@@ -88,6 +88,7 @@ def test_verified_merge_rebuilds_source_order_before_context_selects_top15(
             "url": f"https://www.bbc.com/news/articles/old-{rank}",
             "canonical_url": f"https://bbc.com/news/articles/old-{rank}",
             "discovered_at": "2026-07-14T05:50:00+08:00",
+            "published_at": "2026-07-14T05:00:00+08:00",
             "module": "information",
             "category": "international",
             "content_status": "not_fetched",
@@ -136,6 +137,7 @@ def test_verified_merge_rebuilds_source_order_before_context_selects_top15(
         url="https://www.bbc.com/news/articles/verified-top",
         canonical_url="https://bbc.com/news/articles/verified-top",
         discovered_at="2026-07-14T05:55:00+08:00",
+        published_at="2026-07-14T05:30:00+08:00",
         module="information",
         category="international",
     )
@@ -157,7 +159,8 @@ def test_verified_merge_rebuilds_source_order_before_context_selects_top15(
     expected = ["bbc-verified-top", *[f"bbc-old-{rank}" for rank in range(1, 15)]]
     assert [item["item_id"] for item in merged["items"][:15]] == expected
     assert [item["item_id"] for item in merged["sources"][0]["items"][:15]] == expected
-    assert context["brief_plan"][0]["default_item_ids"] == expected
+    assert context["brief_plan"][0]["default_item_ids"] == [
+        "bbc-verified-top", *[f"bbc-old-{rank}" for rank in range(1, 17)]]
 
 
 def test_resume_merge_replaces_a_source_without_moving_its_group(tmp_path: Path):
@@ -521,3 +524,70 @@ def test_live_item_recovers_matching_current_feed_without_changing_rank(monkeypa
                             monitor_result=replace(cache, items=[navigation]), window=window)
     assert result.items[0].description == ""
     assert "feed_content_path" not in result.items[0].metadata
+
+
+def test_all_today_briefs_keep_source_top_and_cross_source_views():
+    from signaltrail.brief_selection import select_brief_items
+
+    rows = [{"item_id": f"a-{number}", "source_id": "a",
+             "canonical_url": f"https://example.com/{number}",
+             "published_at": "2026-11-06" if number > 1 else "2026-11-05",
+             "metadata": {"source_rank": number}} for number in range(1, 27)]
+    rows.append({**rows[1], "item_id": "b-2", "source_id": "b"})
+    selected = select_brief_items(rows, {}, date_value="2026-11-06")
+    assert len(selected) == 26
+    assert selected[0]["metadata"]["source_rank"] == 2
+    assert [row["item_id"] for row in selected][-2:] == ["a-26", "b-2"]
+
+
+def test_publisher_feed_role_discovery_uses_declared_publication_time():
+    from signaltrail.article_time import published_on_date
+
+    publisher = {"source_id": "al_monitor", "published_at": "2026-11-06T10:30:28+08:00",
+                 "metadata": {"role": "discovery", "acquisition_method": "feed",
+                              "feed_url": "https://www.al-monitor.com/rss"}}
+    assert published_on_date(publisher, "2026-11-06", "2026-11-06T11:00:00+08:00")
+    platform = {**publisher, "source_id": "hacker_news"}
+    assert not published_on_date(platform, "2026-11-06")
+    platform["metadata"] = {**platform["metadata"], "content_source": {
+        "published_at": "2026-11-05"}}
+    assert not published_on_date(platform, "2026-11-06")
+
+
+def test_same_publisher_timezone_evidence_recovers_two_real_news_dates():
+    from signaltrail.article_time import original_publication_time, published_on_date
+    from signaltrail.content import _apply_page_publication_time
+
+    defense = {"source_id": "defense_one", "published_at": "2026-11-05T16:45:20",
+               "metadata": {"published_raw": "Thu, 05 Nov 2026 16:45:20 -0500",
+                            "content_source": {"published_at": "2026-11-05T16:45:20"}}}
+    assert original_publication_time(defense) == "2026-11-06T05:45:20+08:00"
+    _apply_page_publication_time(defense, "2026-11-05T16:45:20")
+    assert defense["published_at"] == "2026-11-06T05:45:20+08:00"
+    africa = {"source_id": "africanews", "published_at": "2026-11-06T04:44:46+08:00",
+              "metadata": {"role": "discovery", "acquisition_method": "feed",
+                           "published_raw": "Thu, 05 Nov 2026 20:44:46 +0000",
+                           "content_source": {"published_at": "2026-11-05CET21:44:42+01:00"}}}
+    assert original_publication_time(africa) == "2026-11-06T04:44:46+08:00"
+    _apply_page_publication_time(africa, "2026-11-05CET21:44:42+01:00")
+    assert published_on_date(africa, "2026-11-06")
+    defense["metadata"]["content_source"]["published_at"] = "2026-11-04T16:45:20-05:00"
+    assert not published_on_date(defense, "2026-11-06")
+    defense["metadata"]["content_source"]["published_at"] = "2026-11-04T16:45:20"
+    assert not published_on_date(defense, "2026-11-06")
+
+
+def test_recovered_http_attempt_is_not_a_pending_page():
+    from signaltrail.reporting import _pending_from_index
+
+    page_url = "https://www.bbc.com/news"
+    index = {"sources": [{
+        "source_id": "bbc_world", "source_name": "BBC", "source_url": page_url,
+        "status": "no_items", "page_results": [
+            {"url": page_url, "status": "failed", "error": "timeout",
+             "acquisition_method": "http"},
+            {"url": page_url, "status": "success", "acquisition_method": "browser"},
+        ],
+    }]}
+    assert pending_verification_pages(index) == []
+    assert _pending_from_index(index) == []

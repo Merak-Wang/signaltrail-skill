@@ -21,6 +21,8 @@ def test_page_cache_reuses_pages_after_reorder_and_invalidates_changed_image(mon
     closed_browsers = []
 
     class Voice:
+        execution_mode = "oneshot"
+        runtime = {}
         provider = "cpu"
         fallback_reason = None
         profile = {"name": "test"}
@@ -29,6 +31,9 @@ def test_page_cache_reuses_pages_after_reorder_and_invalidates_changed_image(mon
         generated = hits = page_hits = 0
 
         def __init__(self, *args, **kwargs):
+            pass
+
+        def close(self):
             pass
 
         def page(self, title, brief, destination, **kwargs):

@@ -206,6 +206,10 @@ def _update_continuity_state(
             report_ids = list(previous.get("report_ids", []))
             if report_id not in report_ids:
                 report_ids.append(report_id)
+            # 迟到评估只补充报告关联，保留事件最近一次评估的正文与状态。
+            if str(previous.get("updated_at", "")) > generated_at:
+                previous["report_ids"] = report_ids
+                continue
             events[event_id] = {
                 "event_id": event_id,
                 "module": section["module"],

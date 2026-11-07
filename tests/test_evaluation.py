@@ -95,3 +95,20 @@ def test_featured_order_preserves_section_boundaries_and_old_dossier(monkeypatch
         {"section_id": "section-a", "event_ids": ["a1", "a2"], "importance": [80, 70]},
         {"section_id": "section-b", "event_ids": ["b1", "b2"], "importance": [90, 85]},
     ]
+
+
+def test_featured_evidence_resolves_legacy_references_per_event(monkeypatch, tmp_path):
+    monkeypatch.setattr("signaltrail.evaluation.validate_report_data", lambda *args: ([], []))
+    report = {"report_id": "mixed-evidence", "sections": [{"items": [
+        {"event_id": "a", "source_item_ids": ["item-a"]},
+        {"event_id": "b", "source_refs": [{"item_id": "item-b"}]},
+    ]}]}
+    report_path = write_json(tmp_path / "report.json", report)
+    index_path = write_json(tmp_path / "index.json", {"items": [
+        {"item_id": "item-a", "title": "First evidence"},
+        {"item_id": "item-b", "title": "Second evidence"},
+    ]})
+
+    dossier = read_json(build_evaluation_dossier(report_path, index_path, tmp_path))
+
+    assert [item["item_id"] for item in dossier["index_evidence"]] == ["item-a", "item-b"]

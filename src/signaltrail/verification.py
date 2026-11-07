@@ -15,6 +15,7 @@ from .config import (
     resolve_browser_channel,
     resolve_profile_dir,
 )
+from .models import effective_page_results
 from .storage import write_text_atomic
 from .utils import read_json
 from .workflow import adopt_index_for_run
@@ -77,6 +78,10 @@ def wait_for_visible_verification(
                         "error": f"{type(exc).__name__}: {exc}",
                     }
                 refreshed_status_only.add(source_id)
+                if result.get("rate_limited"):
+                    final_results[source_id] = {**result, "status": "rate_limited", "stopped": True}
+                    completed.add(source_id)
+                    continue
             elif status_only:
                 result["required"] = True
             if not result.get("required"):
@@ -139,7 +144,7 @@ def pending_verification_pages(index: dict) -> list[dict[str, str]]:
         source_id = str(row.get("source_id", ""))
         source_name = str(row.get("source_name", source_id))
         page_rows = []
-        for page in row.get("page_results", []):
+        for page in effective_page_results(row.get("page_results", [])):
             if not isinstance(page, dict):
                 continue
             status = str(page.get("status", ""))

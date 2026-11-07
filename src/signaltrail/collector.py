@@ -11,7 +11,7 @@ from playwright.sync_api import BrowserContext, Page
 
 from .access import CHALLENGE_TEXTS, classify_access_text
 from .adapters import collect_candidates, is_eligible
-from .article_time import in_window, observe_items
+from .article_time import in_window, observe_items, original_publication_time
 from .brief_selection import select_brief_items
 from .browser_collection import collect_browser_pages
 from .config import (
@@ -22,8 +22,7 @@ from .config import (
     source_urls,
 )
 from .content_extraction import is_navigation_only
-from .discovery_selection import select_discovery_items
-from .models import SourceResult, SourceStatus, order_source_items
+from .models import SourceResult, SourceStatus, effective_page_results, order_source_items
 from .monitor import load_monitor_results
 from .prefetch import page_needs_browser, prefetch_browser_pages
 from .storage import next_revision, write_immutable_json
@@ -68,6 +67,19 @@ def _merge_monitor_evidence(item: Any, cached: Any, data_dir: Path) -> Any:
         return item
     metadata = dict(item.metadata)
     description = item.description
+    published_at = item.published_at
+    cached_original = original_publication_time(cached.to_dict())
+    if not original_publication_time(item.to_dict()) and cached_original:
+        published_at = published_at or cached_original
+        for key in ("published_raw", "published_precision", "feed_url"):
+            if cached.metadata.get(key):
+                metadata[key] = cached.metadata[key]
+        if cached.metadata.get("content_source", {}).get("published_at"):
+            metadata["content_source"] = {
+                **metadata.get("content_source", {}),
+                "published_at": cached.metadata["content_source"]["published_at"],
+            }
+        metadata["publication_time_missing"] = False
     if not description and cached.description and not is_navigation_only(cached.description):
         description = cached.description
     path = cached.metadata.get("feed_content_path")
@@ -85,7 +97,7 @@ def _merge_monitor_evidence(item: Any, cached: Any, data_dir: Path) -> Any:
                         metadata[key] = cached.metadata[key]
         except (OSError, ValueError, TypeError, KeyError):
             pass
-    return replace(item, description=description, metadata=metadata)
+    return replace(item, published_at=published_at, description=description, metadata=metadata)
 
 
 def detect_challenge(page: Page, http_status: int | None) -> dict[str, Any]:
@@ -266,24 +278,49 @@ def collect_source(
         and len(monitor_result.items) >= target
     )
     page_results: list[SourceResult] = [monitor_result] if monitor_result else []
+    attempts: list[tuple[SourceResult, str]] = (
+        [(monitor_result, "monitor_cache")] if monitor_result else []
+    )
     urls = [] if monitor_sufficient else source_urls(source, data_dir)
     for url in urls:
-        if browser_results is not None and (source.id, url) in browser_results:
-            page_results.append(browser_results[(source.id, url)])
-            continue
         prefetched = prefetched_pages.get((source.id, url))
+        if prefetched is not None:
+            attempts.append((prefetched, "http"))
         if not page_needs_browser(prefetched):
             page_results.append(prefetched)
             continue
-        if context is None and prefetch_supplied:
-            raise RuntimeError(
-                f"Edge fallback required for source {source.id!r} page {url}, "
-                "but no browser context is available"
+        if browser_results is not None and (source.id, url) in browser_results:
+            browser = browser_results[(source.id, url)]
+        else:
+            if context is None and prefetch_supplied:
+                raise RuntimeError(
+                    f"Edge fallback required for source {source.id!r} page {url}, "
+                    "but no browser context is available"
+                )
+            browser = collect_one(context, replace(source, url=url), config, data_dir)
+        attempts.append((browser, "browser"))
+        # 浏览器优先保留完整排序；HTTP 候选在后续轮询中补足遗漏。
+        if browser.status == SourceStatus.SUCCESS or (
+            browser.status == SourceStatus.NO_ITEMS and not (
+                prefetched and (prefetched.items or prefetched.status in {
+                    SourceStatus.VERIFICATION_REQUIRED, SourceStatus.RATE_LIMITED,
+                })
             )
-        page_results.append(
-            collect_one(context, replace(source, url=url), config, data_dir)
-        )
-    for result in page_results:
+        ):
+            page_results.append(replace(browser, items=browser.items + (
+                prefetched.items if prefetched else []
+            )))
+        elif prefetched and prefetched.items:
+            page_results.append(replace(
+                browser, status=SourceStatus.PARTIAL, items=browser.items + prefetched.items,
+            ))
+        elif prefetched and prefetched.status in {
+            SourceStatus.VERIFICATION_REQUIRED, SourceStatus.RATE_LIMITED,
+        }:
+            page_results.append(prefetched)
+        else:
+            page_results.append(browser)
+    for result in [*page_results, *(attempt for attempt, _ in attempts)]:
         if result.status == SourceStatus.NO_ITEMS and (
             result.error or (result.http_status is not None and result.http_status >= 400)
         ):
@@ -302,7 +339,8 @@ def collect_source(
     seen: set[str] = set()
     items = []
     position = 0
-    collect_all_ranked_candidates = source.item_order == "published_at" or window is not None
+    collect_all_ranked_candidates = (source.collect_all_items
+                                     or source.item_order == "published_at" or window is not None)
     while collect_all_ranked_candidates or len(items) < source.max_items:
         added = False
         for result in ranked_results:
@@ -342,7 +380,8 @@ def collect_source(
             item.published_at, datetime.min.replace(tzinfo=window[1].tzinfo), window[1],
         )]
         items.sort(key=lambda item: not _within_window(item, *window))
-    items = items[: source.max_items]
+    if not source.collect_all_items:
+        items = items[: source.max_items]
     statuses = {result.status for result in page_results}
     if items and statuses <= {SourceStatus.SUCCESS, SourceStatus.NO_ITEMS}:
         status = SourceStatus.SUCCESS
@@ -374,13 +413,9 @@ def collect_source(
                 "error": result.error,
                 "challenge": result.challenge,
                 "items_count": len(result.items),
-                "acquisition_method": (
-                    "monitor_cache"
-                    if result.challenge.get("monitor_cache")
-                    else "browser_or_http"
-                ),
+                "acquisition_method": method,
             }
-            for result in page_results
+            for result, method in attempts
         ],
         items=items,
     )
@@ -432,7 +467,7 @@ def collect_sources(
     date_value = date_value or today_str(config.timezone)
     selected = [
         source
-        for source in config.sources
+        for source in config.report_sources
         if source.enabled and (not only_source_ids or source.id in only_source_ids)
     ]
     unknown_ids = (only_source_ids or set()) - {source.id for source in selected}
@@ -442,12 +477,9 @@ def collect_sources(
     profile = resolve_profile_dir(config, profile_dir)
     profile.mkdir(parents=True, exist_ok=True)
     channel = resolve_browser_channel(config, browser_channel)
-    discovery_sources = [
-        source for source in config.monitor_sources if source.enabled
-    ] if not only_source_ids and config.collection.discovery_brief_limit else []
     monitor_results = load_monitor_results(
         data_dir,
-        [*selected, *discovery_sources],
+        selected,
         config.timezone,
         config.monitor.snapshot_max_age_minutes,
     )
@@ -487,24 +519,17 @@ def collect_sources(
         )
         for source in selected
     ]
-    core_items = [item for result in results for item in result.items]
-    core_brief_ids = {item["item_id"] for item in select_brief_items(
-        [item.to_dict() for item in core_items], {source.id: source for source in selected},
-    )}
-    allocations = select_discovery_items(
-        monitor_results, discovery_sources,
-        [item for item in core_items if item.item_id in core_brief_ids],
-        limit=config.collection.discovery_brief_limit, start=start, end=end,
-    )
-    allocated_sources = []
-    for source in discovery_sources:
-        items = allocations.get(source.id)
-        if items:
-            results.append(replace(monitor_results[source.id], items=items))
-            allocated_sources.append(replace(
-                source, report_target=len(items), report_max=len(items),
-            ))
+    # 当前自然日的原文保留本源Top；旧文、未知日期和平台上榜时间不占日报位置。
+    source_configs = {source.id: source for source in selected}
+    for result in results:
+        ids = {item["item_id"] for item in select_brief_items(
+            [item.to_dict() for item in result.items], source_configs,
+            date_value=date_value, cutoff=end.isoformat())}
+        result.items = [item for item in result.items if item.item_id in ids]
+        if not result.items and result.status == SourceStatus.SUCCESS:
+            result.status = SourceStatus.NO_ITEMS
 
+    counts = {result.source_id: len(result.items) for result in results}
     return write_results_index(
         results,
         data_dir,
@@ -513,8 +538,10 @@ def collect_sources(
         profile,
         source_policies={
             source.id: {
-                "report_target": source.report_target,
-                "report_max": source.report_max,
+                "report_target": counts[source.id],
+                "report_max": counts[source.id],
+                "configured_report_target": source.report_target,
+                "configured_report_max": source.report_max,
                 "role": source.role,
                 "tier": source.tier,
                 "bundle": source.bundle,
@@ -524,9 +551,9 @@ def collect_sources(
                 **source.origin_metadata,
                 "module": source.module,
                 "category": source.category,
-                **({"selection_scope": "discovery_shared"} if source.id in allocations else {}),
+                "selection_scope": "all_today",
             }
-            for source in [*selected, *allocated_sources]
+            for source in selected
         },
         revision=revision,
         temporary=temporary,
@@ -804,11 +831,12 @@ def merge_verified_results(
                 )
             ):
                 page["status"] = "failed"
+        effective_pages = effective_page_results(page_results)
         updated["error"] = (
-            "; ".join(str(page["error"]) for page in page_results if page.get("error"))
+            "; ".join(str(page["error"]) for page in effective_pages if page.get("error"))
             or None
         )
-        statuses = {str(page.get("status")) for page in page_results}
+        statuses = {str(page.get("status")) for page in effective_pages}
         if nested_items and statuses <= {"success", "no_items"}:
             updated["status"] = SourceStatus.SUCCESS
         elif nested_items:

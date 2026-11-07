@@ -89,19 +89,20 @@ def test_coverage_uses_root_current_items_and_does_not_invent_independence():
 
 def test_context_exposes_gap_plan_without_reordering_or_expanding_candidates(tmp_path):
     config = load_config()
-    config.sources = config.sources[:1]
+    config.sources = [config.source_by_id("bbc_world")]
     source = config.sources[0]
     index = {"date": "2026-09-11", "edition": "morning", "items": [
         {"item_id": f"id-{i}", "source_id": source.id, "title": f"Title {i}",
+         "published_at": "2026-09-11T07:00:00+08:00",
          "url": f"https://example.org/article/{i}"}
         for i in range(30)
     ], "sources": [{"source_id": source.id, "status": "success"}]}
     path = write_json(tmp_path / "index.json", index)
     result = read_json(build_context(path, config, tmp_path, "morning"))
-    assert [row["item_id"] for row in result["candidate_items"]] == [f"id-{i}" for i in range(25)]
-    assert result["brief_plan"][0]["default_item_ids"] == [f"id-{i}" for i in range(15)]
+    assert [row["item_id"] for row in result["candidate_items"]] == [f"id-{i}" for i in range(30)]
+    assert result["brief_plan"][0]["default_item_ids"] == [f"id-{i}" for i in range(30)]
     assert len(result["enrichment_plan"]["actions"]) == 12
-    assert result["enrichment_plan"]["deferred_count"] == 13
+    assert result["enrichment_plan"]["deferred_count"] == 18
     assert result["collection_coverage"]["cells"][0]["item_count"] == 30
 
 
@@ -124,8 +125,9 @@ def test_plan_does_not_repeat_exhausted_or_blocked_preserved_partial_content(tmp
 def test_quality_limits_reach_brief_and_analysis_inputs(tmp_path):
     from signaltrail.authoring import _analysis_candidates
 
-    source = load_config().sources[0]
+    source = load_config().source_by_id("bbc_world")
     item = {"item_id": "story", "source_id": source.id, "title": "Service update",
+            "published_at": "2026-09-11T07:00:00+08:00",
             "metadata": {"content_quality": {
                 "extraction_status": "partial", "numeric_tables_without_headers": ["block-3"],
                 "response_truncated": True, "key_fields_verified": None,

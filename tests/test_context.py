@@ -104,6 +104,7 @@ def test_enriched_rank_below_prefix_is_retained_without_changing_top_plan(tmp_pa
     items = [{
         "item_id": f"bbc-{n}", "source_id": "bbc_world", "title": f"Public headline {n}",
         "url": f"https://www.bbc.com/news/articles/{n}", "metadata": {"source_rank": n},
+        "published_at": "2026-09-12T07:00:00+08:00",
         "content_status": "full_text" if n == 29 else "not_fetched",
     } for n in range(1, 36)]
     index_path = write_json(tmp_path / "indexes" / "2026-09-12" / "morning-r1.json", {
@@ -111,9 +112,9 @@ def test_enriched_rank_below_prefix_is_retained_without_changing_top_plan(tmp_pa
     })
     context = read_json(build_context(index_path, load_config(), tmp_path, "morning"))
     ids = [item["item_id"] for item in context["candidate_items"]]
-    assert ids[-1] == "bbc-29"
-    assert len(ids) == 26
-    assert context["brief_plan"][0]["default_item_ids"] == [f"bbc-{n}" for n in range(1, 16)]
+    assert ids[-1] == "bbc-35"
+    assert len(ids) == 35
+    assert context["brief_plan"][0]["default_item_ids"] == [f"bbc-{n}" for n in range(1, 36)]
 
 
 def test_context_recovery_skips_revision_with_orphaned_immutable_packet(monkeypatch, tmp_path):
@@ -121,6 +122,7 @@ def test_context_recovery_skips_revision_with_orphaned_immutable_packet(monkeypa
         "date": "2026-09-12", "edition": "morning", "items": [{
             "item_id": "bbc-1", "source_id": "bbc_world", "title": "Public source headline",
             "url": "https://www.bbc.com/news/articles/one", "metadata": {},
+            "published_at": "2026-09-12T07:00:00+08:00",
         }],
     })
     immutable = context_module.write_immutable_json
@@ -194,7 +196,7 @@ def test_evening_context_loads_morning_and_continuity_state(tmp_path: Path):
     assert "candidate_index" not in context
 
 
-def test_context_caps_candidates_and_rejects_contaminated_history(tmp_path: Path):
+def test_context_keeps_all_today_candidates_and_rejects_contaminated_history(tmp_path: Path):
     data_dir = tmp_path / "data"
     report = {
         "report_id": "bad-report",
@@ -217,6 +219,7 @@ def test_context_caps_candidates_and_rejects_contaminated_history(tmp_path: Path
             "title": f"新闻标题 {position}",
             "url": f"https://www.bbc.com/news/articles/{position}",
             "discovered_at": f"2026-07-14T{position % 24:02d}:00:00+08:00",
+            "published_at": "2026-07-14T07:00:00+08:00",
         }
         for position in range(30)
     ]
@@ -227,22 +230,22 @@ def test_context_caps_candidates_and_rejects_contaminated_history(tmp_path: Path
 
     context = read_json(build_context(index_path, load_config(), data_dir, "morning"))
 
-    assert len(context["candidate_items"]) == 25
+    assert len(context["candidate_items"]) == 30
     batch = context["brief_authoring_batches"][0]
     assert batch["batch_id"] == "brief-batch-1"
     assert batch["source_ids"] == ["bbc_world"]
-    assert batch["candidate_count"] == 15
-    assert batch["author_item_count"] == 15
+    assert batch["candidate_count"] == 30
+    assert batch["author_item_count"] == 30
     assert Path(batch["packet_path"]).is_file()
     assert context["brief_plan"] == [
         {
             "source_id": "bbc_world",
             "section_id": "information.international",
             "batch_id": "brief-batch-1",
-            "target_count": 15,
-            "default_item_ids": [f"item-{position}" for position in range(15)],
+            "target_count": 30,
+            "default_item_ids": [f"item-{position}" for position in range(30)],
             "reuse_item_ids": [],
-            "author_item_ids": [f"item-{position}" for position in range(15)],
+            "author_item_ids": [f"item-{position}" for position in range(30)],
         }
     ]
     prior = context["continuity_reports"][0]
@@ -294,6 +297,7 @@ def test_context_keeps_index_top_order_even_when_a_lower_item_is_enriched(tmp_pa
             "title": f"BBC headline {position} with enough detail",
             "url": f"https://www.bbc.com/news/articles/{position}",
             "discovered_at": f"2026-07-16T{position % 24:02d}:00:00+08:00",
+            "published_at": "2026-07-16T07:00:00+08:00",
             "content_status": "not_fetched",
             "metadata": {"source_rank": position + 1},
         }
@@ -303,7 +307,7 @@ def test_context_keeps_index_top_order_even_when_a_lower_item_is_enriched(tmp_pa
         {
             "content_status": "full_text",
             "content_path": "content/bbc-19.md",
-            "published_at": None,
+            "published_at": "2026-07-16T07:00:00+08:00",
         }
     )
     index_path = write_json(
@@ -323,9 +327,9 @@ def test_context_keeps_index_top_order_even_when_a_lower_item_is_enriched(tmp_pa
     assert context["candidate_items"][19]["item_id"] == "bbc-19"
     assert context["candidate_items"][19]["content_status"] == "full_text"
     assert context["brief_plan"][0]["default_item_ids"][0] == "bbc-0"
-    assert context["brief_plan"][0]["default_item_ids"][-1] == "bbc-14"
-    assert "bbc-19" not in context["brief_plan"][0]["default_item_ids"]
-    assert context["brief_plan"][0]["target_count"] == 15
+    assert context["brief_plan"][0]["default_item_ids"][-1] == "bbc-29"
+    assert "bbc-19" in context["brief_plan"][0]["default_item_ids"]
+    assert context["brief_plan"][0]["target_count"] == 30
     assert "title_zh" in context["brief_authoring_rule"]
     assert "three concurrent harness workers" in context["brief_authoring_rule"]
     assert "may process the packets serially" in context["brief_authoring_rule"]
@@ -421,10 +425,12 @@ def test_context_splits_all_formal_top15_work_into_bounded_authoring_waves(
             "url": f"https://example.com/{source.id}/{rank}",
             "canonical_url": f"https://example.com/{source.id}/{rank}",
             "discovered_at": "2026-07-16T05:50:00+08:00",
+            "published_at": "2026-07-16T05:00:00+08:00",
             "module": source.module,
             "category": source.category,
             "content_status": "not_fetched",
-            "metadata": {"source_rank": rank},
+            "metadata": {"source_rank": rank, "content_source": {
+                "published_at": "2026-07-16T05:00:00+08:00"}},
         }
         for source in config.sources
         for rank in range(1, 16)
@@ -466,7 +472,7 @@ def test_context_splits_all_formal_top15_work_into_bounded_authoring_waves(
     assert max(batch["author_item_count"] for batch in batches) == 45
 
 
-def test_context_preserves_published_at_order_already_written_to_index(tmp_path: Path):
+def test_context_restores_source_top_order_from_published_at_index(tmp_path: Path):
     data_dir = tmp_path / "data"
     items = [
         {
@@ -485,7 +491,7 @@ def test_context_preserves_published_at_order_already_written_to_index(tmp_path:
             "source_name": "BBC",
             "title": "Older item ranked first on the source page",
             "url": "https://www.bbc.com/news/articles/older",
-            "published_at": "2026-07-15T09:00:00+08:00",
+            "published_at": "2026-07-16T08:00:00+08:00",
             "content_status": "not_fetched",
             "metadata": {"source_rank": 1},
         },
@@ -510,10 +516,10 @@ def test_context_preserves_published_at_order_already_written_to_index(tmp_path:
     context = read_json(build_context(index_path, load_config(), data_dir, "evening"))
 
     assert context["brief_plan"][0]["default_item_ids"] == [
-        "bbc-newer",
         "bbc-older",
+        "bbc-newer",
     ]
-    assert [item["source_rank"] for item in context["candidate_items"]] == [2, 1]
+    assert [item["source_rank"] for item in context["candidate_items"]] == [1, 2]
 
 
 @pytest.mark.parametrize("same_evidence", [True, False])
@@ -547,7 +553,7 @@ def test_shared_brief_evidence_keeps_source_plan_and_receipt_dependencies(tmp_pa
     plan = context_module._build_brief_plan(candidates, sources, batches, {}, aliases)
     assert sum(len(row["author_item_ids"]) for row in plan) == (1 if same_evidence else 2)
     assert {row["source_id"]: row["default_item_ids"] for row in plan} == {
-        "huggingface_papers": ["a"], "papers_with_code": [] if same_evidence else ["b"]}
+        "huggingface_papers": ["a"], "papers_with_code": ["b"]}
     receipt = tmp_path / "accepted.json"
     write_json(receipt, {"briefs": [
         {"item_id": item["item_id"], "title_zh": "研究论文", "tldr": "论文提出具体研究方法。",
@@ -558,8 +564,8 @@ def test_shared_brief_evidence_keeps_source_plan_and_receipt_dependencies(tmp_pa
     session = {"batches": [{"batch_id": batches[0]["batch_id"], "result_path": str(receipt)}]}
     sections, missing, targets = _merge_briefs(context, session, allow_degraded=False)
     briefs = [brief for section in sections for brief in section["briefs"]]
-    assert {brief["item_id"] for brief in briefs} == ({"a"} if same_evidence else {"a", "b"})
-    assert targets == {"huggingface_papers": 1, "papers_with_code": 0 if same_evidence else 1}
+    assert {brief["item_id"] for brief in briefs} == {"a", "b"}
+    assert targets == {"huggingface_papers": 1, "papers_with_code": 1}
     assert not missing
     if same_evidence:
         legacy = {**context, "brief_plan": sorted(
@@ -567,8 +573,8 @@ def test_shared_brief_evidence_keeps_source_plan_and_receipt_dependencies(tmp_pa
         )}
         legacy["brief_plan"][1].update(default_item_ids=["b"], target_count=1)
         merged, _, old_targets = _merge_briefs(legacy, session, allow_degraded=False)
-        assert [b["item_id"] for row in merged for b in row["briefs"]] == ["a"]
-        assert old_targets["papers_with_code"] == 0
+        assert [b["item_id"] for row in merged for b in row["briefs"]] == ["a", "b"]
+        assert old_targets["papers_with_code"] == 1
     session["batches"][0]["result_path"] = str(tmp_path / "missing.json")
     sections, missing, targets = _merge_briefs(context, session, allow_degraded=True)
     assert missing == [batches[0]["batch_id"]]
@@ -587,6 +593,7 @@ def test_stored_feed_evidence_reaches_brief_and_analysis_without_fetching(tmp_pa
     item = {
         "item_id": "feed-evidence", "source_id": "bbc_world", "title": "Provider report",
         "url": "https://bbc.example/story", "description": text[:600],
+        "published_at": "2026-09-12T07:00:00+08:00",
         "content_status": "not_fetched", "module": "information", "category": "international",
         "metadata": reference,
     }
@@ -639,7 +646,7 @@ def test_stored_feed_evidence_reaches_brief_and_analysis_without_fetching(tmp_pa
     assert not list((tmp_path / "content").rglob("*.md"))
 
 
-def test_unique_brief_slots_refill_within_source_beyond_context_cap():
+def test_each_source_keeps_all_own_positions_beyond_context_cap():
     from types import SimpleNamespace
 
     from signaltrail.brief_selection import select_brief_items
@@ -656,7 +663,7 @@ def test_unique_brief_slots_refill_within_source_beyond_context_cap():
                                  selection_reason="research_rank_rise", suggested_status="WATCH")
     selected = select_brief_items(items, sources)
     ids = {item["item_id"] for item in selected}
-    assert ids == {"a-1", "a-2", "b-3", "b-4"}
+    assert ids == {"a-1", "a-2", "b-1", "b-2", "b-3", "b-4"}
     compact = context_module._compact_candidates(
         {"items": items}, 2, {"a": 2, "b": 2}, set(), ids,
     )
@@ -666,7 +673,7 @@ def test_unique_brief_slots_refill_within_source_beyond_context_cap():
         compact, sources, context_module._balanced_source_batches(authors),
     )
     assert {row["source_id"]: row["default_item_ids"] for row in plan} == {
-        "a": ["a-1", "a-2"], "b": ["b-3", "b-4"],
+        "a": ["a-1", "a-2"], "b": ["b-1", "b-2", "b-3", "b-4"],
     }
     signal = next(item for item in compact if item["item_id"] == "b-4")
     assert signal["discovery_signal"] == "rank_rise"
@@ -674,3 +681,43 @@ def test_unique_brief_slots_refill_within_source_beyond_context_cap():
     assert next(row for row in plan if row["source_id"] == "b")["item_signals"]["b-4"][
         "suggested_status"] == "WATCH"
     assert len(items) == 6
+
+
+def test_brief_packets_split_on_complete_evidence_without_changing_order(tmp_path):
+    from signaltrail.authoring import brief_authoring_input
+    from signaltrail.context import _write_brief_authoring_packets
+
+    context_dir = tmp_path / "context/2026-11-06"
+    context_dir.mkdir(parents=True)
+    candidates = []
+    for index, length in enumerate((60000, 60000, 140000)):
+        path = tmp_path / f"body-{index}.md"
+        path.write_text("x" * length, encoding="utf-8")
+        candidates.append({"item_id": f"item-{index}", "source_id": "source",
+                           "title": "Title", "content_path": str(path),
+                           "content_status": "full_text"})
+    ids = [row["item_id"] for row in candidates]
+    packets = _write_brief_authoring_packets(
+        candidates, [{"source_id": "source", "author_item_ids": ids}],
+        [{"batch_id": "brief-batch-1", "source_ids": ["source"]}],
+        context_dir, "daily-r1", "daily", "zh-CN", "2026-11-06", None)
+    assert [row for packet in packets for row in packet["author_item_ids"]] == ids
+    assert len(packets) == 3
+    for index, packet in enumerate(packets):
+        loaded = read_json(Path(packet["packet_path"]))
+        assert loaded["input_projection"]["single_item_over_budget"] == (index == 2)
+        projected = brief_authoring_input(Path(packet["packet_path"]), tmp_path,
+                                          include_evidence=True)
+        assert projected["evidence_by_item_id"][ids[index]]["text"] == "x" * (
+            140000 if index == 2 else 60000)
+        assert loaded["batch_id"] in loaded["submission_command"]
+
+
+def test_same_canonical_article_uses_richest_evidence_once_across_source_positions():
+    candidates = [
+        {"item_id": "a", "source_id": "first", "url": "https://example.org/article",
+         "description": "short", "semantic_fingerprint": "first"},
+        {"item_id": "b", "source_id": "second", "url": "https://example.org/article",
+         "description": "richer context", "content_status": "full_text",
+         "semantic_fingerprint": "second"}]
+    assert context_module._brief_aliases(candidates, {"a": {}}) == {"a": "b"}

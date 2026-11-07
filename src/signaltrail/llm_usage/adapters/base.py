@@ -3,7 +3,6 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Iterable, Mapping
-from dataclasses import replace
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, Protocol
@@ -15,7 +14,6 @@ from ..models import (
     ObservationQuality,
     TokenRelation,
     TokenUsage,
-    UsageObservation,
     exact,
     safe_label,
     unknown_cost,
@@ -627,18 +625,6 @@ def safe_observation_labels(payload: Mapping[str, Any]) -> dict[str, str | None]
             )
         ),
     }
-
-
-def replace_observation_tokens(
-    observation: UsageObservation,
-    tokens: TokenUsage,
-) -> UsageObservation:
-    """处理：为累计日志 observation 替换成确定性 delta token。
-    输入：已规范化 observation 和同语义关系的增量 TokenUsage。
-    输出：除 tokens 外字段保持不变的新 UsageObservation。
-    """
-
-    return replace(observation, tokens=tokens)
 
 
 def _detect_cached_relation(usage: Mapping[str, Any]) -> TokenRelation:

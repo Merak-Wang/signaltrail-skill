@@ -1,12 +1,13 @@
 from __future__ import annotations
 
-from dataclasses import replace
+import json
 from hashlib import sha256
 from math import ceil
 from pathlib import Path
 from typing import Any
 
 from .authoring import (
+    _brief_local_evidence,
     _brief_output_schema,
     _project_analysis_state,
     _project_continuity_reports,
@@ -32,7 +33,7 @@ from .semantics import (
     semantic_fingerprint,
 )
 from .storage import next_revision, write_immutable_json
-from .utils import now_iso, read_json, write_json
+from .utils import canonicalize_url, now_iso, read_json, write_json
 
 _CANDIDATE_FIELDS = (
     "item_id",
@@ -255,13 +256,13 @@ def _compact_candidates(
     reported_item_ids: set[str],
     selected_item_ids: set[str] | None = None,
 ) -> list[dict[str, Any]]:
-    """处理：按来源限额、当前索引顺序和报告历史压缩索引候选。
+    """处理：压缩来源元数据并保留所有当日选中条目和原有排名。
     输入：
     - ``index``：当前来源索引对象；包含规范条目、来源结果、策略和采集时间。
     - ``per_source``：每个来源允许进入情境包的默认候选数量。
     - ``report_targets``：按来源 ID 记录的报告目标数；用于平衡情境候选。
     - ``reported_item_ids``：历史报告已经使用的条目 ID；用于标记连续报道和避免重复。
-    输出：“按来源限额、当前索引顺序和报告历史压缩索引候选”得到的有序结构化记录；
+    输出：用于写作和连续性判断的有序候选；
       典型字段包括 previously_reported、semantic_fingerprint、source_candidate_rank、source_lang
       uage、source_rank，可直接交给下一阶段。
     """
@@ -287,7 +288,7 @@ def _compact_candidates(
             )
 
         # 采集层已经按当前来源的 item_order 写好 index；这里必须保留该顺序，
-        # 否则正文状态或发布时间会把 brief_plan 从 Top1–15 改成另一组条目。
+        # 否则正文状态或发布时间会把 brief_plan 从原 Top 顺序改成另一组条目。
         base_limit = min(per_source, max(5, report_targets.get(source_id, 5) * 2))
         for rank, (item, source_rank) in enumerate(ranked_items, start=1):
             metadata = item.get("metadata") or {}
@@ -351,35 +352,17 @@ def _content_observations(item: dict[str, Any]) -> dict[str, Any]:
     }}
 
 
-def _source_limit(
-    source_configs: dict[str, Any],
-    source_id: object,
-    field: str,
-    default: int,
-) -> int:
-    """处理：读取来源级整数限额，异常或缺失时采用默认值。
-    输入：
-    - ``source_configs``：按来源 ID 索引的来源配置，用于读取配额和策略。
-    - ``source_id``：来源的稳定 ID；用于配置查找、索引关联和状态分区。
-    - ``field``：来源配置中待读取的配额字段名，例如 report_target 或 report_max。
-    - ``default``：配置字段缺失或非法时采用的受控默认值。
-    输出：上述规则计算出的计数、分数、排名或限制值，供确定性决策使用。
-    """
-    source = source_configs.get(str(source_id))
-    return int(getattr(source, field, default))
-
-
 def _planned_authoring_candidates(
     candidates: list[dict[str, Any]],
     source_configs: dict[str, Any],
     reusable_briefs: dict[str, dict[str, Any]],
 ) -> list[dict[str, Any]]:
-    """处理：只保留本轮地址唯一且尚无可复用语义的实际简报候选。
+    """处理：保留每源地址唯一且尚无可复用语义的实际简报候选。
     输入：
     - ``candidates``：按当前 index 顺序压缩后的逐来源候选。
     - ``source_configs``：来源配置映射；提供统一目标、上限和兼容默认值。
     - ``reusable_briefs``：已通过指纹、语言和独立评估门槛的计划内缓存候选。
-    输出：需要交给模型写作的有序候选；Top15 之外的上下文备用项不会虚增批次负载。
+    输出：需要交给模型写作的有序候选；本期已选条目保持原来源 Top 顺序。
     """
     return [item for item in select_brief_items(candidates, source_configs)
             if str(item.get("item_id") or "") not in reusable_briefs]
@@ -389,21 +372,25 @@ def _brief_aliases(
     candidates: list[dict[str, Any]],
     reusable_briefs: dict[str, dict[str, Any]],
 ) -> dict[str, str]:
-    """处理：将计划内相同证据指向一个写作者，优先采用已批准缓存。
-    输入：有序计划候选和已经批准的缓存简报；按现有语义证据指纹分组。
-    输出：目标条目到代表条目的映射；只对已去重计划内候选建立语义复用关系。
+    """处理：同一原文仅选一个写作者，优先正文完整且材料丰富的候选。
+    输入：有序计划候选和已批准缓存；按规范原文地址分组，无地址时用证据指纹。
+    输出：各来源条目到写作代表的映射，各来源展示位置继续保留。
     """
-    groups: dict[str, list[str]] = {}
+    groups: dict[str, list[dict[str, Any]]] = {}
     for item in candidates:
-        fingerprint = str(item["semantic_fingerprint"])
-        groups.setdefault(fingerprint, []).append(str(item["item_id"]))
+        url = canonicalize_url(str(item.get("canonical_url") or item.get("url") or ""))
+        key = "url:" + url if url else "evidence:" + str(item["semantic_fingerprint"])
+        groups.setdefault(key, []).append(item)
     aliases = {}
-    for item_ids in groups.values():
-        representative = next(
-            (item_id for item_id in item_ids if item_id in reusable_briefs), item_ids[0]
-        )
-        aliases.update({item_id: representative for item_id in item_ids
-                        if item_id != representative})
+    for items in groups.values():
+        representative = max(items, key=lambda item: (
+            {"full_text": 3, "partial": 2}.get(item.get("content_status"),
+                1 if item.get("feed_content_path") else 0),
+            int(item.get("feed_content_characters") or len(item.get("description") or "")),
+            item["item_id"] in reusable_briefs,
+        ))["item_id"]
+        aliases.update({item["item_id"]: representative for item in items
+                        if item["item_id"] != representative})
     return aliases
 
 
@@ -412,12 +399,12 @@ def _balanced_source_batches(
     maximum_batches: int = 12,
     target_items_per_batch: int = 45,
 ) -> list[dict[str, Any]]:
-    """处理：按来源完整分组并把大规模 Top15 写作负载均衡到有界批次。
+    """处理：按来源完整分组并把大规模当日新闻 写作负载均衡到有界批次。
     输入：
     - ``candidates``：仅包含本轮计划内、确实需要模型写作的候选记录。
     - ``maximum_batches``：允许创建的批次数上限；默认 12，供三并发空槽补位执行。
     - ``target_items_per_batch``：希望单个模型 packet 承担的条目数，用于动态决定批次数。
-    输出：“按来源完整分组并把大规模 Top15 写作负载均衡到有界批次”得到的有序结构化记录；
+    输出：“按来源完整分组并把大规模当日新闻 写作负载均衡到有界批次”得到的有序结构化记录；
       典型字段包括 batch_id、candidate_count、source_ids，可直接交给下一阶段。
     """
     counts: dict[str, int] = {}
@@ -456,7 +443,7 @@ def _build_brief_plan(
     reusable_briefs: dict[str, dict[str, Any]] | None = None,
     aliases: dict[str, str] | None = None,
 ) -> list[dict[str, Any]]:
-    """处理：结合来源目标、复用结果和批次分配生成逐条写作计划。
+    """处理：按每源当日实际条目、复用结果和批次分配生成写作计划。
     输入：
     - ``candidates``：情境阶段筛选出的候选记录；每项含条目身份、来源、证据、正文和语义缓存。
     - ``source_configs``：按来源 ID 索引的来源配置，用于读取配额和策略。
@@ -479,16 +466,7 @@ def _build_brief_plan(
     plan: list[dict[str, Any]] = []
     for source_id, items in grouped.items():
         source = source_configs.get(source_id)
-        target = min(
-            len(items),
-            int(getattr(source, "report_target", 15)),
-            int(getattr(source, "report_max", 15)),
-            15,
-        )
-        requested = min(int(getattr(source, "report_target", 15)),
-                        int(getattr(source, "report_max", 15)), 15)
-        if requested <= 0:
-            continue
+        target = len(items)
         default_item_ids = [str(item["item_id"]) for item in items[:target]]
         reuse_item_ids = [
             item_id for item_id in default_item_ids if item_id in reusable_briefs
@@ -502,7 +480,6 @@ def _build_brief_plan(
                 "section_id": f"{module}.{category}",
                 "batch_id": batch_by_source.get(source_id),
                 "target_count": target,
-                **({"shortfall_count": requested - target} if target < requested else {}),
                 "default_item_ids": default_item_ids,
                 **({"item_signals": {str(item["item_id"]): {
                     key: item[key] for key in ("discovery_signal", "signal_at",
@@ -519,7 +496,43 @@ def _build_brief_plan(
                 ],
             }
         )
-    return sorted(plan, key=lambda row: (str(row["batch_id"]), str(row["source_id"])))
+    return plan
+
+
+def _brief_input_chunks(
+    packet: dict[str, Any], data_dir: Path, maximum_bytes: int = 120_000,
+    maximum_items: int = 45,
+) -> list[tuple[list[dict[str, Any]], int]]:
+    """处理：按完整本地证据体量切分候选，保持顺序和单篇正文完整。
+    输入：已按来源均衡的写作包、证据数据根和紧凑输入字节预算。
+    输出：各子包候选及估算输入体量；单篇超限仍作为完整独立包。
+    """
+    def size(value: object) -> int:
+        """处理：计算紧凑 JSON 的 UTF-8 体量。
+        输入：待投影的包字段或候选与证据。
+        输出：含字段文字的字节数，供线性分包累加。
+        """
+        return len(json.dumps(value, ensure_ascii=False,
+                                           separators=(",", ":")).encode("utf-8"))
+
+    base = size({key: value for key, value in packet.items()
+                 if key not in {"candidates", "author_item_ids"}}) + 512
+    chunks, candidates, used = [], [], base
+    for candidate in packet["candidates"]:
+        evidence = _brief_local_evidence(candidate, data_dir)
+        projected = {key: value for key, value in candidate.items()
+                     if key != "description" or evidence["kind"] != "description"}
+        item_bytes = size(projected) + size({candidate["item_id"]: evidence})
+        item_bytes += size(candidate["item_id"]) + 4
+        if candidates and (used + item_bytes > maximum_bytes
+                           or len(candidates) >= maximum_items):
+            chunks.append((candidates, used))
+            candidates, used = [], base
+        candidates.append(candidate)
+        used += item_bytes
+    if candidates:
+        chunks.append((candidates, used))
+    return chunks
 
 
 def _write_brief_authoring_packets(
@@ -555,6 +568,8 @@ def _write_brief_authoring_packets(
         if item.get("item_id")
     }
     packets: list[dict[str, Any]] = []
+    # 同轮各批次使用相同语言和字段契约，只构建一次只读 Schema。
+    output_schema = _brief_output_schema(output_language) if batches else None
     for batch in batches:
         batch_id = str(batch["batch_id"])
         source_ids = {str(value) for value in batch.get("source_ids", [])}
@@ -688,7 +703,7 @@ def _write_brief_authoring_packets(
                 "After that repair, resubmit the assigned draft once; do not restart research "
                 "or rewrite already valid briefs."
             ),
-            "output_schema": _brief_output_schema(output_language),
+            "output_schema": output_schema,
             "input_projection": {
                 "policy": "brief_packet_allowlist_v1",
                 "candidate_count": len(packet_candidates),
@@ -701,18 +716,32 @@ def _write_brief_authoring_packets(
             "preflight_command": submission_command + " --check-only",
             "candidates": packet_candidates,
         }
-        write_immutable_json(packet_path, packet)
-        packets.append(
-            {
-                **batch,
-                "packet_path": str(packet_path.resolve()),
-                "draft_result_path": str(draft_result_path.resolve()),
-                "result_path": str(accepted_result_path.resolve()),
-                "author_item_count": len(author_item_ids),
-                "packet_sha256": sha256(packet_path.read_bytes()).hexdigest(),
-                "author_item_ids": author_item_ids,
-            }
-        )
+        chunks = _brief_input_chunks(packet, data_dir)
+        for part_number, (chunk, input_bytes) in enumerate(chunks, start=1):
+            part_id = batch_id if len(chunks) == 1 else f"{batch_id}-part-{part_number}"
+            part_path = context_dir / f"{context_stem}-{part_id}.json"
+            draft, accepted = batch_result_paths(part_path)
+            command = (f'signaltrail --compact --data-dir "{data_dir.resolve()}" '
+                       f'submit-authoring-batch --run "{run_path.resolve()}" '
+                       f'--batch-id "{part_id}" --result "{draft.resolve()}"')
+            item_ids = [item["item_id"] for item in chunk]
+            part = {**packet, "batch_id": part_id, "candidates": chunk,
+                    "author_item_ids": item_ids, "draft_result_path": str(draft.resolve()),
+                    "accepted_result_path": str(accepted.resolve()),
+                    "submission_command": command, "preflight_command": command + " --check-only",
+                    "usage_correlation": {**packet["usage_correlation"], "batch_id": part_id},
+                    "input_projection": {**packet["input_projection"],
+                        "candidate_count": len(chunk), "estimated_input_bytes": input_bytes,
+                        "single_item_over_budget": len(chunk) == 1 and input_bytes > 120_000}}
+            write_immutable_json(part_path, part)
+            packets.append({**batch, "batch_id": part_id,
+                            "candidate_count": len(chunk),
+                            "packet_path": str(part_path.resolve()),
+                            "draft_result_path": str(draft.resolve()),
+                            "result_path": str(accepted.resolve()),
+                            "author_item_count": len(item_ids),
+                            "packet_sha256": sha256(part_path.read_bytes()).hexdigest(),
+                            "author_item_ids": item_ids})
     return packets
 
 
@@ -766,19 +795,12 @@ def build_context(
         for item in _read_state(state_dir / "predictions.json")
         if item.get("status", "open") == "open"
     ]
-    source_configs = {source.id: source for source in config.sources}
-    policies = index.get("source_policies") or {}
-    # 发现源只采用本轮索引分配的共享名额，原始配置中的零配额保持不变。
-    for source in config.monitor_sources:
-        policy = policies.get(source.id, {})
-        if policy.get("selection_scope") == "discovery_shared":
-            source_configs[source.id] = replace(
-                source, report_target=int(policy["report_target"]),
-                report_max=int(policy["report_max"]),
-            )
-    selected_ids = {str(item["item_id"]) for item in select_brief_items(
-        index.get("items", []), source_configs,
-    )}
+    source_configs = {source.id: source for source in config.report_sources}
+    selected_items = select_brief_items(
+        index.get("items", []), source_configs, date_value=index["date"],
+        cutoff=(index.get("collection_window") or {}).get("end") or index.get("generated_at"),
+    )
+    selected_ids = {str(item["item_id"]) for item in selected_items}
     candidates = _compact_candidates(
         index,
         config.budget.context_items_per_source,
@@ -786,6 +808,8 @@ def build_context(
         reported_item_ids,
         selected_ids,
     )
+    compact_by_id = {str(item["item_id"]): item for item in candidates}
+    candidates = [compact_by_id[str(item["item_id"])] for item in selected_items]
     semantic_cache = load_semantic_cache(data_dir)
     planned_ids = {str(item["item_id"]) for item in select_brief_items(candidates, source_configs)}
     cache_metrics = {
@@ -897,12 +921,10 @@ def build_context(
                         "page_results",
                     )
                 },
-                "report_target": _source_limit(
-                    source_configs, source.get("source_id"), "report_target", 15
-                ),
-                "report_max": _source_limit(
-                    source_configs, source.get("source_id"), "report_max", 15
-                ),
+                "report_target": sum(item["source_id"] == source.get("source_id")
+                                     for item in candidates),
+                "report_max": sum(item["source_id"] == source.get("source_id")
+                                  for item in candidates),
             }
             for source in index.get("sources", [])
         ],
@@ -969,16 +991,16 @@ def build_context(
             "retain the diagnostic only. Never copy prior formatting or unscored prose."
         ),
         "selection_rule": (
-            "Each canonical article occupies one brief slot across sources. Refill duplicates "
-            "from the same source tail, preserve section quotas, and report actual shortfalls. "
-            "For each successful source, fill report_target when enough unique candidates exist; "
-            "do not apply an importance-score cutoff. Keep no more than report_max per source, "
+            "Keep each source's Top positions and deduplicate canonical articles within it. "
+            "Reuse one authored text for matching original articles across sources. "
+            "Cover all locally collected original publications from this edition date; "
+            "preserve source Top order without a per-source quota or importance-score cutoff. "
             "A discovery_signal or rank rise is not a new publication. Honor suggested_status "
             "WATCH for research-radar observations and date-only overlap. "
             "preserve the current index and brief_plan order for displayed briefs, and retain "
-            "source_rank as the publisher's original popularity/order label. Older items remain "
-            "eligible when "
-            "previously_reported is false. Reserve featured events/full-text loading for evidence "
+            "source_rank as the publisher's original popularity/order label. Original publication "
+            "dates, rather than listing updates, determine this edition's eligibility. "
+            "Reserve featured events/full-text loading for evidence "
             "used in analysis."
         ),
         "analysis_protocol": {

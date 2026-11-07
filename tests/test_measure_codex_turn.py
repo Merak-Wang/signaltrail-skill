@@ -77,7 +77,14 @@ def test_lineage_deduplication_and_unknown_usage(tmp_path):
     ]
     assert [row["model"] for row in detailed["requests"]] == ["gpt-6.1-sol", None]
     for row in detailed["requests"]:
-        assert set(row) == {"timestamp_utc", "category", "model", "usage"}
+        assert set(row) == {"timestamp_utc", "agent_path", "category", "model", "usage"}
         assert set(row["usage"]) == set(FIELDS)
     assert all(value is None for value in detailed["requests"][1]["usage"].values())
     assert detailed["requests"][0]["usage"]["input_tokens"] == 10
+    assert [row["agent_path"] for row in detailed["requests"]] == ["/root", "/root/daily_run"]
+    root_only = measure(tmp_path, "root", "target", start, start.replace(second=2),
+                        include_agent_paths=[])
+    assert root_only["total"]["responses"] == 1
+    included = measure(tmp_path, "root", "target", start, start.replace(second=2),
+                       include_agent_paths=["/root/daily_run"])
+    assert included["total"] == result["total"]

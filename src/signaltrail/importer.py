@@ -6,7 +6,8 @@ from pathlib import Path
 from .collector import is_eligible
 from .config import AppConfig
 from .models import ArticleItem, SourceStatus
-from .utils import canonicalize_url, clean_title, item_id, now_iso, read_json, today_str, write_json
+from .storage import exclusive_lock, next_revision, write_immutable_json
+from .utils import canonicalize_url, clean_title, item_id, now_iso, read_json, today_str
 
 SOURCE_NAME_ALIASES = {
     "CNBC World": "cnbc_world",
@@ -107,16 +108,16 @@ def import_legacy(path: Path, config: AppConfig, data_dir: Path, edition: str = 
     date = today_str(config.timezone)
     payload = {
         "schema_version": "1.0",
-        "index_id": f"index-{date}-{edition}-r1",
         "date": date,
         "edition": edition,
-        "revision": 1,
         "generated_at": discovered_at,
         "timezone": config.timezone,
         "imported_from": str(path.resolve()),
         "sources": source_results,
         "items": all_items,
     }
-    output = data_dir / "indexes" / date / f"{edition}-r1.json"
-    write_json(output, payload)
-    return output
+    directory = data_dir / "indexes" / date
+    with exclusive_lock(directory / f".{edition}.import.lock", {"edition": edition}):
+        revision = next_revision(directory, edition)
+        payload.update(index_id=f"index-{date}-{edition}-r{revision}", revision=revision)
+        return write_immutable_json(directory / f"{edition}-r{revision}.json", payload)

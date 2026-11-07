@@ -1369,7 +1369,7 @@ def _summarize_events(
         for name in sorted({key for item in selected for key in item.latency})
     }
     lifecycle, started_call_ids = _call_lifecycle(events)
-    coverage = _usage_coverage(usage_events, started_call_ids, call_count)
+    coverage = _usage_coverage(usage_events, observations, started_call_ids, call_count)
     return {
         "schema_version": SCHEMA_VERSION,
         "task_id": task_id,
@@ -1432,24 +1432,24 @@ def _call_lifecycle(
 
 def _usage_coverage(
     usage_events: list[dict[str, Any]],
+    observations: list[UsageObservation],
     started_call_ids: set[str],
     covered_call_count: Mapping[str, Any],
 ) -> dict[str, Any]:
     """处理：关联本地 call ID 与 usage observations，并区分 token 可观测性。
-    输入：usage 事件、started call ID 集合和 observation 派生的 covered-call 测量。
+    输入：usage 事件、同序已解析 observations、started call ID 和 covered-call 测量。
     输出：精确 linkage 计数及保持 unknown 的 usage_covered_call_count 测量。
     """
 
     observed_call_ids: set[str] = set()
     accounted_call_ids: set[str] = set()
     unlinked_observations = 0
-    for event in usage_events:
+    for event, observation in zip(usage_events, observations, strict=True):
         call_id = event["data"].get("call_id")
         if call_id is None:
             unlinked_observations += 1
             continue
         observed_call_ids.add(call_id)
-        observation = UsageObservation.from_dict(dict(event["data"]["observation"]))
         if observation.tokens.accounted_total().value is not None:
             accounted_call_ids.add(call_id)
     return {

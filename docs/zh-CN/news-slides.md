@@ -8,10 +8,10 @@
 
 | 输入 | 选题与输出 |
 | --- | --- |
-| 已保存日报及匹配索引 | 合并重复原文、保留引用，按模型生成的重要性分数排序日报中的事件与简报，默认选择 50 条。 |
+| 已保存日报及匹配索引 | 审阅当日候选，合并同一事件并保留引用，按影响排序，默认选择至多 50 条。 |
 | 独立索引 | 由宿主模型按重要性选择并排序 50 个条目 ID，通过重复 `--item-id` 传入；未传 ID 时 CLI 按来源排名选择。 |
 
-用 `--max-news N` 设置其他正整数。日报定稿使用 `--slides-max-news N`；恢复运行时沿用此前数量，明确修改后才调整。选题不按来源预留名额，缺图或发布日期未知不影响入选。
+用 `--max-news N` 设置其他正整数。日报定稿使用 `--slides-max-news N`；恢复运行时沿用此前数量，明确修改后才调整。选题不按来源预留名额，缺图不影响入选；发布日期未知不得纳入今日流。
 
 ```sh
 signaltrail --data-dir DATA_DIR slides prepare --report REPORT.json --index INDEX.json
@@ -53,6 +53,8 @@ signaltrail --data-dir DATA_DIR edition-status --run RUN.json --require-complete
 
 在线渲染从公开文章页补充配图和原站图注。同一张照片有多种尺寸时，先取分辨率最高的版本；下载失败或超出预算时再尝试较小版本。图库中每张照片只保留可用的最高分辨率副本，离线重排已有图片时也遵循这条规则。读者可以查看缩略图、放大图片或打开原图。原站未提供图注时留空。
 
+BBC Feed 缩略图通过原站公开尺寸地址优先尝试 1920 像素版本，已有低清缓存时也会尝试升级；保存尺寸来自下载文件的实际像素。BBC 路径尺寸和 WordPress 查询尺寸按同一原图与裁切归并，签名和不同裁切继续区分。图文目录在标题下显示来源名，日报目录可直接跳到每个来源分组。
+
 发布方自动生成的裁切图、缩略图按原始照片归组，不同照片保留顺序和原站图注。对已有图文稿执行离线渲染，可生成应用此规则的新版本。
 
 ```sh
@@ -89,8 +91,25 @@ signaltrail --data-dir DATA_DIR slides video --deck DECK.json --output VIDEO.mp4
 
 注册录音复制到 `video-runtime/voices/NAME/`，以相对路径保存。`--reference-id ID` 选择配置中的其他参考录音。省略音色参数时优先使用 `SIGNALTRAIL_VOICE`，其次为已注册默认音色。合成语言由演示决定。
 
+审阅返回全部合格候选，`--max-news` 仅限制最终入选数量。`slides review --model-input` 通过列名和来源表一次定义的紧凑格式，保留相同标题、证据摘要、来源身份、发表时间与访问状态，减少重复字段名、来源名称和 URL；原始 URL 仍可按保留的条目 ID 在索引中定位。
+
 ## 局限性
 
 图片数量和分辨率取决于原站及下载结果，论文 SVG 图片暂不支持。token 估算用于控制写作包大小，实际用量由宿主适配器记录，未计量时为 `null`。结构校验检查写作合同，事实审阅贯穿采集、选题和写作。网络策略、发音、音频处理与缓存细节见[运行参考](../../references/news-slides.md)。
 
 固定 seed 的 GPU 冷合成在不同运行中仍可能产生波形和时长变化。每页画面跟随本次音频的实测时长，重复导出在输入匹配时复用已保存的音频。
+
+视频导出会在 `DATA_DIR/video-runtime/qwen3/worker/`、显式原生程序旁、已选模型目录的兄弟 `worker/` 和已绑定的默认数据根中查找已有 `llama-tts-worker`，也可用 `SIGNALTRAIL_TTS_WORKER` 显式指定。程序探测 worker 自身支持的设备，后端匹配时让模型和参考音色常驻，连续合成各段讲稿。各段继续保存 WAV、帧数诊断和专名检查结果，导出结束后释放进程。
+`video-setup` 和视频导出会报告 `execution_mode`、`worker_path` 或 `tts_worker_executable` 及选择原因。`auto` 优先复用可用的常驻 GPU 后端，Windows 优先常驻 Vulkan，其次常驻 CUDA；显式指定设备优先。没有匹配 worker 时用 `execution_mode: oneshot` 沿用原生 CLI，并说明每个未缓存语段会重新加载模型。隔离数据根应复用兼容 worker；缺少 worker 时可以继续，无需为此默认构建程序。
+
+写讲稿前运行 `slides review --report REPORT.json --index INDEX.json`，审核今日候选与候补，再用 `slides prepare --review REVIEW.json` 应用决定。JSON含 `selected_event_ids`、`exclude_event_ids`、`merge_groups`（组首项保留），合并事件保留所有来源引用。日期资格按版本日期及上海自然日判定；发现来源使用原网页发表日期。未知日期、旧闻、上榜/抓取时间不纳入今日流。模型先审核实质变化与同一事件的跨源报道，不足50条时交付真实条数。
+
+准备阶段补取正文后、派发任何讲稿作者前，协调者必须浏览全部最终入选新闻（最多50条）及实际替补的证据。一次紧凑投影查看已有 `plan.payload.news[].evidence` 的来源标题、正文首段、正文长度、访问状态及可用Feed；只有投影留下具体疑问时再读相关全文。仅有标题、作者简介、照片说明或串错的文章不算正文。充分的Feed证据可注明其部分来源并收窄讲稿；证据不足时先从已审核候补中替换。同一轮完成最终证据审核，并按原文日期、版本自然日及冻结上界复核资格，再派发作者。
+
+独立图文计划已有已接受讲稿时，可用 `finalize-edition --slides-review REVIEW.json --slides-reuse-plan OLD_PLAN.json` 将可复用讲稿绑定到新日报修订。显式计划优先于当前计划及上版日报计划；复用仍按本次审核、日期资格和写作输入身份判定。
+
+新的CLI准备和日报定稿先返回 `review_required`，不生成讲稿包。模型保存决定后，用 `slides prepare --review REVIEW.json` 或 `finalize-edition --slides-review REVIEW.json` 继续；交付状态显示 `slides_review` 待办。既有历史计划可继续恢复。精确发布时间晚于本版冻结上界的条目排除，当日日精度证据保留其原始精度。
+
+候选审核先合并跨源事件、核对今日资格，再综合受影响人数/地区/行业、政策经济科技安全影响程度、持续性或不可逆性、证据充分度排序。`selected_event_ids` 的顺序直接进入最终图文流；热榜或来源顺序不代替影响判断，可附简短排序理由。
+
+当日候选为0时返回 `no_items`，明确提示补采当前来源或只交日报，不要求生成空审核文件。

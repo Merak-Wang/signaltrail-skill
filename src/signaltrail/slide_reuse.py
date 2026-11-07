@@ -17,13 +17,27 @@ def _story_input(model_input: dict) -> dict:
     """
     if "video_title_context" not in model_input:
         return model_input
-    result = deepcopy(model_input)
-    result.pop("video_title_context", None)
-    result.pop("video_title_instruction", None)
-    schema = result["output_schema"]
-    schema["properties"].pop("video_title", None)
+    result = {key: value for key, value in model_input.items()
+              if key not in {"video_title_context", "video_title_instruction"}}
+    schema = result["output_schema"] = dict(model_input["output_schema"])
+    schema["properties"] = {key: value for key, value in schema["properties"].items()
+                            if key != "video_title"}
     schema["required"] = [field for field in schema["required"] if field != "video_title"]
     return result
+
+
+def _accepted_results(reuse_plan: Path, data_dir: Path):
+    """处理：按数值修订顺序读取同一计划的已接受讲稿。
+    输入：旧计划路径与数据根；通过批次父链限定所属计划。
+    输出：讲稿及完整模型输入，供新稿复用和旧版讲解提取共用。
+    """
+    plan_path = reuse_plan.resolve()
+    for path in sorted(reuse_plan.parent.glob("slides-result-*-r*.json"),
+                       key=lambda path: int(path.stem.rsplit("-r", 1)[1])):
+        result = load_artifact(path, data_dir)
+        packet = load_artifact(parent_path(result, "packet", data_dir), data_dir)
+        if parent_path(packet, "plan", data_dir).resolve() == plan_path:
+            yield result["payload"]["draft"]["slides"], packet["payload"]["model_input"]
 
 
 def reusable_slides(
@@ -37,16 +51,11 @@ def reusable_slides(
     payload = plan["payload"]
     template = payload.get("model_input_template")
     accepted: dict[str, tuple[dict, dict]] = {}
-    for result_path in sorted(reuse_plan.parent.glob("slides-result-*-r*.json")):
-        result = load_artifact(result_path, data_dir)
-        packet = load_artifact(parent_path(result, "packet", data_dir), data_dir)
-        if parent_path(packet, "plan", data_dir).resolve() != reuse_plan.resolve():
-            continue
-        model_input = packet["payload"]["model_input"]
+    for slides, model_input in _accepted_results(reuse_plan, data_dir):
         if template is None:
             template = {**model_input, "news": []}
         news = {row["event_id"]: row for row in model_input["news"]}
-        for slide in result["payload"]["draft"]["slides"]:
+        for slide in slides:
             event_id = slide["event_id"]
             accepted[event_id] = (slide, {**model_input, "news": [news[event_id]]})
     if template is not None:
@@ -90,11 +99,8 @@ def previous_narrations(reuse_plan: Path, candidates: list[dict], data_dir: Path
     current = {row["event_id"]: {k: v for k, v in row.items() if k != "images"}
                for row in candidates}
     slides = list(plan["payload"].get("reused_slides", []))
-    for path in sorted(reuse_plan.parent.glob("slides-result-*-r*.json")):
-        result = load_artifact(path, data_dir)
-        packet = load_artifact(parent_path(result, "packet", data_dir), data_dir)
-        if parent_path(packet, "plan", data_dir).resolve() == reuse_plan.resolve():
-            slides.extend(result["payload"]["draft"]["slides"])
+    for accepted, _ in _accepted_results(reuse_plan, data_dir):
+        slides.extend(accepted)
     return {slide["event_id"]: slide["narration"] for slide in slides
             if not slide.get("video_tldr") and slide["event_id"] in current
             and current[slide["event_id"]] == old_news.get(slide["event_id"])}

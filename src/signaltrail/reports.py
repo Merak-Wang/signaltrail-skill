@@ -806,6 +806,7 @@ def save_report(
     media_config: MediaConfig | None = None,
     coverage_targets: dict[str, int] | None = None,
     brief_plan_item_ids: dict[str, list[str]] | None = None,
+    refresh_images: bool = False,
 ) -> dict[str, Any]:
     """处理：编译模型报告草稿、绑定权威索引、执行校验并创建不可变报告修订。
     输入：
@@ -816,6 +817,7 @@ def save_report(
     - ``media_config``：图片下载、格式、安全、缓存和报告预算配置。
     - ``coverage_targets``：按来源 ID 指定的最小报告覆盖数；由运行情境拥有。
     - ``brief_plan_item_ids``：当前 context 按来源固定的有序 default_item_ids；限制缓存与草稿边界。
+    - ``refresh_images``：显式重新选择图片；默认文字修订保留其已发布父版本的有效本地附件。
     输出：“编译模型报告草稿、绑定权威索引、执行校验并创建不可变报告修订”形成的结构化字典；
       典型键包括 compile_and_validation_seconds、content_hash、evaluation_status、json_path、loc
       al_output_error、local_output_seconds、markdown_path、media_seconds、persistence_seconds、
@@ -879,11 +881,20 @@ def save_report(
     compile_validation_seconds = time.perf_counter() - compile_started
 
     media_started = time.perf_counter()
+    preserved_images = None
+    previous_path = report_dir / f"{edition}-r{raw.get('revision')}.json"
+    if not refresh_images and previous_path.is_file():
+        previous = read_json(previous_path)
+        if raw.get("report_id") == previous.get("report_id"):
+            preserved_images = {str(brief["item_id"]): brief.get("image")
+                                for section in previous["sections"]
+                                for brief in section.get("briefs", [])}
     media_warnings = materialize_report_images(
         report,
         index,
         data_dir,
         media_config or MediaConfig(),
+        preserved_images=preserved_images,
     )
     media_seconds = time.perf_counter() - media_started
     errors, final_validation_warnings = validate_report_data(

@@ -10,6 +10,89 @@ from signaltrail.utils import read_json, write_json
 from tests.report_helpers import load_sample_report, write_report_index
 
 
+def test_text_revision_preserves_parent_image_instead_of_reselecting_crop(tmp_path, monkeypatch):
+    import hashlib
+    from io import BytesIO
+
+    from PIL import Image
+
+    from signaltrail import media
+    from signaltrail.config import MediaConfig
+
+    report = load_sample_report(Path(__file__).resolve().parents[1])
+    report["schema_version"] = "1.5"
+    analysis = report["analyses"][0]
+    report["analyses"] = [{**analysis, "domain": domain, "analysis_id": analysis_id}
+                          for domain, analysis_id in (("geopolitics", "TH-GEO-001"),
+                              ("ai_technology", "TH-AI-001"), ("markets", "TH-MKT-001"))]
+    section = next(section for section in report["sections"] if section["items"])
+    event = section["items"][0]
+    ref = event["source_refs"][0]
+    section["briefs"] = [{"item_id": ref["item_id"], "title": ref["title"],
+                           "title_zh": event["title"], "tldr": event["tldr"],
+                           "importance": 80, "status": "NEW",
+                           "primary_source": event["primary_source"], "source_ref": ref}]
+    draft = write_json(tmp_path / "draft.json", report)
+    index_path = write_report_index(report, tmp_path / "index.json")
+    index = read_json(index_path)
+    original_url = "https://cdn.example/original.png"
+    cropped_url = "https://cdn.example/alternate-crop.png"
+    index["items"][0]["image_url"] = original_url
+    write_json(index_path, index)
+    data_dir = tmp_path / "data"
+    calls = []
+
+    def download(url, root, config, **kwargs):
+        calls.append(url)
+        width, height = (1199, 674) if url == original_url else (992, 434)
+        output = BytesIO()
+        Image.new("RGB", (width, height), (40, 80, 120)).save(output, format="PNG")
+        content = output.getvalue()
+        digest = hashlib.sha256(content).hexdigest()
+        local = f"media/images/{digest[:2]}/{digest}.png"
+        path = root / local
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(content)
+        return media.DownloadedImage(url, url, local, "image/png", digest, len(content),
+                                      width, height, False)
+
+    original = media.materialize_report_images
+    monkeypatch.setattr("signaltrail.reports.materialize_report_images",
+                        lambda *args, **kwargs: original(*args, downloader=download, **kwargs))
+    config = OutputConfig(formats=["html"])
+    first = save_report(draft, index_path, data_dir, output_config=config)
+    saved = read_json(Path(first["json_path"]))
+    brief = next(brief for section in saved["sections"] for brief in section.get("briefs", [])
+                 if brief.get("image"))
+    expected = dict(brief["image"])
+    index["items"][0]["image_url"] = cropped_url
+    write_json(index_path, index)
+    saved["executive_summary"][0] += " 补充文字修订。"
+    revision = write_json(tmp_path / "revision.json", saved)
+    second = save_report(revision, index_path, data_dir, output_config=config,
+                         media_config=MediaConfig())
+    revised = read_json(Path(second["json_path"]))
+    actual = next(brief["image"] for section in revised["sections"]
+                  for brief in section.get("briefs", []) if brief.get("image"))
+    assert actual == expected and calls == [original_url]
+    assert revised["media_metrics"]["attached"] == 1
+    assert revised["media_metrics"]["total_bytes"] == expected["byte_size"]
+    refreshed = save_report(revision, index_path, data_dir, output_config=config,
+                            refresh_images=True)
+    refreshed_report = read_json(Path(refreshed["json_path"]))
+    image = next(brief["image"] for section in refreshed_report["sections"]
+                 for brief in section.get("briefs", []) if brief.get("image"))
+    assert (image["width"], image["height"]) == (992, 434)
+    assert calls == [original_url, cropped_url]
+    for media_config in (MediaConfig(enabled=False), MediaConfig(max_images_per_report=0),
+                         MediaConfig(max_image_bytes=1, max_total_bytes=expected["byte_size"] - 1)):
+        limited = read_json(Path(second["json_path"]))
+        original(limited, index, data_dir, media_config, downloader=download,
+                 preserved_images={brief["item_id"]: expected})
+        assert all("image" not in item for section in limited["sections"]
+                   for item in section.get("briefs", []))
+
+
 def test_save_report_writes_markdown_and_continuity_state(tmp_path: Path):
     root = Path(__file__).resolve().parents[1]
     report = load_sample_report(root)

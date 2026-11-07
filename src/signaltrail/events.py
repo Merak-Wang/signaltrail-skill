@@ -83,7 +83,7 @@ def _article_key(item: dict) -> str:
 def _canonical_event(connection: sqlite3.Connection, event_id: str) -> str:
     """处理：沿旧事件链接找到合并后的当前档案。
     输入：数据库连接和旧或当前事件身份。
-    输出：继续读取与写入研究时使用的当前身份。
+    输出：档案读取与关注操作使用的当前身份。
     """
     while row := connection.execute(
         "SELECT payload FROM records WHERE kind='event_alias' AND id=?",
@@ -98,7 +98,7 @@ def _merge_events(
 ) -> None:
     """处理：共同报道确认事件合并时归并旧档案及其关注研究。
     输入：选定的最早事件、其他候选和已有文章。
-    输出：保留单一首页卡片，旧链接和进行中研究继续指向该事件。
+    输出：保留单一首页卡片、旧链接、关注及历史研究记录。
     """
     for other in others:
         old_id = other["event_id"]
@@ -110,10 +110,6 @@ def _merge_events(
         for key in other["article_keys"]:
             articles[key]["event_id"] = event["event_id"]
             _put(connection, "article", key, articles[key])
-        for job in other.get("research", []):
-            job_id = job.get("job_id") or job.get("id")
-            if job_id:
-                _put(connection, "research", job_id, {**job, "event_id": event["event_id"]})
         connection.execute(
             "INSERT OR IGNORE INTO follows SELECT kind,? FROM follows "
             "WHERE kind='event' AND target=?",
@@ -537,7 +533,6 @@ def report_event_cards(data_dir: Path, report: dict) -> list[dict]:
                     report_id=report["report_id"],
                     report_event_id=item["event_id"],
                     platform_event_id=platform_id,
-                    research_available=platform_id is not None,
                     original_language=language,
                 )
                 suffix = "zh" if language.startswith("zh") else "en"
@@ -713,64 +708,6 @@ def _report_analyses(data_dir: Path, articles: list[dict]) -> list[dict]:
                     }
                 )
     return sorted(found, key=lambda analysis: analysis.get("generated_at") or "", reverse=True)
-
-
-def save_event_research(data_dir: Path, event_id: str, research: dict) -> dict:
-    """处理：把研究执行结果挂接到其事件，保留此前研究。
-    输入：事件身份与包含研究身份的结果记录。
-    输出：保存后的研究记录，供研究任务接口返回。
-    """
-    with _connect(data_dir) as connection:
-        connection.execute("BEGIN IMMEDIATE")
-        event_id = _canonical_event(connection, event_id)
-        research = {**research, "event_id": event_id}
-        row = connection.execute(
-            "SELECT payload FROM records WHERE kind='event' AND id=?", (event_id,)
-        ).fetchone()
-        if row is None:
-            raise ValueError("事件不存在")
-        event = json.loads(row[0])
-        records = event.setdefault("research", [])
-        job_id = research.get("job_id") or research.get("id")
-        records[:] = [
-            row for row in records if not job_id or (row.get("job_id") or row.get("id")) != job_id
-        ]
-        records.append(research)
-        _put(connection, "event", event_id, event)
-        if job_id:
-            _put(connection, "research", job_id, {**research, "event_id": event_id})
-    return research
-
-
-def get_research_job(data_dir: Path, job_id: str) -> dict | None:
-    """处理：按任务身份读取后台研究状态。
-    输入：个人资料目录和任务身份。
-    输出：任务记录，供详情页轮询或后台恢复使用。
-    """
-    with _connect(data_dir) as connection:
-        row = connection.execute(
-            "SELECT payload FROM records WHERE kind='research' AND id=?", (job_id,)
-        ).fetchone()
-    return json.loads(row[0]) if row else None
-
-
-def list_research_jobs(
-    data_dir: Path, status: str | None = None, event_id: str | None = None
-) -> list[dict]:
-    """处理：列出后台研究任务并按状态选取待恢复任务。
-    输入：资料目录和可选任务状态。
-    输出：研究调度器或前端使用的任务列表。
-    """
-    with _connect(data_dir) as connection:
-        jobs = list(_records(connection, "research").values())
-        if event_id is not None:
-            event_id = _canonical_event(connection, event_id)
-    return [
-        job
-        for job in jobs
-        if (status is None or job.get("status") == status)
-        and (event_id is None or job.get("event_id") == event_id)
-    ]
 
 
 def update_event_articles(data_dir: Path, event_id: str, articles: list[dict]) -> None:

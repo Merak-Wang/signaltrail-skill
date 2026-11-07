@@ -24,20 +24,22 @@
 检查点不授予重试受限来源或扩大正文预算的权限。旧运行若缺少恢复绑定，需要显式重启。
 已经派发作者任务后，新增富化或验证索引替换会被拒绝；先完成当前版次，或开启新尝试。
 
+程序完成日期资格、材料可用性检查与输入冻结后即可派发简报作者。图文事件的语义合并和影响排序与简报写作并行，仍须审阅全部合格候选，并在报告定稿前保存完整决定。简报收录范围由当日来源索引决定，不依赖图文前五十条的选题结果。
+
 默认每天生成一次 `daily`，按选定时区冻结生成前 24 小时的采集窗口。同一日期恢复既有运行；
 只有明确重启时使用 `--restart`。`morning`／`evening` 用于历史恢复。调度时间由用户选择，
 需要准点交付时预留采集与写作时间。
 
 ```text
-采集与补证 → 简报批次与图片预取 → 研判 → 校验与保存 HTML
+采集补证及程序检查 → 简报、图片预取与全候选图文审阅并行 → 研判 → 校验与保存 HTML
 → tail 与图文讲稿 → 等待 tail 和讲稿完成 → 渲染 → edition-status 整期验收
 ```
 
-每次正常运行最多 3600 秒，模型输入加输出最多 10,000,000 token。32 个正式来源满载时最多有 480 条普通 brief；需要准点交付时必须提前启动。采集脚本继续处理单源错误；brief/analysis authors 只消费计划内 packet 和影响研判的必要正文。开发/调试不受该预算限制。
+默认配置的运行预算为 3600 秒、模型输入加输出 10,000,000 token，实际覆盖由所有启用来源中的合格当日条目决定。采集脚本继续处理单源错误；brief/analysis authors 只消费计划内 packet 和影响研判的必要正文。开发/调试独立计量。时间对照必须分别列实际墙钟时间与给定输出速率的推算；缓存输入计入累计 token，模型输出速率只用于输出生成阶段。
 
-日报按需执行采集，不启动常驻服务或后台定时采集。监控快照是可复用的采集输入；RSS/Atom、静态 HTML、时间解析、图片元数据、聚类和来源健康均不调用模型。需要单独检查采集时，可显式运行 `signaltrail refresh-monitor`；`signaltrail serve --open` 默认只读，即使没有快照也不自动采集。发现来源的 `report_target` 和 `report_max` 均为 0。完整采集通过 `collection.discovery_brief_limit` 从新鲜快照补充共享发现简报，默认最多 30 条、每发现来源最多两条；核心来源目标保持原值，显式来源采集不追加共享池。`run-edition` 优先复用默认 90 分钟内的新鲜零-token 快照；仅在快照缺失或过期时执行本轮快照采集，失败则保留旧快照并继续原采集流程。可用 `monitor.snapshot_max_age_minutes` 和 `monitor.reuse_fresh_snapshot_before_edition` 调整这一策略。
+日报按需执行采集，不启动常驻服务或后台定时采集。监控快照可作为采集输入；RSS/Atom、静态 HTML、时间解析、图片元数据、聚类和来源健康均不调用模型。需要单独检查时可运行 `refresh-monitor`；`serve --open` 默认只读。所有启用来源均参与日报采集，保留实际访问状态。
 
-32 个正式来源的 `report_target` 和 `report_max` 均为 15。默认 `collection.item_order: source`，每来源候选充足时交付网页、榜单或 Feed 的原 Top1–15；切换为 `published_at` 时，采集层把有效发布时间从新到旧写入当前 index，缺失发布时间和时间并列的条目保持稳定输入顺序，日报再取前 15 条。单源覆盖使用同名 `item_order`。两种模式都保留原始 `source_rank`；context、普通 brief、Markdown、HTML、PDF 与 Notion 必须维持当前 index/`brief_plan` 顺序，不能按 `importance` 重排。Hugging Face Papers 的 `source` 模式以 Trending Top 为准，较早发表的论文仍可能出现在当前 Top15。
+日报保留版本所在上海自然日、冻结截止时刻之前的全部可核实原发新闻，按各来源原 Top 顺序和 `source_rank` 展示。同源规范网址去重，跨来源保留各自位置；相同原文可复用写作结果。缺失或较早的原发日期、榜单与收录时间不作为当日资格。
 
 用户请求日报即授权完成采集、写作、尾任务、幻灯片讲稿、渲染与整期验收。报告保存后发送进度说明并继续执行；动态 `edition-status` 返回待办时，按命令和 packet 路径继续推进，直至 `delivery_complete: true`。只有人工验证、明确请求但缺少独立执行者的评分等外部条件阻塞后续时，才向用户报告具体阻塞及恢复动作；已耗尽动作不反复重试。
 
@@ -51,7 +53,30 @@
 
 ## Harness 与用量接入
 
-核心流程不要求特定 harness。Agent 只需能运行本地命令、读取 packet、把结构化 JSON 写到指定路径并提交。全程复用同一个 `--data-dir`；有隔离 worker 时最多同时运行 3 个 packet，一个完成就按序补下一个；否则顺序执行。简报、研判和图文作者均使用独立的新上下文，初始输入只有自己的 packet 路径与已确定的绝对 CLI 调用；不沿用采集、调试或前一批写作的历史。
+与运行关联的文字修订，通过 Python `save_report` 传入原 context 的 `coverage_targets` 和 `brief_plan_item_ids`，沿用覆盖目标与选择顺序，避免默认计划重建后改变排序；独立 `save-report` CLI 没有 `--run` 参数。
+
+核心流程不要求特定 harness。全程复用同一个 `--data-dir`，会话建立后用源码入口 `--advance-edition RUN.json --data-dir DATA_DIR` 推进确定性步骤。新的完整写作投影保存在专用 `author-inputs/`，程序按材料体量降序返回最多三个任务票据；用 `--task-limit 空槽数` 控制本次数量，并重复 `--in-flight 批次ID或包路径` 排除运行任务。简报、分析和讲稿均提供 `input_parts_dir` 及有序 `input_parts` 文件名，每块至多 7500 个 `o200k_base` token，按序拼接的 UTF-8 字节与完整输入一致。作者按序逐块读取，每个工具结果只放一块，读完全部材料后写作。`input_file` 留作审计，作者不再打印大文件或自行分块。完整错误位于 `repair_errors_file`，异常问题位于 `issues_file`。保存 `draft_result_path` 后在同一次工具执行中运行 `check_command`，只输出简短结果；接收由推进程序完成。日期或榜单信号确定的 WATCH 在预检和接收时归一，文字、重要性及其余有效编辑判断保持原值。事件审阅通过 `--slides-review REVIEW.json` 传入，规范 URL 别名绑定报告文字时保留原 event ID。
+
+`slides review --index INDEX.json --max-news 50 --model-input --parts-dir REVIEW_INPUT_DIR` 将全部合格候选按相同方法分块，模型仍需读完所有候选后给出决定。恢复已有冻结输入可运行 `scripts/run_signaltrail.py --prepare-input-parts FILE`。设置大的输出上限不能代替分块。每次只读一个 part，并把外层 pragma 和内层命令的输出上限均设为任务值（当前为 9000）：
+
+```javascript
+// @exec: {"max_output_tokens": 9000}
+const r = await tools.exec_command({
+  cmd: "Get-Content -Raw -LiteralPath 'INPUT_PART'",
+  max_output_tokens: 9000
+});
+text(r.output);
+```
+
+协调者只读短回执、完成通知和路径，作者独立读取正文与修复错误。候选审阅的 lead 跳过导航和孤立短行，保留 `body_chars`、`evidence_chars` 供判断材料可用性，重大短公告继续保留审阅资格。
+
+长运行约每完成 8–12 个简报批次，或进入分析、图文、视频阶段时，可交接给新上下文协调者。先收齐并接收所有在飞作者，只传运行、审阅、CLI、数据根路径、必要约束和后台进程句柄，不传作者材料或旧会话。Codex 使用 `fork_turns="none"`；新协调者成功启动后，父协调者结束本阶段并释放槽位。仅在宿主保证父任务结束后子任务仍能继续时采用该方式。有外层观察者且总共四个槽位时最多两名作者，无额外观察者时可用三名。
+
+优化时保留完整作者证据、实质内容和交付质量。时间与 token 目标用于改进调度和上下文复用；如实报告实测结果及未达目标，不能为满足数字而压缩应交付内容。
+
+进入图文写作后，把 `background_commands` 返回的图片预取、未完成 tail/PDF 各作为后台工具进程启动一次，保留进程句柄；运行期间分别传 `--in-flight slides-images`、`--in-flight edition-tail`。二者与作者并行，渲染前在工具内等待全部结束，避免共同更新日报投影。图片手动命令为 `slides prefetch-images --plan PLAN.json`，原子写入同计划旁的 `images-slides-plan-rN.json`，渲染直接复用完整新闻图片和计量。重抓时加 `--refresh`，默认图片下载预算为 250 MiB。
+
+有隔离 worker 时最多同时运行 3 个 packet，一个完成就补下一个；否则顺序执行。简报、研判和图文每项任务重新创建作者，上下文仅含当前任务和写作指令。Codex 使用 `spawn_agent(fork_turns="none")`；`followup_task` 保留旧上下文，不能用于跨批派发。任务尚在执行时从待办中排除；依赖完成通知调度，多个草稿一起提交。长进程在同一次工具脚本内等待。
 
 Codex 运行的耗时和用量使用 `scripts/measure_codex_turn.py` 从运行记录确定性汇总，阶段耗时使用已有机器记录；不派模型执行计量。成本对照固定相同输入、模型和统计范围，包含协调器和全部子任务。cached input 是 token 数量，实际金额须有真实价格与计费数据；缺失时保留未知。
 
@@ -69,12 +94,12 @@ signaltrail --data-dir DATA_DIR slides render --plan PLAN.json
 signaltrail --data-dir DATA_DIR edition-status --run RUN.json --require-complete
 ```
 
-代表新闻从整份已保存日报去重后按模型生成的重要性分数排序，默认选最重要的 50 条，可用 `finalize-edition --slides-max-news N` 自定义；恢复时未显式改数量则沿用既有设置，显式更改会准备新计划。按来源不保证配额，未知发布日期保持未知。CLI `slides prepare` 和日报定稿会先为入选新闻补取缺失或不完整正文，复用已有可用证据，并把完整可用正文放入 `news[].evidence[].body`；写作者先通读正文。正文不截断，默认以每批输入估算 64,000 token 为目标拆批，超长单篇自动扩容；显式 `--max-input-tokens` 为硬上限，超限时拒绝并给出可复用的已补全文索引路径。默认在线 `slides render` 会从入选新闻公开页面补充图片候选和原站 caption。`render` 生成独立放映 HTML，
-并更新日报 HTML 的嵌入容器及独立打开入口。`edition-status` 输出 `delivery_complete`、`report_status`、`pending_steps` 和图文流状态；只有动态命令返回 `delivery_complete: true`、`pending_steps` 为空且 `slides.status` 为 `rendered` 才能报告整期交付完成。不要依赖可能过期的 manifest 快照。更换图片和重新渲染不需要模型。完整恢复、图注、
+图文流先审阅今日候选与候补，按实质事件合并跨来源报道，依据影响和证据排序，默认最多 50 条；符合条件不足时交付实际数量。入选新闻先补充可用正文并审阅证据，再分派讲稿作者。正文不截断；默认按每批估算 64,000 token 拆批，显式上限为硬限制。渲染附加公开图片与图注，详见[新闻图文流参考](news-slides.md)。
+渲染也更新日报 HTML 的嵌入容器及独立打开入口。`edition-status` 输出 `delivery_complete`、`report_status`、`pending_steps` 和图文流状态；只有动态命令返回 `delivery_complete: true`、`pending_steps` 为空且 `slides.status` 为 `rendered` 才能报告整期交付完成。不要依赖可能过期的 manifest 快照。更换图片和重新渲染不需要模型。完整恢复、图注、
 大图、打印与本地配音视频的执行步骤见[新闻图文流参考](news-slides.md)。
 
 并行研究与解释性故事属于实验流程，不是日报交付步骤。尤其研究组合页目前只支持 `preview`，
-正式 `current` 准入保持阻断，细节见[并行研究参考](research-workflow.md)。
+正式 `current` 准入保持阻断，细节见并行研究参考。
 
 ## 交互式验证
 
@@ -100,18 +125,19 @@ host scheduler、Gateway 和其他无人值守会话不得传 `--open-verificati
 
 ## 恢复
 
+- 已有 run 先查 `edition-status --run RUN.json` 并按待办恢复；已有 session 时直接推进待处理草稿。报告已完成则继续 tail、图文或视频，不再推进 brief；`completed_partial` 本身不是重跑信号。视频需另查已有成品和诊断，`edition-status` 不检查视频；有效成品直接复用。
 - `awaiting_selection`：选择 ID，运行 `enrich-edition`。
 - `awaiting_authoring` 且没有 session：运行 `begin-authoring` 后，启动 `prefetch-media`；可在宿主支持并行进程时与作者同时运行，否则先完成预取。同时按顺序调度尚未复用的 packet，最多同时运行 3 个 author，一个 worker 完成后按序补入下一个。媒体预取只读固定 index/context、写入图片缓存和独立 receipt；等它退出并检查 receipt 后再运行 `prepare-analysis` 或定稿。每个 brief author 只读自己的 packet 及列出的证据，按 `output_schema` 写入指定 `draft_result_path`，再执行 `submission_command`。
 - 已派发 packet 的输入缺陷修复后，运行 `begin-authoring --run RUN.json --refresh-context`，从冻结索引和采集窗口生成新版本情境及会话；旧 packet 和草稿保留，按新会话重新派发。
 - authoring 批次已返回：把宿主提供的有界批次指标写入 session 指定路径并运行 `record-authoring-metrics`；`authoring-status` 全部完成后运行 `prepare-analysis`。即使宿主完成通知或不可变接收结果缺失，也不要先删 draft：`prepare-analysis` 会对每个缺 receipt 的授权 `draft_result_path` 执行原 packet 校验，合法草稿会被原子接收并列入 `recovered_batches`。检查恢复后的 `missing_batches`，只有输出 `deadline_exceeded: true` 时才能用 `prepare-analysis --allow-degraded`。
 - brief 修复预算限制新一轮模型修复；预算耗尽后，已完成的合法草稿仍可通过校验并接收。
-- authoring 降级：只把对应 missing batch 所负责来源的 `coverage_targets` 降到该批实际接收数；其他已完成 batch 的来源仍保持原计划目标（唯一候选不少于 15 时为 15）。semantic cache 和草稿都只能使用各来源 `brief_plan.default_item_ids`，不得用本轮计划之外的旧缓存补位。索引已有候选但 brief 缺失时，即使同栏目其他来源正常，也要列出缺失来源及“已验证摘要/计划”计数，不能写成未采集、`no_items`、来源失败或让该来源无提示消失。
+- authoring 降级：只降低缺失批次负责来源的覆盖目标，其他来源保持原计划。不得用本轮计划之外的旧缓存补位；已采集但缺少 brief 的来源要明确列出。
 - `analysis_pending`：默认由一个新上下文作者完成原 analysis 包，再执行 `assemble-authoring`。需要缩短写作等待时显式选择 `prepare-analysis --parallel`：先返回 selection 包；完成其输出后运行 `analysis-stage --run RUN.json --stage domains`，并行完成三个领域包，再运行 `analysis-stage --run RUN.json --stage synthesis` 并完成综合包，最后运行 `analysis-stage --run RUN.json --stage assemble` 生成原 `analysis_result_path`。多阶段会重复输入共享内容，增加总输入 token；默认单包避免这部分开销。每任务使用仅含 packet 与绝对 CLI 的新上下文，遵循原 Schema；随后运行 `assemble-authoring`、`validate-report --run` 和 `finalize-edition --defer-tail`。观察信号写明对象、证据已有的复核时间和改变判断的方向；综合只解释具体跨域传导机制，无证据联系的领域保持独立。
 - `finalizing` 在事实源持久化前失败：状态自动退回 `awaiting_authoring` 并记录错误；HTML/PDF 投影失败时 JSON/Markdown 仍有效，结果会记录 `local_output_error`，修复环境后重建投影即可，不要重新生成 revision。
 - `tail.pending`：HTML 已有效；在后台执行 manifest 的精确 `tail.command`。
 - `tail.partial`：读取 `tail.errors`，修复后重跑 `complete-edition-tail`；已存在 PDF/Notion 不会重复创建。
 - 旧同步路径的 `publishing` 失败：重试 `finalize-edition --publish`。
-- `failed`：阅读 manifest 的 `error`，修复后用 `run-edition --restart`。
+- `failed`：阅读 manifest 的 `error`，先按失败阶段和已有产物恢复；确需重启采集时再用 `run-edition --restart`。
 - `completed_partial`：本地报告有效；待验证链接可留到后续处理。
 - `evaluation pending`：日报已经完成；先检查独立评估调度和不可变 evaluation。Hermes 集成只有在当前 report ID/content hash 尚无完成评估、且既有任务已明确 failed/expired 时，才创建一次新的有界评估尝试；其他 host scheduler 必须执行相同 preflight 和最多两次总尝试的边界。
 - 评估失败：保留 pending/错误日志与失败 job 身份，按上述 preflight 显式重试；不得撤回日报、无限重调度或由 brief/analysis authors 自评。
@@ -121,7 +147,7 @@ run manifest 固定在 `DATA_DIR/runs/YYYY-MM-DD/<edition>.json`。不要手改�
 
 ## 验收
 
-报告保存检查：run/index/report 一致、schema 2.0、七个 section、所有正式来源目标/上限均为 15、有足够候选时正好使用本轮 `brief_plan` 的前 15 条、semantic cache 未越界、普通 brief 在 JSON/Markdown/HTML/PDF/Notion 中保持当前 index 顺序且未按 `importance` 重排、TL;DR 无访问状态话术、brief/精选事件关系、候选足够时满足精选新鲜度下限、发布时间（缺失时显示采集时间）与 NEW、URL/标题身份、正文访问等级、三个视角使用同一事件档案、每篇 `narrative` 为 4—7 个自然段、跨视角综合、JSON/Markdown/HTML、`reports/index.html`、`local_html_ready_at` 和待验证链接。若有 authoring 降级，还要核对 `recovered_batches`、`missing_batches` 与逐来源 `coverage_targets`，并确认已采集候选没有被描述为未采集。浏览器验收还要确认每条 brief 的标题先于配图、版本化 HTML 的相对图片存在，以及桌面 HTML 单独移入无媒体目录后所有内嵌图片均可加载。
+报告保存检查：run/index/report 一致，普通 brief 保持来源 Top 顺序与原始排名，所有当日合格条目按计划覆盖，引用、正文访问等级、三个视角与综合符合证据；JSON、Markdown、HTML 与待验证链接可用。作者降级时检查 `recovered_batches`、`missing_batches` 和逐来源覆盖，不把写作缺失描述为未采集。
 
 整期交付检查：运行 `edition-status --run RUN.json --require-complete` 并要求 `delivery_complete: true`、`pending_steps` 为空，图文流所有计划批次已接受且 HTML 已生成；如不满足，明确报告待办，不称整期完成。报告保存检查和整期交付检查是不同阶段。后台收尾检查：tail 为 `completed` 或有可操作的 `partial` 错误；PDF、`pdf_ready_at`、可选 Notion page ID/`notion_ready_at` 和独立评估调度彼此可重试，不影响前台 HTML 有效性。核对 `pdf_projection_seconds`、`pdf_bytes`、`pdf_size_budget_bytes` 和 `pdf_size_budget_status`；超预算是显式警告。PDF 必须在断开本地媒体目录与网络后仍能显示全部已物化图片；用页面栅格化抽查和 PDF image XObject 计数确认打印重采样后的图片已写入文件，且不含外链依赖。
 
@@ -130,3 +156,11 @@ run manifest 固定在 `DATA_DIR/runs/YYYY-MM-DD/<edition>.json`。不要手改�
 运行复盘中的计数只能来自 manifest 和根级 `items[]`；不得把 `verification_required`、`failed` 或 `metadata_only` 说成 `no_items`。
 
 监控检查：`snapshot.json` 的 `token_usage` 为 0、来源总数与配置一致、story ID 跨刷新稳定、缺失发布时间的条目明确回退到采集时间、`health.json` 保留每个失败原因。本地情报台默认只绑定 `127.0.0.1`。
+
+## 长进程与作者分派
+
+`begin-authoring` 前可用 `enrich-edition --run RUN.json --slides-candidates --max-items 100` 补充今日图文候选和候补的正文及原发日期；重复 `--item-id` 可优先指定条目。复用返回索引，用 `slides review --index INDEX.json --max-news 50` 提前审阅日期和证据质量。后续正式图文复核仍负责语义合并、影响排序及必要补位。
+
+简报 session 和图文 plan 可用 `scripts/run_signaltrail.py --advance-dispatch INPUT.json --data-dir DATA_DIR [--run RUN.json]` 接收合法草稿并列出待写或修复任务；作者返回草稿路径，协调者在完成后再次推进。处理返回的 `issues`。分析包仍用 `--dispatch-plan`。
+
+使用绝对解释器调用 `scripts/run_signaltrail.py`，并将共享 `author_instruction` 和票据交给作者。返回任务先排除已在执行的 batch ID 或 packet 路径；四槽位中另有观察者时最多两名作者，否则最多三名。作者使用新上下文，协调者批量提交。视频在独立短上下文启动，按 `SKILL.md` 在工具内部等待，由进程输出进度，完成或失败后再进入模型。

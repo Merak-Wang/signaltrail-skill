@@ -1,6 +1,6 @@
 sources:
-  # Global and regional news. These sources expand discovery only; they never
-  # create per-source quotas in the daily report.
+  # Global and regional news. Enabled sources enter existing report sections.
+  # Each source retains all current-day items in its own publisher Top order.
   - id: un_news
     name: UN News
     url: https://news.un.org/en/

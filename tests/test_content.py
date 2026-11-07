@@ -35,6 +35,19 @@ def test_access_classifier_recognizes_verified_request_challenge_text():
     assert result["matched_text"] == "your request is being verified"
 
 
+@pytest.mark.parametrize("status", [401, 403])
+def test_access_classifier_distinguishes_denial_from_challenge(status):
+    assert not classify_access_text(status, "Access denied", "")["required"]
+    assert classify_access_text(status, "Security check", "Verify you are human")["required"]
+
+
+def test_access_classifier_ignores_article_and_iframe_but_keeps_rate_limit():
+    article = "A study discusses captcha and browser security. " * 20
+    assert not classify_access_text(200, "Research", article, iframe_detected=True)["required"]
+    assert classify_access_text(429, "", "")["rate_limited"]
+    assert classify_access_text(200, "", "Checking your browser " + "Details " * 200)["required"]
+
+
 def test_http_challenge_detection_ignores_captcha_script_when_article_is_visible(tmp_path):
     config = load_config()
     item = _item()
@@ -52,7 +65,7 @@ def test_http_challenge_detection_ignores_captcha_script_when_article_is_visible
     assert "content_challenge" not in item["metadata"]
 
 
-def test_http_challenge_detection_keeps_captcha_iframe_signal(tmp_path):
+def test_http_challenge_detection_ignores_iframe_with_article(tmp_path):
     config = load_config()
     item = _item()
     markup = (
@@ -65,8 +78,8 @@ def test_http_challenge_detection_keeps_captcha_iframe_signal(tmp_path):
         config, tmp_path,
     )
 
-    assert item["content_status"] == ContentStatus.VERIFICATION_REQUIRED
-    assert item["metadata"]["content_challenge"]["iframe_detected"] is True
+    assert item["content_status"] != ContentStatus.VERIFICATION_REQUIRED
+    assert "content_challenge" not in item["metadata"]
 
 
 def test_yicai_article_uses_specific_body_region_when_title_is_outside():
@@ -769,7 +782,7 @@ def test_unlabeled_article_image_does_not_displace_publisher_metadata(tmp_path):
 
 
 @pytest.mark.parametrize(("http_status", "expected"), [
-    (403, ContentStatus.VERIFICATION_REQUIRED),
+    (403, ContentStatus.FAILED),
     (429, ContentStatus.VERIFICATION_REQUIRED),
     (500, ContentStatus.FAILED),
 ])
@@ -831,14 +844,14 @@ def test_http_first_content_extraction_avoids_browser_for_static_article(
     assert browser_targets == []
     assert item["content_status"] == ContentStatus.FULL_TEXT
     assert item["metadata"]["content_acquisition"] == "http"
-    assert item["published_at"] == "2026-07-24T08:00:00Z"
+    assert item["published_at"] == "2026-07-24T16:00:00+08:00"
     assert item["image_url"] == "https://www.bbc.com/image/story.png"
     assert Path(item["content_path"]).is_file()
 
 
 @pytest.mark.parametrize(("role", "expected_index_date"), [
     ("discovery", "2026-09-27T02:22:41+08:00"),
-    (None, "2026-09-19T12:20:26Z"),
+    (None, "2026-09-19T20:20:26+08:00"),
 ])
 def test_original_page_date_does_not_replace_discovery_posted_date(
     tmp_path: Path, role: str | None, expected_index_date: str,
@@ -847,6 +860,7 @@ def test_original_page_date_does_not_replace_discovery_posted_date(
     item = _item("hacker-news-post")
     item["published_at"] = "2026-09-27T02:22:41+08:00"
     if role:
+        item["source_id"] = "hacker_news"
         item["metadata"]["role"] = role
     article_text = " ".join(["The paper describes its original systems research"] * 40)
     markup = (
@@ -911,7 +925,7 @@ def test_http_first_content_extraction_uses_browser_only_for_javascript_shell(
     assert item["content_status"] == ContentStatus.METADATA_ONLY
 
 
-def test_http_access_failure_stays_verification_required_without_browser_retry(
+def test_http_access_failure_stays_failed_without_browser_retry(
     tmp_path: Path,
 ):
     config = load_config()
@@ -934,8 +948,8 @@ def test_http_access_failure_stays_verification_required_without_browser_retry(
     )
 
     assert browser_targets == []
-    assert item["content_status"] == ContentStatus.VERIFICATION_REQUIRED
-    assert item["metadata"]["content_challenge"]["required"] is True
+    assert item["content_status"] == ContentStatus.FAILED
+    assert item["metadata"]["content_error"] == "HTTP 403"
 
 
 def test_content_pipeline_reuses_existing_successful_content(monkeypatch, tmp_path: Path):

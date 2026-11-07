@@ -71,7 +71,7 @@ def summarize(records: list[dict]) -> dict:
 
 def measure(
     log_root: Path, root: str, turn: str, start: datetime, end: datetime,
-    *, per_request: bool = False,
+    *, per_request: bool = False, include_agent_paths: list[str] | None = None,
 ) -> dict:
     """以首条会话元数据建立血缘，再筛选和去重逐请求计量。"""
     files = []
@@ -108,6 +108,9 @@ def measure(
     requests = []
     for path, tid, _, agent_path in files:
         if tid not in descendants:
+            continue
+        if (include_agent_paths is not None and tid != root
+                and agent_path not in include_agent_paths):
             continue
         contexts = {}
         selected = []
@@ -149,6 +152,7 @@ def measure(
                     request_usage = summarize([usage])
                     requests.append({
                         "timestamp_utc": stamp.isoformat(),
+                        "agent_path": agent_path or "/root",
                         "category": agent_category,
                         "model": model if model != "unknown" else None,
                         "usage": {field: request_usage[field] for field in FIELDS},
@@ -157,6 +161,7 @@ def measure(
             all_usage.extend(usages)
             agents.append(
                 {
+                    "agent_path": agent_path or "/root",
                     "category": agent_category,
                     "turn_count": len({t for t, _, _ in selected if t is not None}),
                     "models": {
@@ -187,12 +192,14 @@ def main() -> None:
     parser.add_argument("--end", type=timestamp, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--per-request", action="store_true")
+    parser.add_argument("--include-agent-path", action="append", default=None,
+                        help="Include root and only these exact descendant task paths; repeatable")
     args = parser.parse_args()
     if args.end < args.start:
         parser.error("--end must be at or after --start")
     result = measure(
         args.log_root, args.root_thread_id, args.root_turn_id, args.start, args.end,
-        per_request=args.per_request,
+        per_request=args.per_request, include_agent_paths=args.include_agent_path,
     )
     with args.output.open("x", encoding="utf-8") as stream:
         json.dump(result, stream, ensure_ascii=False, indent=2)

@@ -6,12 +6,14 @@ import json
 import re
 from copy import deepcopy
 from dataclasses import replace
+from datetime import datetime
 from math import ceil
 from pathlib import Path
 from urllib.parse import parse_qs, parse_qsl, urlsplit
 
 from jsonschema import Draft202012Validator
 
+from .article_time import normalize_time, original_publication_time
 from .config import AppConfig, MediaConfig, project_root
 from .content_extraction import is_navigation_only, strip_content_frontmatter
 from .image_policy import (
@@ -23,7 +25,7 @@ from .localization import source_matches_output_language, translated_title
 from .narrative_store import digest, file_ref, load_artifact, parent_path, save_artifact
 from .runtime import require_data_root_path
 from .storage import exclusive_lock
-from .utils import TRACKING_QUERY_PREFIXES, read_json_object, write_text_atomic
+from .utils import TRACKING_QUERY_PREFIXES, canonicalize_url, read_json_object, write_text_atomic
 
 DOMAINS = ("geopolitics", "markets", "ai_technology")
 VIDEO_TITLE_POLICY = "selected-leads-v1"
@@ -73,6 +75,211 @@ INDEX_OUTPUT_SCHEMA["properties"]["slides"]["items"]["properties"].update({
 })
 
 
+def _publication_time(item: dict) -> str | None:
+    """处理：换算原文发表时间，发现平台时间不参与资格判断。
+    输入：规范条目及已有原网页元数据。
+    输出：上海时间或日精度日期，无法确定时为空。
+    """
+    return original_publication_time(item)
+
+
+def _publication_date(item: dict) -> str | None:
+    """处理：提取来源发表自然日。
+    输入：规范条目。
+    输出：上海日期，未知时为空。
+    """
+    value = _publication_time(item)
+    return value[:10] if value else None
+
+
+def _current_events(events: list[dict], index: dict) -> list[dict]:
+    """处理：按版本自然日及冻结上界过滤事件资格。
+    输入：事件引用和规范索引；各来源日期独立判断。
+    输出：至少一源为当日已发表新闻的事件，保留全部来源引用。
+    """
+    items = {item["item_id"]: item for item in index["items"]}
+    day = index["date"]
+    raw_end = (index.get("collection_window") or {}).get("end") or index.get("generated_at")
+    cutoff = normalize_time(str(raw_end or ""), "Asia/Shanghai")
+
+    def eligible(ref):
+        """处理：比较单来源日期和冻结时刻。
+        输入：事件的单来源引用。
+        输出：是否可纳入今日流。
+        """
+        stamp = _publication_time(items[ref["item_id"]])
+        return bool(stamp and stamp[:10] == day and (
+            len(stamp) == 10 or not cutoff or len(cutoff) == 10
+            or datetime.fromisoformat(stamp) <= datetime.fromisoformat(cutoff)))
+
+    return [event for event in events if any(eligible(ref) for ref in event["source_refs"])]
+
+
+def apply_candidate_review(events: list[dict], review: dict) -> list[dict]:
+    """处理：应用模型逐事件排除及语义合并。
+    输入：日期合格的事件和一次候选审核决定。
+    输出：按审核顺序排列的事件，合并项保留所有原始来源。
+    """
+    by_id = {event["event_id"]: deepcopy(event) for event in events}
+    excluded = set(review.get("exclude_event_ids", []))
+    unknown = excluded - by_id.keys()
+    used = set(excluded)
+    if unknown:
+        raise ValueError("Review references unknown events: " + ", ".join(sorted(unknown)))
+    for group in review.get("merge_groups", []):
+        if len(group) < 2 or len(set(group)) != len(group) or any(
+            event_id not in by_id or event_id in used for event_id in group
+        ):
+            raise ValueError("Review merge groups must contain distinct eligible event IDs")
+        leader = by_id[group[0]]
+        refs = {ref["item_id"]: ref for event_id in group
+                for ref in by_id[event_id]["source_refs"]}
+        leader["source_refs"] = list(refs.values())
+        used.update(group)
+        excluded.update(group[1:])
+    selected = review.get("selected_event_ids")
+    if selected is not None:
+        if len(selected) != len(set(selected)) or any(
+            event_id not in by_id or event_id in excluded for event_id in selected
+        ):
+            raise ValueError("Selected review events must be distinct retained event IDs")
+        return [by_id[event_id] for event_id in selected]
+    return [by_id[event["event_id"]] for event in events
+            if event["event_id"] not in excluded]
+
+
+def _review_lead(body: str, description: str) -> tuple[str, int]:
+    """处理：跳过导航和孤立短行，为审阅提取首个实质正文段。
+    输入：已抽取正文及公开描述；短公告仍可作为回退证据。
+    输出：三百字以内的开头与可用正文字符数，仅提示材料量而不筛除事件。
+    """
+    paragraphs = [part.strip() for part in re.split(r"\n\s*\n|\n", body) if part.strip()]
+    paragraphs = [part for part in paragraphs if not is_navigation_only(part) and not re.match(
+        r"^(?:分享到[：:]?.*|分享|返回首页|(?:\w+\s+)?Homepage|Home|Menu|Sign in|Log in)$",
+        part, re.I)]
+    substantive = [part for part in paragraphs if len(part) >= 20]
+    lead = next(iter(substantive or paragraphs), description)
+    return lead[:300], sum(len(part) for part in paragraphs)
+
+
+def review_candidates(report: dict | None, index: dict, max_news: int = 50,
+                      data_dir: Path | None = None) -> dict:
+    """处理：投影全部日期合格事件，供模型比较重要性后决定讲稿选题。
+    输入：已保存日报或独立索引，以及最终入选事件数上限。
+    输出：全体候选的来源身份、日期和有界证据摘要；正文留给入选后的作者包。
+    """
+    events = (select_news(report, index, max_news=max(1, len(index["items"]))) if report else
+              select_index_news(index, max_news=max(1, len(index["items"]))))
+    items = {item["item_id"]: item for item in index["items"]}
+    rows = [{"event_id": event["event_id"], "title": event.get("title"),
+             "importance": event.get("importance"),
+             "summary": str(event.get("tldr") or "")[:240], "sources": [
+                 {"item_id": ref["item_id"], "title": items[ref["item_id"]].get("title"),
+                  "source_id": items[ref["item_id"]].get("source_id"),
+                  "source_name": items[ref["item_id"]].get("source_name"),
+                  "url": items[ref["item_id"]]["url"],
+                  "published_at": items[ref["item_id"]].get("published_at"),
+                  "original_published_at": _publication_time(items[ref["item_id"]]),
+                  "publication_date": _publication_date(items[ref["item_id"]])}
+                 for ref in event["source_refs"]]} for event in events]
+    if data_dir is not None:
+        for row, event in zip(rows, events, strict=True):
+            for source, evidence in zip(
+                row["sources"], _article_evidence(event, items, data_dir), strict=True
+            ):
+                body = evidence["body"].strip()
+                metadata = items[evidence["item_id"]].get("metadata") or {}
+                quality = evidence["content_quality"] or {}
+                completion = evidence["content_completion"] or {}
+                lead, evidence_chars = _review_lead(body, evidence["description"])
+                issues = [evidence["content_gap"]] if evidence.get("content_gap") else []
+                issues.extend(key for key in ("response_truncated", "incomplete_marker",
+                                               "numeric_tables_without_headers")
+                              if quality.get(key))
+                source.update({
+                    "lead": lead,
+                    "body_chars": len(body),
+                    "evidence_chars": evidence_chars or len(evidence["description"]),
+                    "access": evidence["content_status"],
+                    "feed_available": bool(metadata.get("feed_content_path")),
+                    "content_quality": {key: quality[key] for key in
+                                        ("extraction_status", "title_overlap", "region")
+                                        if key in quality},
+                    "content_completion": completion.get("status"),
+                    "issues": issues,
+                })
+    return {"date": index["date"], "timezone": "Asia/Shanghai", "max_news": max_news,
+            "eligible_count": len(rows), "candidates": rows,
+            "status": "ready" if rows else "no_items",
+            "message": (None if rows else
+                        f"No eligible news for {index['date']} before the frozen cutoff; "
+                        "collect additional current sources or deliver the report alone."),
+            "decision_format": {"selected_event_ids": [], "exclude_event_ids": [],
+                                "merge_groups": [], "rank_reasons": {}},
+            "instruction": f"Review all candidates and select at most {max_news} events "
+                           "before narration. "
+                           "Merge different-source reports of one event; retain distinct events. "
+                           "Exclude old events republished without substantive new facts. "
+                           "Rank retained events "
+                           "by affected population/regions/industries, severity of policy/economic/"
+                           "technology/security effects, persistence/irreversibility and evidence "
+                           "strength; listing popularity and source order are not impact. "
+                           "Return one decision; report fewer stories if the pool is short."}
+
+
+def review_model_input(review: dict) -> dict:
+    """处理：将完整候选投影为共享列名与来源表，省去重复身份和日期文字。
+    输入：全候选审阅结果；来源正文摘要、标题与证据状态保持原值。
+    输出：可还原事件和条目身份的模型输入，原始 URL 留在索引中按条目 ID 查阅。
+    """
+    registry = []
+    source_indexes = {}
+    candidates = []
+    day = review["date"]
+    for event in review["candidates"]:
+        sources = []
+        for source in event["sources"]:
+            identity = (source.get("source_id"), source.get("source_name"))
+            if identity not in source_indexes:
+                source_indexes[identity] = len(registry)
+                registry.append(list(identity))
+            stamp = source.get("original_published_at")
+            if stamp == day:
+                stamp = ""
+            elif stamp and stamp.startswith(day + "T") and stamp.endswith("+08:00"):
+                stamp = stamp[11:-6]
+            details = {key: source[key] for key in (
+                "content_quality", "content_completion", "issues", "body_chars", "evidence_chars"
+            ) if source.get(key) or (key in {"body_chars", "evidence_chars"} and key in source)}
+            if source.get("feed_available"):
+                details["feed_available"] = True
+            item_id = source["item_id"]
+            if event["event_id"] == "index-" + item_id:
+                item_id = None
+            sources.append([item_id, source_indexes[identity], source.get("title"), stamp,
+                            source.get("lead", ""), source.get("access"), details])
+        candidates.append([event["event_id"], sources, event.get("title"),
+                           event.get("importance"), event.get("summary") or None])
+    return {
+        **{key: review[key] for key in ("date", "timezone", "max_news", "eligible_count",
+                                       "status", "decision_format", "instruction")},
+        "source_columns": ["source_id", "source_name"], "source_registry": registry,
+        "candidate_columns": ["event_id", "sources", "title", "importance", "summary"],
+        "evidence_columns": ["item_id", "source_registry_index", "title",
+                             "original_published_at", "lead", "access", "details"],
+        "encoding": (
+            "Each candidate and source is an array in the declared column order. "
+            "A null item_id means event_id without its index- prefix. "
+            "An empty timestamp is the edition date with date-only precision; "
+            "a time-only timestamp uses the edition date and Asia/Shanghai timezone. "
+            "Other timestamps retain their original date and offset. "
+            "All titles, leads and access statuses are unchanged. "
+            "Item IDs resolve original URLs in the authoritative index."
+        ),
+        "candidates": candidates,
+    }
+
+
 def select_index_news(
     index: dict,
     *,
@@ -114,7 +321,8 @@ def select_index_news(
     unknown = excluded - {event["event_id"] for event in selected}
     if unknown:
         raise ValueError("Excluded event IDs are not in this index: " + ", ".join(sorted(unknown)))
-    return [event for event in selected if event["event_id"] not in excluded][:max_news]
+    return _current_events([event for event in selected
+                            if event["event_id"] not in excluded], index)[:max_news]
 
 
 def _index_candidate(event: dict, indexed: dict, data_dir: Path) -> dict:
@@ -215,8 +423,8 @@ def select_news(
     exclude_event_ids: list[str] | None = None,
 ) -> list[dict]:
     """处理：合并日报中的精选事件与简报，去重并排除指定事件后按重要性截取。
-    输入：已存日报、权威索引及可选 ID、分数门槛和条数上限；不按日期二次裁剪。
-    输出：日报内按重要性稳定排序的至多 max_news 条新闻，来源时间保持原值。
+    输入：已存日报、权威索引及可选 ID、分数门槛和条数上限。
+    输出：原文日期属于本版上海自然日的候选，按既有重要性稳定排序供审核。
     """
     if not 0 <= min_importance <= 100:
         raise ValueError("min_importance must be between 0 and 100")
@@ -272,7 +480,8 @@ def select_news(
         raise ValueError("Excluded event IDs are not in this report: " + ", ".join(sorted(unknown)))
     eligible = [e for e in merged if e["event_id"] not in excluded
                 and (selected or e.get("importance", 0) >= min_importance)]
-    return sorted(eligible, key=lambda e: -e.get("importance", 0))[:max_news]
+    return sorted(_current_events(eligible, index),
+                  key=lambda e: -e.get("importance", 0))[:max_news]
 
 
 def _merge_image_detail(known: dict, new: dict) -> dict:
@@ -603,6 +812,11 @@ def _candidate(event: dict, report: dict, briefs: dict, indexed: dict, data_dir:
             "url": ref["url"], "published_at": item.get("published_at"),
             "access": item.get("content_status") or ref.get("access", "metadata_only"),
         })
+    item_ids = {ref["item_id"] for ref in event["source_refs"]}
+    related_event_ids = {event["event_id"]} | {
+        row["event_id"] for section in report["sections"] for row in section.get("items", [])
+        if item_ids.intersection(ref["item_id"] for ref in row["source_refs"])
+    }
     return {
         "event_id": event["event_id"], "title": event["title"], "summary": event["tldr"],
         "why_it_matters": event.get("why_it_matters", ""),
@@ -611,7 +825,7 @@ def _candidate(event: dict, report: dict, briefs: dict, indexed: dict, data_dir:
         "analyses": [{k: a.get(k) for k in (
             "domain", "claim", "narrative", "counter_evidence", "watch_signals"
         )} for a in report.get("analyses", [])
-            if event["event_id"] in a.get("evidence_event_ids", [])],
+            if related_event_ids.intersection(a.get("evidence_event_ids", []))],
         "images": _news_images(event, briefs, indexed),
     }
 
@@ -717,6 +931,54 @@ def _batch_model_input(
     return model_input
 
 
+def _bind_index_review_events(
+    events: list[dict], index: dict, review: dict, report: dict,
+) -> list[dict]:
+    """处理：把报告前已审阅的索引事件按条目身份绑定到报告文字。
+    输入：报告事件、同版索引和提前完成的候选决定。
+    输出：保留索引事件身份与来源边界的报告候选，审阅决定无需改写或重复运行。
+    """
+    ids = [*review.get("selected_event_ids", []), *review.get("exclude_event_ids", []),
+           *(key for group in review.get("merge_groups", []) for key in group)]
+    if not any(key.startswith("index-") for key in ids):
+        return events
+    report_by_item = {ref["item_id"]: event for event in events for ref in event["source_refs"]}
+    refs_by_item = {ref["item_id"]: ref for event in events for ref in event["source_refs"]}
+    indexed = {item["item_id"]: item for item in index["items"]}
+    by_identity = {}
+    for item_id in report_by_item:
+        item = indexed.get(item_id, refs_by_item[item_id])
+        identity = canonicalize_url(item.get("canonical_url") or item.get("url", ""))
+        if identity:
+            by_identity.setdefault(identity, item_id)
+    # 同源去重可能让审阅的条目只剩报告中的原文代表；保留审阅 ID 和实际来源引用。
+    for item_id, item in indexed.items():
+        if item_id in report_by_item:
+            continue
+        identity = canonicalize_url(item.get("canonical_url") or item.get("url", ""))
+        representative = by_identity.get(identity)
+        if representative is not None:
+            report_by_item[item_id] = report_by_item[representative]
+            refs_by_item[item_id] = {**refs_by_item[representative], "item_id": item_id,
+                                     "title": item.get("title") or refs_by_item[representative][
+                                         "title"], "url": item["url"],
+                                     "access": item.get("content_status") or refs_by_item[
+                                         representative].get("access", "metadata_only")}
+    briefs = {brief["item_id"]: brief for section in report["sections"]
+              for brief in section.get("briefs", [])}
+    bound = []
+    for event in select_index_news(index, max_news=len(index["items"])):
+        item_ids = [ref["item_id"] for ref in event["source_refs"]]
+        available = [item_id for item_id in item_ids if item_id in report_by_item]
+        if not available:
+            continue
+        text = deepcopy(briefs.get(available[0], report_by_item[available[0]]))
+        text["title"] = translated_title(text, report.get("language", "zh-CN")) or text["title"]
+        bound.append({**text, "event_id": event["event_id"],
+                      "source_refs": [deepcopy(refs_by_item[item_id]) for item_id in available]})
+    return bound
+
+
 def prepare_slides(
     report_path: Path | None,
     index_path: Path,
@@ -733,6 +995,7 @@ def prepare_slides(
     reuse_plan: Path | None = None,
     config: AppConfig | None = None,
     resume_plan: bool = False,
+    review: dict | None = None,
 ) -> dict:
     """处理：按重要性截取日报新闻并按每批输入与输出预留分包。
     输入：明确日报/索引修订、可选分数门槛、手选 ID、数量上限和批次成本约束。
@@ -750,9 +1013,13 @@ def prepare_slides(
     if report and any(report[key] != index[key] for key in ("date", "edition")):
         raise ValueError("Report and index must belong to the same edition")
     events = (select_news(report, index, min_importance=min_importance, item_ids=item_ids,
-                          max_news=max_news, exclude_event_ids=exclude_event_ids) if report else
+                          max_news=len(index["items"]),
+                          exclude_event_ids=exclude_event_ids) if report else
               select_index_news(index, min_importance=min_importance, item_ids=item_ids,
-                                max_news=max_news, exclude_event_ids=exclude_event_ids))
+                                max_news=len(index["items"]), exclude_event_ids=exclude_event_ids))
+    if report and review:
+        events = _bind_index_review_events(events, index, review, report)
+    events = apply_candidate_review(events, review or {})[:max_news]
     if not events:
         raise ValueError("No news matches the selection")
     indexed = {i["item_id"]: i for i in index["items"]}
@@ -784,6 +1051,9 @@ def prepare_slides(
             )
             index = read_json_object(index_path, "Enriched slide index")
             indexed = {item["item_id"]: item for item in index["items"]}
+            events = _current_events(events, index)
+            if not events:
+                raise ValueError("No news matches the selection")
     briefs = ({b["item_id"]: b for s in report["sections"] for b in s.get("briefs", [])}
               if report else {})
     candidates = ([_candidate(e, report, briefs, indexed, data_dir) for e in events] if report else
@@ -835,6 +1105,7 @@ def prepare_slides(
                     {k: v for k, v in item.items() if k != "existing_narration"}
                     for item in candidates
                 ]
+                and previous.get("candidate_review") == review
                 and previous.get("exclude_event_ids", []) == sorted(set(exclude_event_ids or []))
                 and previous.get("model_input_template") == _model_input([], style, language, mode)
                 and previous.get("video_title_policy") == VIDEO_TITLE_POLICY
@@ -856,7 +1127,9 @@ def prepare_slides(
                 == (file_ref(report_path, data_dir) if report_path else None)
             ):
                 # 内容、指令和预算相同则沿用原计划，保留已渲染页面与提交进度。
-                packets = [next(reuse_plan.parent.glob(f"slides-packet-{number}-r*.json"))
+                packets = [next(path for path in reuse_plan.parent.glob(
+                    f"slides-packet-{number}-r*.json") if re.fullmatch(
+                        rf"slides-packet-{number}-r\d+\.json", path.name))
                            for number in range(1, len(previous["batches"]) + 1)]
                 status = slides_status(reuse_plan, data_dir)
                 return {"plan_path": str(reuse_plan), "packet_paths": list(map(str, packets)),
@@ -939,12 +1212,13 @@ def prepare_slides(
         "as_of": report["generated_at"] if report else index.get("generated_at"),
         "news": candidates,
         "input_mode": mode,
+        "candidate_review": review,
         "model_input_template": _model_input([], style, language, mode),
         "video_title_policy": VIDEO_TITLE_POLICY,
         "reused_slides": reused,
         "exclude_event_ids": sorted(set(exclude_event_ids or [])),
         "selection_policy": (
-            "report-admitted-importance-v1"
+            "edition-day-reviewed-v1" if review is not None else "report-admitted-importance-v1"
             if report
             else "index-selected-items-v1"
             if item_ids
@@ -1147,7 +1421,9 @@ def slides_status(plan_path: Path, data_dir: Path) -> dict:
         else:
             pending.append(number)
             pending_news_count += len(plan["payload"]["batches"][number - 1])
-            packet_paths = sorted(plan_path.parent.glob(f"slides-packet-{number}-r*.json"))
+            packet_paths = sorted(path for path in plan_path.parent.glob(
+                f"slides-packet-{number}-r*.json") if re.fullmatch(
+                    rf"slides-packet-{number}-r\d+\.json", path.name))
             if packet_paths:
                 packet = load_artifact(packet_paths[0], data_dir)
                 estimated_input_tokens += packet["payload"]["budget"]["estimated_input_tokens"]
@@ -1173,6 +1449,34 @@ def _deck_markdown(deck: dict) -> str:
         lines.extend(f"\n> {i['caption']}" for i in slide["images"] if i["caption"])
         lines.append("")
     return "\n".join(lines)
+
+
+def prefetch_slide_images(plan_path: Path, data_dir: Path, *,
+                          media_config: MediaConfig | None = None, refresh: bool = False) -> dict:
+    """处理：在讲稿写作期间补取公开图片，并原子保存同计划的完整图片结果。
+    输入：不可变图文计划、数据根和媒体配置；显式刷新可重新采集图片。
+    输出：单一回执路径及抓取计数，渲染阶段直接复用其中的新闻图片和计量。
+    """
+    from .slide_images import enrich_slide_images
+    from .utils import write_json
+
+    plan = load_artifact(plan_path, data_dir, kind="slides-plan")
+    receipt_path = plan_path.with_name("images-" + plan_path.name)
+    reused = receipt_path.is_file() and not refresh
+    if reused:
+        receipt = read_json_object(receipt_path, "Slide image prefetch")
+    else:
+        news, metrics = enrich_slide_images(
+            plan["payload"]["news"], data_dir, media_config or MediaConfig())
+        receipt = {"plan_path": str(plan_path.resolve()), "news": news,
+                   "image_enrichment": metrics}
+        write_json(receipt_path, receipt)
+    metrics = receipt["image_enrichment"]
+    return {"status": "reused" if reused else "prefetched", "receipt_path": str(receipt_path),
+            "news_count": len(receipt["news"]),
+            **{key: value for key, value in metrics.items() if not isinstance(value, list)},
+            "source_failure_count": len(metrics.get("source_failures", [])),
+            "image_failure_count": len(metrics.get("image_failures", []))}
 
 
 def render_slides(
@@ -1212,7 +1516,11 @@ def render_slides(
     if not news:
         raise ValueError("No news in this slide plan")
     image_metrics = None
-    if refresh_images:
+    prefetch_path = plan_path.with_name("images-" + plan_path.name)
+    if prefetch_path.is_file():
+        prefetched = read_json_object(prefetch_path, "Slide image prefetch")
+        news, image_metrics = prefetched["news"], prefetched["image_enrichment"]
+    elif refresh_images:
         news, image_metrics = enrich_slide_images(news, data_dir, media_config or MediaConfig())
     else:
         # 离线改版复用上次已保存的图片，不重新抓网页或请求模型。

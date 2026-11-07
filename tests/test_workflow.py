@@ -522,6 +522,45 @@ def test_prepare_reuses_fresh_monitor_snapshot_without_refresh(
     assert run["artifacts"]["monitor_snapshot_path"] == str(snapshot_path)
 
 
+def test_slide_candidate_enrichment_reuses_existing_content_and_respects_limit(
+    monkeypatch, tmp_path: Path,
+):
+    config = load_config()
+    source_id = config.sources[0].id
+    data_dir = tmp_path / "data"
+    run_path = data_dir / "runs" / "2026-07-14" / "morning.json"
+    ids = [f"item-{n}" for n in range(16)]
+    index_path = write_json(data_dir / "indexes" / "morning-r1.json", {
+        "date": "2026-07-14", "edition": "morning", "sources": [],
+        "items": [{"item_id": key, "source_id": source_id} for key in ids],
+    })
+    write_json(run_path, {"date": "2026-07-14", "edition": "morning",
+                          "status": RunStatus.AWAITING_SELECTION, "collection_window": {},
+                          "artifacts": {"index_path": str(index_path)}})
+    monkeypatch.setattr("signaltrail.news_slides.review_candidates", lambda *_: {
+        "candidates": [{"sources": [{"item_id": key}]} for key in ids], "reserves": []})
+    monkeypatch.setattr("signaltrail.collection_diagnostics.content_gaps",
+                        lambda item, _: [] if item["item_id"] == ids[0] else ["article_body"])
+    calls = []
+    def extract(**kwargs):
+        calls.append(kwargs)
+        return kwargs["index_path"]
+    monkeypatch.setattr("signaltrail.workflow.extract_content", extract)
+    monkeypatch.setattr("signaltrail.workflow.build_context",
+                        lambda index, _config, data, edition, collection_window=None:
+                        write_json(data / "context" / f"{edition}.json", {}))
+
+    enrich_edition(run_path, config, data_dir, [ids[-1]], 14, slides_candidates=True)
+    result = read_json(run_path)["artifacts"]
+    assert calls[0]["selected_ids"] == [ids[-1], *ids[1:14]]
+    assert calls[0]["config"].budget.max_fulltext_per_run == 14
+    assert result["enrichment"]["slides_candidates"] == {
+        "candidate_count": 16, "skipped_count": 1, "supplemented_count": 14,
+        "remaining_count": 1,
+    }
+    assert result["index_path"] == str(index_path)
+
+
 def test_enrich_edition_records_only_ids_accepted_under_hard_cap(monkeypatch, tmp_path: Path):
     config = load_config()
     data_dir = tmp_path / "data"
@@ -595,7 +634,12 @@ def test_verified_index_reopens_published_run_as_a_report_revision(monkeypatch, 
     data_dir = tmp_path / "data"
     index_path = write_json(
         data_dir / "indexes" / "2026-07-15" / "morning-r2.json",
-        {"date": "2026-07-15", "edition": "morning", "items": [], "sources": []},
+        {"date": "2026-07-15", "edition": "morning",
+         "items": [{"item_id": "new-item"}], "sources": [
+            {"source_id": "ok", "status": "success"},
+            {"source_id": "verify", "status": "verification_required"},
+            {"source_id": "limited", "status": "rate_limited"},
+            {"source_id": "partial", "status": "partial"}]},
     )
     old_report = data_dir / "reports" / "2026-07-15" / "morning-r1.json"
     old_index = data_dir / "indexes" / "2026-07-15" / "morning-r1.json"
@@ -612,12 +656,17 @@ def test_verified_index_reopens_published_run_as_a_report_revision(monkeypatch, 
                 "json_path": str(old_report),
                 "markdown_path": str(old_report.with_suffix(".md")),
                 "content_hash": "abc123",
+                "collection_metrics": {"candidate_count": 181, "source_count": 1,
+                                       "monitor_refresh": True,
+                                       "collection_global_concurrency": 8},
             },
             "publication": {"page_id": "notion-page", "status": "published"},
             "evaluation": {"status": "completed"},
         },
     )
     context_path = data_dir / "context" / "2026-07-15" / "morning-r2.json"
+    coordinator = context_path.with_name(f"{context_path.stem}-coordinator.json")
+    write_json(coordinator, {})
     captured: dict[str, str] = {}
 
     def fake_build_context(_index_path, config, *_args, **_kwargs):
@@ -635,6 +684,14 @@ def test_verified_index_reopens_published_run_as_a_report_revision(monkeypatch, 
     assert captured["language"] == "en"
     assert "publication" not in run
     assert "evaluation" not in run
+
+    assert run["artifacts"]["coordinator_path"] == str(coordinator.resolve())
+    assert run["artifacts"]["collection_metrics"] == {
+        "source_count": 4, "candidate_count": 1, "monitor_refresh": True,
+        "collection_global_concurrency": 8, "status_breakdown": {
+            "success": 1, "verification_required": 1, "rate_limited": 1, "partial": 1}}
+    assert run["pending_sources"] == ["verify", "limited", "partial"]
+    assert run["verification_sources"] == ["verify", "limited"]
 
 
 @pytest.mark.parametrize(
@@ -682,7 +739,7 @@ def test_deferred_tail_returns_after_html_then_finishes_requested_work(
                 "report_id": f"daily-{date}-morning-r1",
                 "date": date,
                 "edition": "morning",
-                "revision": 1,
+                "revision": 1, "sections": [],
             },
         )
         return {
@@ -743,7 +800,7 @@ def test_deferred_tail_returns_after_html_then_finishes_requested_work(
     assert run["artifacts"]["requested_formats"] == ["html"]
     assert "--publish" in run["tail"]["command"]
     assert run["tail"]["command"].startswith("signaltrail --data-dir ")
-    assert "finalize-edition" in run["next_action"]
+    assert "report alone" in run["next_action"]
 
     monkeypatch.setattr(
         "signaltrail.workflow.write_local_outputs",
@@ -808,7 +865,7 @@ def test_deferred_tail_returns_after_html_then_finishes_requested_work(
         assert not (data_dir / "usage").exists()
     assert run["artifacts"]["pdf_engine"] == "reportlab"
     assert run["metrics"]["pdf_projection_seconds"] >= 0
-    assert "finalize-edition" in run["next_action"]
+    assert "report alone" in run["next_action"]
 
 
 def test_schema_20_context_rejects_legacy_draft_before_persistence(monkeypatch, tmp_path: Path):
@@ -929,6 +986,7 @@ def test_deferred_tail_records_projection_failure_without_retracting_html(
 
 
 def test_saved_edition_prepares_slides_and_keeps_packet_paths(monkeypatch, tmp_path):
+    review = write_json(tmp_path / "review.json", {"selected_event_ids": []})
     data_dir = tmp_path / "data"
     report_path = write_json(data_dir / "reports" / "2026-09-24" / "morning-r1.json", {
         "edition": "morning", "revision": 1,
@@ -947,7 +1005,7 @@ def test_saved_edition_prepares_slides_and_keeps_packet_paths(monkeypatch, tmp_p
                                "packet_paths": packets, "news_count": 2, "batch_count": 1}
     ))
 
-    finalize_edition(run_path, tmp_path / "unused.json", data_dir)
+    finalize_edition(run_path, tmp_path / "unused.json", data_dir, slides_review=review)
 
     run = read_json(run_path)
     assert len(calls) == 1
@@ -957,6 +1015,7 @@ def test_saved_edition_prepares_slides_and_keeps_packet_paths(monkeypatch, tmp_p
 
 
 def test_first_finalize_prepares_slides_from_newly_saved_report(monkeypatch, tmp_path):
+    review = write_json(tmp_path / "review.json", {"selected_event_ids": []})
     data_dir = tmp_path / "data"
     index_path = write_json(data_dir / "indexes" / "2026-09-24" / "morning-r1.json", {
         "date": "2026-09-24", "edition": "morning", "items": [],
@@ -984,7 +1043,8 @@ def test_first_finalize_prepares_slides_from_newly_saved_report(monkeypatch, tmp
                                "packet_paths": packets, "news_count": 1, "batch_count": 1}
     ))
 
-    finalize_edition(run_path, draft, data_dir, output_config=OutputConfig(formats=["html"]))
+    finalize_edition(run_path, draft, data_dir, slides_review=review,
+                     output_config=OutputConfig(formats=["html"]))
 
     run = read_json(run_path)
     assert len(calls) == 1
@@ -1007,7 +1067,8 @@ def test_finalize_resumes_existing_report_and_reuses_slide_plan(monkeypatch, tmp
     })
     index_path = write_json(data_dir / "indexes" / "2026-09-24" / "morning-r1.json", {
         "date": "2026-09-24", "edition": "morning",
-        "items": [{**ref, "source_id": "example", "source_name": "Example"}],
+        "items": [{**ref, "source_id": "example", "source_name": "Example",
+                   "published_at": "2026-09-24"}],
     })
     prepared = prepare_slides(report_path, index_path, data_dir)
     plan_path = Path(prepared["plan_path"])
@@ -1036,6 +1097,7 @@ def test_finalize_keeps_custom_slide_limit_on_retry_and_changes_plan_explicitly(
 ):
     from signaltrail.narrative_store import save_artifact
 
+    review = write_json(tmp_path / "review.json", {"selected_event_ids": []})
     data_dir = tmp_path / "data"
     report_path = write_json(data_dir / "reports" / "r1.json", {
         "date": "2026-09-24", "edition": "morning", "revision": 1,
@@ -1050,12 +1112,14 @@ def test_finalize_keeps_custom_slide_limit_on_retry_and_changes_plan_explicitly(
     })
     calls = []
     exclusions = []
+    reuse_options = []
 
     def prepare(report, index, root, *, max_news, exclude_event_ids=None, reuse_plan=None,
-                config=None, resume_plan=False):
+                config=None, resume_plan=False, review=None):
         from signaltrail.narrative_store import load_artifact
 
         calls.append(max_news)
+        reuse_options.append((reuse_plan, resume_plan))
         exclusions.append(exclude_event_ids)
         if resume_plan and reuse_plan:
             prior = load_artifact(reuse_plan, root, kind="slides-plan")
@@ -1071,19 +1135,28 @@ def test_finalize_keeps_custom_slide_limit_on_retry_and_changes_plan_explicitly(
 
     monkeypatch.setattr("signaltrail.news_slides.prepare_slides", prepare)
 
-    finalize_edition(run_path, Path("unused.json"), data_dir, slides_max_news=20,
+    finalize_edition(run_path, Path("unused.json"), data_dir, slides_review=review,
+                     slides_max_news=20,
                      slides_exclude_event_ids=["bad-story"])
     custom_plan = read_json(run_path)["artifacts"]["slides"]["plan_path"]
-    finalize_edition(run_path, Path("unused.json"), data_dir)
+    finalize_edition(run_path, Path("unused.json"), data_dir, slides_review=review)
     assert calls == [20, 20]
     assert exclusions == [["bad-story"], ["bad-story"]]
     assert read_json(run_path)["artifacts"]["slides"]["plan_path"] == custom_plan
 
-    finalize_edition(run_path, Path("unused.json"), data_dir, slides_max_news=50,
+    finalize_edition(run_path, Path("unused.json"), data_dir, slides_review=review,
+                     slides_max_news=50,
                      slides_exclude_event_ids=[])
     assert exclusions[-1] == []
     assert calls == [20, 20, 50]
     assert read_json(run_path)["artifacts"]["slides"]["plan_path"] != custom_plan
+
+    independent = save_artifact(data_dir, "independent", "slides-plan", {
+        "budget": {"max_news": 50}}, {"index": index_path})
+    finalize_edition(run_path, Path("unused.json"), data_dir, slides_review=review,
+                     slides_reuse_plan=independent)
+    assert reuse_options[-1] == (independent, False)
+    assert read_json(run_path)["artifacts"]["slides"]["status"] == "prepared"
 
 
 def test_rendered_slide_sidecar_clears_pending_action(tmp_path):
@@ -1126,6 +1199,7 @@ def test_slides_recovery_action_uses_explicit_data_dir_for_legacy_run(tmp_path):
 
 
 def test_slides_prepare_failure_does_not_revoke_saved_report(monkeypatch, tmp_path):
+    review = write_json(tmp_path / "review.json", {"selected_event_ids": []})
     data_dir = tmp_path / "data"
     report_path = data_dir / "reports" / "2026-09-24" / "morning-r1.json"
     index_path = data_dir / "indexes" / "2026-09-24" / "morning-r1.json"
@@ -1138,7 +1212,7 @@ def test_slides_prepare_failure_does_not_revoke_saved_report(monkeypatch, tmp_pa
         _ for _ in ()
     ).throw(ValueError("No representative news selected")))
 
-    finalize_edition(run_path, tmp_path / "unused.json", data_dir)
+    finalize_edition(run_path, tmp_path / "unused.json", data_dir, slides_review=review)
 
     run = read_json(run_path)
     assert run["status"] == RunStatus.COMPLETED_PARTIAL
@@ -1150,9 +1224,11 @@ def test_finalize_reuses_enriched_index_after_navigation_evidence_failure(monkey
     from signaltrail.workflow import get_edition_status
 
     data_dir = tmp_path / "data"
+    review = write_json(tmp_path / "review.json", {"selected_event_ids": ["event-0"]})
     source = {"id": "bbc_world", "name": "BBC", "url": "https://www.bbc.com"}
     refs = [{"item_id": f"item-{number}", "title": f"Report {number}",
-             "url": f"https://www.bbc.com/news/{number}"} for number in range(2)]
+             "url": f"https://www.bbc.com/news/{number}", "published_at": "2026-09-24"}
+            for number in range(2)]
     report_path = write_json(data_dir / "reports" / "2026-09-24" / "morning-r1.json", {
         "date": "2026-09-24", "edition": "morning", "revision": 1,
         "title": "Daily news", "report_id": "report-1", "language": "en",
@@ -1191,7 +1267,8 @@ def test_finalize_reuses_enriched_index_after_navigation_evidence_failure(monkey
         return write_json(enriched_path, enriched)
 
     monkeypatch.setattr("signaltrail.content.extract_content", extract)
-    finalize_edition(run_path, report_path, data_dir, app_config=load_config(), slides_max_news=1)
+    finalize_edition(run_path, report_path, data_dir, app_config=load_config(), slides_max_news=1,
+                     slides_review=review)
     failed = read_json(run_path)["artifacts"]["slides"]
     assert failed["index_path"] == str(enriched_path)
     assert failed["source_index_path"] == str(index_path)
@@ -1203,8 +1280,10 @@ def test_finalize_reuses_enriched_index_after_navigation_evidence_failure(monkey
     assert '--slides-exclude-event-id "event-0"' in status["slides"]["next_action"]
     finalize_edition(run_path, report_path, data_dir, app_config=load_config())
     assert extractions == [index_path]
+    replacement = write_json(tmp_path / "replacement-review.json", {
+        "selected_event_ids": ["event-1"]})
     finalize_edition(run_path, report_path, data_dir, app_config=load_config(),
-                     slides_exclude_event_ids=["event-0"])
+                     slides_exclude_event_ids=["event-0"], slides_review=replacement)
     prepared = read_json(run_path)["artifacts"]["slides"]
     assert prepared["status"] == "prepared"
     assert prepared["index_path"] == str(enriched_path)
@@ -1276,3 +1355,23 @@ def test_finalize_rejects_an_index_that_lost_successful_enrichment(tmp_path):
 
     with pytest.raises(ValueError, match="lost previously successful full-text enrichment"):
         finalize_edition(run_path, draft, data_dir)
+
+
+@pytest.mark.parametrize("target_source", ["plan", "artifacts", "session"])
+def test_current_brief_plan_coverage_fallback_and_degraded_priority(tmp_path, target_source):
+    from signaltrail.workflow import _coverage_targets_for_run
+
+    context = write_json(tmp_path / "context/current.json", {"brief_plan": [
+        {"source_id": "source", "default_item_ids": ["today-1", "today-2"]}]})
+    index = write_json(tmp_path / "indexes/old.json", {"source_policies": {
+        "source": {"report_target": 376, "report_max": 376}}})
+    authoring = {}
+    if target_source == "artifacts":
+        authoring["coverage_targets"] = {"source": 1}
+    elif target_source == "session":
+        authoring["session_path"] = str(write_json(tmp_path / "context/session.json", {
+            "coverage_targets": {"source": 1}}))
+    run = {"artifacts": {"context_path": str(context), "index_path": str(index),
+                         "authoring": authoring}}
+    assert _coverage_targets_for_run(run, tmp_path) == {
+        "source": 2 if target_source == "plan" else 1}

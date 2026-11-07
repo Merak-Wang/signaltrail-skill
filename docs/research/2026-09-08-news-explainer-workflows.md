@@ -6,9 +6,9 @@
 **Purpose:** Choose a source-backed path from SignalTrail news evidence to narration and an illustrated reading stream.
 **Audience:** Readers of Chinese and English with some background; Chinese oral storytelling and English novel-like narrative, retaining professional analysis (confirmed by the user).
 
-[中文](../zh-CN/research/2026-09-08-news-explainer-workflows.md) · [Implementation roadmap](../roadmap.md) · [Experimental prompts](../../templates/news-explainer-prompts.md)
+[中文](../zh-CN/research/2026-09-08-news-explainer-workflows.md) · [Implementation roadmap](../roadmap.md) · Experimental prompts
 
-This record preserves the research-time proposals. The current experimental implementation and remaining gates are documented in [the explainer guide](../explainers.md).
+This record preserves the research-time proposals. The current experimental implementation and remaining gates are documented in the explainer guide.
 
 ## Recommendation
 
@@ -227,7 +227,7 @@ and transitions. Checking only the author's registered claims misses additions s
 Use one shared repair budget initially and revalidate the complete new revision. New evidence
 requires upstream work rather than a cosmetic repair. Artifact boundaries do not require one
 model call each: extraction and outlining can share a prototype call, while review remains isolated.
-The [experimental prompt pack](../../templates/news-explainer-prompts.md) specifies seven stages;
+The experimental prompt pack specifies seven stages;
 its proposed slots must be replaced by an injected runtime schema during implementation.
 
 ## The illustrated reading stream

@@ -8,13 +8,13 @@ browser:
   collection_global_concurrency: 8
   collection_per_domain_concurrency: 2
   http_prefetch_timeout_ms: 15000
+  http_prefetch_max_bytes: 8388608
   navigation_timeout_ms: 45000
   default_wait_ms: 3500
 collection:
   browser_extractor: auto
   fallback_extractor: trafilatura
   item_order: source
-  discovery_brief_limit: 30
 budget:
   max_runtime_seconds: 3600
   max_agent_tokens: 10000000
@@ -35,7 +35,8 @@ media:
   enabled: true
   max_images_per_report: 1000
   max_image_bytes: 8388608
-  max_total_bytes: 83886080
+  max_total_bytes: 262144000
+  prefetch_max_total_bytes: 262144000
   max_image_pixels: 25000000
   request_timeout_seconds: 10
   max_redirects: 5
@@ -555,6 +556,8 @@ sources:
   enabled: true
   mode: browser_index
   url: https://abcnews.com/
+  feed_urls:
+  - https://abcnews.go.com/abcnews/topstories
   include_domains:
   - abcnews.com
   max_items: 80

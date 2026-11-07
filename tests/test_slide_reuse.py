@@ -55,6 +55,17 @@ def test_matching_text_reuses_a_copy_without_images(accepted_plan):
     assert reusable_slides(plan, {"event-1": model_input}, root) == draft["slides"]
 
 
+def test_reuse_prefers_numeric_latest_result_revision(accepted_plan):
+    root, plan, model_input, draft = accepted_plan
+    packet = next(plan.parent.glob("slides-packet-1-r*.json"))
+    for revision in range(2, 11):
+        latest = deepcopy(draft)
+        latest["slides"][0]["video_tldr"] = f"第{revision}版已确认的变化。"
+        save_artifact(root, "old", "slides-result-1", {"draft": latest}, {"packet": packet})
+    reused = reusable_slides(plan, {"event-1": model_input}, root)
+    assert reused[0]["video_tldr"] == "第10版已确认的变化。"
+
+
 def test_unaccepted_packet_is_not_reused(tmp_path):
     news = {"event_id": "unaccepted", "analyses": []}
     model_input = _model_input([news], "style", "en")
@@ -164,7 +175,9 @@ def test_workflow_prepares_new_revision_with_the_known_old_plan(tmp_path, locati
     }
     run["artifacts"][location] = old if location == "slides" else {"slides": old}
     run_path = write_json(tmp_path / "runs/morning.json", run)
-    _prepare_edition_slides(run, run_path, tmp_path)
+    review = write_json(tmp_path / "review.json", {"selected_event_ids": ["brief-item-1"]})
+    run["artifacts"].setdefault("slides", {})["review_path"] = str(review)
+    _prepare_edition_slides(run, run_path, tmp_path, review_explicit=True)
     assert run["artifacts"]["slides"]["plan_path"] != old["plan_path"]
     plan = load_artifact(Path(run["artifacts"]["slides"]["plan_path"]), tmp_path)
     assert plan["payload"]["report_id"] == revised["report_id"]
@@ -189,7 +202,9 @@ def test_workflow_rebuilds_when_optional_old_plan_is_unavailable(tmp_path, locat
                location: old if location == "slides" else {"slides": old},
            }}
     run_path = write_json(tmp_path / "runs/morning.json", run)
-    _prepare_edition_slides(run, run_path, tmp_path)
+    review = write_json(tmp_path / "review.json", {"selected_event_ids": ["brief-item-1"]})
+    run["artifacts"].setdefault("slides", {})["review_path"] = str(review)
+    _prepare_edition_slides(run, run_path, tmp_path, review_explicit=True)
     result = run["artifacts"]["slides"]
     assert result["status"] == "prepared"
     assert result["plan_path"] != str(old_plan)

@@ -187,6 +187,25 @@ class ArticleItem:
         return asdict(self)
 
 
+def effective_page_results(pages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """处理：筛选页面最终状态，保留已恢复 HTTP 尝试作为原始诊断。
+    输入：同一来源按采集顺序记录的页面尝试。
+    输出：用于状态汇总的页面记录；浏览器成功后排除同 URL 的 HTTP 尝试。
+    """
+    recovered = {
+        page.get("url"): page.get("status") for page in pages
+        if isinstance(page, dict) and page.get("acquisition_method") == "browser"
+        and page.get("status") in {"success", "no_items"} and not page.get("error")
+    }
+    return [page for page in pages if isinstance(page, dict) and not (
+        page.get("acquisition_method") == "http"
+        and (recovered.get(page.get("url")) == "success" or (
+            recovered.get(page.get("url")) == "no_items"
+            and page.get("status") not in {"partial", "verification_required", "rate_limited"}
+        ))
+    )]
+
+
 @dataclass(slots=True)
 class SourceResult:
     """处理：封装来源结果相关的数据与行为。

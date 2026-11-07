@@ -81,7 +81,6 @@ def test_home_uses_only_saved_editions_and_never_substitutes_news_or_old_languag
     }
     assert current["events"][0]["title"] == "央行公布利率决议"
     detail = read_edition_event(tmp_path, report["report_id"], "EVT-one")
-    assert detail["event"]["research_available"] is False
     assert detail["articles"][0]["url"] == "https://news.example/rates"
 
 

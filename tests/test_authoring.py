@@ -324,6 +324,26 @@ def test_frozen_brief_preflight_rejects_impossible_new_status(published_at, sign
     assert validate_authoring_batch(packet, payload) == []
 
 
+def test_deterministic_watch_normalization_preserves_editorial_fields():
+    from signaltrail.authoring import _canonicalize_brief_statuses
+
+    packet = {"date": "2026-11-06", "candidates": [
+        {"item_id": "date", "published_at": "2026-11-06"},
+        {"item_id": "old", "published_at": "2026-07-01T08:00:00+08:00"},
+        {"item_id": "fresh", "published_at": "2026-11-06T08:00:00+08:00"},
+    ]}
+    payload = {"briefs": [{"item_id": item["item_id"], "title_zh": "原有译题",
+                            "tldr": "原有事实摘要", "importance": 85, "status": "NEW"}
+                           for item in packet["candidates"]]}
+    normalized = _canonicalize_brief_statuses(packet, payload)
+    assert [brief["status"] for brief in normalized["briefs"]] == ["WATCH", "WATCH", "NEW"]
+    assert all(brief["status"] == "NEW" for brief in payload["briefs"])
+    assert [{key: value for key, value in brief.items() if key != "status"}
+            for brief in normalized["briefs"]] == [
+                {key: value for key, value in brief.items() if key != "status"}
+                for brief in payload["briefs"]]
+
+
 @pytest.mark.parametrize("authorization", ["matching", "subset", "missing"])
 def test_brief_input_preserves_complete_writing_contract(
     tmp_path, authorization, monkeypatch, capsys,
@@ -1418,3 +1438,65 @@ def test_parallel_selection_counts_events_not_source_items(tmp_path, monkeypatch
     draft["domain_evidence_item_ids"]["geopolitics"] = ["b-0", "b-1"]
     write_json(tmp_path / "analysis-selection-draft.json", draft)
     assert _selection({}, tmp_path) == draft
+
+
+def test_brief_input_embeds_complete_local_evidence_in_priority_order(
+        tmp_path, monkeypatch, capsys):
+    from signaltrail.cli import main
+
+    body = "完整正文与表格\n|数值|说明|\n|318484|设计数|\n" + "正文材料。" * 20000
+    article = tmp_path / "article.md"
+    article.write_text(body, encoding="utf-8")
+    table = {"type": "table", "rows": [[{"text": "49%", "header": False,
+              "raw_html": "do not embed"}]], "raw_html": "do not embed"}
+    feed = write_json(tmp_path / "feed.json", {"text": "完整Feed正文。", "blocks": [table],
+                                               "html": "do not embed"})
+    blocks = write_json(tmp_path / "blocks.json", {"blocks": [
+        {"type": "paragraph", "text": "只有结构化段落。"}, table,
+        {"type": "image", "url": "data:image/base64,do not embed"}]})
+    candidates = [
+        {"item_id": "article", "content_path": str(article), "feed_content_path": str(feed),
+         "content_status": "full_text", "description": "short"},
+        {"item_id": "feed", "content_path": str(tmp_path / "missing.md"),
+         "feed_content_path": str(feed), "description": "short"},
+        {"item_id": "blocks", "feed_content_path": str(blocks)},
+        {"item_id": "description", "description": "公开描述。"},
+    ]
+    path = write_json(tmp_path / "packet.json", {"candidates": candidates,
+                      "author_item_ids": [row["item_id"] for row in candidates]})
+    before = path.read_bytes()
+    result = brief_authoring_input(path, tmp_path, include_evidence=True)
+    evidence = result["evidence_by_item_id"]
+    assert evidence["article"] == {"kind": "article", "path": str(article),
+                                    "text": body, "partial": False}
+    assert evidence["feed"]["text"] == "完整Feed正文。"
+    assert evidence["feed"]["partial"] is True
+    assert evidence["feed"]["tables"][0]["rows"] == [[{"text": "49%", "header": False}]]
+    assert evidence["blocks"]["text"] == "只有结构化段落。\n\n49%"
+    assert evidence["description"] == {"kind": "description", "text": "公开描述。",
+                                       "partial": True}
+    assert "do not embed" not in json.dumps(evidence)
+    assert result["candidates"][:3] == candidates[:3]
+    assert result["candidates"][3] == {"item_id": "description"}
+    assert json.dumps(result, ensure_ascii=False).count("公开描述。") == 1
+    assert path.read_bytes() == before
+    monkeypatch.setattr("signaltrail.cli.resolve_data_dir", lambda *_args, **_kwargs: tmp_path)
+    assert main(["brief-input", "--packet", str(path), "--include-evidence"]) == 0
+    assert json.loads(capsys.readouterr().out)["evidence_by_item_id"] == evidence
+
+
+def test_split_brief_batches_lower_only_their_missing_source_coverage(tmp_path):
+    accepted = write_json(tmp_path / "accepted.json", {"briefs": [{"item_id": "first"}]})
+    context = {"candidate_items": [], "reusable_briefs": [], "brief_plan": [{
+        "source_id": "source", "section_id": "information.international",
+        "batch_id": "original-batch", "target_count": 2,
+        "default_item_ids": ["first", "second"], "author_item_ids": ["first", "second"]}],
+        "brief_authoring_batches": [
+            {"batch_id": "part-1", "author_item_ids": ["first"]},
+            {"batch_id": "part-2", "author_item_ids": ["second"]}]}
+    session = {"batches": [
+        {"batch_id": "part-1", "result_path": str(accepted)},
+        {"batch_id": "part-2", "result_path": str(tmp_path / "missing.json")}]}
+    sections, missing, coverage = _merge_briefs(context, session, allow_degraded=True)
+    assert missing == ["part-2"] and coverage == {"source": 1}
+    assert [row["item_id"] for section in sections for row in section["briefs"]] == ["first"]

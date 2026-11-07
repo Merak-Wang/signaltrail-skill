@@ -20,13 +20,14 @@ dependencies = [
   "python-dotenv>=1.0,<2",
   "PyYAML>=6.0,<7",
   "reportlab>=4.2,<5",
+  "Send2Trash[win32]>=1.8.3,<2",
+  "tiktoken>=0.12,<1",
   "tzdata>=2024.1",
   "trafilatura>=2.0,<3",
 ]
 
 [project.optional-dependencies]
 dev = [ "pytest>=8.3,<9", "ruff>=0.9,<1"]
-extraction = []
 crawl4ai = ["crawl4ai>=0.9,<1"]
 
 [project.scripts]
@@ -36,6 +37,9 @@ signaltrail-hermes = "signaltrail.hermes_runner:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}
+
+[tool.setuptools.package-data]
+signaltrail = ["native/*.cpp"]
 
 [tool.setuptools.packages.find]
 where = ["src"]

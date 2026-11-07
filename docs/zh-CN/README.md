@@ -7,13 +7,12 @@
 | 指南 | 内容 |
 | --- | --- |
 | [使用说明](usage.md) | 安装、数据路径、语言、来源、完整计量和恢复 |
-| [采集扩展与研究接口](platform.md) | 采集监控、RSSHub/Crawl4AI、发现简报及日报／事件／研究接口 |
+| [采集扩展与档案接口](platform.md) | 采集监控、RSSHub/Crawl4AI、发现简报及日报与事件档案接口 |
 | [开发指南](development.md) | 测试选择、命名、代码与文档约定 |
 | [架构](ARCHITECTURE.md) | 模块归属、状态、文件和模型边界 |
 | [智能体说明](agent-instructions.md) | 修改本仓库的规则 |
-| [讲解实验指南](explainers.md) | 已实现命令、双语审核、不可变图文与实时准入边界 |
 | [新闻幻灯片](news-slides.md) | 日报与独立索引、图文演示、本地视频和音色配置 |
-| [路线图](roadmap.md) | 实验性讲解与研究工作流；实时准入和验收缺口 |
+| [路线图](roadmap.md) | 日报、图文与视频的维护范围 |
 | [技术债](exec-plans/tech-debt-tracker.md) | 已知实现缺口和退出条件 |
 
 [输出样例](https://github.com/Merak-Wang/signaltrail-skill/blob/main/examples/README.md)：当前日报、图文演示、配音视频与历史样例。
@@ -30,21 +29,10 @@
 | `evals/` | Skill 触发评估案例。 |
 | `tests/` | 当前实现的行为与回归测试。 |
 
-## 研究与提案
+## 历史研究
 
-- [9 月 20 日研究与图文工作流](research/2026-09-20-illustrated-workflow.md)：
-  已实现的问题检索、研究底稿、表格、晚绑定与组件效果评估。
-
-- [9 月 20 日采集改进](research/2026-09-20-collection-improvements.md)：
-  地区发现源、Feed 长内容保留、并发调度和部署实测。
-
-- [报告 A 信息搜集来源核查与实现](research/2026-09-11-collection-evidence.md)：第三部分的引用核查、
-  本地抽取、覆盖诊断和有界补全。
-
-- [新闻讲解工作流研究](research/2026-09-08-news-explainer-workflows.md)：新闻机构、技术、创作者及公开社媒资料，
-  双语叙事选择、时效检查、样例与评测设计。研究已完成，实验快照流程已实现；实时新闻正式验收仍待完成。
-- [实验讲解提示词](../../templates/news-explainer-prompts.md)：中文权威草案，包含英文写作配置与双语对照审核。
-  尚不是当前智能体执行指令；实施与验收以路线图为准。
+`docs/research/` 保存早期采集研究与实验方案。独立讲解和研究原型已于 2026-11-07 退场。
+当前维护日报、图文幻灯片与配音视频。
 
 ## 运行参考
 
@@ -57,8 +45,6 @@ Schema 修复说明是英文历史兼容记录。按任务读取需要的那一�
 | [运行手册](../../references/runbook.md) | 阶段恢复和运行检查 |
 | [系统契约](../../references/system-design.md) | 数据字段、状态和产物约定 |
 | [编辑策略](../../references/editorial-policy.md) | 来源选择、证据、访问和排序 |
-| [讲解实验策略](../../references/explainer-policy.md) | 主张、审核与图文实验准入 |
-| [研究工作流](../../references/research-workflow.md) | 并行准备、研究证据范围与晚到组合阅读 |
 | [新闻幻灯片参考](../../references/news-slides.md) | 批次数据包、token 估算门槛和完整渲染要求 |
 | [叙事研判](../../references/narrative-analysis.md) | 修复分析内容 |
 | [报告契约](../../templates/report-contract.md)和 [Schema](../../schemas/report.schema.json) | 草稿结构和机器校验 |

@@ -143,6 +143,15 @@ def test_cli_external_evaluation_and_slides_complete_without_hermes(
     capsys.readouterr()
 
     slides = run["artifacts"]["slides"]
+    assert slides["status"] == "review_required"
+    review_path = write_json(data_dir / "slides-review.json", {"selected_event_ids": [
+        row["event_id"] for row in slides["review"]["candidates"]]})
+    assert cli.main([
+        "finalize-edition", "--run", str(run_path), "--report", str(saved_report),
+        "--slides-review", str(review_path),
+    ]) == 0
+    capsys.readouterr()
+    slides = read_json(run_path)["artifacts"]["slides"]
     for packet_path in slides["packet_paths"]:
         packet = read_json(Path(packet_path))["payload"]
         draft_path = Path(packet_path).with_name(

@@ -100,7 +100,9 @@ def test_finalize_retry_replaces_failed_slides_preparation(tmp_path, monkeypatch
     monkeypatch.setattr("signaltrail.news_slides.slides_status", lambda *_: {
         "pending_batches": [1], "news_count": 1, "status": "awaiting_authoring",
     })
-    finalize_edition(run, Path("unused.json"), data, defer_tail=True)
+    review = tmp_path / "review.json"
+    review.write_text(json.dumps({"selected_event_ids": []}), encoding="utf-8")
+    finalize_edition(run, Path("unused.json"), data, defer_tail=True, slides_review=review)
     status = get_edition_status(run, data)
     assert status["slides"]["status"] == "awaiting_authoring"
     assert "slides_prepare" not in status["pending_steps"]

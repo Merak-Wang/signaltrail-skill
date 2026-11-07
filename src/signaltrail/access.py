@@ -9,11 +9,9 @@ CHALLENGE_TEXTS = (
     "checking your browser",
     "are you a robot",
     "unusual traffic",
-    "access denied",
     "security check",
     "your request is being verified",
     "enable javascript and cookies",
-    "captcha",
     "robot check",
     "sina visitor system",
 )
@@ -56,34 +54,18 @@ def classify_access_text(
     - ``title``：来源提供的标题文本；会清理空白，并用于过滤、身份或展示。
     - ``body``：正文或 HTML 文本；保存前只作为数据处理。
     - ``iframe_detected``：访问分类器是否在页面中发现验证码或登录挑战 iframe。
-    输出：“统一识别 HTTP 与浏览器采集中的访问失败类型”形成的结构化字典；
-      典型键包括 iframe_detected、matched_text、rate_limited、required。
+    输出：required 仅表示识别到挑战提示；rate_limited 独立表示限流，
+      iframe_detected 保留页面线索，matched_text 记录命中的提示。
     """
-    haystack_title = title.lower()
-    haystack_body = body.lower()
-    rate_limited_text = next(
-        (
-            text
-            for text in RATE_LIMIT_TEXTS
-            if text in haystack_title or text in haystack_body
-        ),
-        None,
-    )
-    matched = rate_limited_text or next(
-        (
-            text
-            for text in CHALLENGE_TEXTS
-            if text in haystack_title or text in haystack_body
-        ),
-        None,
-    )
+    # 页面开头保留挑战提示，避免正文后部或页脚的文字触发误判。
+    haystack = f"{title} {body[:500]}".lower()
+    rate_limited_text = next((text for text in RATE_LIMIT_TEXTS if text in haystack), None)
+    matched = next((text for text in CHALLENGE_TEXTS if text in haystack), None)
     rate_limited = http_status == 429 or rate_limited_text is not None
-    required = (
-        http_status in {401, 403, 429} or matched is not None or iframe_detected
-    )
+    required = matched is not None
     return {
         "required": required,
         "rate_limited": rate_limited,
-        "matched_text": matched,
+        "matched_text": rate_limited_text or matched,
         "iframe_detected": iframe_detected,
     }

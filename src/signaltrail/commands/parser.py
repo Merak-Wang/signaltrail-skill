@@ -3,50 +3,7 @@
 import argparse
 from pathlib import Path
 
-from .platform import add_platform_parser
-from .research import add_research_parser
 from .slides import add_slides_parser
-
-
-def _add_explainer_parser(sub: argparse._SubParsersAction) -> None:
-    """处理：注册日报子产物的显式准备、写作、审核与预览命令。
-    输入：主命令树；各阶段仅接受自己依赖的确切文件路径。
-    输出：添加 explainer 子命令，不启动模型或改变日报发布流程。
-    """
-    explainer = sub.add_parser("explainer", help="Build and review report-derived explainers")
-    stages = explainer.add_subparsers(dest="action", required=True)
-    prepare = stages.add_parser("prepare", help="Freeze bounded evidence from a saved edition")
-    prepare.add_argument("--run", type=Path, required=True)
-    prepare.add_argument("--experimental", action="store_true")
-    ledger = stages.add_parser("ledger", help="Validate a shared claim ledger")
-    ledger.add_argument("--packet", type=Path, required=True)
-    ledger.add_argument("--input", type=Path, required=True)
-    script = stages.add_parser("script", help="Submit one language script")
-    script.add_argument("--ledger", type=Path, required=True)
-    script.add_argument("--input", type=Path, required=True)
-    script.add_argument("--author-context", required=True)
-    review_packet = stages.add_parser("review-packet", help="Prepare an independent review")
-    review_packet.add_argument("--script", type=Path, required=True)
-    for name in ("review", "bilingual"):
-        review = stages.add_parser(name, help=f"Submit {name} findings")
-        review.add_argument("--packet", type=Path, required=True)
-        review.add_argument("--input", type=Path, required=True)
-        review.add_argument("--reviewer-context", required=True)
-    bilingual = stages.add_parser("bilingual-packet", help="Bind both language reviews")
-    bilingual.add_argument("--zh-review", type=Path, required=True)
-    bilingual.add_argument("--en-review", type=Path, required=True)
-    story = stages.add_parser("story", help="Compose verbatim illustrated cards")
-    story.add_argument("--script", type=Path, action="append", required=True)
-    story.add_argument("--bilingual", type=Path)
-    story.add_argument("--review", type=Path)
-    render = stages.add_parser("render", help="Render the exact story revision")
-    render.add_argument("--story", type=Path, required=True)
-    render.add_argument("--mode", choices=["preview", "current"], default="preview")
-    visual = stages.add_parser("visual-review", help="Bind actual desktop/mobile review")
-    visual.add_argument("--projection", type=Path, required=True)
-    visual.add_argument("--input", type=Path, required=True)
-    status = stages.add_parser("status", help="Show coverage, freshness and usage limitations")
-    status.add_argument("--script", type=Path, required=True)
 
 
 def _common_parser() -> argparse.ArgumentParser:
@@ -76,8 +33,6 @@ def build_parser() -> argparse.ArgumentParser:
     parser = _common_parser()
     sub = parser.add_subparsers(dest="command", required=True)
 
-    _add_explainer_parser(sub)
-    add_research_parser(sub)
     add_slides_parser(sub)
 
     data_root = sub.add_parser(
@@ -85,6 +40,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Show or deliberately adopt the one canonical SignalTrail data root",
     )
     data_root.add_argument("action", choices=["status", "adopt"])
+
+    cleanup = sub.add_parser("cleanup", help="Recycle collection files older than seven days")
+    cleanup.add_argument("--days", type=int, default=7)
+    cleanup.add_argument("--apply", action="store_true",
+                         help="Move expired files to OS recycle bin")
 
     collect = sub.add_parser("collect", help="Collect source indexes")
     collect.add_argument("--edition", choices=["daily", "morning", "evening"], default="daily")
@@ -123,7 +83,7 @@ def build_parser() -> argparse.ArgumentParser:
     serve = sub.add_parser(
         "serve",
         aliases=["serve-monitor"],
-        help="Serve the personal news platform with events, follows and research",
+        help="Serve the personal news platform with reports, events and source status",
     )
     serve.add_argument("--host", default="127.0.0.1")
     serve.add_argument("--port", type=int, default=8765)
@@ -138,14 +98,6 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=0,
         help="Refresh news every N minutes; default: 0 (read-only, no automatic collection)",
-    )
-    serve.add_argument(
-        "--no-auto-research",
-        action="store_true",
-        help="Disable research triggered by new evidence in followed events",
-    )
-    serve.add_argument(
-        "--research-command", help="Research host command (default: available Hermes host)"
     )
 
     imported = sub.add_parser("import-legacy", help="Import the existing browser-link JSON")
@@ -263,10 +215,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     enrich.add_argument("--run", type=Path, required=True)
     enrich.add_argument("--item-id", action="append", default=[])
+    enrich.add_argument("--slides-candidates", action="store_true",
+                        help="Enrich today's slide candidates before report authoring")
     enrich.add_argument(
         "--max-items",
         type=int,
-        help="Maximum selected bodies to fetch; defaults to the configured hard cap (12)",
+        help="Maximum bodies to fetch; slide candidates default to 100, otherwise configured cap",
     )
     enrich.add_argument("--headed", action="store_true")
     enrich.add_argument("--profile-dir", type=Path)
@@ -296,6 +250,8 @@ def build_parser() -> argparse.ArgumentParser:
         "brief-input", help="Read one compact, complete brief writing input",
     )
     brief_input.add_argument("--packet", type=Path, required=True)
+    brief_input.add_argument("--include-evidence", action="store_true",
+                             help="Embed complete locally available text and tables")
 
     metrics = sub.add_parser(
         "record-authoring-metrics",
@@ -352,6 +308,10 @@ def build_parser() -> argparse.ArgumentParser:
     )
     finalize.add_argument("--run", type=Path, required=True)
     finalize.add_argument("--report", type=Path, required=True)
+    finalize.add_argument("--slides-review", type=Path,
+                          help="Reviewed daily slide candidate decisions")
+    finalize.add_argument("--slides-reuse-plan", type=Path,
+                          help="Reuse matching accepted narration from an existing slide plan")
     finalize.add_argument(
         "--slides-exclude-event-id",
         action="append",
@@ -424,6 +384,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     save.add_argument("report", type=Path)
     save.add_argument("--index", type=Path, required=True)
+    save.add_argument("--refresh-images", action="store_true",
+                      help="Explicitly reselect images instead of preserving published attachments")
 
     evaluation = sub.add_parser(
         "finalize-evaluation",
@@ -434,5 +396,4 @@ def build_parser() -> argparse.ArgumentParser:
     evaluation.add_argument("--publish", action="store_true")
     evaluation.add_argument("--notion-config", type=Path)
 
-    add_platform_parser(sub)
     return parser

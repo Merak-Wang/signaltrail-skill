@@ -8,13 +8,12 @@ mirrors under [zh-CN/](zh-CN/README.md).
 | Guide | Covers |
 | --- | --- |
 | [Usage](usage.md) | Installation, data paths, language, sources, metered runs, recovery |
-| [Collection extensions and research APIs](platform.md) | Collection monitor, RSSHub/Crawl4AI, discovery briefs, and report/event/research APIs |
+| [Collection extensions and archive APIs](platform.md) | Collection monitor, RSSHub/Crawl4AI, discovery briefs, and report/event archive APIs |
 | [Development](development.md) | Test selection, naming, code and documentation conventions |
 | [Architecture](../ARCHITECTURE.md) | Module ownership, state, files, model boundaries |
 | [Agent instructions](../AGENTS.md) | Rules for changing this repository |
-| [Experimental explainers](explainers.md) | Implemented commands, bilingual reviews, immutable stories and current-admission limits |
 | [News slides](news-slides.md) | Report and index inputs, illustrated presentations, local video, and voice setup |
-| [Roadmap](roadmap.md) | Experimental explainer and research workflow; current-news admission and acceptance gaps |
+| [Roadmap](roadmap.md) | Maintained daily report, slides and video scope |
 | [Technical debt](exec-plans/tech-debt-tracker.md) | Known implementation gaps and exit conditions |
 
 [Output examples](https://github.com/Merak-Wang/signaltrail-skill/blob/main/examples/README.en.md): current daily reports, illustrated slides, narrated video, and historical samples.
@@ -31,23 +30,11 @@ mirrors under [zh-CN/](zh-CN/README.md).
 | `evals/` | Skill trigger examples for evaluation. |
 | `tests/` | Behavior and regression tests for the maintained implementation. |
 
-## Research and proposals
+## Historical research
 
-- [September 20 illustrated research workflow](research/2026-09-20-illustrated-workflow.md):
-  implemented question retrieval, research memos, tables, late binding and component evaluation.
-
-- [September 20 collection improvements](research/2026-09-20-collection-improvements.md):
-  regional discovery sources, Feed content preservation, scheduling and deployment probes.
-
-- [Report A collection research and implementation](research/2026-09-11-collection-evidence.md):
-  section 3 source verification, local extraction, coverage diagnostics and bounded completion.
-
-- [News-explainer workflow research](research/2026-09-08-news-explainer-workflows.md): newsroom,
-  engineering, creator and public-social evidence; bilingual narrative choices, temporal checks,
-  an example and evaluation design. Research is complete; the experimental snapshot workflow is implemented. Current-news acceptance remains pending.
-- [Experimental explainer prompts](../templates/news-explainer-prompts.md): Chinese-authoritative
-  draft templates, including an English authoring prompt and bilingual review. These are not
-  current agent execution instructions; implementation and acceptance belong to the roadmap.
+Dated records under `docs/research/` preserve earlier collection and experimental proposals.
+The independent explainer and research prototypes were retired on 2026-11-07.
+The maintained workflow produces daily reports, illustrated slides and narrated video.
 
 ## Runtime references
 
@@ -61,8 +48,6 @@ Read only the reference needed for the task.
 | [Runbook](../references/runbook.md) | Stage recovery and operational checks |
 | [System contracts](../references/system-design.md) | Data fields, state and artifact contracts |
 | [Editorial policy](../references/editorial-policy.md) | Source selection, evidence, access and ordering |
-| [Explainer policy](../references/explainer-policy.md) | Experimental claim, review and story admission |
-| [Research workflow](../references/research-workflow.md) | Parallel preparation, scoped research evidence and late composite reading |
 | [News slides reference](../references/news-slides.md) | Batch payloads, token estimate gates and complete rendering requirements |
 | [Narrative analysis](../references/narrative-analysis.md) | Repairing analysis content |
 | [Report contract](../templates/report-contract.md) and [schema](../schemas/report.schema.json) | Draft shape and machine validation |

@@ -130,17 +130,45 @@ def ensure_qwen_runtime(data_dir: Path, profile: dict, *, device: str | None = N
     supplied = tts_executable or os.environ.get("SIGNALTRAIL_TTS_EXECUTABLE")
     if supplied and not Path(supplied).is_file():
         raise FileNotFoundError(supplied)
+    from .config import resolve_signaltrail_home
+    from .runtime import load_bound_data_root
+
+    home = resolve_signaltrail_home()
+    bound = load_bound_data_root(home) or home
+    filename = "llama-tts-worker.exe" if system[0] == "Windows" else "llama-tts-worker"
+    candidates = [root / "worker" / filename, model.parent / "worker" / filename,
+                  bound / "video-runtime" / "qwen3" / "worker" / filename]
+    if supplied:
+        candidates.insert(1, Path(supplied).parent / filename)
+    explicit_worker = os.environ.get("SIGNALTRAIL_TTS_WORKER")
+    if explicit_worker:
+        candidates.insert(0, Path(explicit_worker))
+    worker = next((path.resolve() for path in candidates if path.is_file()), None)
+    worker_devices, worker_log = _probe(worker) if worker else ([], "")
     choices = [requested]
     if requested == "auto":
         choices = (["metal"] if system[0] == "Darwin" else
                    (["cuda"] if shutil.which("nvidia-smi") else []) + ["vulkan"])
+    if requested == "auto" and worker:
+        resident_choices = (["vulkan", "cuda"] if system[0] == "Windows" else choices)
+        resident_choices = [choice for choice in resident_choices if any(
+            key.lower().startswith(choice) for key, _label in worker_devices)]
+        choices = list(dict.fromkeys([*resident_choices, *choices]))
     choices += ["cpu"] if "cpu" not in choices else []
     diagnostics = []
     selected, device_name, libraries = "cpu", "none", None
+    resident = False
     for choice in choices:
         if choice not in _PACKAGES.get(system, {}) and not supplied:
             continue
         try:
+            matches = [(key, label) for key, label in worker_devices
+                       if key.lower().startswith(choice)]
+            if worker and (matches or choice == "cpu"):
+                executable = worker
+                selected, device_name = choice, matches[0][0] if matches else "none"
+                resident = True
+                break
             executable = (Path(supplied).resolve() if supplied
                           else _program(root, system, choice, proxy))
             if choice == "cpu":
@@ -167,7 +195,13 @@ def ensure_qwen_runtime(data_dir: Path, profile: dict, *, device: str | None = N
             diagnostics.append(f"{choice}: {exc}")
     else:
         raise RuntimeError("No runnable Qwen native package: " + "\n".join(diagnostics))
-    return {"engine": "qwen3", "model_dir": model.resolve(),
+    worker_note = ("Compatible resident worker selected" if resident else
+                   "No compatible resident worker; each uncached segment loads the model")
+    if worker and not resident:
+        worker_note += f". Available worker devices: {worker_devices}. {worker_log[-500:]}"
+    return {"tts_worker_executable": worker if resident else None,
+            "execution_mode": "resident" if resident else "oneshot", "worker_note": worker_note,
+            "engine": "qwen3", "model_dir": model.resolve(),
             "model_path": (model / MODEL_NAME).resolve(),
             "mmproj_path": (model / MMPROJ_NAME).resolve(),
             "tts_executable": executable, "provider": selected, "device_name": device_name,
@@ -187,5 +221,7 @@ def cpu_qwen_runtime(runtime: dict) -> dict:
     result = dict(runtime)
     root = Path(runtime["data_dir"]) / "video-runtime" / "qwen3"
     result.update(tts_executable=_program(root, video_platform(), "cpu", runtime.get("proxy")),
-                  provider="cpu", device_name="none", library_dir=None)
+                  provider="cpu", device_name="none", library_dir=None,
+                  tts_worker_executable=None, execution_mode="oneshot",
+                  worker_note="CPU fallback uses one-shot synthesis")
     return result

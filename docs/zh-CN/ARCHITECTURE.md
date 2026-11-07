@@ -1,6 +1,6 @@
 # 架构
 
-**状态：** 已验证 · **负责人：** 仓库维护者 · **最后验证：** 2026-11-02
+**状态：** 已验证 · **负责人：** 仓库维护者 · **最后验证：** 2026-11-05
 
 本文说明 SignalTrail 的代码分工。[运行契约](../../references/system-design.md)解释数据字段
 和恢复规则，[agent-instructions.md](agent-instructions.md)说明修改仓库时的约束。[English](../../ARCHITECTURE.md)
@@ -15,7 +15,7 @@
 | `src/signaltrail/` | 唯一实现，模块职责见下表 |
 | `configs/` | `config` 读取来源及发现配置，`notion` 读取可选发布配置 |
 | `schemas/` | 日报和用量契约；日报校验读取 report schema |
-| `templates/` | 日报契约、图文写作风格与实验研究、讲解提示词 |
+| `templates/` | 日报契约与图文写作风格 |
 | `assets/news-slides/`、`assets/monitor/` | 图文渲染器和监控页面使用的 HTML、CSS、JavaScript |
 | `assets/tts/reference/`、`assets/tts/profile.example.json` | 随包默认参考声线与自定义声线配置示例 |
 | `assets/readme/` | 双语 README 引用的产品截图 |
@@ -26,9 +26,9 @@
 | `examples/` | 当前与历史公开样例；测试也读取 `sample_report.json` |
 | `.github/workflows/ci.yml` | 仓库 CI 检查 |
 
-发布包包含 `scripts/install.ps1`、`install.sh`、`build_hermes_skill.py` 和 `measure_codex_turn.py`。
-源码仓库另有 `check_code_comments.py`、`check_docs.py`、`benchmark_slide_efficiency.py`、
-`evaluate_research_workflow.py`，用于开发检查和手动基准。发布范围由构建脚本白名单定义，与 Python 导入关系分别维护；
+发布包包含 `scripts/install.ps1`、`install.sh`、`build_hermes_skill.py` 、`measure_codex_turn.py`、`run_signaltrail.py` 和 `build_qwen_worker.py`。
+源码仓库另有 `check_code_comments.py`、`check_docs.py`、`benchmark_slide_efficiency.py`，
+用于开发检查和手动基准。发布范围由构建脚本白名单定义，与 Python 导入关系分别维护；
 独立脚本、Schema 和提示词也可以由人、宿主或测试直接使用。
 
 默认构建只读取 Git 已跟踪文件。新运行模块和音色资源须与功能一起纳入版本控制后再发布，
@@ -52,19 +52,28 @@ Python 负责采集、身份、访问状态、修订和持久化。模型在数�
 整期交付要求全部讲稿批次通过并完成渲染。`edition-status --run RUN.json --require-complete`
 独立于报告状态检查待办。见[使用指南](usage.md)。
 
-图文流合并同一原文并保留来源引用，按模型生成的重要性默认选择前 50 条；
+图文流先按版本上海自然日及冻结上界过滤原文日期，再由模型在写讲稿前合并跨源同事件，按重要性与影响力排列至多50条；
+保留来源及审核顺序，不足时交付真实条数。CLI/工作流先返回 `slides_review`，收到决定后才生成讲稿包；
 `--max-news`／`--slides-max-news` 调整数量。准备阶段先补取选中新闻正文，再把完整可用正文放入有界写作包。
 输入未变时可复用已接受讲稿。独立 `slides prepare --index` 路径根据模型选定的条目 ID 直接制作图文流，
 省去日报写作。渲染附加公开网页图片及原始图注；离线渲染复用本地图片。见[新闻幻灯片](news-slides.md)。
 
 视频导出读取已保存的 deck，并以 140% 整页缩放截取原 HTML。本地 Qwen3-TTS 1.7B Q8 朗读每页标题和
 `video_tldr`，实测音频决定页面停留及图片轮播。运行时自动准备原生程序和模型，默认使用随包参考声线，
-优先采用通过合成探针的 GPU，不可用时回落 CPU。音频和单页画面缓存用于后续导出。
+优先采用通过合成探针的 GPU，不可用时回落 CPU。已构建的 `llama-tts-worker` 在多个句段之间保留模型和参考音频，
+Python 合成器逐段发送请求，并在导出完成后关闭进程。维护的源码位于 `src/signaltrail/native/`，
+`scripts/build_qwen_worker.py` 基于固定 llama.cpp 源码构建。音频和单页画面缓存用于后续导出。
 
 监控独立采集 RSS/Atom 与静态 HTML，聚类条目并记录来源健康，全程不调用模型。
-完整采集默认可从监控快照补充最多 30 条发现简报。首页使用 `assets/monitor/`。
-日报、事件及异步研究 API 提供已保存版本与 `platform/events.sqlite` 长期事件档案；
-研究任务由已配置宿主调用模型。见[采集与研究接口](platform.md)。
+完整采集复用新鲜监控快照；启用扩展来源均作为正式栏目来源收录全部合格当日条目。首页使用 `assets/monitor/`。
+日报与事件 API 提供已保存版本与 `platform/events.sqlite` 长期事件档案；
+见[采集与档案接口](platform.md)。
+
+`scripts/run_signaltrail.py` 将 CLI 导入绑定到当前工作区；其 `--advance-edition` 模式接收草稿，
+推进分析准备、组装、定稿、尾任务和图文渲染，遇到模型任务时返回。完整作者输入保存到独立文件，
+协调者只取得精简任务路径；宿主为每项任务创建新上下文，动态填满最多三个作者槽位。
+Python 负责校验和提交；单独会话仍可使用 `--advance-dispatch` 和 `--dispatch-plan`。
+长进程在一次工具运行时内等待，作者完成通知触发派发，执行示例见 `SKILL.md`。
 
 研判默认由一个新上下文作者完成。可选 `prepare-analysis --parallel` 路径依次处理选题、
 三个领域、综合和组装，各阶段会重复读取共享输入。全局 `--compact` 压缩命令输出，保存文件保留完整内容。
@@ -79,15 +88,15 @@ Python 负责采集、身份、访问状态、修订和持久化。模型在数�
 | 配置 | `config` | 来源、限额和运行选项 |
 | 采集 | `adapters`、`browser_collection`、`feeds`、`feed_content`、`prefetch`、`collector`、`clustering`、`article_time` | 抓取、保留精度的日期规范化、首次观测与榜单信号、来源状态和顺序 |
 | 采集诊断 | `collection_diagnostics` | 已配置来源覆盖、有界正文缺口建议和本地产物完整性 |
+| 采集保留 | `retention` | 将超过七天的采集文件移入回收站，保留运行中依赖和全部报告／媒体产物 |
 | 证据 | `content`、`content_extraction`、`pdf_content`、`content_images`、`media`、`image_policy`、`monitor` | 结构化正文块、有界文本 PDF 证据、抽取质量、含上下文的配图候选、快照和证据关联 |
-| 写作 | `context`、`brief_selection`、`authoring`、`analysis_parallel`、`semantics`、`state` | 规范 URL 唯一简报名额、本源尾部补位与实际缺额、有界数据包、已接收批次、可选并行研判、连续状态和缓存 |
+| 写作 | `context`、`brief_selection`、`authoring`、`author_inputs`、`analysis_parallel`、`semantics`、`state` | 每源全部当日Top、同源规范URL去重、跨源保视图并复用原文写作、有界数据包、按token切分的有序输入块、已接收批次、可选并行研判、连续状态和缓存 |
 | 报告契约 | `reporting` | 编译草稿、补齐证据、校验 Schema 及跨字段规则 |
+| 图文共享产物 | `narrative_store` | 不可变图文包、已接受写作和精确修订重放；沿用既有产物格式 |
 | 报告存储 | `reports` | 保存报告和评估、渲染 Markdown、更新派生状态 |
 | 新闻图文流 | `news_slides`、`slide_reuse`、`slide_images`、`slide_renderer` | 日报或独立索引的有界写作、已接受讲稿复用、原文图片补充与独立动态 HTML 放映 |
 | 配音视频 | `slide_video`、`voice_synthesis`、`speech_text`、`qwen_runtime`、`video_runtime` | 朗读规范化、本地 Qwen3 TTS、音画共用时间轴、原生工具准备和 MP4 导出 |
-| 实验讲解 | `narrative`、`narrative_contracts`、`narrative_store`、`narrative_verification`、`story_stream` | 不可变日报子产物、语言审核和解释图；实时新闻准入保持阻断 |
-| 实验研究 | `research`、`research_contracts`、`research_delivery` | 冻结正文块、本地问题检索、研究底稿和仅供预览的日报晚绑定；当前准入仍阻断 |
-| 交付 | `local_output`、`notion`、`dashboard` | HTML/PDF、远程副本和原有采集监控、保留的日报／事件 API 与异步研究后端 |
+| 交付 | `local_output`、`notion`、`dashboard` | HTML/PDF、远程副本和原有采集监控、日报与事件档案 API |
 | 工作流 | `workflow` | 检查点、期限、恢复和评估调度 |
 | 用量与预算 | `llm_usage/`、`llm_budget`、`evaluation` | 不可变用量事件、派发预留和评估数据包 |
 | 宿主接入 | `hosts/`、`hermes_runner`、`usage_cli` | 可选宿主计量、启动器、Hook 和持久日志导入 |
@@ -149,3 +158,5 @@ Schema 1.1–1.5 报告保持可读，新报告使用 2.0 并要求跨视角综�
 
 编译器、校验器和渲染器中的超长函数仍记为[技术债](exec-plans/tech-debt-tracker.md) TD-002。
 测试选择和完整检查见[开发指南](development.md)。
+
+两份来源配置共127项、124启用，全部启用源按现有栏目映射进入日报；有限公开Feed/页面内的可验证当日原文按各来源Top完整呈现，不设共享30池或每源1/2/15限额。

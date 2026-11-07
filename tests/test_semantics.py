@@ -34,6 +34,7 @@ def test_semantic_identity_reuses_same_evidence_across_storage_paths():
 
 def test_compact_context_keeps_content_digest_and_cache_identity(tmp_path):
     item = _item()
+    item["published_at"] = "2026-09-12T05:00:00+08:00"
     item["metadata"]["content_text_sha256"] = sha256(b"article text").hexdigest()
     index_path = write_json(tmp_path / "indexes" / "2026-09-12" / "morning-r1.json", {
         "date": "2026-09-12", "edition": "morning", "items": [item],
@@ -46,6 +47,7 @@ def test_compact_context_keeps_content_digest_and_cache_identity(tmp_path):
 
 def test_approved_semantics_skip_model_work_after_body_path_moves(tmp_path):
     item = _item()
+    item["published_at"] = "2026-09-12T05:00:00+08:00"
     item.update(content_status="full_text", content_path=str(tmp_path / "content" / "first.md"))
     item["metadata"]["content_text_sha256"] = sha256(b"unchanged article").hexdigest()
     report_id = "daily-relocated-evidence"

@@ -460,3 +460,47 @@ def test_failed_refresh_remains_stale_during_backoff(tmp_path):
     assert failed.status == cached.status == "partial"
     assert failed.stale and cached.stale
     assert cached.http_status == 429
+
+
+def test_report_feed_keeps_complete_finite_response_beyond_item_caps():
+    source = _source()
+    source.collect_all_items = True
+    source.max_items = 2
+    items = "".join(
+        f"<item><title>Current public policy report number {number}</title>"
+        f"<link>https://news.example/article-{number}</link>"
+        "<pubDate>Fri, 06 Nov 2026 01:00:00 GMT</pubDate></item>"
+        for number in range(65))
+    result = parse_feed_document(f"<rss><channel>{items}</channel></rss>", source,
+                                 "https://news.example/feed.xml", "2026-11-06T10:00:00+08:00",
+                                 "Asia/Shanghai", max_items=2)
+    assert len(result) == 65
+    assert result[-1].metadata["source_rank"] == 65
+
+
+def test_full_report_collection_refreshes_old_truncated_feed_cache(tmp_path):
+    source = _source()
+    rss = "<rss><channel>" + "".join(
+        f"<item><title>Public policy decision number {n}</title>"
+        f"<link>https://news.example/article-{n}</link></item>" for n in range(4)
+    ) + "</channel></rss>"
+    requests = []
+
+    def respond(request):
+        requests.append(request)
+        return httpx.Response(200, content=rss, headers={"etag": "same"})
+
+    async def collect():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+            options = {"max_bytes": 10000, "max_items": 1, "refresh_interval_minutes": 60}
+            first = await fetch_feed(client, source, "https://news.example/feed", tmp_path,
+                                     "Asia/Shanghai", **options)
+            source.collect_all_items = True
+            full = await fetch_feed(client, source, "https://news.example/feed", tmp_path,
+                                    "Asia/Shanghai", **options)
+            assert len(first.items) == 1
+            assert len(full.items) == 4
+
+    asyncio.run(collect())
+    assert len(requests) == 2
+    assert "if-none-match" not in requests[1].headers

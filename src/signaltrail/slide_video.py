@@ -127,6 +127,10 @@ def render_video(
     synthesizer = VoiceSynthesizer(
         runtime, data_dir / "video-runtime" / "voice-cache", threads=threads
     )
+    _progress("runtime", provider=synthesizer.provider,
+              execution_mode=synthesizer.execution_mode,
+              worker_path=str(runtime.get("tts_worker_executable") or ""),
+              worker_note=runtime.get("worker_note"))
     timeline, offset = [], 0.0
     diagnostics = []
     diagnostics_lock = Lock()
@@ -190,7 +194,8 @@ def render_video(
     pages = []
     page = None
     # 只预取下一页语音，主线程按页序消费，浏览器始终由同一线程持有。
-    with ThreadPoolExecutor(max_workers=1) as speech_pool, ExitStack() as browser_stack:
+    with ExitStack() as browser_stack, ThreadPoolExecutor(max_workers=1) as speech_pool:
+        browser_stack.callback(synthesizer.close)
         speech_future = speech_pool.submit(synthesize_page, 0) if deck["slides"] else None
         for index, (slide, node) in enumerate(zip(deck["slides"], source_slides, strict=True)):
             wav, speech = speech_future.result()
@@ -449,6 +454,9 @@ def render_video(
         "model": str(runtime["model_dir"]),
         "voice": synthesizer.profile.get("name"),
         "engine": synthesizer.engine,
+        "execution_mode": synthesizer.execution_mode,
+        "worker_path": str(synthesizer.runtime.get("tts_worker_executable") or ""),
+        "worker_note": synthesizer.runtime.get("worker_note"),
         "reference_id": (synthesizer.reference["id"] if synthesizer.reference else None),
         "tts_segments_generated": synthesizer.generated,
         "tts_cache_hits": synthesizer.hits,

@@ -1,13 +1,11 @@
-from collections import Counter
 from datetime import UTC, datetime
 
 import pytest
 
 from signaltrail.authoring import _analysis_candidates
 from signaltrail.collector import collect_sources
-from signaltrail.config import AppConfig, BrowserConfig, SourceConfig, load_config
+from signaltrail.config import AppConfig, BrowserConfig, SourceConfig
 from signaltrail.context import build_context
-from signaltrail.discovery_selection import _domain, select_discovery_items
 from signaltrail.models import ArticleItem, SourceResult
 from signaltrail.utils import read_json
 
@@ -46,80 +44,9 @@ def _result(source, items):
     )
 
 
-def test_shared_pool_covers_domains_and_caps_each_source_at_two():
-    sources = [_source(f"{domain}{number}", domain)
-               for domain, count in (("international", 8), ("markets", 3), ("technology", 6))
-               for number in range(count)]
-    results = {source.id: _result(source, [_item(source, n) for n in range(1, 5)])
-               for source in sources}
-    selected = select_discovery_items(results, sources, [], limit=30, start=_START, end=_END)
-    assert sum(map(len, selected.values())) == 30
-    assert all(len(items) <= 2 for items in selected.values())
-    counts = Counter(domain for domain in ("international", "markets", "technology")
-                     for source in sources if source.id.startswith(domain)
-                     for _ in selected.get(source.id, []))
-    assert counts == {"international": 15, "markets": 6, "technology": 9}
-    assert select_discovery_items(results, sources, [], limit=0, start=_START, end=_END) == {}
-
-
-def test_domestic_news_does_not_fill_international_slots():
-    domestic = _source("domestic", "international")
-    domestic.category = "domestic"
-    international = _source("world", "international")
-    military = _source("military", "international")
-    military.category = "military"
-    sources = [domestic, international, military]
-    results = {source.id: _result(source, [_item(source, 1)]) for source in sources}
-    selected = select_discovery_items(results, sources, [], limit=30, start=_START, end=_END)
-    assert set(selected) == {"world", "military"}
-    assert selected["military"][0].category == "military"
-    assert _domain(domestic) is None
-    for category in ("market", "markets", "economy"):
-        market = _source("finance", "markets")
-        market.category = category
-        assert _domain(market) == "markets"
-
-
-def test_shared_pool_skips_core_duplicates_old_future_and_stale_items():
-    source = _source("international", "international")
-    core = _item(source, 1)
-    candidates = [_item(source, n) for n in range(1, 10)]
-    candidates[1].canonical_url = core.canonical_url
-    candidates[2].title = core.title
-    candidates[3].published_at = "2026-10-30T05:00:00+00:00"
-    candidates[4].published_at = "2026-11-03T05:00:00+00:00"
-    candidates[5].metadata["feed_stale"] = True
-    candidates[6].metadata["retained_from_previous_snapshot"] = True
-    candidates[7].published_at = None
-    result = select_discovery_items(
-        {source.id: _result(source, candidates)}, [source], [core],
-        limit=30, start=_START, end=_END,
-    )
-    assert [item.item_id for item in result[source.id]] == ["international-3", "international-9"]
-
-
-def test_old_paper_needs_observed_rank_signal_and_stays_watch():
-    source = _source("papers", "technology")
-    source.category = "papers"
-    items = [_item(source, number) for number in range(1, 5)]
-    for item in items:
-        item.published_at = "2025-01-01"
-    items[0].metadata.update(discovery_signal="bootstrap_watch", signal_at=_END.isoformat())
-    items[1].metadata.update(discovery_signal="rank_rise", signal_at=_START.isoformat())
-    items[2].metadata.update(discovery_signal="rank_rise", signal_at="2026-10-29")
-    items[3].published_at = "2026-11-03"
-    items[3].metadata.update(discovery_signal="new_listing", signal_at=_END.isoformat())
-    selected = select_discovery_items(
-        {source.id: _result(source, items)}, [source], [], limit=30, start=_START, end=_END,
-    )[source.id]
-    assert {item.item_id for item in selected} == {"papers-1", "papers-2"}
-    assert all(item.metadata["suggested_status"] == "WATCH" for item in selected)
-    assert all(item.published_at == "2025-01-01" for item in selected)
-
-
-@pytest.mark.parametrize("limit,filtered", [(6, False), (0, False), (6, True)])
+@pytest.mark.parametrize("filtered", [False, True])
 def test_collection_and_authoring_use_only_actual_shared_allocations(
-    monkeypatch, tmp_path, limit, filtered,
+    monkeypatch, tmp_path, filtered,
 ):
     core = SourceConfig(id="core", name="Core", url="https://core.example/")
     sources = [_source(domain, domain) for domain in ("international", "markets", "technology")]
@@ -127,10 +54,13 @@ def test_collection_and_authoring_use_only_actual_shared_allocations(
         timezone="Asia/Shanghai", browser=BrowserConfig(), sources=[core],
         monitor_sources=sources,
     )
-    config.collection.discovery_brief_limit = limit
     results = {core.id: _result(core, [_item(core, n) for n in range(1, 16)])}
     results.update({source.id: _result(source, [_item(source, n) for n in range(1, 5)])
                     for source in sources})
+    for source_result in results.values():
+        for item in source_result.items:
+            if item.metadata.get("role") == "discovery":
+                item.metadata["content_source"] = {"published_at": item.published_at}
     monkeypatch.setattr("signaltrail.collector.load_monitor_results", lambda *_args: results)
     index_path = collect_sources(
         config, tmp_path, "daily", False,
@@ -139,17 +69,16 @@ def test_collection_and_authoring_use_only_actual_shared_allocations(
         collection_window={"start": _START.isoformat(), "end": _END.isoformat()},
     )
     index = read_json(index_path)
-    expected = 6 if limit and not filtered else 0
+    expected = 0 if filtered else 12
     assert len(index["items"]) == 15 + expected
     assert len([item for row in index["sources"] for item in row["items"]]) == 15 + expected
     assert index["source_policies"]["core"]["report_target"] == 15
     assert core.report_target == 15
     assert all(source.report_target == source.report_max == 0 for source in sources)
     allocated = {key: policy for key, policy in index["source_policies"].items()
-                 if policy.get("selection_scope") == "discovery_shared"}
+                 if key != "core"}
     assert sum(policy["report_target"] for policy in allocated.values()) == expected
-    assert all(policy["report_target"] == policy["report_max"] <= 2
-               for policy in allocated.values())
+    assert all(policy["selection_scope"] == "all_today" for policy in allocated.values())
     context = read_json(build_context(index_path, config, tmp_path, "daily"))
     plans = {row["source_id"]: row for row in context["brief_plan"]}
     assert plans["core"]["target_count"] == 15
@@ -166,14 +95,6 @@ def test_collection_and_authoring_use_only_actual_shared_allocations(
         assert {row["source_id"] for row in candidates} == set(allocated)
 
 
-def test_shared_pool_config_defaults_and_rejects_invalid_limits(tmp_path):
-    assert load_config().collection.discovery_brief_limit == 30
-    path = tmp_path / "sources.yaml"
-    path.write_text("collection:\n  discovery_brief_limit: -1\nsources: []\n", "utf-8")
-    with pytest.raises(ValueError, match="discovery_brief_limit"):
-        load_config(path)
-
-
 def test_unselected_core_tail_does_not_exclude_discovery_brief(monkeypatch, tmp_path):
     core = SourceConfig(id="core", name="Core", url="https://core.example/",
                         report_target=1, report_max=1, max_items=2)
@@ -182,6 +103,7 @@ def test_unselected_core_tail_does_not_exclude_discovery_brief(monkeypatch, tmp_
                        sources=[core], monitor_sources=[discovery])
     first, tail = [_item(core, n) for n in (1, 2)]
     duplicate = _item(discovery, 1)
+    duplicate.metadata["content_source"] = {"published_at": duplicate.published_at}
     duplicate.title = tail.title
     duplicate.canonical_url = tail.canonical_url
     results = {core.id: _result(core, [first, tail]),
@@ -206,6 +128,8 @@ def test_discovery_dedup_uses_unique_core_refill_not_unused_alias(monkeypatch, t
     alias, refill = [_item(b, n) for n in (1, 2)]
     alias.canonical_url = first.canonical_url
     duplicate, independent = [_item(discovery, n) for n in (1, 2)]
+    for item in (duplicate, independent):
+        item.metadata["content_source"] = {"published_at": item.published_at}
     duplicate.canonical_url = refill.canonical_url
     independent.title = alias.title
     config = AppConfig(timezone="Asia/Shanghai", browser=BrowserConfig(),
@@ -219,7 +143,7 @@ def test_discovery_dedup_uses_unique_core_refill_not_unused_alias(monkeypatch, t
                                               "end": _END.isoformat()})
     index = read_json(path)
     assert [i["item_id"] for i in index["items"] if i["source_id"] == discovery.id] == [
-        independent.item_id,
+        duplicate.item_id, independent.item_id,
     ]
     assert {i["item_id"] for i in index["items"] if i["source_id"] == b.id} == {
         alias.item_id, refill.item_id,

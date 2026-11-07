@@ -6,6 +6,13 @@ import pytest
 from signaltrail import video_runtime
 
 
+@pytest.fixture(autouse=True)
+def isolated_shared_runtime_home(monkeypatch, tmp_path):
+    """将自动复用目录限定在测试根，避免本机已有 worker 影响设备选择。"""
+    monkeypatch.setattr("signaltrail.config.resolve_signaltrail_home",
+                        lambda: tmp_path / "app-home")
+
+
 @pytest.mark.parametrize(("system", "machine", "expected"), [
     ("Windows", "AMD64", "sherpa-onnx-v2.0.1-win-x64-shared-MT-Release"),
     ("Windows", "ARM64", "sherpa-onnx-v2.0.1-win-arm64-shared-MT-Release"),
@@ -282,3 +289,62 @@ def test_managed_cuda_repairs_only_missing_library_not_hidden_devices(
     result = qwen_runtime.ensure_qwen_runtime(tmp_path, {"engine": "qwen3"}, model_dir=tmp_path)
     assert result["provider"] == ("cuda" if missing_library else "cpu")
     assert len(repairs) == int(missing_library)
+
+
+@pytest.mark.parametrize(("system", "requested", "expected"), [
+    (("Windows", "x86_64"), "auto", "vulkan"),
+    (("Windows", "x86_64"), "cuda", "cuda"),
+    (("Linux", "x86_64"), "auto", "cuda"),
+])
+def test_resident_worker_auto_prefers_vulkan_only_on_windows(
+        monkeypatch, tmp_path, system, requested, expected):
+    from signaltrail import qwen_runtime
+
+    for name in (qwen_runtime.MODEL_NAME, qwen_runtime.MMPROJ_NAME):
+        (tmp_path / name).touch()
+    worker = tmp_path / "llama-tts-worker.exe"
+    worker.touch()
+    monkeypatch.setenv("SIGNALTRAIL_TTS_WORKER", str(worker))
+    monkeypatch.setattr(video_runtime, "video_platform", lambda: system)
+    monkeypatch.setattr(qwen_runtime.shutil, "which", lambda name: "nvidia-smi")
+    selected = []
+    def program(root, platform, provider, proxy):
+        selected.append(provider)
+        return tmp_path / provider
+    monkeypatch.setattr(qwen_runtime, "_program", program)
+    monkeypatch.setattr(qwen_runtime, "_probe", lambda *args: (
+        [("CUDA0", "GPU"), ("Vulkan0", "GPU")], "native probe"))
+    result = qwen_runtime.ensure_qwen_runtime(
+        tmp_path, {"engine": "qwen3"}, model_dir=tmp_path, device=requested)
+    assert result["provider"] == expected
+    assert selected == []
+    assert result["tts_worker_executable"] == worker
+    assert result["execution_mode"] == "resident"
+
+
+@pytest.mark.parametrize("requested", ["auto", "cuda"])
+def test_model_sibling_worker_is_reused_only_for_its_available_backend(
+    monkeypatch, tmp_path, requested,
+):
+    from signaltrail import qwen_runtime
+
+    model = tmp_path / "shared" / "model"
+    model.mkdir(parents=True)
+    for name in (qwen_runtime.MODEL_NAME, qwen_runtime.MMPROJ_NAME):
+        (model / name).touch()
+    worker = model.parent / "worker" / "llama-tts-worker.exe"
+    worker.parent.mkdir()
+    worker.touch()
+    cli = tmp_path / "cuda.exe"
+    cli.touch()
+    monkeypatch.setattr(video_runtime, "video_platform", lambda: ("Windows", "x86_64"))
+    monkeypatch.setattr(qwen_runtime.shutil, "which", lambda name: "nvidia-smi")
+    monkeypatch.setattr(qwen_runtime, "_probe", lambda path, *args:
+                        ([("Vulkan0" if path == worker else "CUDA0", "GPU")], "probe"))
+    result = qwen_runtime.ensure_qwen_runtime(
+        tmp_path / "isolated", {"engine": "qwen3"}, model_dir=model,
+        tts_executable=cli, device=requested,
+    )
+    assert result["provider"] == ("vulkan" if requested == "auto" else "cuda")
+    assert result["execution_mode"] == ("resident" if requested == "auto" else "oneshot")
+    assert result["tts_worker_executable"] == (worker if requested == "auto" else None)

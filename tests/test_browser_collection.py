@@ -73,7 +73,7 @@ class Context:
     [
         (200, False, "success"),
         (429, False, "rate_limited"),
-        (403, False, "verification_required"),
+        (403, False, "failed"),
         (503, False, "failed"),
         (200, True, "failed"),
     ],

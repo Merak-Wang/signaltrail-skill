@@ -4,6 +4,7 @@ import json
 import re
 import time
 from collections import Counter
+from copy import deepcopy
 from datetime import datetime, timedelta
 from enum import StrEnum
 from hashlib import sha256
@@ -1158,7 +1159,48 @@ def brief_writing_style(output_language: str) -> str:
     )
 
 
-def brief_authoring_input(packet_path: Path, data_dir: Path) -> dict[str, Any]:
+def _brief_local_evidence(candidate: dict[str, Any], data_dir: Path) -> dict[str, Any]:
+    """处理：按正文、Feed 字段、描述的顺序装配一个候选的本地证据。
+    输入：当前写作包候选和已绑定的数据根，仅读取候选列出的路径。
+    输出：未截断文本、表格及来源和部分证据语义，不带原始网页或图片。
+    """
+    from .content_extraction import strip_content_frontmatter
+
+    for field, kind in (("content_path", "article"), ("feed_content_path", "feed")):
+        if not candidate.get(field):
+            continue
+        path = Path(candidate[field])
+        if not path.is_absolute():
+            path = data_dir / path
+        path = require_data_root_path(path, data_dir, "Brief evidence")
+        if not path.is_file():
+            continue
+        tables = []
+        if kind == "article":
+            text = strip_content_frontmatter(path.read_text(encoding="utf-8"))
+        else:
+            feed = read_json(path)
+            blocks = feed.get("blocks", [])
+            tables = [{"text": block.get("text", ""), "rows": [
+                [{key: cell[key] for key in ("text", "header", "rowspan", "colspan")
+                  if key in cell} for cell in row] for row in block.get("rows", [])]}
+                for block in blocks if block.get("type") == "table"]
+            text = feed.get("text") or "\n\n".join(
+                block.get("text") or "\n".join(
+                    "\t".join(cell.get("text", "") for cell in row)
+                    for row in block.get("rows", []))
+                for block in blocks if block.get("type") != "image")
+        if text.strip() or tables:
+            return {"kind": kind, "path": str(path), "text": text,
+                    "partial": kind == "feed" or candidate.get("content_status") != "full_text",
+                    **({"tables": tables} if tables else {})}
+    return {"kind": "description", "text": candidate.get("description") or "",
+            "partial": True}
+
+
+def brief_authoring_input(
+    packet_path: Path, data_dir: Path, *, include_evidence: bool = False,
+) -> dict[str, Any]:
     """处理：从单个受限写作包投影作者所需输入，省去接收与调度字段。
     输入：当前包路径和数据根；候选证据仅保留包内已列出的内容与路径。
     输出：完整候选、风格、Schema 与草稿命令；旧包的非一一对应授权列表继续保留。
@@ -1184,6 +1226,38 @@ def brief_authoring_input(packet_path: Path, data_dir: Path) -> dict[str, Any]:
         result["authoring_scope"] = "Author every candidate once, in the listed order."
     if "output_schema" not in result and "required_output_fields" in packet:
         result["required_output_fields"] = packet["required_output_fields"]
+    if include_evidence:
+        result["evidence_by_item_id"] = {
+            candidate["item_id"]: _brief_local_evidence(candidate, data_dir)
+            for candidate in packet["candidates"]
+        }
+        result["candidates"] = [
+            {key: value for key, value in candidate.items()
+             if key != "description" or result["evidence_by_item_id"][candidate["item_id"]][
+                 "kind"] != "description"}
+            for candidate in packet["candidates"]
+        ]
+    return result
+
+
+def _canonicalize_brief_statuses(packet: dict, payload: object) -> object:
+    """处理：将来源日期和列表信号确定的状态统一为 WATCH。
+    输入：受限包候选与作者草稿，不修改作者的文字、重要性或可编辑状态。
+    输出：用于预检和接收的副本，避免为确定性状态再次调用模型。
+    """
+    if not isinstance(payload, dict) or not isinstance(payload.get("briefs"), list):
+        return payload
+    result = deepcopy(payload)
+    candidates = {str(item["item_id"]): item for item in packet.get("candidates", [])}
+    reference = (packet.get("collection_window") or {}).get("end") or packet.get("date")
+    for brief in result["briefs"]:
+        if not isinstance(brief, dict):
+            continue
+        candidate = candidates.get(brief.get("item_id"), {})
+        if (brief_requires_watch(candidate) or len(str(candidate.get("published_at") or "")) == 10
+                or (reference and
+                run_relative_brief_fields(candidate, reference)["status"] == "WATCH")):
+            brief["status"] = "WATCH"
     return result
 
 
@@ -1227,7 +1301,7 @@ def check_authoring_batch(
         "Authoring batch result",
     )
     packet = _read_bound_packet(batch, data_dir)
-    payload = read_json(input_path)
+    payload = _canonicalize_brief_statuses(packet, read_json(input_path))
     if not isinstance(packet, dict):
         raise ValueError("Authoring packet must be a JSON object")
     errors = validate_authoring_batch(packet, payload)
@@ -1285,7 +1359,7 @@ def submit_authoring_batch(
     rejection_dir = packet_path.with_name(f"{packet_path.stem}-rejections")
     rejection_paths = _validation_rejection_paths(rejection_dir)
     packet = _read_bound_packet(batch, data_dir)
-    payload = read_json(input_path)
+    payload = _canonicalize_brief_statuses(packet, read_json(input_path))
     if not isinstance(packet, dict):
         raise ValueError("Authoring packet must be a JSON object")
     errors = validate_authoring_batch(packet, payload)
@@ -1893,19 +1967,22 @@ def _merge_briefs(
                 key: value for key, value in available[representative].items()
                 if key in {"title_zh", "title_en", "tldr", "semantic_fingerprint"}
             }
-            available[item_id].update(item_id=item_id)
+            available[item_id].update(item_id=item_id, semantic_fingerprint=
+                                      candidates[item_id].get("semantic_fingerprint"))
             available[item_id].update(
                 run_relative_brief_fields(candidates[item_id], reference_date)
             )
     batch_by_item = {
         str(item_id): str(plan.get("batch_id") or "")
         for plan in context.get("brief_plan", [])
-        for item_id in plan.get("author_item_ids", [])
+        for item_id in plan.get("author_item_ids", plan.get("default_item_ids", []))
     }
+    batch_by_item.update({str(item_id): str(batch["batch_id"])
+                          for batch in context.get("brief_authoring_batches", [])
+                          for item_id in batch.get("author_item_ids", [])})
     section_rows = {section_id: [] for section_id in SECTION_ORDER_V13}
     coverage_targets: dict[str, int] = {}
     missing_batch_ids = set(missing_batches)
-    selected_urls: set[str] = set()
     for plan in context.get("brief_plan", []):
         if not isinstance(plan, dict):
             continue
@@ -1918,6 +1995,7 @@ def _merge_briefs(
             for item_id in map(str, plan.get("default_item_ids", []))
             if item_id in available
         ]
+        selected_urls: set[str] = set()
         unique = []
         for brief in selected:
             item = candidates.get(str(brief["item_id"]), {})
@@ -1933,9 +2011,8 @@ def _merge_briefs(
         section_rows[section_id].extend(selected)
         coverage_targets[source_id] = (
             len(selected)
-            if (str(plan.get("batch_id") or "") in missing_batch_ids
-                or any(batch_by_item.get(aliases.get(str(item_id), "")) in missing_batch_ids
-                       for item_id in plan.get("default_item_ids", [])))
+            if any(batch_by_item.get(aliases.get(str(item_id), str(item_id))) in missing_batch_ids
+                   for item_id in plan.get("default_item_ids", []))
             else max(0, int(plan.get("target_count", len(selected))) - duplicate_count)
         )
     sections = [

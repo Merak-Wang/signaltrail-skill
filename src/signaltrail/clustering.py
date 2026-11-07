@@ -205,19 +205,6 @@ def _parse_time(item: dict[str, Any]) -> datetime | None:
     return parsed.replace(tzinfo=parsed.tzinfo or UTC).astimezone(UTC)
 
 
-def _containment_match(left: str, right: str) -> bool:
-    """处理：判断一个具有足够长度的规范标题是否包含于另一个标题。
-    输入：
-    - ``left``：第一条已清理标题；用于判断它是否完整包含另一标题。
-    - ``right``：第二条已清理标题；用于判断它是否完整包含另一标题。
-    输出：布尔判断；True 表示满足处理说明中的条件，False 表示不满足且不产生该结果。
-    """
-    left_compact = re.sub(r"\s+", "", _normalized_title(left))
-    right_compact = re.sub(r"\s+", "", _normalized_title(right))
-    shorter, longer = sorted((left_compact, right_compact), key=len)
-    return len(shorter) >= 24 and len(shorter) / max(1, len(longer)) >= 0.65 and shorter in longer
-
-
 def _role_score(item: dict[str, Any]) -> int:
     """处理：把来源角色转换为聚类重要性分值。
     输入：
@@ -315,8 +302,13 @@ def cluster_articles(
         return []
     generated = datetime.fromisoformat(generated_at.replace("Z", "+00:00"))
     generated = generated.replace(tzinfo=generated.tzinfo or UTC)
-    vectors = [lexical_vector(str(item.get("title") or "")) for item in items]
-    token_sets = [set(lexical_tokens(str(item.get("title") or ""))) for item in items]
+    titles = [str(item.get("title") or "") for item in items]
+    vectors = [lexical_vector(title) for title in titles]
+    token_sets = [set(lexical_tokens(title)) for title in titles]
+    # 预先解析匹配所需的标题和时间，候选对复用结果，避免高频词放大解析开销。
+    normalized_titles = [_normalized_title(title) for title in titles]
+    compact_titles = [title.replace(" ", "") for title in normalized_titles]
+    parsed_times_by_item = [_parse_time(item) for item in items]
     canonical_to_index: dict[str, int] = {}
     inverted: defaultdict[str, list[int]] = defaultdict(list)
     pairs: set[tuple[int, int]] = set()
@@ -342,8 +334,8 @@ def cluster_articles(
         right_item = items[right]
         if str(left_item.get("module")) != str(right_item.get("module")):
             continue
-        left_time = _parse_time(left_item)
-        right_time = _parse_time(right_item)
+        left_time = parsed_times_by_item[left]
+        right_time = parsed_times_by_item[right]
         if (
             left_time is not None
             and right_time is not None
@@ -357,20 +349,20 @@ def cluster_articles(
         if (
             not canonical_match
             and min(len(token_sets[left]), len(token_sets[right])) < 4
-            and _normalized_title(str(left_item.get("title") or ""))
-            != _normalized_title(str(right_item.get("title") or ""))
+            and normalized_titles[left] != normalized_titles[right]
         ):
             continue
         if not canonical_match and len(shared_tokens) < 2:
             continue
         similarity = cosine_similarity(vectors[left], vectors[right])
+        shorter, longer = compact_titles[left], compact_titles[right]
+        if len(shorter) > len(longer):
+            shorter, longer = longer, shorter
         if (
             canonical_match
             or similarity >= threshold
-            or _containment_match(
-                str(left_item.get("title") or ""),
-                str(right_item.get("title") or ""),
-            )
+            or (len(shorter) >= 24 and len(shorter) / len(longer) >= 0.65
+                and shorter in longer)
         ):
             union.union(left, right)
 

@@ -12,6 +12,7 @@ import subprocess
 import sys
 import time
 import wave
+from contextlib import suppress
 from copy import deepcopy
 from pathlib import Path
 
@@ -93,12 +94,12 @@ def spoken_narration(text: str, language: str, pronunciations: dict) -> str:
     return spoken_numbers(text, language)
 
 
-def run_native(arguments: list[str], *, library_dir: Path | None = None) -> None:
-    """处理：运行原生语音或编码程序，保存配音日志并报告实际错误。
-    输入：不经过 shell 的参数列表；库目录随当前系统加入子进程环境。
-    输出：成功返回，失败或 CUDA 回退 CPU 时给出日志中的原因。
+def _native_environment(executable: str, library_dir: Path | None = None) -> dict:
+    """处理：准备当前原生程序的私有动态库搜索路径。
+    输入：可执行文件与可选运行库目录。
+    输出：仅供当前子进程使用的环境。
     """
-    directory = Path(arguments[0]).resolve().parent
+    directory = Path(executable).resolve().parent
     environment = os.environ.copy()
     variable = ('PATH' if sys.platform == 'win32' else
                 'DYLD_LIBRARY_PATH' if sys.platform == 'darwin' else 'LD_LIBRARY_PATH')
@@ -107,6 +108,15 @@ def run_native(arguments: list[str], *, library_dir: Path | None = None) -> None
         paths += sorted({str(path.parent) for path in Path(library_dir).rglob('*')
                          if path.is_file()})
     environment[variable] = os.pathsep.join(paths + [environment.get(variable, '')])
+    return environment
+
+
+def run_native(arguments: list[str], *, library_dir: Path | None = None) -> None:
+    """处理：运行原生语音或编码程序，保存配音日志并报告实际错误。
+    输入：不经过 shell 的参数列表；库目录随当前系统加入子进程环境。
+    输出：成功返回，失败或 CUDA 回退 CPU 时给出日志中的原因。
+    """
+    environment = _native_environment(arguments[0], library_dir)
     try:
         result = subprocess.run(arguments, capture_output=True, env=environment,
                                 creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
@@ -133,6 +143,97 @@ def run_native(arguments: list[str], *, library_dir: Path | None = None) -> None
     if '--mmproj-device' in arguments and not re.search(
             r'offloaded [1-9]\d*/\d+ layers to GPU', diagnostic):
         raise NativeInferenceError('GPU layer offload was not confirmed in the native TTS log')
+
+
+class QwenWorker:
+    """处理：保持模型和参考音色常驻，逐条生成独立音频。
+    输入：原生启动参数及有序意群请求。
+    输出：各段 WAV 和对应推理诊断。
+    """
+
+    def __init__(self, arguments: list[str], library_dir: Path | None = None,
+                 log_path: Path | None = None, runtime_dir: Path | None = None):
+        """处理：启动一次原生进程并等待模型加载完成。
+        输入：模型参数、运行库及诊断日志路径。
+        输出：可以连续接收意群的工作进程。
+        """
+        self.log_path = log_path
+        self.log = log_path.open('w', encoding='utf-8') if log_path else None
+        environment = _native_environment(arguments[0], library_dir)
+        if runtime_dir:
+            variable = ('PATH' if sys.platform == 'win32' else
+                        'DYLD_LIBRARY_PATH' if sys.platform == 'darwin' else 'LD_LIBRARY_PATH')
+            environment[variable] = str(runtime_dir) + os.pathsep + environment[variable]
+        try:
+            self.process = subprocess.Popen(
+                arguments, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                stderr=self.log or subprocess.DEVNULL, text=True, encoding='utf-8',
+                env=environment, cwd=runtime_dir,
+                creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+        except OSError as error:
+            if self.log:
+                self.log.close()
+            raise NativeInferenceError(str(error)) from error
+        try:
+            ready = self._response()
+            if '--mmproj-device' in arguments and not re.search(
+                    r'offloaded [1-9]\d*/\d+ layers to GPU', ready.get('diagnostic', '')):
+                raise NativeInferenceError('GPU layer offload was not confirmed by Qwen worker')
+        except Exception:
+            self.close()
+            raise
+
+    def _response(self) -> dict:
+        """处理：读取当前请求回执并传递原生错误。
+        输入：工作进程的单行输出。
+        输出：完成字段或附带诊断的推理异常。
+        """
+        line = self.process.stdout.readline()
+        if not line:
+            diagnostic = self.log_path.read_text(encoding='utf-8')[-4000:] if self.log_path else ''
+            raise NativeInferenceError('Qwen worker exited before completing its request: '
+                                       + diagnostic)
+        result = json.loads(line)
+        if result.get('ok') is False:
+            raise NativeInferenceError(result.get('error', 'Qwen worker synthesis failed'))
+        return result
+
+    def synthesize(self, text_file: Path, output: Path, language: str) -> None:
+        """处理：提交一个意群并保存逐段诊断。
+        输入：文字文件、目标 WAV 路径和语言。
+        输出：供帧数与缓存检查使用的音频和日志。
+        """
+        try:
+            self.process.stdin.write(json.dumps(
+                {'text_file': str(text_file), 'output': str(output), 'language': language},
+                ensure_ascii=False) + '\n')
+            self.process.stdin.flush()
+        except (BrokenPipeError, OSError) as error:
+            raise NativeInferenceError('Qwen worker exited during synthesis') from error
+        result = self._response()
+        diagnostic = result.get('diagnostic', '')
+        if 'generated ' not in diagnostic:
+            diagnostic += f"\ngenerated {result['frames']} frames\n"
+        output.with_suffix('.log').write_text(diagnostic, encoding='utf-8')
+        if re.search(r'OOV (?:word|character) skipped:|Skip unknown token:', diagnostic):
+            raise ValueError('TTS skipped a name or word; add a pronunciation alias')
+
+    def close(self) -> None:
+        """处理：关闭输入队列并等待原生模型释放。
+        输入：当前持有的工作进程。
+        输出：关闭的管道与诊断文件。
+        """
+        if self.process.stdin and not self.process.stdin.closed:
+            with suppress(BrokenPipeError):
+                self.process.stdin.close()
+        try:
+            self.process.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            self.process.terminate()
+            self.process.wait()
+        self.process.stdout.close()
+        if self.log:
+            self.log.close()
 
 
 def _wave_samples(path: Path) -> tuple[tuple, array.array]:
@@ -273,6 +374,7 @@ class VoiceSynthesizer:
         输入：本地运行工具、可选音色配置和数据根中的缓存目录。
         输出：仅依赖选中声音与内容的缓存；画面及页面顺序不影响配音。
         """
+        self.worker = None
         self.profile = runtime.get('voice_profile') or {}
         self.runtime = runtime
         self.cache_root = cache_root
@@ -282,6 +384,7 @@ class VoiceSynthesizer:
         self.provider = runtime['provider']
         self.model_dir = Path(runtime['model_dir'])
         self.executable = Path(runtime['tts_executable'])
+        self.execution_mode = 'resident' if runtime.get('tts_worker_executable') else 'oneshot'
         self.speed = self.profile.get('speed', 1)
         self.gain_db = self.profile.get('gain_db', 0)
         self.pauses = {'title': .45, 'sentence': .35, 'end': .2} | self.profile.get('pauses', {})
@@ -291,6 +394,9 @@ class VoiceSynthesizer:
                     'threads': threads, 'speed': self.speed, 'gain_db': self.gain_db,
                     'pauses': self.pauses}
         files = [self.executable]
+        if runtime.get('tts_worker_executable'):
+            files.append(Path(runtime['tts_worker_executable']))
+            identity['execution'] = 'resident-v1'
         self.reference = None
         if self.engine == 'qwen3':
             self.reference = next(entry for entry in self.profile['references']
@@ -372,6 +478,15 @@ class VoiceSynthesizer:
             config.write_text('--reference-text=' + self.reference['text'] + '\n', encoding='utf-8')
             self.arguments += [f'--reference-audio={prepared}', f'--config={config}']
 
+    def close(self) -> None:
+        """处理：结束本次导出持有的常驻语音进程。
+        输入：合成器当前持有的工作实例。
+        输出：已释放资源的合成器。
+        """
+        if self.worker is not None:
+            self.worker.close()
+            self.worker = None
+
     def page(self, title: str, brief: str, destination: Path,
              *, language: str = "zh-CN") -> dict:
         """处理：GPU 执行失败时整页改用同模型 CPU 配音，并保留回退原因。
@@ -415,6 +530,7 @@ class VoiceSynthesizer:
             reason = str(error)
             generated, hits, page_hits = self.generated, self.hits, self.page_hits
             runtime = cpu_video_runtime(self.runtime)
+            self.close()
             self.__init__(runtime, self.cache_root, threads=self.threads)
             self.fallback_reason = reason
             self.generated, self.hits, self.page_hits = generated, hits, page_hits
@@ -451,16 +567,28 @@ class VoiceSynthesizer:
                            'en' if language.lower().startswith('en') else 'zh',
                            '-f', str(text_file), '--output', str(raw.with_suffix('.pending.wav'))]
             started = time.perf_counter()
+            cached_audio = None
             if raw.exists():
                 try:
-                    _wave_samples(raw)
+                    cached_audio = _wave_samples(raw)
                     if self.engine == 'qwen3':
                         _check_qwen_log(raw.with_suffix('.log'), self.identity['frames'])
                 except (ValueError, EOFError, wave.Error):
+                    cached_audio = None
                     raw.rename(raw.with_name(raw.stem + f'.invalid-{time.time_ns()}.wav'))
             if not raw.exists():
                 if self.engine == 'qwen3':
-                    run_native(command, library_dir=self.runtime.get('library_dir'))
+                    worker_path = self.runtime.get('tts_worker_executable')
+                    if worker_path:
+                        if self.worker is None:
+                            self.worker = QwenWorker(
+                                [str(worker_path), *self.arguments[1:]],
+                                self.runtime.get('library_dir'), self.cache / 'worker.log',
+                                self.executable.parent)
+                        self.worker.synthesize(text_file, raw.with_suffix('.pending.wav'),
+                                               'en' if language.lower().startswith('en') else 'zh')
+                    else:
+                        run_native(command, library_dir=self.runtime.get('library_dir'))
                 else:
                     run_native(command)
                 if self.engine == 'qwen3':
@@ -482,7 +610,8 @@ class VoiceSynthesizer:
                         and 'fallback to cpu' in log.read_text(encoding='utf-8').lower()):
                     raise RuntimeError('Cached CUDA synthesis fell back to CPU')
                 self.hits += 1
-            current, samples = _wave_samples(raw)
+            # 缓存校验已读出 PCM，直接交给拼接，避免同一段音频再次读取。
+            current, samples = cached_audio if cached_audio is not None else _wave_samples(raw)
             if parameters is not None and current[:3] != parameters[:3]:
                 raise ValueError('Voice segments have different audio formats')
             parameters = current
@@ -509,6 +638,7 @@ class VoiceSynthesizer:
         duration = len(played) / parameters.framerate / parameters.nchannels
         _write_wave(destination, parameters, played)
         manifest = {'voice': self.profile.get('name'), 'engine': self.engine,
+                    'execution_mode': self.execution_mode,
                     'provider': self.provider, 'fallback_reason': self.fallback_reason,
                     'language': language, 'display_text': title + '\n' + brief,
                     'spoken_text': '\n'.join(segment['spoken_text'] for segment in segments),

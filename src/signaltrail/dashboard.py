@@ -23,24 +23,6 @@ _CONTENT_TYPES = {
 }
 
 
-class PlatformHTTPServer(ThreadingHTTPServer):
-    """处理：在关闭新闻服务时一并停止研究工作线程。
-    输入：现有HTTP监听地址、处理器及可选研究服务。
-    输出：保留标准HTTP服务器接口，关闭时释放研究宿主进程。
-    """
-
-    research_service: Any = None
-
-    def server_close(self) -> None:
-        """处理：释放监听端口并通知研究服务停止后台任务。
-        输入：当前服务器绑定的研究服务。
-        输出：HTTP与研究资源共同结束，页面退出不遗留宿主进程。
-        """
-        super().server_close()
-        if self.research_service is not None:
-            self.research_service.close()
-
-
 def _asset_dir() -> Path:
     """处理：返回本地监控页面静态资源目录。
     输入：
@@ -64,7 +46,6 @@ def _handler_factory(
     assets: Path,
     *,
     quiet: bool,
-    research_service: Any = None,
 ) -> type[BaseHTTPRequestHandler]:
     """处理：创建绑定数据目录与配置的本地监控 HTTP 处理器。
     输入：
@@ -258,17 +239,6 @@ def _handler_factory(
                     )
                 )
                 return
-            if route.startswith("/api/research/"):
-                job = (
-                    research_service.get(unquote(route.removeprefix("/api/research/")))
-                    if research_service
-                    else None
-                )
-                self._send_json(
-                    {"job": job} if job else {"error": "research_not_found"},
-                    HTTPStatus.OK if job else HTTPStatus.NOT_FOUND,
-                )
-                return
             if route.startswith("/api/events/"):
                 query = parse_qs(urlsplit(self.path).query)
                 if query.get("report_id"):
@@ -316,7 +286,6 @@ def _handler_factory(
                     {
                         "status": "ok",
                         "read_only": False,
-                        "research_available": research_service is not None,
                     }
                 )
                 return
@@ -343,9 +312,9 @@ def _handler_factory(
                 self.connection.settimeout(timeout)
 
         def do_POST(self) -> None:  # noqa: N802
-            """处理：接受同源页面的关注变更和事件研究问题。
-            输入：关注开关或事件问题与分析视角。
-            输出：保存后的关注列表或已排队研究任务。
+            """处理：接受同源页面的关注变更。
+            输入：关注类型、目标与开关。
+            输出：保存后的关注列表。
             """
             origin = self.headers.get("Origin")
             if (origin and urlsplit(origin).netloc != self.headers.get("Host")) or self.headers.get(
@@ -355,12 +324,7 @@ def _handler_factory(
                 self._send_json({"error": "origin_not_allowed"}, HTTPStatus.FORBIDDEN)
                 return
             route = urlsplit(self.path).path
-            research_event = (
-                unquote(route[len("/api/events/") : -len("/research")])
-                if route.startswith("/api/events/") and route.endswith("/research")
-                else None
-            )
-            if route != "/api/follows" and research_event is None:
+            if route != "/api/follows":
                 self._send_json({"error": "not_found"}, HTTPStatus.NOT_FOUND)
                 return
             try:
@@ -370,22 +334,6 @@ def _handler_factory(
                 payload = json.loads(self.rfile.read(length))
                 if not isinstance(payload, dict):
                     raise ValueError("请求必须为JSON对象")
-                if research_event is not None:
-                    if research_service is None:
-                        self._send_json(
-                            {"error": "research_unavailable"}, HTTPStatus.SERVICE_UNAVAILABLE
-                        )
-                        return
-                    if not isinstance(payload.get("question"), str):
-                        raise ValueError("研究问题必须为文本")
-                    job = research_service.submit(
-                        research_event,
-                        payload.get("question", ""),
-                        payload.get("domain"),
-                        language=payload.get("language", "zh-CN"),
-                    )
-                    self._send_json({"job": job}, HTTPStatus.ACCEPTED)
-                    return
                 if type(payload.get("following")) is not bool:
                     raise ValueError("关注开关必须为布尔值")
                 result = set_follow(
@@ -418,9 +366,8 @@ def create_monitor_server(
     port: int = 8765,
     *,
     quiet: bool = False,
-    research_service: Any = None,
 ) -> ThreadingHTTPServer:
-    """处理：创建绑定新闻档案、关注与研究入口的 HTTP 服务。
+    """处理：创建绑定日报、新闻档案与关注入口的 HTTP 服务。
     输入：
     - ``data_dir``：当前运行的唯一数据根；所有状态和版本化产物都必须位于其中。
     - ``host``：本地监控服务器绑定的主机地址；远程地址需要显式授权。
@@ -437,13 +384,12 @@ def create_monitor_server(
         raise FileNotFoundError(
             f"Monitor frontend assets are missing from {assets}: {', '.join(missing)}"
         )
-    server = PlatformHTTPServer(
+    server = ThreadingHTTPServer(
         (host, port),
         _handler_factory(
-            data_dir.resolve(), assets, quiet=quiet, research_service=research_service
+            data_dir.resolve(), assets, quiet=quiet
         ),
     )
-    server.research_service = research_service
     return server
 
 
@@ -452,8 +398,6 @@ def _refresh_loop(
     config: AppConfig,
     data_dir: Path,
     refresh_minutes: int,
-    research_service: Any = None,
-    auto_research: bool = True,
 ) -> None:
     """处理：按固定间隔刷新监控快照，并保留上一份可用结果。
     输入：
@@ -474,8 +418,6 @@ def _refresh_loop(
                 and refresh_minutes
             ):
                 refresh_monitor(config, data_dir)
-            if auto_research and research_service:
-                research_service.schedule_followed()
         except Exception:
             # 刷新失败时保留上一份可读快照；来源级错误继续写入 health.json，
             # 下一次成功刷新再清除连续失败状态。
@@ -494,8 +436,6 @@ def serve_monitor(
     open_browser: bool = False,
     allow_remote: bool = False,
     refresh_minutes: int = 0,
-    auto_research: bool = True,
-    research_command: str | None = None,
 ) -> None:
     """处理：启动本地监控服务、可选刷新线程并保持进程运行。
     输入：
@@ -516,10 +456,7 @@ def serve_monitor(
         )
     if refresh_minutes < 0:
         raise ValueError("--refresh-minutes must be zero or a positive integer")
-    from .platform_research import ResearchService
-
-    research_service = ResearchService(config, data_dir, worker_command=research_command)
-    server = create_monitor_server(data_dir, host, port, research_service=research_service)
+    server = create_monitor_server(data_dir, host, port)
     actual_host, actual_port = server.server_address[:2]
     display_host = "127.0.0.1" if actual_host in {"0.0.0.0", "::"} else actual_host
     url = f"http://{display_host}:{actual_port}/"
@@ -529,7 +466,7 @@ def serve_monitor(
     if refresh_minutes > 0:
         refresh_thread = threading.Thread(
             target=_refresh_loop,
-            args=(stop_event, config, data_dir, refresh_minutes, research_service, auto_research),
+            args=(stop_event, config, data_dir, refresh_minutes),
             name="daily-intelligence-monitor-refresh",
             daemon=True,
         )

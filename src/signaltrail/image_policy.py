@@ -179,6 +179,10 @@ def image_variant_key(url: str) -> tuple:
         match = re.fullmatch(r"/image/(\d+)_\d+\.(?:jpe?g|webp|png)", path, re.I)
         if match:
             return "dw-photo", host, match[1], query
+    if host == "ichef.bbci.co.uk":
+        match = re.fullmatch(r"(/ace/(?:standard|branded_news))/\d+/(.+?)(?:\.webp)?", path)
+        if match:
+            return "bbc-photo", host, match[1], match[2], query
     if host == "global.unitednations.entermediadb.net":
         match = re.fullmatch(r"(.+\.(?:jpe?g|png))/image\d+x\d+(?:cropped)?\.(?:jpe?g|png)", path)
         if match:
@@ -190,7 +194,10 @@ def image_variant_key(url: str) -> tuple:
     if "/wp-content/uploads/" in path:
         match = re.fullmatch(r"(.+?)(?:-\d+x\d+)?\.(jpe?g|png|webp)", path, re.I)
         if match:
-            return "wordpress-photo", host, match[1], match[2].lower(), query
+            return ("wordpress-photo", host, match[1], match[2].lower(),
+                    tuple((key, value) for key, value in query
+                          if key not in _RESIZE_QUERY_KEYS
+                          and not (key == "resize" and re.fullmatch(r"\d+,\d+", value))))
     if host == "dam.mediacorp.sg" and "/image/upload/" in path:
         parts = path.split("/")
         for position, part in enumerate(parts):
@@ -201,14 +208,19 @@ def image_variant_key(url: str) -> tuple:
                 parts[position] = ""
         return "cloudinary-photo", host, "/".join(part for part in parts if part), query
     parameters = dict(query)
+    crop_fields = {"rect", "crop", "x", "y", "focal", "fp-x", "fp-y"} & parameters.keys()
+    if parameters.get("crop", "").casefold() == "none":
+        crop_fields.discard("crop")
     if (host in _RESIZE_QUERY_HOSTS and _SIZE_QUERY_KEYS & parameters.keys()
-            and not {"rect", "crop", "x", "y", "focal", "fp-x", "fp-y"} & parameters.keys()):
+            and not crop_fields):
         width = _image_dimension(parameters.get("w") or parameters.get("width"))
         height = _image_dimension(parameters.get("h") or parameters.get("height"))
         # 普通尺寸查询只合并等比版本，保留不同构图与所有非尺寸参数。
         ratio = round(width / height, 2) if width and height else None
         return ("query-resize", host, path, ratio,
-                tuple((key, value) for key, value in query if key not in _RESIZE_QUERY_KEYS))
+                tuple((key, value) for key, value in query
+                      if key not in _RESIZE_QUERY_KEYS
+                      and not (key == "crop" and value.casefold() == "none")))
     return "url", url
 
 
@@ -236,8 +248,6 @@ def _image_pixels(image: dict) -> float:
     dimensions = re.search(r"(?:image|-|/)(\d+)x(\d+)(?:cropped)?\.[a-z]+$", parsed.path, re.I)
     if dimensions:
         return float(dimensions[1]) * float(dimensions[2])
-    if "/wp-content/uploads/" in parsed.path:
-        return math.inf
     query = parse_qs(parsed.query)
     width = _image_dimension((query.get("width") or query.get("w") or [0])[0])
     height = _image_dimension((query.get("height") or query.get("h") or [0])[0])
@@ -246,10 +256,32 @@ def _image_pixels(image: dict) -> float:
     height *= density
     if width:
         return width * (height or width)
+    resize = (query.get("resize") or [""])[0]
+    if re.fullmatch(r"\d+,\d+", resize):
+        width, height = map(float, resize.split(","))
+        return width * height
+    bbc = re.search(r"/ace/(?:standard|branded_news)/(\d+)/", parsed.path)
+    if bbc:
+        return float(bbc[1]) ** 2
+    if "/wp-content/uploads/" in parsed.path:
+        return math.inf
     width = _image_dimension(image.get("declared_width"))
     height = _image_dimension(image.get("declared_height"))
     density = _image_dimension(image.get("pixel_density")) or 1
     return (width * (height or width) or density) * density
+
+
+def image_resolution_candidates(url: str) -> list[str]:
+    """处理：把 BBC 公开缩放服务的 Feed 缩略图提升为高清候选，保留原地址回退。
+    输入：发布者图片 URL；签名地址和其他站点保持原样。
+    输出：先尝试 1920 像素版本，下载失败时继续使用原始缩略图。
+    """
+    parsed = urlsplit(url)
+    match = re.fullmatch(r"(/ace/standard/)(\d+)(/.+)", parsed.path)
+    if (parsed.hostname == "ichef.bbci.co.uk" and not parsed.query
+            and match and int(match[2]) < 1920):
+        return [parsed._replace(path=match[1] + "1920" + match[3]).geturl(), url]
+    return [url]
 
 
 def image_variant_groups(images: list[dict]) -> list[list[dict]]:

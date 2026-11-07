@@ -6,9 +6,9 @@
 **研究范围：** 为 SignalTrail 选择从新闻材料到讲解稿、再到图文流的实现路线。
 **受众：** 有一定背景的中英文读者；讲清来龙去脉，中文可有说书节奏，英文可有小说式叙事，同时保留专业分析（用户已确认）。
 
-[English](../../research/2026-09-08-news-explainer-workflows.md) · [实施路线图](../roadmap.md) · [可试用提示词](../../../templates/news-explainer-prompts.md)
+[English](../../research/2026-09-08-news-explainer-workflows.md) · [实施路线图](../roadmap.md) · 可试用提示词
 
-本文保留研究完成时的提案描述。当前实验实现与剩余门禁以[讲解指南](../explainers.md)为准。
+本文保留研究完成时的提案描述。当前实验实现与剩余门禁以讲解指南为准。
 
 ## 研究结论
 
@@ -213,7 +213,7 @@ flowchart TD
 不把它包装成文字润色。阶段可以有多份中间产物，不必每份都增加一个模型调用：
 候选抽取和提纲在原型阶段可合并，独立核验保持隔离。
 
-完整阶段提示词见[实验提示词包](../../../templates/news-explainer-prompts.md)。
+完整阶段提示词见实验提示词包。
 其中的字段是设计草案；实现时以注入的 `output_schema` 为准，不可提交到现有 analysis 接收器。
 
 ## 图文流的具体含义

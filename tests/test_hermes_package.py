@@ -30,7 +30,6 @@ def test_skill_metadata_uses_generic_agent_skill_contract():
     project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     assert BUILD.package_version(ROOT) == project["project"]["version"] == __version__
     assert "hermes" not in metadata.get("metadata", {})
-    assert "Notion" in body and "optional" in body
     assert len(body.splitlines()) < 220
 
 
@@ -198,3 +197,33 @@ def test_installers_default_to_platform_hermes_skill_roots():
     assert '${HOME}/.hermes' in shell
     assert 'skills_root="${hermes_home}/skills"' in shell
     assert 'target_dir="${skills_root}/research/signaltrail"' in shell
+
+
+@pytest.mark.parametrize("recycle_fails", [False, True])
+def test_package_replacement_recycles_previous_directory(monkeypatch, tmp_path, recycle_fails):
+    staging = tmp_path / "staging"
+    output = tmp_path / "signaltrail"
+    staging.mkdir()
+    output.mkdir()
+    (staging / "version.txt").write_text("new", encoding="utf-8")
+    (output / "version.txt").write_text("old", encoding="utf-8")
+    recycled = []
+
+    def recycle(path):
+        recycled.append(Path(path))
+        if recycle_fails:
+            raise OSError("Recycle bin unavailable")
+        Path(path).rename(tmp_path / "recycled")
+
+    monkeypatch.setattr("send2trash.send2trash", recycle)
+    if recycle_fails:
+        with pytest.warns(RuntimeWarning, match="previous package remains"):
+            BUILD.replace_directory_atomically(staging, output)
+    else:
+        BUILD.replace_directory_atomically(staging, output)
+
+    assert (output / "version.txt").read_text(encoding="utf-8") == "new"
+    backup = tmp_path / ".signaltrail.previous"
+    assert recycled == [backup]
+    previous = backup if recycle_fails else tmp_path / "recycled"
+    assert (previous / "version.txt").read_text(encoding="utf-8") == "old"

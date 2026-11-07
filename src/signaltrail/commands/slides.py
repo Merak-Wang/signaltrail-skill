@@ -25,6 +25,16 @@ def add_slides_parser(sub: argparse._SubParsersAction) -> None:
     prepare = stages.add_parser(
         "prepare", help="Select indexed or report news and split bounded batches"
     )
+    review = stages.add_parser("review", help="Review today's candidates before writing narration")
+    review.add_argument("--parts-dir", type=Path,
+                        help="Save complete compact review as ordered small input parts")
+    review.add_argument("--report", type=Path)
+    review.add_argument("--index", type=Path, required=True)
+    review.add_argument("--max-news", type=int, default=50)
+    review.add_argument("--model-input", action="store_true",
+                        help="Emit full-pool columnar review input without repeated metadata")
+    prepare.add_argument("--review", type=Path,
+                         help="Model candidate selection and merge decisions")
     prepare.add_argument("--report", type=Path)
     prepare.add_argument("--index", type=Path, required=True)
     prepare.add_argument("--language", choices=("zh-CN", "en"))
@@ -42,6 +52,10 @@ def add_slides_parser(sub: argparse._SubParsersAction) -> None:
     prepare.add_argument("--max-output-tokens", type=int, default=4000)
     author_input = stages.add_parser("input", help="Read one complete, compact writing input")
     author_input.add_argument("--packet", type=Path, required=True)
+    image_prefetch = stages.add_parser("prefetch-images",
+                                       help="Fetch slide images during authoring")
+    image_prefetch.add_argument("--plan", type=Path, required=True)
+    image_prefetch.add_argument("--refresh", action="store_true")
     submit = stages.add_parser("submit", help="Accept and reuse one authored batch")
     submit.add_argument("--packet", type=Path)
     submit.add_argument("--input", type=Path)
@@ -82,6 +96,28 @@ def handle_slides(args: argparse.Namespace, context: CommandContext) -> int:
     """
     try:
         match args.action:
+            case "review":
+                from ..news_slides import review_candidates, review_model_input
+
+                result = review_candidates(
+                    read_json_object(args.report, "Report") if args.report else None,
+                    read_json_object(args.index, "Index"), args.max_news, context.data_dir)
+                if args.parts_dir is not None:
+                    from ..author_inputs import materialize_input_parts
+                    from ..runtime import require_data_root_path
+                    from ..utils import write_json
+
+                    directory = require_data_root_path(args.parts_dir, context.data_dir,
+                                                       "Review input directory")
+                    path = directory / "review-input.json"
+                    write_json(path, review_model_input(result))
+                    print_json({"eligible_count": result["eligible_count"],
+                                "max_news": result["max_news"],
+                                **materialize_input_parts(path)}, indent=None)
+                    return 0
+                if args.model_input:
+                    print_json(review_model_input(result), indent=None)
+                    return 0
             case "input":
                 from ..narrative_store import load_artifact
 
@@ -117,6 +153,24 @@ def handle_slides(args: argparse.Namespace, context: CommandContext) -> int:
                 if player:
                     result["report_video_path"] = str(player)
             case "prepare":
+                if args.review is None:
+                    from ..news_slides import review_candidates
+
+                    result = review_candidates(
+                        read_json_object(args.report, "Report") if args.report else None,
+                        read_json_object(args.index, "Index"), args.max_news, context.data_dir)
+                    if not result["eligible_count"]:
+                        result["next_action"] = result["message"]
+                        print_json(result)
+                        return 0
+                    result["status"] = "review_required"
+                    result["next_action"] = ("Review candidates, save decisions, then "
+                                             "prepare --review REVIEW.json")
+                    print_json(result)
+                    return 0
+                decisions = read_json_object(args.review, "Candidate review")
+                if "selected_event_ids" not in decisions:
+                    raise ValueError("Candidate review requires selected_event_ids")
                 result = prepare_slides(
                     args.report, args.index, context.data_dir,
                     language=args.language or (context.config.output.language
@@ -127,6 +181,7 @@ def handle_slides(args: argparse.Namespace, context: CommandContext) -> int:
                     batch_size=args.batch_size, max_input_tokens=args.max_input_tokens,
                     max_output_tokens=args.max_output_tokens,
                     config=context.config,
+                    review=decisions,
                 )
             case "submit":
                 if not args.plan and not args.check_only:
@@ -140,6 +195,12 @@ def handle_slides(args: argparse.Namespace, context: CommandContext) -> int:
                     return 1 if result["invalid"] else 0
             case "status":
                 result = slides_status(args.plan, context.data_dir)
+            case "prefetch-images":
+                from ..news_slides import prefetch_slide_images
+
+                result = prefetch_slide_images(args.plan, context.data_dir,
+                                               media_config=context.config.media,
+                                               refresh=args.refresh)
             case "render":
                 result = render_slides(args.plan, context.data_dir,
                                        refresh_images=not args.offline,

@@ -636,7 +636,6 @@ def test_serve_without_snapshot_does_not_start_automatic_refresh(tmp_path, monke
     server = Mock()
     server.server_address = ("127.0.0.1", 8766)
     monkeypatch.setattr(dashboard, "create_monitor_server", Mock(return_value=server))
-    monkeypatch.setattr("signaltrail.platform_research.ResearchService", Mock())
     thread = Mock()
     refresh = Mock()
     monkeypatch.setattr(

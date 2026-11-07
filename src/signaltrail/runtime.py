@@ -8,20 +8,6 @@ from .utils import now_iso, read_json, write_json
 DATA_ROOT_REGISTRY_SCHEMA = "1.0"
 
 
-def _is_relative_to(path: Path, root: Path) -> bool:
-    """处理：判断规范路径是否位于指定根目录之内。
-    输入：
-    - ``path``：当前函数要读取、校验或写入的本地文件路径。
-    - ``root``：安全边界或检查根目录；目标路径必须位于其中。
-    输出：布尔判断；True 表示满足处理说明中的条件，False 表示不满足且不产生该结果。
-    """
-    try:
-        path.relative_to(root)
-    except ValueError:
-        return False
-    return True
-
-
 def _migration_binding(data_dir: Path) -> tuple[Path, Path] | None:
     """处理：读取显式迁移登记，或识别同级旧目录已移走的改名。
     输入：当前数据根及应用目录、当前根父目录中的登记表。
@@ -52,7 +38,7 @@ def _map_legacy_path(path: Path, data_dir: Path, previous_root: Path | None = No
     resolved = path.expanduser().resolve()
     migration = _migration_binding(root) if previous_root is None else None
     legacy = previous_root or (migration[1] if migration else None)
-    if legacy and root.exists() and _is_relative_to(resolved, legacy):
+    if legacy and root.exists() and resolved.is_relative_to(legacy):
         return (root / resolved.relative_to(legacy)).resolve()
     return resolved
 
@@ -82,9 +68,9 @@ def _map_legacy_value(value: Any, root: Path, previous_root: Path | None) -> Any
         if path.is_absolute():
             resolved = path.expanduser().resolve()
             mapped = (root / resolved.relative_to(previous_root)).resolve() if (
-                previous_root and root.exists() and _is_relative_to(resolved, previous_root)
+                previous_root and root.exists() and resolved.is_relative_to(previous_root)
             ) else resolved
-            if mapped != path.expanduser().resolve():
+            if mapped != resolved:
                 return str(mapped)
     return value
 
@@ -99,7 +85,7 @@ def require_data_root_path(path: Path, data_dir: Path, label: str) -> Path:
     """
     root = data_dir.expanduser().resolve()
     resolved = _map_legacy_path(path, root)
-    if not _is_relative_to(resolved, root):
+    if not resolved.is_relative_to(root):
         raise ValueError(
             f"{label} is outside the active data root: {resolved}. "
             f"Active root: {root}. Re-run with --data-dir {resolved_data_root_hint(resolved)} "
@@ -179,14 +165,6 @@ def data_root_registry_path(app_home: Path) -> Path:
     return app_home.expanduser().resolve() / "state" / "signaltrail-data-root.json"
 
 
-def _legacy_data_root_registry_path(app_home: Path) -> Path:
-    """处理：定位旧名称的数据根登记表以供只读升级兼容。
-    输入：SignalTrail 应用数据目录。
-    输出：旧版 state 登记表路径；本函数不创建或修改文件。
-    """
-    return app_home.expanduser().resolve() / "state" / "daily-intelligence-data-root.json"
-
-
 def _load_data_root_registry(app_home: Path) -> dict[str, Any] | None:
     """处理：读取规范登记或旧名称登记中的数据根记录。
     输入：SignalTrail 应用数据目录。
@@ -194,7 +172,9 @@ def _load_data_root_registry(app_home: Path) -> dict[str, Any] | None:
     """
     registry_path = data_root_registry_path(app_home)
     if not registry_path.exists():
-        registry_path = _legacy_data_root_registry_path(app_home)
+        registry_path = (
+            app_home.expanduser().resolve() / "state" / "daily-intelligence-data-root.json"
+        )
     if not registry_path.exists():
         return None
     payload = read_json(registry_path)

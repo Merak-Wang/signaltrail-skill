@@ -49,13 +49,13 @@ signaltrail --help
 
 ## 配置与文档
 
-默认输出中文，可要求英文或设置 `output.language: en`。在 [sources.yaml](configs/sources.yaml) 调整核心来源，在 [discovery-sources.yaml](configs/discovery-sources.yaml) 调整发现来源。
+默认输出中文，可要求英文或设置 `output.language: en`。在 [sources.yaml](configs/sources.yaml) 调整核心来源，在 [discovery-sources.yaml](configs/discovery-sources.yaml) 调整扩展来源；两份配置中的启用项均按现有栏目进入日报，收录各来源全部合格当日新闻并保留来源Top。
 
 | 文档 | 内容 |
 | --- | --- |
 | [使用指南](docs/zh-CN/usage.md) | 安装、语言、数据目录、宿主用量和恢复 |
 | [图文与视频](docs/zh-CN/news-slides.md) | 日报与独立索引两种路径、渲染、配音和自定义音色 |
-| [采集扩展](docs/zh-CN/platform.md) | 本地监控、RSSHub、Crawl4AI 和研究接口 |
+| [采集扩展](docs/zh-CN/platform.md) | 本地监控、RSSHub、Crawl4AI 和事件档案 |
 | [开发指南](docs/zh-CN/development.md) · [架构](docs/zh-CN/ARCHITECTURE.md) | 代码结构、维护约定和检查 |
 | [文档索引](docs/zh-CN/README.md) · [变更记录](CHANGELOG.md) | 其他指南与版本历史 |
 

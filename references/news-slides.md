@@ -6,9 +6,9 @@
 
 本流程从已保存日报及其索引生成独立动态 HTML。日报定稿会自动准备计划和写作包，并将路径登记在 `artifacts.slides`。本地报告可先保存并交付，但这只表示“报告已保存”；完成全部讲稿提交、渲染及整期交付验收后，才能称为“整期交付完成”。默认日报无论 metered 或 unmetered 都必须完成图文流。Python 从整份日报中去重，并按模型已生成的重要性分数选择有界批次，附加来源与图片；准备阶段不额外调用模型。原日报 JSON/Markdown 不变。有放映文件时，日报 HTML 屏幕端以嵌入式演示替代今日摘要，并保留“打开图文演示”独立入口；打印时隐藏演示并恢复摘要。准备失败记录在 `artifacts.slides.error`，不撤销本地日报。整期恢复时运行 `finalize-edition --run RUN.json --report SAVED_REPORT.json --defer-tail` 重新登记计划；单独运行 `slides prepare` 仍可独立准备，但不会更新运行清单。此流程不进入实验讲解的主张账本和独立审核流程。
 
-图文流的候选范围是整份已保存日报中的精选事件与简报，不再按来源发布时间或报告日期二次筛选。来源发布日期缺失时继续保持未知；不得用发现时间、采集时间或索引更新时间补造日期。Hacker News、Lobsters 等发现型来源仍保留平台提交日期，原网页日期另存于 `metadata.content_source.published_at`；直接发布来源保留原站日期。跨日或含未知日期的聚合事件保留其完整来源引用，不删旧来源后沿用原摘要。
+图文流与视频仅纳入版本日期对应的上海本地自然日新闻。直接来源使用可验证的原文发表日期，发现型来源使用 metadata.content_source.published_at；平台提交、榜单、抓取及索引更新时间不作新发布时间。未知或更早的原文日期不得凑入今日流；实质更新须有当日新增事实和来源日期依据。主日报仍使用既有24小时采集窗口。
 
-子命令前加全局 `--compact` 压缩标准输出，保存文件保持完整。每个写作任务以仅含 packet 与绝对 CLI 的新上下文启动。默认保持 50 条，用户明确要求时再改数量。模型复核初选新闻的新近性和重复覆盖；必要时通过重复 `--slides-exclude-event-id` 排除过时或重复事件，由后续候选补足数量。单条补证后仍不足，定稿用 `finalize-edition --slides-exclude-event-id EVENT_ID` 排除；独立 `slides prepare` 用 `--exclude-event-id EVENT_ID`，多条可重复选项。准备阶段按后续候选补位并复用输入未变的已接受讲稿，只处理 pending 包。
+子命令前加全局 `--compact` 压缩标准输出，保存文件保持完整。每个写作任务以仅含 packet 与绝对 CLI 的新上下文启动。默认上限 50 条，当日合格独立事件不足时交付实际条数，用户可明确设置其他上限。模型复核初选新闻的新近性和重复覆盖；必要时通过重复 `--slides-exclude-event-id` 排除过时或重复事件，由后续候选补足数量。单条补证后仍不足，定稿用 `finalize-edition --slides-exclude-event-id EVENT_ID` 排除；独立 `slides prepare` 用 `--exclude-event-id EVENT_ID`，多条可重复选项。准备阶段按后续候选补位并复用输入未变的已接受讲稿，只处理 pending 包。
 
 ## 仅从索引制作图文流
 
@@ -40,7 +40,11 @@ signaltrail slides render --plan PLAN.json --offline
 
 批量草稿命名为 `batch-N-draft.json`，兼容 `slides-draft-N.json`。预检与正式提交共用校验规则，`--check-only` 一次返回全部字段错误，不写入接受结果或拒绝回执。返回的 `accepted` 为已接受路径，`pending` 为全部未接受批次，`invalid` 为错误批次；合格待提交的状态为 `ready_to_submit`。正式批量提交接收合格草稿并复用已接受结果，缺失或不合格草稿保持待处理。摘要批次可用 `submit-authoring-batch --run RUN.json --all [--check-only]` 执行同样流程。
 
-候选覆盖整份已保存日报，包括其中全部精选事件和简报；不从日报之外的索引条目扩充。先按原文身份去重并合并来源引用，再按模型生成的重要性分数排序，默认准备最重要的 50 条。可用 `slides prepare --max-news N` 设置其他正整数；`finalize-edition --slides-max-news N` 用于定稿流程的日常配置。没有按来源分配名额的保证，某来源可能在前 N 条中没有入选。新一期默认最重要的 50 条；恢复既有运行且未显式指定数量时沿用上次设置，明确修改数量才准备新计划。日期缺失或来源日期不同不再排除候选；日期值应忠实保留未知，不能用发现、采集或更新时间代替。没有图片不影响入选。此选择只影响图文流，不改变主日报。每个写作数据包仍是一组有界新闻，默认每批五条。
+写讲稿前先运行 `slides review --report REPORT.json --index INDEX.json`，浏览候选50条及需要的候补，合并不同来源报道的同一事件、排除旧闻。模型一次保存 `selected_event_ids`（最终保留顺序）、`exclude_event_ids`、`merge_groups`（每组首项保留，其余合并来源），用 `slides prepare --report REPORT.json --index INDEX.json --review REVIEW.json` 应用。自动规则判定日期资格，模型判定实质事件和语义重复；不按标题相似度自动合并。默认至多50条，不足则报告实际条数，不用旧闻补齐。无图不影响资格。每批默认五条。
+
+准备阶段补取正文后、派发任何讲稿作者前，协调者必须浏览全部最终入选新闻（最多50条）及实际替补的证据。一次紧凑投影查看已有 `plan.payload.news[].evidence` 的来源标题、正文首段、正文长度、访问状态及可用Feed；只有投影留下具体疑问时再读相关全文。仅有标题、作者简介、照片说明或串错的文章不算正文。充分的Feed证据可注明其部分来源并收窄讲稿；证据不足时先从已审核候补中替换。同一轮完成最终证据审核，并按原文日期、版本自然日及冻结上界复核资格，再派发作者。
+
+独立图文计划已有已接受讲稿时，可用 `finalize-edition --slides-review REVIEW.json --slides-reuse-plan OLD_PLAN.json` 将可复用讲稿绑定到新日报修订。显式计划优先于当前计划及上版日报计划；复用仍按本次审核、日期资格和写作输入身份判定。
 
 `prepare` 返回 `plan_path` 和 `packet_paths`；正式日报应直接采用 run manifest 的 `artifacts.slides.plan_path` 与 `artifacts.slides.packet_paths[]`，并保留每个文件的真实绝对路径。每名作者执行一次 `slides input --packet PACKET.json`，读取命令返回的完整模型输入。该命令在验证已保存包后，以紧凑 JSON 原样输出 `payload.model_input`，包括全部正文、风格指引、Schema、日报摘要、来源访问等级、相关分析和适用的视频标题上下文；旧包同样支持。预算由程序从 `payload.budget` 执行。不要再把整期日报、所有批次、历史对话、图片字节或 HTML 模板塞进每个模型请求，也无需另读同一风格文件。Windows 写作宿主使用 UTF-8 输出，Python 入口可加 `-X utf8`，完整读取命令输出且不设置截断上限。
 
@@ -106,6 +110,12 @@ Qwen 按有界意群合成标题和短稿；完整旧句段缓存仍可复用。
 
 执行 skill 的 harness 选择设备，优先使用经过实际合成探针确认的 GPU，不可用时回落 CPU。`video-setup` 与 `video` 支持 `--device auto|cpu|cuda|vulkan|metal`，或 `SIGNALTRAIL_TTS_DEVICE`，默认 `auto`。固定 llama.cpp b11981 发行矩阵：Windows/Linux 的 x64、ARM64 提供 CPU、CUDA、Vulkan；macOS 的 x64、ARM64 提供 CPU、Metal。发行包存在与当前机器实际可用性分别由准备和合成探针确认；导出记录实际 provider、模型、设备与耗时。可用 `--tts-executable`、`--model-dir` 复用已有程序与模型。
 
+隔离数据根同样应复用兼容的常驻 worker，可用 `SIGNALTRAIL_TTS_WORKER` 指定已有程序。
+运行时还会查找当前数据根、模型目录旁、原生程序旁与已绑定默认数据根的 worker，并探测其自身后端。
+`video-setup` 的 `execution_mode` 为 `resident` 时，模型和参考音色只加载一次；`oneshot` 会对每个未缓存语段重新加载。
+`auto` 优先选择兼容的常驻 GPU；显式设备不匹配 worker 时继续使用原生 CLI，并报告原因。
+没有 worker 时继续导出，无需默认编译新程序。
+
 
 ## 新闻播报
 
@@ -141,3 +151,9 @@ Qwen 按有界意群合成标题和短稿；完整旧句段缓存仍可复用。
 配置采用 `engine: qwen3`、`reference_id` 和 `references: [{id, audio, text, language}]`，录音使用相对配置文件的路径。参数为 `seed: 42`、`context: 4096`、`max_frames: 500`、`speed: 1`、`gain_db: 0`、`peak_limit: 0.794`。新 Qwen 整页合成由标点控制内部停顿，并追加 0.2 秒结尾停顿；旧句段缓存拼接仍保留 0.45/0.35 秒的标题、句间停顿。参考文字逐字匹配录音；目标播报语言由上游 deck 的 `language` 决定，英文稿在 `slides prepare --language en` 阶段写好。朗读规范化负责展开数字表达，Qwen 负责词语和专名发音，不继承旧引擎的强制拼写映射。
 
 模型和原生程序在准备后本地复用。原始直播、其余候选参考、模型及缓存保留在运行数据目录；技能包携带默认短参考及配置示例，自定义参考录音留在本地。
+
+新计划先返回 `review_required`，在模型完成候选审核前不创建讲稿写作包。日报定稿使用 `--slides-review REVIEW.json` 接收决定，交付待办为 `slides_review`。时间上界采用冻结 collection_window.end 或本版 generated_at；精确时间晚于上界者排除，当天纯日期仍保留日精度。既有历史计划不因新门禁强制返工。
+
+审核先合并跨源同事件、确认今日资格，再按受影响人数/地区/行业、政策经济科技安全影响程度、持续性或不可逆性、证据充分度排列；热门榜单或同分来源顺序不代替判断。`selected_event_ids` 是最终有序列表，合并来源不占额外条数；可附简短排序理由，不采用伪精确固定权重。
+
+当日合格候选为0时返回 `no_items` 和本版无可选新闻说明，不要求模型生成空审核文件；工作流明确提示补采当前来源或只交日报。

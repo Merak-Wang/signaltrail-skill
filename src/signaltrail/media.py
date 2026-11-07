@@ -5,6 +5,7 @@ import ipaddress
 import socket
 import threading
 import time
+from collections import deque
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import ExitStack
@@ -14,13 +15,15 @@ from functools import lru_cache
 from io import BytesIO
 from pathlib import Path
 from typing import Any
-from urllib.parse import urljoin, urlsplit
+from urllib.parse import parse_qsl, urljoin, urlsplit
 
 import httpx
 from PIL import Image, ImageStat, UnidentifiedImageError
 
 from .config import MediaConfig
 from .image_policy import (
+    _image_pixels,
+    image_resolution_candidates,
     image_variant_groups,
     image_variant_key,
     is_placeholder_image_url,
@@ -794,8 +797,37 @@ def _indexed_image_candidates(indexed: dict[str, Any]) -> list[str]:
     details = {
         row["url"]: row for row in (metadata or {}).get("image_candidate_details", [])
     }
-    images = [{**details.get(url, {}), "url": url} for url in normalize_image_candidates(values)]
-    return [row["url"] for group in image_variant_groups(images) for row in group]
+    images = [
+        {**details.get(url, {}), "url": url}
+        for candidate in normalize_image_candidates(values)
+        for url in image_resolution_candidates(candidate)
+    ]
+    groups = image_variant_groups(images)
+
+    def signed_family(group: list[dict]) -> tuple | None:
+        """处理：比较 Guardian 已给出的同原图尺寸，不改写签名或裁切参数。
+        输入：保留完整 URL 的候选组。
+        输出：相同路径及裁切共享排序族，其他发布者保持原顺序。
+        """
+        parsed = urlsplit(group[0]["url"])
+        if parsed.hostname != "i.guim.co.uk":
+            return None
+        return (parsed.scheme, parsed.netloc, parsed.path,
+                tuple((key, value) for key, value in parse_qsl(parsed.query)
+                      if key not in {"width", "w", "height", "h", "dpr", "s",
+                                     "quality", "q", "auto", "format"}))
+
+    families = {}
+    for group in groups:
+        family = signed_family(group)
+        if family is not None:
+            families.setdefault(family, []).append(group)
+    ordered = {key: iter(sorted(rows, key=lambda group: _image_pixels(group[0]), reverse=True))
+               for key, rows in families.items()}
+    # URL 仍各自保留有效签名；只调整同图尺寸的尝试顺序，失败后继续回退。
+    groups = [next(ordered[family]) if (family := signed_family(group)) is not None else group
+              for group in groups]
+    return [row["url"] for group in groups for row in group]
 
 
 def materialize_report_images(
@@ -805,6 +837,7 @@ def materialize_report_images(
     config: MediaConfig,
     *,
     downloader: Callable[..., DownloadedImage] = download_image,
+    preserved_images: dict[str, dict | None] | None = None,
 ) -> list[str]:
     """处理：在整轮图片处理期间复用连接池，结束或失败时统一释放资源。
     输入：已编译报告、权威索引、数据根、图片预算及可注入下载器。
@@ -813,6 +846,7 @@ def materialize_report_images(
     with ExitStack() as resources:
         return _materialize_report_images(
             report, index, data_dir, config, downloader=downloader, resources=resources,
+            preserved_images=preserved_images,
         )
 
 
@@ -828,9 +862,35 @@ def _indexed_image_caption(indexed: dict[str, Any], image_url: str) -> str:
     )
 
 
+def _image_variant_urls(items: list[dict], cache_entries: dict) -> dict[str, list[str]]:
+    """处理：合并当前候选与已有高清缓存，供预取和最终附件共用尺寸选择。
+    输入：当前索引条目及媒体缓存记录。
+    输出：每个候选对应的高清优先地址列表，保留失败回退顺序。
+    """
+    details = {}
+    for item in items:
+        metadata = {row["url"]: row for row in
+                    (item.get("metadata") or {}).get("image_candidate_details", [])}
+        for url in _indexed_image_candidates(item):
+            details.setdefault(url, {**metadata.get(url, {}), "url": url})
+    selected_keys = {image_variant_key(url) for url in details}
+    for url, entry in cache_entries.items():
+        if (isinstance(entry, dict) and entry.get("status") == "success"
+                and image_variant_key(url) in selected_keys):
+            details[url] = {**details.get(url, {}), "url": url,
+                            "width": entry.get("width"), "height": entry.get("height")}
+    variants = {}
+    for group in image_variant_groups(list(details.values())):
+        urls = list(dict.fromkeys(row["url"] for row in group))
+        for url in urls:
+            variants[url] = urls
+    return variants
+
+
 def _materialize_report_images(
     report: dict[str, Any], index: dict[str, Any], data_dir: Path, config: MediaConfig,
     *, downloader: Callable[..., DownloadedImage], resources: ExitStack,
+    preserved_images: dict[str, dict | None] | None = None,
 ) -> list[str]:
     """处理：将权威索引图片绑定到报告简报并持久化本地副本。
     输入：
@@ -842,8 +902,22 @@ def _materialize_report_images(
     输出：未能附图或降级时的警告列表；report 会就地获得通过预算和安全校验的本地图片元数据。
     """
     briefs = _report_briefs(report)
+    preserved = {}
+    without_image = set()
     for brief in briefs:
         brief.pop("image", None)
+        item_id = str(brief.get("item_id"))
+        image = (preserved_images or {}).get(item_id)
+        if preserved_images is not None and item_id in preserved_images and image is None:
+            without_image.add(item_id)
+        if image:
+            path = _safe_cached_image_path(data_dir, image.get("local_path"))
+            if path is not None and path.is_file():
+                content = path.read_bytes()
+                if (len(content) == image["byte_size"]
+                        and hashlib.sha256(content).hexdigest() == image["sha256"]):
+                    # 文字修订沿用已发布附件的原图、裁切和图注，缺失或失效才重新选图。
+                    preserved[str(brief["item_id"])] = image
     indexed_items = {
         str(item.get("item_id")): item
         for item in index.get("items", [])
@@ -853,10 +927,14 @@ def _materialize_report_images(
         tuple[int, dict[str, Any], dict[str, Any], list[str]]
     ] = []
     for order, brief in enumerate(briefs):
+        if str(brief.get("item_id")) in without_image:
+            continue
         indexed = indexed_items.get(str(brief.get("item_id")))
         if not indexed:
             continue
-        image_candidates = _indexed_image_candidates(indexed)
+        image_candidates = (["preserved:" + str(brief["item_id"])]
+                            if str(brief.get("item_id")) in preserved else
+                            _indexed_image_candidates(indexed))
         if not image_candidates:
             continue
         candidates.append((order, brief, indexed, image_candidates))
@@ -878,33 +956,24 @@ def _materialize_report_images(
         "total_bytes": 0,
     }
     report["media_metrics"] = metrics
+    if preserved_images is not None:
+        metrics["preserved_without_image"] = len(without_image)
     if not config.enabled or config.max_images_per_report == 0:
         metrics["skipped_budget"] = len(candidates)
         return []
 
     warnings: list[str] = []
     unique_digests: set[str] = set()
-    resolved_by_url: dict[str, DownloadedImage | Exception] = {}
+    # 已发布附件按条目独立复用，继续经过原有数量和字节预算分配，不进入 URL 变体重选。
+    resolved_by_url: dict[str, DownloadedImage | Exception] = {
+        "preserved:" + item_id: DownloadedImage(**{key: image[key] for key in (
+            "source_url", "resolved_url", "local_path", "content_type", "sha256", "byte_size",
+            "width", "height")}, reused=True)
+        for item_id, image in preserved.items()}
     cache_enabled = downloader is download_image
     cache = _load_image_cache(data_dir) if cache_enabled else {"entries": {}}
     cache_entries = cache["entries"]
-    image_details = {}
-    for _order, _brief, indexed, urls in candidates:
-        details = {row["url"]: row for row in
-                   (indexed.get("metadata") or {}).get("image_candidate_details", [])}
-        for url in urls:
-            image_details.setdefault(url, {**details.get(url, {}), "url": url})
-    selected_keys = {image_variant_key(url) for url in image_details}
-    for url, entry in cache_entries.items():
-        if (isinstance(entry, dict) and entry.get("status") == "success"
-                and image_variant_key(url) in selected_keys):
-            image_details[url] = {**image_details.get(url, {}), "url": url,
-                                  "width": entry.get("width"), "height": entry.get("height")}
-    variant_urls = {}
-    for group in image_variant_groups(list(image_details.values())):
-        urls = list(dict.fromkeys(row["url"] for row in group))
-        for url in urls:
-            variant_urls[url] = urls
+    variant_urls = _image_variant_urls([indexed for _, _, indexed, _ in candidates], cache_entries)
     cache_warning_emitted = False
     shared: dict[str, Any] = {}
 
@@ -1076,7 +1145,7 @@ def _materialize_report_images(
             if isinstance(source, dict) and source.get("name")
             else str(indexed.get("source_name") or indexed.get("source_id") or "原始来源")
         )
-        brief["image"] = {
+        brief["image"] = dict(preserved[item_id]) if item_id in preserved else {
             "source_url": downloaded.source_url,
             "resolved_url": downloaded.resolved_url,
             "local_path": downloaded.local_path,
@@ -1098,51 +1167,146 @@ def prefetch_index_images(
     data_dir: Path,
     config: MediaConfig,
 ) -> dict[str, Any]:
-    """处理：为确定性报告候选预热图片缓存，但不执行发布。
-    输入：
-    - ``index``：当前来源索引对象；包含规范条目、来源结果、策略和采集时间。
-    - ``item_ids``：待处理条目的稳定 ID 集合；用于限定预算和授权范围。
-    - ``data_dir``：当前运行的唯一数据根；所有状态和版本化产物都必须位于其中。
-    - ``config``：已校验的应用配置；提供时区、来源策略、并发限制、预算和输出选项。
-    输出：“为确定性报告候选预热图片缓存，但不执行发布”形成的结构化字典；
-      典型键包括 briefs、elapsed_seconds、id、importance、item_id、name、primary_source、request
-      ed_item_count、sections、source_rank、title、url。
+    """处理：独立预取每条新闻的首个可用高清图，并按域轮转填充下载槽位。
+    输入：当前索引、选定条目、媒体缓存及独立的新下载预算。
+    输出：缓存就绪条数、实际下载字节和失败统计；最终报告仍按自己的附件预算选图。
     """
-    indexed_items = {
-        str(item.get("item_id")): item
-        for item in index.get("items", [])
-        if isinstance(item, dict) and item.get("item_id")
-    }
-    briefs = []
-    for rank, item_id in enumerate(dict.fromkeys(map(str, item_ids)), start=1):
-        indexed = indexed_items.get(item_id)
-        if not indexed:
-            continue
-        briefs.append(
-            {
-                "item_id": item_id,
-                "importance": max(0, 100 - rank),
-                "source_rank": rank,
-                "title": indexed.get("title"),
-                "primary_source": {
-                    "id": indexed.get("source_id"),
-                    "name": indexed.get("source_name"),
-                    "url": indexed.get("url"),
-                },
-            }
-        )
-    scratch_report: dict[str, Any] = {
-        "sections": [{"id": "prefetch", "briefs": briefs}]
-    }
     started = time.perf_counter()
-    warnings = materialize_report_images(
-        scratch_report,
-        index,
-        data_dir,
-        config,
-    )
+    wanted = set(map(str, item_ids))
+    items = [item for item in index.get("items", []) if str(item.get("item_id")) in wanted]
+    cache = _load_image_cache(data_dir)
+    variants = _image_variant_urls(items, cache["entries"])
+    pending = []
+    for item in items:
+        urls = list(dict.fromkeys(url for candidate in _indexed_image_candidates(item)
+                                 for url in variants.get(candidate, [candidate])))
+        if urls:
+            pending.append({"item": item, "urls": deque(urls), "error": None,
+                            "budget_blocked": False})
+    metrics = {"candidates": len(pending), "ready": 0, "downloaded_files": 0,
+               "reused_items": 0, "failed": 0, "skipped_budget": 0, "downloaded_bytes": 0,
+               "download_budget_bytes": config.prefetch_max_total_bytes, "host_deferred_urls": 0}
+    warnings = []
+    if not config.enabled:
+        metrics["skipped_budget"] = len(pending)
+        pending = []
+    resolved: dict[str, DownloadedImage | Exception | None] = {}
+    downloaded_urls = set()
+    budget_exhausted = False
+    transport_failures: dict[str, int] = {}
+    successful_hosts = set()
+    deferred_hosts = set()
+
+    def defer_host_url(url: str) -> bool:
+        """处理：当前宿主重复传输超时后暂缓同域新请求，其他来源继续处理。
+        输入：尚未发出的候选 URL 和本轮网络结果。
+        输出：暂缓时保存可重试负缓存，不改变新闻或来源采集状态。
+        """
+        host = urlsplit(url).netloc
+        if host not in deferred_hosts:
+            return False
+        if resolved.get(url) is None:
+            value = ImageDownloadError(
+                f"image host {host!r} temporarily deferred after repeated transport failures",
+            )
+            resolved[url] = value
+            cache["entries"][_serialized_http_url(url)] = _cache_failure(value, config)
+            metrics["host_deferred_urls"] += 1
+        return True
+
+    with ExitStack() as resources:
+        shared: dict[str, Any] = {}
+        while pending:
+            rows = {}
+            retry = []
+            for task in pending:
+                while task["urls"]:
+                    url = task["urls"][0]
+                    if url not in resolved:
+                        resolved[url] = _cached_download(
+                            url, cache["entries"].get(_serialized_http_url(url)), data_dir, config,
+                        )
+                    if resolved[url] is None:
+                        defer_host_url(url)
+                    value = resolved[url]
+                    if isinstance(value, DownloadedImage):
+                        metrics["ready"] += 1
+                        metrics["reused_items"] += int(url not in downloaded_urls)
+                        break
+                    if isinstance(value, Exception):
+                        task["error"] = value
+                        task["urls"].popleft()
+                    elif budget_exhausted:
+                        task["budget_blocked"] = True
+                        task["urls"].popleft()
+                    else:
+                        rows.setdefault(url, str(task["item"].get("url") or "") or None)
+                        retry.append(task)
+                        break
+                else:
+                    if task["budget_blocked"]:
+                        metrics["skipped_budget"] += 1
+                    else:
+                        metrics["failed"] += 1
+                        warnings.append(f"image prefetch failed for {task['item']['item_id']}: "
+                                        f"{task['error']}")
+            pending = retry
+            # 同域任务轮流进入批次，避免一个来源占满线程后只剩域内两个请求活动。
+            domains: dict[str, deque] = {}
+            for url, referer in rows.items():
+                domains.setdefault(urlsplit(url).netloc, deque()).append((url, referer))
+            scheduled = deque()
+            while any(domains.values()):
+                for queue in domains.values():
+                    if queue:
+                        scheduled.append(queue.popleft())
+            while scheduled:
+                remaining = config.prefetch_max_total_bytes - metrics["downloaded_bytes"]
+                # 线程池持续补位；按最大单图字节预留本批预算，避免慢请求形成逐窗等待。
+                count = min(len(scheduled), remaining // config.max_image_bytes)
+                if count == 0:
+                    budget_exhausted = True
+                    break
+                batch = []
+                while scheduled and len(batch) < count:
+                    row = scheduled.popleft()
+                    if not defer_host_url(row[0]):
+                        batch.append(row)
+                if not batch:
+                    continue
+                results = _download_image_batch(
+                    batch, data_dir, config, config.max_image_bytes, download_image,
+                    resources=resources, shared=shared,
+                )
+                for url, _referer in batch:
+                    value = results.get(
+                        url, ImageDownloadError("image download produced no result"),
+                    )
+                    resolved[url] = value
+                    host = urlsplit(url).netloc
+                    key = _serialized_http_url(url)
+                    if isinstance(value, DownloadedImage):
+                        metrics["downloaded_files"] += 1
+                        metrics["downloaded_bytes"] += value.byte_size
+                        downloaded_urls.add(url)
+                        cache["entries"][key] = _cache_success(value)
+                        successful_hosts.add(host)
+                    else:
+                        cache["entries"][key] = _cache_failure(value, config)
+                        if any(reason in str(value) for reason in (
+                            "ReadTimeout", "ConnectTimeout", "ConnectError", "ReadError",
+                            "WriteTimeout", "public DNS confirmation failed", "SSL",
+                            "image request exceeded its total timeout",
+                        )):
+                            transport_failures[host] = transport_failures.get(host, 0) + 1
+                deferred_hosts.update(host for host, count in transport_failures.items()
+                                      if count >= 2 and host not in successful_hosts)
+                _write_image_cache(data_dir, cache)
+    _write_image_cache(data_dir, cache)
     return {
-        **scratch_report.get("media_metrics", {}),
+        **metrics,
+        "deferred_hosts": sorted(deferred_hosts),
+        "transport_failures_by_host": transport_failures,
         "requested_item_count": len(item_ids),
         "elapsed_seconds": round(time.perf_counter() - started, 3),
         "warnings": warnings,

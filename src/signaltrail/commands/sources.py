@@ -21,6 +21,18 @@ from ..workflow import (
 from .common import CommandContext, print_json
 
 
+def handle_cleanup(args: argparse.Namespace, context: CommandContext) -> int:
+    """处理：预览或回收超过指定天数的采集材料。
+    输入：保留天数、执行开关和当前数据根。
+    输出：候选和回收失败回执，失败时返回非零状态。
+    """
+    from ..retention import cleanup_collection
+
+    result = cleanup_collection(context.data_dir, days=args.days, apply=args.apply)
+    print_json(result, indent=None)
+    return 1 if result["failures"] else 0
+
+
 def handle_source_page(args: argparse.Namespace, context: CommandContext) -> int:
     """处理：读取或修改已批准的来源索引页。
     输入：

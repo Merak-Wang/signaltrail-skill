@@ -373,11 +373,14 @@ def parse_feed_document(
             content_records[article.item_id] = content_record
         seen.add(canonical)
         items.append(article)
-        if source.item_order != "published_at" and len(items) >= max_items:
+        if (not source.collect_all_items and source.item_order != "published_at"
+                and len(items) >= max_items):
             break
     for source_rank, item in enumerate(items, start=1):
         item.metadata["source_rank"] = source_rank
-    selected = order_source_items(items, source.item_order)[:max_items]
+    selected = order_source_items(items, source.item_order)
+    if not source.collect_all_items:
+        selected = selected[:max_items]
     _remove_repeated_feed_templates(selected, content_records)
     if data_dir is not None:
         for article in selected:
@@ -565,10 +568,11 @@ async def fetch_feed(
     输出：单个 Feed 的抓取结果；包含访问状态、缓存信息、错误、刷新时间和规范文章条目。
     """
     cache = _load_cache(data_dir, feed_url)
+    scope_changed = source.collect_all_items and not cache.get("collect_all_items")
     checked_at = datetime.now(ZoneInfo(timezone))
     checked_iso = checked_at.isoformat(timespec="seconds")
     next_refresh_raw = str(cache.get("next_refresh_at") or "")
-    if cache and not force and next_refresh_raw:
+    if cache and not force and not scope_changed and next_refresh_raw:
         next_refresh = _parse_datetime(next_refresh_raw, timezone)
         if next_refresh is not None and checked_at < next_refresh:
             cached = _cached_items(cache)
@@ -594,9 +598,9 @@ async def fetch_feed(
         ),
         "User-Agent": "DailyIntelligenceMonitor/2.0 (+local feed reader)",
     }
-    if cache.get("etag"):
+    if cache.get("etag") and not scope_changed:
         headers["If-None-Match"] = str(cache["etag"])
-    if cache.get("last_modified"):
+    if cache.get("last_modified") and not scope_changed:
         headers["If-Modified-Since"] = str(cache["last_modified"])
     started = time.perf_counter()
     response: httpx.Response | None = None
@@ -756,6 +760,8 @@ async def fetch_feed(
         "next_refresh_at": next_refresh_at,
         "consecutive_failures": failures,
         "items": [item.to_dict() for item in items],
+        "collect_all_items": source.collect_all_items if not failed else bool(
+            cache.get("collect_all_items")),
     }
     write_json(_cache_path(data_dir, feed_url), record)
     return FeedFetchResult(

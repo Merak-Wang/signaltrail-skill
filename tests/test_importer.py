@@ -68,3 +68,18 @@ def test_importer_preserves_partial_status(tmp_path: Path):
     output = import_legacy(source, load_config(), tmp_path / "data")
     payload = json.loads(output.read_text(encoding="utf-8"))
     assert payload["sources"][0]["status"] == "partial"
+
+
+def test_repeated_import_creates_revision_and_preserves_previous_bytes(tmp_path: Path):
+    source = tmp_path / "legacy.json"
+    source.write_text("[]", encoding="utf-8")
+    config = load_config()
+    first = import_legacy(source, config, tmp_path / "data")
+    original = first.read_bytes()
+    second = import_legacy(source, config, tmp_path / "data")
+    assert first.name == "imported-r1.json"
+    assert second.name == "imported-r2.json"
+    assert first.read_bytes() == original
+    payload = json.loads(second.read_text(encoding="utf-8"))
+    assert payload["revision"] == 2
+    assert payload["index_id"].endswith("-r2")

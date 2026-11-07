@@ -1,6 +1,7 @@
 import pytest
 
 from signaltrail.image_policy import (
+    image_resolution_candidates,
     image_variant_groups,
     normalize_image_candidates,
     select_image_variants,
@@ -122,3 +123,53 @@ def test_local_photo_pixels_merge_renamed_sizes_and_preserve_edited_charts(tmp_p
         images.append({"url": f"https://example.com/chart-{number}.png",
                        "local_path": f"chart-{number}.png", "width": 256, "height": 256})
     assert len(select_image_variants(images, data_dir=tmp_path)) == 3
+
+
+def test_guardian_crop_none_groups_sizes_and_keeps_highest_available_variant(tmp_path):
+    from PIL import Image
+
+    base = ("https://i.guim.co.uk/img/media/d6ebd9b4d868a9da787c0f6b207548c78ad7ab28/"
+            "897_48_4916_3935/master/4916.jpg")
+    images = [{"url": base + f"?width={width}&dpr=2&s=none&crop=none"}
+              for width in (140, 300, 360, 465, 620, 645, 1200, 1400)]
+    for number in (4, 5):
+        path = tmp_path / f"{number}.png"
+        Image.new("RGB", (160 * number, 100 * number), "blue").save(path)
+        images[number]["local_path"] = path.name
+    assert len(image_variant_groups(images)) == 1
+    selected = select_image_variants(images, data_dir=tmp_path)
+    assert len(selected) == 1 and selected[0]["url"] == images[5]["url"]
+    independent = [
+        {"url": base + "?width=645&dpr=2&s=none&crop=faces"},
+        {"url": base + "?width=645&dpr=2&s=none&crop=none&rect=0,0,10,10"},
+        {"url": base + "?width=645&dpr=2&s=signature&crop=none"},
+        {"url": base.replace("master/4916.jpg", "master/other.jpg")
+         + "?width=645&dpr=2&s=none&crop=none"},
+    ]
+    assert len(image_variant_groups(images + independent)) == 5
+
+
+def test_bbc_feed_thumbnail_prefers_hd_and_preserves_signed_urls():
+    thumbnail = "https://ichef.bbci.co.uk/ace/standard/240/cpsprodpb/live/photo.jpg"
+    high, fallback = image_resolution_candidates(thumbnail)
+    assert "/1920/" in high and fallback == thumbnail
+    images = [{"url": thumbnail, "width": 240, "height": 135},
+              {"url": high}, {"url": high + ".webp"}]
+    assert len(image_variant_groups(images)) == 1
+    assert select_image_variants(images)[0]["url"] == high
+    assert image_resolution_candidates(thumbnail + "?signature=abc") == [
+        thumbnail + "?signature=abc",
+    ]
+
+
+def test_wordpress_query_sizes_keep_only_largest_with_same_crop():
+    base = "https://platform.theverge.com/wp-content/uploads/2026/photo.jpg"
+    images = [{"url": base + f"?quality=90&crop=0%2C0%2C100%2C100&w={width}"}
+              for width in (376, 640, 1920)]
+    selected = select_image_variants(images)
+    assert len(selected) == 1 and "w=1920" in selected[0]["url"]
+    different_crop = {"url": base + "?crop=20%2C20%2C80%2C80&w=2400"}
+    assert len(select_image_variants([*images, different_crop])) == 2
+    assert select_image_variants([{"url": base + "?resize=300,200"},
+                                  {"url": base + "?resize=1200,800"}])[0]["url"].endswith(
+                                      "resize=1200,800")

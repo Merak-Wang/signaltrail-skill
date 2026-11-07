@@ -806,6 +806,7 @@
         "attached": {"type": "integer", "minimum": 0},
         "unique_files": {"type": "integer", "minimum": 0},
         "reused_files": {"type": "integer", "minimum": 0},
+        "preserved_without_image": {"type": "integer", "minimum": 0},
         "failed": {"type": "integer", "minimum": 0},
         "skipped_budget": {"type": "integer", "minimum": 0},
         "total_bytes": {"type": "integer", "minimum": 0}

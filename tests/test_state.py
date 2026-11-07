@@ -128,3 +128,17 @@ def test_shared_continuity_lock_rejects_parallel_updates_without_writing(tmp_pat
     ):
         update_continuity_state(_report(), tmp_path)
     assert not (tmp_path / "state" / "theses.json").exists()
+
+
+def test_late_report_adds_event_history_without_replacing_latest_state(tmp_path):
+    older = _report()
+    newer = _next_report(older)
+    event = next(item for section in newer["sections"] for item in section["items"])
+    event["title"] = "更新后的事件标题"
+    event["status"] = "updated"
+    update_continuity_state(newer, tmp_path)
+    expected = deepcopy(_rows(tmp_path, "events"))
+    update_continuity_state(older, tmp_path)
+    actual = _rows(tmp_path, "events")
+    for before, after in zip(expected, actual, strict=True):
+        assert after == {**before, "report_ids": [newer["report_id"], older["report_id"]]}

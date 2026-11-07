@@ -395,6 +395,7 @@ def test_newspaper_header_preserves_continuous_source_order_and_images(
     report = _report()
     report["language"] = language
     original = report["sections"][0]["briefs"][0]
+    original["primary_source"] = {"id": "bbc_world", "name": "BBC", "url": "https://bbc.com/"}
     report["sections"][0]["briefs"] = [
         dict(copy.deepcopy(original), title=f"Story {i}", source_rank=i, importance=100-i)
         for i in range(1, 19)
@@ -412,6 +413,9 @@ def test_newspaper_header_preserves_continuous_source_order_and_images(
     assert len(soup.select(".brief figure img")) == 18
     assert len(soup.select(".brief .story-time")) == 0
     assert soup.select_one("#toc-toggle")["aria-controls"] == "report-toc"
+    source_link = soup.select_one(".toc-level-2")
+    assert source_link.get_text() == "BBC"
+    assert source_link["href"] == "#" + soup.select_one(".source-group")["id"]
     assert [a["href"] for a in soup.select(".toolbar nav a")] == ["#evaluation"]
     assert not soup.select("[data-reading-entry], .st-pagination")
     assert report == before

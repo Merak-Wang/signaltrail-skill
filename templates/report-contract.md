@@ -25,7 +25,7 @@ Schema，也不能放宽下列安全和状态边界。
 3. 研判。
 4. 质量评估与用户反馈（无评分时显示尚未评分；仅按用户明确要求启动质量评分）。
 
-七个 section 由 Python 按输出语言补齐并排序。渲染器按 brief 来源形成三级标题。精选 `items[]` 在每个 section 内按 `importance` 降序，不要求跨 section 全局降序。正式来源的 `report_target` 与 `report_max` 都是 15；Python 按来源与当前索引顺序分配唯一文章位置，同 canonical URL 只占一个位置，遇到重复从该来源尾部顺延补位；不足时使用实际可用数并记录 `shortfall_count`。同标题、不同地址的报道保留。默认 `collection.item_order: source` 保留来源原顺序；`published_at` 按有效发布时间从新到旧排列，缺失时间与并列时保持稳定输入顺序。两种模式和顺延补位都保留原始 `source_rank` 作为来源 Top 标签。普通 `briefs[]` 保持当前 `brief_plan` 的选择顺序，不按内部 `importance` 二次重排；`importance` 仍用于精选事件与研判选择。
+七个 section 由 Python 按输出语言补齐并排序。渲染器按 brief 来源形成三级标题。精选 `items[]` 在每个 section 内按 `importance` 降序，不要求跨 section 全局降序。Python 按来源保留本期当日可用条目，并依当前索引顺序分配唯一文章位置；同来源的同 canonical URL 只占一个位置，覆盖数由本轮 `brief_plan` 的实际条目数决定。同标题、不同地址的报道保留。默认 `collection.item_order: source` 保留来源原顺序；`published_at` 按有效发布时间从新到旧排列，缺失时间与并列时保持稳定输入顺序。两种模式和顺延补位都保留原始 `source_rank` 作为来源 Top 标签。普通 `briefs[]` 保持当前 `brief_plan` 的选择顺序，不按内部 `importance` 二次重排；`importance` 仍用于精选事件与研判选择。
 
 候选的发表、更新和发现时间分别解释。纯日期与未知发表时间使用 `WATCH`。论文、项目的 `discovery_signal` 和 `signal_at` 表达本期榜单观察，`selection_reason` 说明选材依据；遵守 `suggested_status=WATCH`。旧论文再次上榜或排名上升可说明其研究价值与关注变化，保留原发表日期。三视角分析继续围绕可追溯证据形成独立判断。
 
@@ -37,7 +37,7 @@ Schema。模型不得增加 Schema 未声明的字段。接收器先用同一 Sc
 路径/规则错误，再执行语言、摘要质量、证据边界和完整报告校验；一次修复后仍失败必须开始
 新的运行尝试，不能继续追加修复。
 
-`prepare-analysis` 在判定批次缺失前，会重新校验已经写入授权 `draft_result_path`、但缺少宿主完成通知或不可变 receipt 的草稿；只有完整通过原 packet 校验的草稿才可恢复并记入 `recovered_batches`。只有运行时限已到且 run 明确记录缺失批次时，才允许采用 Python 计算的降级覆盖目标，而且只能降低该缺失 batch 所负责来源的目标；其他已完成 batch 的来源继续保持原计划目标（候选不少于 15 时为 15）。索引中已有候选但写作或校验未完成时，即使同 section 还有其他来源，说明也必须列出受影响来源及其“已验证摘要/计划”计数，不得写成“未采集到内容”或让来源无提示消失。
+`prepare-analysis` 在判定批次缺失前，会重新校验已经写入授权 `draft_result_path`、但缺少宿主完成通知或不可变 receipt 的草稿；只有完整通过原 packet 校验的草稿才可恢复并记入 `recovered_batches`。只有运行时限已到且 run 明确记录缺失批次时，才允许采用 Python 计算的降级覆盖目标，而且只能降低该缺失 batch 所负责来源的目标；其他已完成 batch 的来源继续保持本轮 `brief_plan` 的原计划目标。索引中已有候选但写作或校验未完成时，即使同 section 还有其他来源，说明也必须列出受影响来源及其“已验证摘要/计划”计数，不得写成“未采集到内容”或让来源无提示消失。
 
 ## Python 装配后的完整草稿
 

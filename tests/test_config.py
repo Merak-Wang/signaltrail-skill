@@ -489,3 +489,16 @@ def test_source_taxonomy_is_loaded():
     assert config.source_by_id("bbc_world").report_target == 15
     assert all(source.report_target == 15 for source in config.sources)
     assert config.source_by_id("twz").report_max == 15
+
+
+def test_all_enabled_bundles_enter_report_sources_without_enabling_disabled():
+    config = load_config()
+    assert len(config.report_sources) == 127
+    assert sum(source.enabled for source in config.report_sources) == 124
+    assert {source.id for source in config.report_sources if not source.enabled} == {
+        "anadolu_en", "irna_en", "wam_en"}
+    assert all(source.collect_all_items for source in config.report_sources)
+    assert config.source_by_id("agencia_brasil").module == "information"
+    config.monitor_sources.append(config.sources[0])
+    assert len(config.report_sources) == 127
+    assert config.report_sources[0].id == config.sources[0].id

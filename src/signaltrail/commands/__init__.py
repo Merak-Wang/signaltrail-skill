@@ -5,11 +5,8 @@ from collections.abc import Callable
 
 from . import (
     editions,
-    explainers,
     monitor,
-    platform,
     reports,
-    research,
     slides,
     sources,
     verification,
@@ -17,10 +14,8 @@ from . import (
 from .common import CommandContext
 
 HANDLERS: dict[str, Callable[[Namespace, CommandContext], int]] = {
-    "platform-research": platform.handle_platform_research,
+    "cleanup": sources.handle_cleanup,
     "slides": slides.handle_slides,
-    "research": research.handle_research,
-    "explainer": explainers.handle_explainer,
     "source-page": sources.handle_source_page,
     "collect": sources.handle_collect,
     "import-legacy": sources.handle_import_legacy,

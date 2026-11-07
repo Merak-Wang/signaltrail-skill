@@ -64,12 +64,15 @@ def test_slides_cli_prepares_bounded_batches(cli_data_root, monkeypatch, capsys,
     config = load_config()
     monkeypatch.setattr("signaltrail.cli.load_config", Mock(return_value=config))
     report, index = cli_data_root / "report.json", cli_data_root / "index.json"
+    decisions = {"selected_event_ids": ["event-1"]}
+    review = write_json(cli_data_root / "review.json", decisions)
     assert main(["slides", "prepare", "--report", str(report), "--index", str(index),
                  "--batch-size", "3", "--max-news", "22", "--item-id", "news-1",
-                 *score_args]) == 0
+                 "--review", str(review), *score_args]) == 0
     prepare.assert_called_once()
     assert prepare.call_args.args == (report, index, cli_data_root)
     options = prepare.call_args.kwargs
+    assert options["review"] == decisions
     assert options["min_importance"] == expected_score
     assert options["item_ids"] == ["news-1"]
     assert (options["batch_size"], options["max_news"]) == (3, 22)
@@ -87,11 +90,14 @@ def test_slides_cli_prepares_index_without_report(cli_data_root, monkeypatch, ca
     config = load_config()
     monkeypatch.setattr("signaltrail.cli.load_config", Mock(return_value=config))
     index, old_plan = cli_data_root / "index.json", cli_data_root / "old-plan.json"
+    decisions = {"selected_event_ids": ["index-item-1"]}
+    review = write_json(cli_data_root / "review.json", decisions)
     assert main(["slides", "prepare", "--index", str(index), "--reuse-plan", str(old_plan),
-                 *language_args]) == 0
+                 "--review", str(review), *language_args]) == 0
     prepare.assert_called_once()
     assert prepare.call_args.args == (None, index, cli_data_root)
     options = prepare.call_args.kwargs
+    assert options["review"] == decisions
     assert options["language"] == expected
     assert options["reuse_plan"] == old_plan
     assert options["max_input_tokens"] is None
@@ -153,44 +159,12 @@ def test_slides_render_explicitly_controls_image_fetching(cli_data_root, monkeyp
     assert render.call_args.kwargs["media_config"].enabled is True
 
 
-def test_research_cli_prepares_before_a_report_with_explicit_approval(
-    cli_data_root, monkeypatch, capsys
-):
-    questions = write_json(cli_data_root / "questions.json", {"questions": []})
-    prepare = Mock(return_value=cli_data_root / "snapshot.json")
-    monkeypatch.setattr("signaltrail.commands.research.prepare_research_snapshot", prepare)
-    index = cli_data_root / "index.json"
-    assert main(["research", "prepare", "--index", str(index), "--item-id", "item-1",
-                 "--cutoff", "2026-09-20T09:00:00+08:00", "--questions", str(questions)]) == 0
-    prepare.assert_called_once_with(index, ["item-1"], "2026-09-20T09:00:00+08:00", [],
-                                     cli_data_root, previous_path=None, discovery_path=None)
-    assert "snapshot.json" in json.loads(capsys.readouterr().out)["artifact_path"]
 
 
-def test_research_cli_reports_unavailable_snapshot(cli_data_root, capsys):
-    assert main(["research", "evaluate", "--snapshot", str(cli_data_root / "missing.json")]) == 1
-    assert json.loads(capsys.readouterr().out)["status"] == "rejected"
 
 
-def test_explainer_cli_dispatches_explicit_parent_and_preview_flag(
-    cli_data_root, monkeypatch, capsys
-):
-    result = cli_data_root / "narratives/session/packet-r1.json"
-    prepare = Mock(return_value=result)
-    monkeypatch.setattr("signaltrail.commands.explainers.prepare_explainer", prepare)
-    run = cli_data_root / "run.json"
-    assert main(["explainer", "prepare", "--run", str(run), "--experimental"]) == 0
-    prepare.assert_called_once_with(run, cli_data_root, experimental=True)
-    assert json.loads(capsys.readouterr().out)["artifact_path"] == str(result)
 
 
-def test_explainer_cli_reports_rejected_parent_without_changing_report(
-    cli_data_root, monkeypatch, capsys
-):
-    prepare = Mock(side_effect=ValueError("Parent is not completed"))
-    monkeypatch.setattr("signaltrail.commands.explainers.prepare_explainer", prepare)
-    assert main(["explainer", "prepare", "--run", str(cli_data_root / "run.json")]) == 1
-    assert json.loads(capsys.readouterr().out)["status"] == "rejected"
 
 
 def test_regular_cli_ignores_hermes_environment_and_registry(monkeypatch, tmp_path, capsys):
@@ -314,8 +288,6 @@ def test_monitor_server_aliases_forward_the_same_options(cli_data_root, monkeypa
         "open_browser": True,
         "allow_remote": False,
         "refresh_minutes": 30,
-        "auto_research": True,
-        "research_command": None,
     }
 
 
@@ -637,8 +609,10 @@ def test_finalize_cli_forwards_explicit_slide_exclusions(cli_data_root, monkeypa
     assert main(["--compact", "finalize-edition", "--run", str(output),
                  "--report", str(cli_data_root / "report.json"),
                  "--slides-exclude-event-id", "brief-a",
-                 "--slides-exclude-event-id", "brief-b"]) == 0
+                 "--slides-exclude-event-id", "brief-b",
+                 "--slides-reuse-plan", str(cli_data_root / "old-slides.json")]) == 0
     assert finalize.call_args.kwargs["slides_exclude_event_ids"] == ["brief-a", "brief-b"]
+    assert finalize.call_args.kwargs["slides_reuse_plan"] == cli_data_root / "old-slides.json"
     assert json.loads(capsys.readouterr().out)["artifact_path"] == str(output)
 
 
@@ -677,3 +651,13 @@ def test_compact_keeps_deadline_and_structured_diagnostics(
     run = cli_data_root / "run.json"
     assert main(["--compact", "authoring-status", "--run", str(run)]) == 0
     assert json.loads(capsys.readouterr().out) == {"artifact_path": str(run), **diagnostics}
+
+
+def test_retired_experiments_are_absent_from_cli():
+    from signaltrail.commands.parser import build_parser
+
+    help_text = build_parser().format_help()
+    for command in ("platform-research", "explainer", "research"):
+        assert command not in help_text
+    assert "slides" in help_text
+    assert "run-edition" in help_text

@@ -534,7 +534,7 @@ def test_v12_caps_freshness_by_source_age():
     assert any("age-based cap" in error for error in errors)
 
 
-def test_v14_limits_each_primary_source_to_fifteen_items():
+def test_v14_does_not_impose_a_fixed_source_item_limit():
     root = Path(__file__).resolve().parents[1]
     report = json.loads((root / "examples" / "sample_report.json").read_text(encoding="utf-8"))
     section = next(section for section in report["sections"] if section["items"])
@@ -552,7 +552,7 @@ def test_v14_limits_each_primary_source_to_fifteen_items():
 
     errors, _warnings = validate_report_data(report)
 
-    assert any("exceed 15 selected items" in error for error in errors)
+    assert not any("exceed 15 selected items" in error for error in errors)
 
 
 def test_v14_requires_multi_perspective_analysis_and_majority_event_coverage():
@@ -1234,20 +1234,21 @@ def test_v15_compiler_normalizes_simple_top_level_draft_fields():
     assert any("executive_summary string" in warning for warning in warnings)
 
 
-def test_v15_compiler_never_creates_missing_semantic_briefs():
+@pytest.mark.parametrize("target", [3, 18])
+def test_v15_compiler_never_creates_missing_semantic_briefs(target):
     report = _v15_report()
     index = _v15_index(report)
     index["date"] = report["date"]
     index["edition"] = report["edition"]
     source_id = index["items"][0]["source_id"]
     index["source_policies"] = {
-        source_id: {"report_target": 3, "report_max": 15}
+        source_id: {"report_target": target, "report_max": target}
     }
     base = index["items"][0]
     source_section = next(section for section in report["sections"] if section["briefs"])
     base["module"] = source_section["module"]
     base["category"] = source_section["category"]
-    for position in (2, 3):
+    for position in range(2, target + 1):
         item = json.loads(json.dumps(base))
         item["item_id"] = f"example-news-{position}"
         item["title"] = f"Source metadata headline {position}"
@@ -1263,7 +1264,7 @@ def test_v15_compiler_never_creates_missing_semantic_briefs():
     assert len(section["briefs"]) == 1
     assert {brief["item_id"] for brief in section["briefs"]} == {base["item_id"]}
     assert any(
-        f"coverage source '{source_id}': selected 1 of required 3" in error
+        f"coverage source '{source_id}': selected 1 of required {target}" in error
         for error in errors
     )
 
@@ -1643,23 +1644,48 @@ def test_report_rejects_claimed_access_not_present_in_index(tmp_path: Path):
     assert any("does not match index content_status" in error for error in errors)
 
 
-def test_compiler_deduplicates_old_draft_urls_but_retains_independent_reporting():
+def test_compiler_keeps_cross_source_urls_and_deduplicates_within_source():
     items = [{"item_id": key, "source_id": source, "source_name": source,
               "title": "Two sources report the same event", "url": url,
               "module": "technology", "category": "papers", "metadata": {"source_rank": 1}}
              for key, source, url in (("a", "source-a", "https://example.org/paper"),
                                       ("b", "source-b", "http://www.example.org/paper?utm_source=x"),
-                                      ("c", "source-b", "https://other.org/report"))]
+                                      ("c", "source-b", "https://other.org/report"),
+                                      ("d", "source-b", "https://example.org/paper"))]
+    items[1]["source_rank"] = 9
     index = {"date": "2026-11-02", "edition": "daily", "items": items,
              "sources": [{"source_id": key, "source_name": key, "status": "success"}
                          for key in ("source-a", "source-b")]}
     report = {"schema_version": "2.0", "language": "en", "analyses": [], "sections": [
         {"id": "technology.papers", "briefs": [
             {"item_id": key, "tldr": "The report describes a research finding.",
-             "importance": 70, "status": "WATCH"} for key in ("a", "b", "c")], "items": []}]}
+             "importance": 70, "status": "WATCH"} for key in ("a", "b", "c", "d")], "items": []}]}
     warnings = compile_report_data(report, index, brief_plan_item_ids={
-        "source-a": ["a"], "source-b": ["b", "c"],
+        "source-a": ["a"], "source-b": ["b", "c", "d"],
     })
-    assert [b["item_id"] for s in report["sections"] for b in s["briefs"]] == ["a", "c"]
+    assert [b["item_id"] for s in report["sections"] for b in s["briefs"]] == ["a", "b", "c"]
     assert any("duplicate brief canonical URL" in warning for warning in warnings)
-    assert len(index["items"]) == 3
+    assert len(index["items"]) == 4
+
+    briefs = {brief["item_id"]: brief for section in report["sections"]
+              for brief in section["briefs"]}
+    assert briefs["b"]["source_rank"] == 9
+    assert briefs["a"]["source_ref"]["item_id"] == "a"
+    assert briefs["b"]["source_ref"]["item_id"] == "b"
+
+
+def test_validator_rejects_duplicate_canonical_within_one_source():
+    report = _v15_report()
+    index = _v15_index(report)
+    compile_report_data(report, index)
+    section = next(section for section in report["sections"] if section["briefs"])
+    original = section["briefs"][0]
+    item = json.loads(json.dumps(index["items"][0]))
+    item["item_id"] = "duplicate-item"
+    index["items"].append(item)
+    duplicate = json.loads(json.dumps(original))
+    duplicate["item_id"] = item["item_id"]
+    duplicate["source_ref"]["item_id"] = item["item_id"]
+    section["briefs"].append(duplicate)
+    errors, _ = validate_report_data(report, index)
+    assert any("duplicate canonical URL within source" in error for error in errors)

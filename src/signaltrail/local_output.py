@@ -370,15 +370,16 @@ def _embedded_image_sources(
             candidate = _validated_local_image_path(image, data_dir)
             if candidate is None:
                 continue
-            try:
-                payload = candidate.read_bytes()
-            except OSError:
-                continue
             if optimize_for_pdf:
                 optimized = _optimized_pdf_image_bytes(candidate)
                 if optimized is None:
                     continue
                 payload, content_type = optimized
+            else:
+                try:
+                    payload = candidate.read_bytes()
+                except OSError:
+                    continue
             encoded = base64.b64encode(payload).decode("ascii")
             embedded[local_path] = f"data:{content_type};base64,{encoded}"
     return embedded
@@ -590,6 +591,15 @@ def _brief_html(
     )
 
 
+def _source_anchor(section_id: str, source: dict[str, Any]) -> str:
+    """处理：用栏目和来源身份生成目录与正文共享的稳定锚点。
+    输入：栏目 ID 与正文分组使用的来源对象。
+    输出：跨重新渲染保持一致、同来源跨栏目互不冲突的 HTML ID。
+    """
+    identity = source.get("id") or source.get("name") or source.get("url") or "unknown"
+    return f"source-{quote(section_id, safe='')}-{quote(str(identity), safe='')}"
+
+
 def _source_section_html(
     source: dict[str, Any],
     items: list[dict[str, Any]],
@@ -597,6 +607,7 @@ def _source_section_html(
     embedded_image_sources: dict[str, str] | None = None,
     language: object = "zh-CN",
     section_title: str = "",
+    section_id: str = "",
 ) -> str:
     """处理：把同一来源的简报集合渲染为报告分区。
     输入：
@@ -620,7 +631,8 @@ def _source_section_html(
         for rank, item in enumerate(items, start=1)
     )
     return (
-        f'<section class="source-group" data-search="{_escape(source_name)}">'
+        f'<section class="source-group" id="{_escape(_source_anchor(section_id, source))}" '
+        f'data-search="{_escape(source_name)}">'
         '<div class="source-heading">'
         f'<h3>{_external_link(source_name, source.get("url"))}</h3>'
         f'<span>{_escape(section_title)} · '
@@ -792,15 +804,16 @@ def _toc_html(report: dict[str, Any], *, slides_href: str | None = None) -> str:
     entries: list[tuple[str, str, int]] = [(*first_entry, 0)]
     for module in ("information", "technology"):
         entries.append((f"module-{module}", modules[module], 0))
-        entries.extend(
-            (
-                str(section.get("id") or ""),
-                str(section.get("title") or section.get("id") or ""),
-                1,
+        for section in _ordered_sections(report, module):
+            section_id = str(section.get("id") or "")
+            if not section_id:
+                continue
+            entries.append((section_id, str(section.get("title") or section_id), 1))
+            entries.extend(
+                (_source_anchor(section_id, source),
+                 str(source.get("name") or labels["unknown_source"]), 2)
+                for source, _ in _group_items(section, language)
             )
-            for section in _ordered_sections(report, module)
-            if section.get("id")
-        )
     entries.append(("analysis", labels["analysis"], 0))
     entries.extend(
         (f"analysis-{domain}", label, 1)
@@ -944,8 +957,6 @@ def render_report_html(
     embedded_image_sources: dict[str, str] | None = None,
     archive_href: str | None = "../index.html",
     pdf_href: str | None = None,
-    illustrated_story: dict[str, Any] | None = None,
-    research_relations: list[dict[str, Any]] | None = None,
     slides_href: str | None = None,
     video_href: str | None = None,
     video_title: str | None = None,
@@ -988,6 +999,7 @@ def render_report_html(
                     embedded_image_sources,
                     language,
                     str(section.get("title") or ""),
+                    str(section.get("id") or ""),
                 )
                 for source, items in _group_items(section, language)
             )
@@ -1034,12 +1046,6 @@ def render_report_html(
     synthesis_block = _synthesis_html(
         report.get("cross_perspective_synthesis"), language
     )
-    research_block = ""
-    if illustrated_story is not None:
-        from .story_stream import render_research_section
-
-        research_block = render_research_section(illustrated_story, research_relations or [])
-
     changes = report.get("changes", [])
     changes_block = (
         f'<section class="follow-up"><h3>{_escape(labels["changes"])}</h3>'
@@ -1148,7 +1154,7 @@ def render_report_html(
 *{{box-sizing:border-box}}html{{scroll-behavior:smooth}}body{{margin:0;color:var(--ink);background:var(--paper);font-family:"Microsoft YaHei","PingFang SC","Noto Sans CJK SC",sans-serif;line-height:1.72}}
 a{{color:var(--blue);text-decoration:none}}a:hover{{text-decoration:underline}}.shell{{width:min(1120px,calc(100% - 32px));margin:0 auto}}.masthead{{padding:56px 0 38px;background:linear-gradient(135deg,#ffffff,#ffffff);color:#fff;border-bottom:5px solid #b61f24}}.eyebrow{{letter-spacing:.16em;text-transform:uppercase;color:#b61f24;font-size:13px}}h1{{font-family:Georgia,"Noto Serif CJK SC",serif;font-size:clamp(34px,5vw,60px);line-height:1.14;margin:10px 0 16px;max-width:900px}}.metadata{{display:flex;gap:10px 24px;flex-wrap:wrap;color:#626262;font-size:14px}}.toolbar{{position:sticky;top:0;z-index:10;background:rgba(255,255,255,.96);border-bottom:1px solid var(--line);backdrop-filter:blur(12px)}}.toolbar-inner{{display:flex;align-items:center;gap:16px;padding:12px 0}}.toolbar nav{{display:flex;gap:18px;font-weight:700}}.toolbar input{{margin-left:auto;min-width:260px;padding:9px 12px;border:1px solid var(--line);border-radius:8px}}.tools{{display:flex;gap:10px;white-space:nowrap}}main{{padding:34px 0 70px}}.summary,.module,.analysis-module,.evaluation,.feedback,.pending{{background:var(--card);border:1px solid var(--line);border-radius:14px;box-shadow:0 8px 24px rgba(30,30,30,.05);margin:0 0 24px;padding:28px}}.summary h2,.module-label,.analysis-module>h2,.evaluation>h2,.feedback>h2{{font-family:Georgia,"Noto Serif CJK SC",serif;color:var(--blue);font-size:28px;margin:0 0 16px}}.summary ul{{margin:0;padding-left:24px}}.module-label{{font-size:34px;border-bottom:3px solid var(--gold);padding-bottom:10px}}.content-section{{padding:24px 0 6px;border-bottom:1px solid var(--line)}}.content-section:last-child{{border:0}}.content-section>h2{{font-size:24px;margin:0 0 16px}}.source-group{{margin:18px 0 28px}}.source-heading{{display:flex;align-items:center;justify-content:space-between;background:var(--soft);border-left:5px solid var(--blue);padding:10px 14px;margin-bottom:4px}}.source-heading h3{{font-size:19px;margin:0}}.source-heading span{{font-size:13px;color:var(--muted)}}.brief{{display:grid;grid-template-columns:38px minmax(220px,300px) minmax(0,1fr);gap:14px 18px;padding:18px 6px;border-bottom:1px dashed var(--line);break-inside:avoid}}.brief-heading{{grid-column:1/-1;grid-row:1;display:grid;grid-template-columns:38px minmax(0,1fr) auto;gap:12px;align-items:start}}.ordinal{{font:700 18px Georgia;color:var(--gold);padding-top:2px}}.brief h4{{font-size:17px;line-height:1.5;margin:0}}.translated-title{{font-weight:700;margin:5px 0 0;color:#303030}}.story-time{{margin:5px 0 0;color:var(--muted);font-size:12px}}.badges{{display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end}}.badge{{display:inline-block;padding:2px 7px;border-radius:999px;font-size:11px;background:#f0f0f0;color:#626262}}.badge.status{{background:#f9eded;color:var(--red)}}.badge.rank{{background:#f9eded;color:#b61f24}}.brief>.tldr{{grid-column:3;grid-row:2;margin:0;color:#303030}}.brief:not(.has-image)>.tldr{{grid-column:2/-1}}.tldr span{{font-size:11px;font-weight:800;letter-spacing:.08em;color:var(--red);margin-right:9px}}.brief>figure{{grid-column:2;grid-row:2;margin:0}}.brief figure img{{display:block;width:100%;max-width:300px;aspect-ratio:16/9;object-fit:cover;border-radius:8px}}.brief figcaption{{font-size:12px;color:var(--muted);line-height:1.45;margin-top:5px}}.empty-note,.evaluation-pending{{padding:18px;background:#f7f7f7;border:1px dashed #d0d0d0;border-radius:8px;color:var(--muted)}}.pending li{{display:flex;gap:10px;justify-content:space-between;border-bottom:1px solid var(--line);padding:8px 0}}.pending li span{{color:var(--muted);font-size:13px}}.analysis-domain>h3{{font-size:23px;margin:30px 0 14px;border-left:5px solid var(--red);padding-left:12px}}.analysis-card{{border:1px solid var(--line);border-radius:12px;margin:0 0 20px;padding:24px;break-inside:avoid}}.analysis-card>h4{{font-family:Georgia,"Noto Serif CJK SC",serif;font-size:23px;line-height:1.5;margin:0 0 10px}}.analysis-meta{{display:flex;gap:14px;flex-wrap:wrap;color:var(--muted);font-size:13px;padding-bottom:15px;border-bottom:1px solid var(--line)}}.analysis-part{{margin-top:18px}}.analysis-part h5{{font-size:15px;color:var(--red);margin:0 0 6px}}.analysis-part p,.analysis-part ul{{margin-top:0}}.stakeholder-grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px}}.stakeholder{{background:#f7f7f7;border-radius:8px;padding:14px}}.stakeholder p{{margin:4px 0}}.stakeholder small{{color:var(--muted)}}.follow-up{{border-top:1px solid var(--line);margin-top:24px;padding-top:18px}}.evaluation-score{{display:flex;align-items:baseline;gap:6px;margin:4px 0 18px}}.evaluation-score strong{{font:700 52px Georgia;color:var(--red)}}.evaluation-score span{{color:var(--muted)}}.table-wrap{{overflow:auto}}table{{width:100%;border-collapse:collapse}}th,td{{text-align:left;border-bottom:1px solid var(--line);padding:10px;vertical-align:top}}th{{background:var(--soft)}}.score{{font-weight:800;color:var(--red);white-space:nowrap}}.feedback-grid{{display:grid;grid-template-columns:repeat(4,1fr);gap:12px}}label{{font-size:13px;color:var(--muted)}}select,textarea{{width:100%;margin-top:5px;padding:9px;border:1px solid var(--line);border-radius:7px;background:#fff}}textarea{{min-height:100px}}.feedback .comment{{display:block;margin-top:16px}}button{{margin-top:14px;background:var(--blue);color:#fff;border:0;border-radius:8px;padding:10px 16px;font-weight:700;cursor:pointer}}.feedback-note{{color:var(--muted);font-size:12px}}.feedback-print{{display:none}}footer{{color:var(--muted);font-size:12px;padding:0 0 34px;text-align:center}}.hidden-by-search{{display:none!important}}
 .analysis-narrative{{max-width:76ch;margin:22px 0 18px;font-family:Georgia,"Noto Serif CJK SC",serif;font-size:17px;line-height:1.92;color:#303030}}.analysis-narrative p{{margin:0 0 1em}}.analysis-notebook{{margin-top:20px;border-top:1px solid var(--line);padding-top:14px}}.analysis-notebook summary{{cursor:pointer;color:var(--blue);font-weight:800;list-style-position:outside}}.analysis-notebook-body{{margin-top:12px;padding:2px 16px 12px;border-left:3px solid var(--line);color:#303030}}
-.summary,.module,.content-section,.analysis-module,.analysis-domain,.evaluation,.feedback{{scroll-margin-top:88px}}.toc-toggle{{position:fixed;z-index:32;left:14px;top:50%;display:flex;flex-direction:column;align-items:center;gap:6px;width:42px;margin:0;padding:13px 8px;transform:translateY(-50%);border:1px solid rgba(182,31,36,.2);border-radius:10px;background:rgba(255,255,255,.96);box-shadow:0 8px 24px rgba(30,30,30,.14);color:var(--blue);font-size:12px;letter-spacing:.12em;backdrop-filter:blur(12px);transition:opacity .2s,transform .2s}}.toc-toggle span:first-child{{font-size:17px;line-height:1}}body.toc-open .toc-toggle{{opacity:0;pointer-events:none;transform:translate(-12px,-50%)}}.report-toc{{position:fixed;z-index:31;left:14px;top:84px;bottom:18px;width:286px;display:flex;flex-direction:column;overflow:hidden;border:1px solid rgba(182,31,36,.16);border-radius:14px;background:rgba(255,255,255,.97);box-shadow:0 16px 42px rgba(30,30,30,.18);backdrop-filter:blur(16px);transform:translateX(calc(-100% - 30px));transition:transform .24s ease}}body.toc-open .report-toc{{transform:translateX(0)}}.toc-heading{{display:flex;align-items:center;justify-content:space-between;padding:16px 16px 12px;border-bottom:1px solid var(--line);color:var(--blue)}}.toc-heading strong{{font:700 18px Georgia,"Noto Serif CJK SC",serif}}.toc-close{{margin:0;padding:5px 9px;border:1px solid var(--line);border-radius:7px;background:var(--soft);color:var(--blue);font-size:12px}}.toc-nav{{overflow-y:auto;padding:10px}}.toc-link{{display:block;margin:2px 0;padding:7px 10px;border-left:3px solid transparent;border-radius:6px;color:#303030;font-size:14px;line-height:1.4}}.toc-link:hover{{background:var(--soft);text-decoration:none}}.toc-link.toc-level-0{{margin-top:7px;font-weight:800;color:var(--blue)}}.toc-link.toc-level-1{{padding-left:22px;font-size:13px}}.toc-link.active{{border-left-color:var(--gold);background:#f9eded;color:#b61f24}}.toc-scrim{{position:fixed;z-index:30;inset:0;visibility:hidden;background:rgba(20,20,20,.22);opacity:0;transition:opacity .2s,visibility .2s}}body.toc-open .toc-scrim{{visibility:visible;opacity:1}}
+.summary,.module,.content-section,.source-group,.analysis-module,.analysis-domain,.evaluation,.feedback{{scroll-margin-top:88px}}.toc-toggle{{position:fixed;z-index:32;left:14px;top:50%;display:flex;flex-direction:column;align-items:center;gap:6px;width:42px;margin:0;padding:13px 8px;transform:translateY(-50%);border:1px solid rgba(182,31,36,.2);border-radius:10px;background:rgba(255,255,255,.96);box-shadow:0 8px 24px rgba(30,30,30,.14);color:var(--blue);font-size:12px;letter-spacing:.12em;backdrop-filter:blur(12px);transition:opacity .2s,transform .2s}}.toc-toggle span:first-child{{font-size:17px;line-height:1}}body.toc-open .toc-toggle{{opacity:0;pointer-events:none;transform:translate(-12px,-50%)}}.report-toc{{position:fixed;z-index:31;left:14px;top:84px;bottom:18px;width:286px;display:flex;flex-direction:column;overflow:hidden;border:1px solid rgba(182,31,36,.16);border-radius:14px;background:rgba(255,255,255,.97);box-shadow:0 16px 42px rgba(30,30,30,.18);backdrop-filter:blur(16px);transform:translateX(calc(-100% - 30px));transition:transform .24s ease}}body.toc-open .report-toc{{transform:translateX(0)}}.toc-heading{{display:flex;align-items:center;justify-content:space-between;padding:16px 16px 12px;border-bottom:1px solid var(--line);color:var(--blue)}}.toc-heading strong{{font:700 18px Georgia,"Noto Serif CJK SC",serif}}.toc-close{{margin:0;padding:5px 9px;border:1px solid var(--line);border-radius:7px;background:var(--soft);color:var(--blue);font-size:12px}}.toc-nav{{overflow-y:auto;padding:10px}}.toc-link{{display:block;margin:2px 0;padding:7px 10px;border-left:3px solid transparent;border-radius:6px;color:#303030;font-size:14px;line-height:1.4}}.toc-link:hover{{background:var(--soft);text-decoration:none}}.toc-link.toc-level-0{{margin-top:7px;font-weight:800;color:var(--blue)}}.toc-link.toc-level-1{{padding-left:22px;font-size:13px}}.toc-link.toc-level-2{{padding-left:34px;font-size:12px;color:var(--muted)}}.toc-link.active{{border-left-color:var(--gold);background:#f9eded;color:#b61f24}}.toc-scrim{{position:fixed;z-index:30;inset:0;visibility:hidden;background:rgba(20,20,20,.22);opacity:0;transition:opacity .2s,visibility .2s}}body.toc-open .toc-scrim{{visibility:visible;opacity:1}}
 @media(min-width:1500px){{.toc-scrim{{display:none}}}}
 @media(max-width:720px){{.toolbar-inner{{align-items:flex-start;flex-wrap:wrap}}.toolbar input{{order:3;margin:0;width:100%;min-width:0}}.tools{{margin-left:auto}}.summary,.module,.analysis-module,.evaluation,.feedback,.pending{{padding:20px}}.brief{{grid-template-columns:32px minmax(0,1fr);gap:10px 12px}}.brief-heading{{grid-column:1/-1;grid-template-columns:32px 1fr}}.badges{{grid-column:2;justify-content:flex-start}}.brief>figure{{grid-column:2;grid-row:2}}.brief.has-image>.tldr{{grid-column:2;grid-row:3}}.brief:not(.has-image)>.tldr{{grid-column:2;grid-row:2}}.feedback-grid{{grid-template-columns:1fr 1fr}}.toc-toggle{{left:auto;right:8px;top:auto;bottom:12px;width:38px;padding:10px 8px;transform:none}}.toc-toggle span:last-child{{display:none}}body.toc-open .toc-toggle{{transform:translateX(12px)}}.report-toc{{left:8px;top:72px;bottom:8px;width:min(300px,calc(100vw - 24px))}}}}
 @media print{{body{{background:#fff;font-size:10.5pt}}.masthead{{padding:28px 0;background:#fff!important;color:#ffffff;border-bottom:3px solid #b61f24}}.eyebrow{{color:#b61f24}}.metadata{{color:#626262}}.toolbar,.toc-toggle,.report-toc,.toc-scrim,.feedback button,.feedback-note,.feedback-grid,.feedback .comment{{display:none}}.feedback-print{{display:block}}.shell{{width:auto;margin:0 14mm}}main{{padding:12px 0}}.summary,.module,.analysis-module,.evaluation,.feedback,.pending{{box-shadow:none;border:0;border-radius:0;padding:10px 0;margin:0 0 12px}}.source-group,.brief,table,figure{{break-inside:avoid}}.analysis-domain>h3{{break-after:avoid}}.analysis-card{{break-inside:auto}}details.analysis-notebook:not([open])>.analysis-notebook-body{{display:block!important}}.analysis-notebook summary{{list-style:none}}a{{color:#111111}}.content-section{{break-before:auto}}}}
@@ -1199,7 +1205,7 @@ a{{color:var(--blue);text-decoration:none}}a:hover{{text-decoration:underline}}.
 {toc_block}
 {masthead_block}
 <div class="toolbar"><div class="shell toolbar-inner"><nav><a href="#evaluation">{_escape(labels["source_status"])}</a></nav><input id="search" type="search" placeholder="{_escape(labels["filter"])}"><div class="tools">{archive_link}{pdf_link}{slides_link}</div></div></div>
-<main class="shell">{slides_embed}<section class="{summary_class}" id="summary"><h2>{_escape(labels["summary"])}</h2>{_list_html(report.get('executive_summary', []), language=language)}</section>{''.join(module_blocks)}{pending_block}<section class="analysis-module" id="analysis"><h2>{_escape(labels["analysis"])}</h2>{''.join(analysis_groups)}{synthesis_block}{research_block}{changes_block}{watch_block}</section><section class="evaluation" id="evaluation"><h2>{_escape(labels["evaluation"])}</h2>{_evaluation_html(evaluation, language)}</section><section class="feedback" id="feedback"><h2>{_escape(labels["feedback"])}</h2><div class="feedback-grid">{feedback_controls}</div><label class="comment">{_escape(labels["comments"])}<textarea data-feedback="comment" placeholder="{_escape(labels["feedback_placeholder"])}"></textarea></label><div class="feedback-print">{_escape(feedback_print)}<br>{_escape(labels["comments"])}: ________________________________</div><button id="download-feedback" type="button">{_escape(labels["download_feedback"])}</button><p class="feedback-note">{_escape(labels["feedback_note"])}</p></section></main><footer class="shell">{_escape(labels["footer"])}</footer>
+<main class="shell">{slides_embed}<section class="{summary_class}" id="summary"><h2>{_escape(labels["summary"])}</h2>{_list_html(report.get('executive_summary', []), language=language)}</section>{''.join(module_blocks)}{pending_block}<section class="analysis-module" id="analysis"><h2>{_escape(labels["analysis"])}</h2>{''.join(analysis_groups)}{synthesis_block}{changes_block}{watch_block}</section><section class="evaluation" id="evaluation"><h2>{_escape(labels["evaluation"])}</h2>{_evaluation_html(evaluation, language)}</section><section class="feedback" id="feedback"><h2>{_escape(labels["feedback"])}</h2><div class="feedback-grid">{feedback_controls}</div><label class="comment">{_escape(labels["comments"])}<textarea data-feedback="comment" placeholder="{_escape(labels["feedback_placeholder"])}"></textarea></label><div class="feedback-print">{_escape(feedback_print)}<br>{_escape(labels["comments"])}: ________________________________</div><button id="download-feedback" type="button">{_escape(labels["download_feedback"])}</button><p class="feedback-note">{_escape(labels["feedback_note"])}</p></section></main><footer class="shell">{_escape(labels["footer"])}</footer>
 <script>
 const reportMeta={feedback_data};
 const tocToggle=document.getElementById('toc-toggle');

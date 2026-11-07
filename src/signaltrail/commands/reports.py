@@ -84,6 +84,7 @@ def handle_save_report(args: argparse.Namespace, context: CommandContext) -> int
         data_dir,
         output_config=config.output,
         media_config=config.media,
+        refresh_images=args.refresh_images,
     )
     print_json(artifacts)
     return 0

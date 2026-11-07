@@ -395,7 +395,7 @@ def _merge_source_items(
     - ``html_results``：同一来源静态 HTML 或浏览器回退的采集结果。
     输出：可写入监控快照的规范文章记录；
       已按 canonical_url 去重、保留原始 source_rank、执行来源所选排序，
-      并受 source.max_items 限制。
+      日报来源保留有限响应内全部条目，独立监控可保留原条数限制。
     """
     by_canonical: dict[str, dict[str, Any]] = {}
     for result in feed_results:
@@ -430,7 +430,8 @@ def _merge_source_items(
         metadata = item.setdefault("metadata", {})
         if isinstance(metadata, dict):
             metadata["source_rank"] = rank
-    return order_source_items(items, source.item_order)[: source.max_items]
+    ordered = order_source_items(items, source.item_order)
+    return ordered if source.collect_all_items else ordered[: source.max_items]
 
 
 def _source_record(

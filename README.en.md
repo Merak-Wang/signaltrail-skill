@@ -50,13 +50,13 @@ The first video setup downloads tools and models; later exports reuse local cach
 
 ## Configuration and documentation
 
-Output defaults to Chinese. Request English or set `output.language: en`. Edit [sources.yaml](configs/sources.yaml) for core sources and [discovery-sources.yaml](configs/discovery-sources.yaml) for discovery sources.
+Output defaults to Chinese. Request English or set `output.language: en`. Edit [sources.yaml](configs/sources.yaml) for core sources and [discovery-sources.yaml](configs/discovery-sources.yaml) for extension sources. Enabled entries in both bundles enter existing report sections, retaining all eligible current-day articles in each source's original Top order.
 
 | Guide | Covers |
 | --- | --- |
 | [Usage](docs/usage.md) | Installation, language, data paths, host usage, and recovery |
 | [Slides and video](docs/news-slides.md) | Report and index-only inputs, rendering, speech, and custom voices |
-| [Collection extensions](docs/platform.md) | Local monitor, RSSHub, Crawl4AI, and research APIs |
+| [Collection extensions](docs/platform.md) | Local monitor, RSSHub, Crawl4AI, and event archives |
 | [Development](docs/development.md) · [Architecture](ARCHITECTURE.md) | Code structure, maintenance, and checks |
 | [Documentation index](docs/README.md) · [Changelog](CHANGELOG.md) | Other guides and release history |
 

@@ -16,6 +16,7 @@ from .content_extraction import extract_document
 from .content_images import article_image_candidates
 from .image_policy import (
     filter_editorial_templates,
+    image_resolution_candidates,
     image_variant_groups,
     normalize_image_candidates,
     select_image_variants,
@@ -296,7 +297,16 @@ def enrich_slide_images(
             briefs[item_id] = {"primary_source": {"name": source.get("name", "")}}
         event = {"source_refs": refs}
         merged = _news_images(event, briefs, indexed, preserve_variants=True)
-        item["images"] = filter_editorial_templates(merged)
+        candidates = []
+        for candidate in filter_editorial_templates(merged):
+            for url in image_resolution_candidates(candidate["url"]):
+                # 新尺寸地址只有来源元数据；像素和缓存路径必须来自该地址的实际下载。
+                detail = (candidate if url == candidate["url"] else
+                          {key: value for key, value in candidate.items()
+                           if key not in {"width", "height", "local_path", "sha256",
+                                          "byte_size", "resolved_url"}})
+                candidates.append({**detail, "url": url})
+        item["images"] = candidates
         source_url = source_urls[0] if source_urls else ""
         for candidate in item["images"]:
             if candidate.get("url"):

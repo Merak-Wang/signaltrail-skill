@@ -278,7 +278,8 @@ def title_overlap(title: str, text: str) -> float | None:
         tokens.update(run[i:i + 2] for i in range(len(run) - 1))
     if not tokens:
         return None
-    return round(sum(token in text.casefold() for token in tokens) / len(tokens), 4)
+    normalized_text = text.casefold()
+    return round(sum(token in normalized_text for token in tokens) / len(tokens), 4)
 
 
 def extract_with_fallback(

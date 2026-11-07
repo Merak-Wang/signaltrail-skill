@@ -23,6 +23,7 @@ from .localization import (
     translated_title,
     translated_title_field,
 )
+from .models import effective_page_results
 from .semantics import (
     brief_requires_watch,
     reusable_semantic_brief,
@@ -559,7 +560,7 @@ def _pending_from_index(
         source_id = str(source.get("source_id", ""))
         source_name = str(source.get("source_name", source_id))
         page_rows = []
-        for page in source.get("page_results", []):
+        for page in effective_page_results(source.get("page_results", [])):
             if not isinstance(page, dict):
                 continue
             status = str(page.get("status", ""))
@@ -893,7 +894,8 @@ def compile_report_data(
         fallback_ranks[source_id] = fallback_ranks.get(source_id, 0) + 1
         metadata = item.get("metadata", {}) if isinstance(item.get("metadata"), dict) else {}
         item_ranks[str(item["item_id"])] = int(
-            metadata.get("source_rank")
+            item.get("source_rank")
+            or metadata.get("source_rank")
             or metadata.get("hot_rank")
             or metadata.get("list_position")
             or fallback_ranks[source_id]
@@ -1015,7 +1017,7 @@ def compile_report_data(
     compiled_sections: list[dict[str, Any]] = []
     event_by_item: dict[str, str] = {}
     used_brief_ids: set[str] = set()
-    used_brief_urls: set[str] = set()
+    used_brief_urls: set[tuple[str, str]] = set()
     for section_id in SECTION_ORDER_V13:
         module, category = section_id.split(".", 1)
         section = provided_sections.get(section_id, {})
@@ -1041,14 +1043,15 @@ def compile_report_data(
             indexed = indexed_items.get(item_id, {})
             raw_url = indexed.get("canonical_url") or indexed.get("url")
             url = canonicalize_url(raw_url) if raw_url else ""
-            if url and url in used_brief_urls:
+            source_url = (str(indexed.get("source_id", "")), url)
+            if url and source_url in used_brief_urls:
                 warnings.append(f"omitted duplicate brief canonical URL for {item_id!r}")
                 continue
             deduplicated_briefs.append(brief)
             if item_id:
                 used_brief_ids.add(item_id)
             if url:
-                used_brief_urls.add(url)
+                used_brief_urls.add(source_url)
         section["briefs"] = deduplicated_briefs
         for brief in section["briefs"]:
             item_id = str(brief.get("item_id", ""))
@@ -1398,9 +1401,9 @@ def normalize_report_data(report: dict, index: dict | None) -> None:
                 "selected": brief_counts[source_id],
                 "target": min(
                     indexed_counts[source_id],
-                    int(policy.get("report_target", 15)),
+                    int(policy.get("report_target", indexed_counts[source_id])),
                 ),
-                "maximum": int(policy.get("report_max", 15)),
+                "maximum": int(policy.get("report_max", indexed_counts[source_id])),
             }
             for source_id, policy in policies.items()
             if indexed_counts[source_id]
@@ -1568,6 +1571,7 @@ def validate_report_data(
     event_source_ids: dict[str, set[str]] = {}
     featured_brief_event_ids: set[str] = set()
     brief_item_ids: set[str] = set()
+    brief_source_urls: set[tuple[str, str]] = set()
     source_counts: Counter[str] = Counter()
     source_importance_values: dict[str, list[int]] = {}
     section_ids: set[str] = set()
@@ -1657,6 +1661,13 @@ def validate_report_data(
                 continue
             indexed = known_items.get(item_id, {})
             indexed_url = str(indexed.get("url", ""))
+            canonical_url = canonicalize_url(str(
+                indexed.get("canonical_url") or indexed_url or ref.get("url", "")))
+            source_url = (str(indexed.get("source_id") or source_id), canonical_url)
+            if canonical_url:
+                if source_url in brief_source_urls:
+                    errors.append(f"{brief_prefix}: duplicate canonical URL within source")
+                brief_source_urls.add(source_url)
             if indexed_url and canonicalize_url(str(ref.get("url", ""))) != canonicalize_url(
                 indexed_url
             ):
@@ -1938,10 +1949,6 @@ def validate_report_data(
                 f"sections contain unsupported ids for schema {schema_version}: "
                 f"{unexpected_sections}"
             )
-    if source_group_contract:
-        over_limit = {source_id: count for source_id, count in source_counts.items() if count > 15}
-        if over_limit:
-            errors.append(f"primary sources exceed 15 selected items: {over_limit}")
     if brief_contract:
         for source_id, values in sorted(source_importance_values.items()):
             if len(values) >= 3 and len(set(values)) == 1:
@@ -1965,9 +1972,8 @@ def validate_report_data(
                     continue
                 target = min(
                     indexed_counts[source_id],
-                    int(policy.get("report_target", 15)),
-                    int(policy.get("report_max", 15)),
-                    15,
+                    int(policy.get("report_target", indexed_counts[source_id])),
+                    int(policy.get("report_max", indexed_counts[source_id])),
                 )
                 if coverage_targets is not None and source_id in coverage_targets:
                     override = coverage_targets[source_id]

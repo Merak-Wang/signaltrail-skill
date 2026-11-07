@@ -6,6 +6,7 @@ from copy import deepcopy
 from io import BytesIO
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 import httpx
 import jsonschema
@@ -169,6 +170,39 @@ def _report(image: dict | None = None) -> dict[str, Any]:
         "tomorrow_watch_items": [],
         "pending_verifications": [],
     }
+
+
+def test_revision_keeps_missing_attachment_state_but_collects_new_and_lost_files(tmp_path):
+    content = _png_bytes()
+    image = _image_record(content)
+    path = tmp_path / image["local_path"]
+    path.parent.mkdir(parents=True)
+    path.write_bytes(content)
+    report = _report(image)
+    original = report["sections"][0]["briefs"][0]
+    for item_id in ("without-image", "new-item", "lost-file"):
+        report["sections"][0]["briefs"].append({**deepcopy(original), "item_id": item_id})
+    index = {"items": [{"item_id": brief["item_id"],
+                        "image_url": f"https://cdn.example/{brief['item_id']}.png"}
+                       for brief in report["sections"][0]["briefs"]]}
+    calls = []
+
+    def download(url, *_args, **_kwargs):
+        calls.append(url)
+        return DownloadedImage(url, url, image["local_path"], image["content_type"],
+                               image["sha256"], image["byte_size"], 3, 2, False)
+
+    preserved = {original["item_id"]: image, "without-image": None,
+                 "lost-file": {**image, "local_path": "media/images/00/missing.png"}}
+    assert materialize_report_images(report, index, tmp_path, MediaConfig(), downloader=download,
+                                     preserved_images=preserved) == []
+    assert set(calls) == {"https://cdn.example/new-item.png", "https://cdn.example/lost-file.png"}
+    briefs = {brief["item_id"]: brief for brief in report["sections"][0]["briefs"]}
+    assert briefs[original["item_id"]]["image"] == image
+    assert "image" not in briefs["without-image"]
+    assert report["media_metrics"]["attached"] == 3
+    assert report["media_metrics"]["preserved_without_image"] == 1
+    assert report["media_metrics"]["failed"] == 0
 
 
 def test_public_image_url_rejects_credentials_and_private_networks():
@@ -518,6 +552,165 @@ def test_materialize_downloads_one_highest_photo_variant_with_fallback_and_cache
     ) == []
     assert calls == ([large, small] if high_fails else [large])
     assert cached_report["sections"][0]["briefs"][0]["image"]["source_url"] == expected
+
+
+@pytest.mark.parametrize("high_fails", [False, True])
+def test_bbc_feed_uses_measured_hd_dimensions_and_falls_back(tmp_path, high_fails):
+    report = _report()
+    low = "https://ichef.bbci.co.uk/ace/standard/240/cpsprodpb/live/photo.jpg"
+    high = low.replace("/240/", "/1920/")
+    thumbnail = BytesIO()
+    Image.new("RGB", (240, 135), (40, 90, 150)).save(thumbnail, format="PNG")
+    existing = {**_image_record(thumbnail.getvalue(), low), "width": 240, "height": 135}
+    local = tmp_path / existing["local_path"]
+    local.parent.mkdir(parents=True, exist_ok=True)
+    local.write_bytes(thumbnail.getvalue())
+    report["sections"][0]["briefs"][0]["image"] = existing
+    index = {"items": [{"item_id": "example-1", "image_url": low}]}
+    calls = []
+
+    def download(url, *_args, **_kwargs):
+        calls.append(url)
+        if url == high and high_fails:
+            raise ImageDownloadError("HD unavailable")
+        width, height = (1600, 900) if url == high else (240, 135)
+        return DownloadedImage(url, url, "media/photo.jpg", "image/jpeg", url, 500,
+                               width, height, False)
+
+    assert materialize_report_images(report, index, tmp_path, MediaConfig(),
+                                     downloader=download) == []
+    image = report["sections"][0]["briefs"][0]["image"]
+    assert calls == ([high, low] if high_fails else [high])
+    assert (image["width"], image["height"]) == ((240, 135) if high_fails else (1600, 900))
+
+
+@pytest.mark.parametrize("high_fails", [False, True])
+def test_guardian_existing_signed_sizes_prefer_large_and_keep_fallback(tmp_path, high_fails):
+    report = _report()
+    base = "https://i.guim.co.uk/img/media/photo/master/1000.jpg"
+    low = base + "?width=140&fit=max&s=low-signature"
+    high = base + "?width=700&fit=max&s=high-signature"
+    other_crop = base + "?width=1200&fit=crop&crop=faces&s=other-signature"
+    index = {"items": [{"item_id": "example-1", "image_url": low,
+                        "metadata": {"image_candidates": [low, high, other_crop]}}]}
+    calls = []
+
+    def download(url, *_args, **_kwargs):
+        calls.append(url)
+        if url == high and high_fails:
+            raise ImageDownloadError("HD unavailable")
+        width, height = (700, 560) if url == high else (140, 112)
+        return DownloadedImage(url, url, "media/photo.jpg", "image/jpeg", url, 500,
+                               width, height, False)
+
+    assert materialize_report_images(report, index, tmp_path, MediaConfig(),
+                                     downloader=download) == []
+    image = report["sections"][0]["briefs"][0]["image"]
+    assert calls == ([high, low] if high_fails else [high])
+    assert image["source_url"] == (low if high_fails else high)
+
+
+def test_prefetch_cache_hits_are_free_and_report_attachment_budget_stays_separate(
+    monkeypatch, tmp_path,
+):
+    urls = [f"https://cdn.example/{number}.png" for number in range(3)]
+
+    def stored(url):
+        content = url.rsplit("/", 1)[-1].encode()[:6]
+        digest = hashlib.sha256(content).hexdigest()
+        local = f"media/{digest}.png"
+        path = tmp_path / local
+        path.parent.mkdir(exist_ok=True)
+        path.write_bytes(content)
+        return DownloadedImage(url, url, local, "image/png", digest, len(content), 700, 400, False)
+
+    media_module._write_image_cache(tmp_path, {"entries": {
+        urls[0]: media_module._cache_success(stored(urls[0])),
+    }})
+    index = {"items": [{"item_id": str(number), "image_url": url}
+                       for number, url in enumerate(urls)]}
+    calls = []
+
+    def download(rows, *_args, **_kwargs):
+        calls.extend(url for url, _referer in rows)
+        return {url: stored(url) for url, _referer in rows}
+
+    monkeypatch.setattr(media_module, "_download_image_batch", download)
+    config = MediaConfig(max_image_bytes=6, max_total_bytes=6, prefetch_max_total_bytes=12)
+    receipt = media_module.prefetch_index_images(index, ["0", "1", "2"], tmp_path, config)
+    assert calls == urls[1:]
+    assert receipt["ready"] == 3 and receipt["reused_items"] == 1
+    assert receipt["downloaded_bytes"] == 10
+    again = media_module.prefetch_index_images(index, ["0", "1", "2"], tmp_path, config)
+    assert again["ready"] == 3 and again["downloaded_bytes"] == 0
+    report = {"sections": [{"briefs": [{"item_id": str(number)} for number in range(3)]}]}
+    assert materialize_report_images(report, index, tmp_path, config) == []
+    assert report["media_metrics"]["attached"] == 1
+    assert len(calls) == 2
+
+
+def test_prefetch_interleaves_domains_and_reuses_negative_cache(monkeypatch, tmp_path):
+    urls = [f"https://{host}.example/{number}.png"
+            for host in ("one", "two", "three") for number in range(3)]
+    index = {"items": [{"item_id": str(number), "image_url": url}
+                       for number, url in enumerate(urls)]}
+    batches = []
+
+    def download(rows, *_args, **_kwargs):
+        batches.append([url for url, _referer in rows])
+        return {url: ImageDownloadError("public image unavailable") for url, _referer in rows}
+
+    monkeypatch.setattr(media_module, "_download_image_batch", download)
+    config = MediaConfig(global_concurrency=3)
+    first = media_module.prefetch_index_images(index, list(map(str, range(9))), tmp_path, config)
+    assert len(batches) == 1
+    assert {urlsplit(url).hostname for url in batches[0][:3]} == {
+        "one.example", "two.example", "three.example",
+    }
+    second = media_module.prefetch_index_images(index, list(map(str, range(9))), tmp_path, config)
+    assert first["failed"] == second["failed"] == 9
+    assert len(batches) == 1
+
+
+@pytest.mark.parametrize("transport_timeout", [False, True])
+def test_prefetch_temporarily_defers_repeated_transport_failures_but_keeps_http_fallback(
+    monkeypatch, tmp_path, transport_timeout,
+):
+    items = [{"item_id": str(number),
+              "image_url": f"https://down.example/{number}-large.jpg",
+              "metadata": {"image_candidates": [f"https://down.example/{number}-small.jpg",
+                                                  f"https://other.example/{number}.jpg"]}}
+             for number in range(2)]
+    index = {"items": items}
+    calls = []
+
+    def download(rows, *_args, **_kwargs):
+        result = {}
+        for url, _referer in rows:
+            calls.append(url)
+            if "down.example" in url:
+                error = "ReadTimeout" if transport_timeout else "returned HTTP 404"
+                result[url] = ImageDownloadError(error)
+            else:
+                content = url.encode()
+                digest = hashlib.sha256(content).hexdigest()
+                local = f"media/{digest}.jpg"
+                (tmp_path / local).parent.mkdir(exist_ok=True)
+                (tmp_path / local).write_bytes(content)
+                result[url] = DownloadedImage(url, url, local, "image/jpeg", digest,
+                                              len(content), 700, 400, False)
+        return result
+
+    monkeypatch.setattr(media_module, "_download_image_batch", download)
+    receipt = media_module.prefetch_index_images(index, ["0", "1"], tmp_path, MediaConfig())
+    assert receipt["ready"] == 2 and receipt["failed"] == 0
+    assert len([url for url in calls if "down.example" in url]) == (2 if transport_timeout else 4)
+    assert receipt["deferred_hosts"] == (["down.example"] if transport_timeout else [])
+    assert receipt["host_deferred_urls"] == (2 if transport_timeout else 0)
+    count = len(calls)
+    report = {"sections": [{"briefs": [{"item_id": str(number)} for number in range(2)]}]}
+    assert materialize_report_images(report, index, tmp_path, MediaConfig()) == []
+    assert report["media_metrics"]["attached"] == 2 and len(calls) == count
 
 
 def test_materialize_report_images_tries_later_candidates_after_a_failure(

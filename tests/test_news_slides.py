@@ -176,18 +176,15 @@ def test_selection_covers_report_dates_and_preserves_unknown_publication(slide_c
     report["sections"][0]["briefs"][4]["source_ref"]["published_at"] = "2026-09-23"
     selected = select_news(report, index)
     assert {e["event_id"] for e in selected} == {
-        "event-0", *(f"brief-item-{i}" for i in range(1, 8)),
+        "event-0", "brief-item-2", "brief-item-6",
     }
-    assert [e["event_id"] for e in select_news(report, index, item_ids=["item-1"])] == [
-        "brief-item-1",
-    ]
+    assert select_news(report, index, item_ids=["item-1"]) == []
     assert index["items"][4]["published_at"] is None
     root, report_path, index_path, _, _ = slide_case
     write_json(report_path, report)
     write_json(index_path, index)
-    prepared = prepare_slides(report_path, index_path, root, item_ids=["item-4"])
-    plan = load_artifact(Path(prepared["plan_path"]), root)["payload"]
-    assert plan["news"][0]["sources"][0]["published_at"] is None
+    with pytest.raises(ValueError, match="No news"):
+        prepare_slides(report_path, index_path, root, item_ids=["item-4"])
     assert report["sections"][0]["items"] == before["sections"][0]["items"]
 
 
@@ -201,16 +198,16 @@ def test_default_plan_includes_low_score_and_imageless_news_in_score_order(slide
 
     selected = select_news(report, index)
     assert [e["event_id"] for e in selected][-2:] == ["brief-item-1", "brief-item-2"]
-    assert "brief-item-3" in {e["event_id"] for e in selected}
-    assert len(select_news(report, index, min_importance=70)) == 14
+    assert "brief-item-3" not in {e["event_id"] for e in selected}
+    assert len(select_news(report, index, min_importance=70)) == 13
     assert sum(ref["item_id"] == "item-0" for e in selected for ref in e["source_refs"]) == 1
 
     prepared = prepare_slides(report_path, index_path, root)
     plan = load_artifact(Path(prepared["plan_path"]), root)["payload"]
-    assert prepared["news_count"] == 16
+    assert prepared["news_count"] == 15
     assert [n["event_id"] for n in plan["news"]] == [e["event_id"] for e in selected]
     assert all(n["images"] == [] for n in plan["news"])
-    assert len(prepared["packet_paths"]) == 4
+    assert len(prepared["packet_paths"]) == 3
 
 
 def test_old_featured_events_do_not_hide_todays_briefs(slide_case):
@@ -231,20 +228,20 @@ def test_discovery_and_unknown_dates_are_retained_with_index_dates(slide_case):
     for item, published in zip(
         index["items"][:3], ["2026-09-19", None, "2026-09-23"], strict=True,
     ):
+        item["source_id"] = "hacker_news"
         item["metadata"] = {"role": "discovery", "content_source": {"published_at": published}}
     index["items"][2]["published_at"] = "2026-09-22T23:00:00+08:00"
     selected = select_news(report, index)
-    assert {"event-0", "brief-item-1", "brief-item-2"} <= {
-        e["event_id"] for e in selected
-    }
+    assert "brief-item-2" in {e["event_id"] for e in selected}
+    assert not {"event-0", "brief-item-1"} & {e["event_id"] for e in selected}
     assert [e["event_id"] for e in select_news(report, index, item_ids=["item-2"])] == [
         "brief-item-2",
     ]
     # 聚合条目保留平台发布日期，原文元信息不覆盖；其他来源不伪造日期。
     write_json(index_path, index)
-    prepared = prepare_slides(report_path, index_path, root, item_ids=["item-0"])
+    prepared = prepare_slides(report_path, index_path, root, item_ids=["item-2"])
     plan = load_artifact(Path(prepared["plan_path"]), root)["payload"]
-    assert plan["news"][0]["sources"][0]["published_at"] == "2026-09-23T08:00:00+08:00"
+    assert plan["news"][0]["sources"][0]["published_at"] == "2026-09-22T23:00:00+08:00"
     for packet in prepared["packet_paths"]:
         submit_slides(Path(packet), author_packet(packet, root), root)
     output = render_slides(Path(prepared["plan_path"]), root, refresh_images=False)
@@ -280,7 +277,8 @@ def test_selection_defaults_to_fifty_and_accepts_custom_limit(slide_case):
         }
         report["sections"][0]["briefs"].append(brief)
         index["items"].append(
-            {"item_id": brief["item_id"], "published_at": None, "url": brief["source_ref"]["url"]}
+            {"item_id": brief["item_id"], "published_at": report["date"],
+             "url": brief["source_ref"]["url"]}
         )
 
     assert len(select_news(report, index)) == 50
@@ -703,13 +701,13 @@ def test_slides_inherit_report_language_and_preserve_mixed_language_sources(slid
     chinese_ref = dict(report["sections"][0]["items"][0]["source_refs"][0])
     chinese_ref.update({
         "title": "央行维持政策利率不变",
-        "published_at": "2026-09-28T08:00:00+08:00",
+        "published_at": "2026-09-23T08:00:00+08:00",
         "access": "metadata_only",
     })
     english_ref = dict(report["sections"][0]["briefs"][1]["source_ref"])
     english_ref.update({
         "title": "Central bank holds policy rate",
-        "published_at": "2026-09-28T08:10:00+00:00",
+        "published_at": "2026-09-23T08:10:00+00:00",
         "access": "full_text",
     })
     report["sections"][0]["items"][0]["source_refs"] = [chinese_ref, english_ref]
@@ -980,6 +978,8 @@ def test_exclusion_keeps_default_fifty_and_rejects_unknown_ids(slide_case):
         brief.update(item_id=f"item-{number}", importance=90 - number)
         brief["source_ref"].update(item_id=f"item-{number}", url=f"https://example.com/{number}")
         report["sections"][0]["briefs"].append(brief)
+        index["items"].append({"item_id": brief["item_id"], "published_at": report["date"],
+                               "url": brief["source_ref"]["url"]})
     selected = select_news(report, index, exclude_event_ids=["brief-item-1"])
     assert len(selected) == 50
     assert selected[-1]["event_id"] == "brief-item-50"
@@ -1036,6 +1036,33 @@ def test_slide_batch_checks_every_draft_before_partial_submit(slide_case):
     assert 2 in result["pending"]
     replay = _submit_many(args, root)
     assert replay["accepted"] == result["accepted"]
+
+
+def test_advance_dispatch_cli_accepts_ready_slides_and_retries_only_pending(slide_case):
+    import subprocess
+    import sys
+
+    root, report, index, _, _ = slide_case
+    prepared = prepare_slides(report, index, root, batch_size=5)
+    packets = prepared["packet_paths"]
+    submit_slides(Path(packets[0]), author_packet(packets[0], root), root)
+    plan_path = Path(prepared["plan_path"])
+    write_json(plan_path.parent / "batch-2-draft.json", author_packet(packets[1], root))
+    invalid = author_packet(packets[2], root)
+    invalid["slides"][0]["narration"] = " "
+    write_json(plan_path.parent / "batch-3-draft.json", invalid)
+    launcher = Path(__file__).parents[1] / "scripts/run_signaltrail.py"
+    command = [sys.executable, str(launcher), "--advance-dispatch", str(plan_path),
+               "--data-dir", str(root)]
+    for _ in range(2):
+        result = subprocess.run(command, capture_output=True, text=True, encoding="utf-8")
+        assert result.returncode == 0, result.stderr
+        receipt = json.loads(result.stdout)
+        assert receipt["accepted_count"] == 2
+        assert [(task["batch_id"], task["action"]) for task in receipt["tasks"]] == [
+            (3, "repair"), (4, "write")]
+        assert "narration" in receipt["tasks"][0]["errors"][0]
+    assert len(list(plan_path.parent.glob("slides-result-2-r*.json"))) == 1
 
 
 def test_slide_preflight_valid_draft_is_pending_until_submission(slide_case):
@@ -1098,3 +1125,267 @@ def test_resume_after_filling_missing_video_script(slide_case):
                              reuse_plan=Path(pending["plan_path"]), resume_plan=True)
     assert resumed["plan_path"] == pending["plan_path"]
     assert resumed["pending_news_count"] == 0
+
+
+def test_today_review_uses_original_publication_and_shanghai_day():
+    from signaltrail.news_slides import review_candidates
+
+    index = {"date": "2026-11-06", "items": [
+        {"item_id": "today", "url": "https://example.com/a", "title": "A",
+         "published_at": "2026-11-05T17:00:00Z"},
+        {"item_id": "old", "url": "https://example.com/b", "title": "B",
+         "published_at": "2026-11-05T12:00:00+08:00"},
+        {"item_id": "ranked", "source_id": "hacker_news",
+         "url": "https://example.com/c", "title": "C",
+         "published_at": "2026-11-06", "metadata": {"role": "discovery",
+         "content_source": {"published_at": "2026-10-01"}}},
+        {"item_id": "unknown", "url": "https://example.com/d", "title": "D"},
+    ]}
+    review = review_candidates(None, index)
+    assert review["eligible_count"] == 1
+    assert review["candidates"][0]["sources"][0]["publication_date"] == "2026-11-06"
+
+
+def test_candidate_review_projects_enriched_evidence(tmp_path):
+    from signaltrail.news_slides import review_candidates
+
+    body = tmp_path / "article.md"
+    body.write_text("首段事实。\n\n更多正文。", encoding="utf-8")
+    index = {"date": "2026-11-06", "items": [{
+        "item_id": "one", "url": "https://example.com/a", "title": "A",
+        "published_at": "2026-11-06", "content_path": str(body),
+        "content_status": "full_text", "metadata": {"content_quality": {
+            "extraction_status": "good", "candidates": [{"text": "x" * 10000}],
+        }, "content_completion": {"status": "complete", "unresolved": ["detail"]}},
+    }]}
+    source = review_candidates(None, index, data_dir=tmp_path)["candidates"][0]["sources"][0]
+    assert source["lead"] == "首段事实。"
+    assert source["body_chars"] == len("首段事实。\n\n更多正文。")
+    assert source["access"] == "full_text"
+    assert source["content_quality"] == {"extraction_status": "good"}
+    assert source["content_completion"] == "complete"
+    assert source["feed_available"] is False
+
+
+def test_candidate_review_skips_navigation_lead_and_keeps_evidence_size(tmp_path):
+    from signaltrail.news_slides import review_candidates, review_model_input
+
+    body = tmp_path / "article.md"
+    fact = "研究团队发布新的实验结果，详细说明了方法、样本范围与性能变化。"
+    body.write_text("分享到：\n\nInfoQ Homepage\n\nComments\n\n" + fact, encoding="utf-8")
+    index = {"date": "2026-11-06", "items": [{
+        "item_id": "one", "url": "https://example.com/a", "title": "A",
+        "published_at": "2026-11-06", "content_path": str(body), "content_status": "full_text",
+    }]}
+    review = review_candidates(None, index, data_dir=tmp_path)
+    source = review["candidates"][0]["sources"][0]
+    assert source["lead"] == fact and source["evidence_chars"] == len(fact)
+    details = review_model_input(review)["candidates"][0][1][0][-1]
+    assert details["body_chars"] == source["body_chars"]
+    assert details["evidence_chars"] == len(fact)
+
+
+def test_candidate_review_merges_semantic_event_sources_and_selects_replacement():
+    from signaltrail.news_slides import apply_candidate_review
+
+    events = [{"event_id": key, "source_refs": [{"item_id": key}]} for key in "abcd"]
+    selected = apply_candidate_review(events, {
+        "merge_groups": [["a", "b"]], "exclude_event_ids": ["c"],
+        "selected_event_ids": ["a", "d"]})
+    assert [event["event_id"] for event in selected] == ["a", "d"]
+    assert selected[0]["source_refs"] == [{"item_id": "a"}, {"item_id": "b"}]
+    assert events[0]["source_refs"] == [{"item_id": "a"}]
+
+
+def test_today_review_excludes_future_timestamps_but_keeps_date_precision():
+    from signaltrail.news_slides import review_candidates
+
+    index = {"date": "2026-11-06", "generated_at": "2026-11-06T09:00:00+08:00",
+             "items": [{"item_id": name, "title": name, "url": f"https://example.com/{name}",
+                        "published_at": stamp} for name, stamp in (
+                            ("future", "2026-11-06T10:00:00+08:00"),
+                            ("today", "2026-11-06"))]}
+    review = review_candidates(None, index)
+    assert [row["event_id"] for row in review["candidates"]] == ["index-today"]
+
+
+def test_edition_waits_for_candidate_review_before_preparing_packets(slide_case, monkeypatch):
+    from signaltrail.workflow import _prepare_edition_slides
+
+    root, report_path, index_path, report, _ = slide_case
+    run_path = root / "runs" / report["date"] / "morning.json"
+    run = {"date": report["date"], "edition": "morning", "status": "completed",
+           "artifacts": {"json_path": str(report_path), "index_path": str(index_path)}}
+    write_json(run_path, run)
+    monkeypatch.setattr("signaltrail.news_slides.prepare_slides", lambda *a, **k:
+                        pytest.fail("Narration packets must wait for the review"))
+    _prepare_edition_slides(run, run_path, root)
+    slides = json.loads(run_path.read_text(encoding="utf-8"))["artifacts"]["slides"]
+    assert slides["status"] == "review_required"
+    assert slides["review"]["eligible_count"] == 16
+    assert "--slides-review" in slides["next_action"]
+    assert "packet_paths" not in slides
+
+
+def test_index_review_binds_report_text_without_collapsing_featured_sources(slide_case):
+    root, report_path, index_path, report, _ = slide_case
+    featured = report["sections"][0]["items"][0]
+    featured["source_refs"].append(report["sections"][0]["briefs"][1]["source_ref"])
+    report["analyses"] = [{"domain": "geopolitics", "claim": "关联分析",
+                           "evidence_event_ids": [featured["event_id"]]}]
+    write_json(report_path, report)
+    prepared = prepare_slides(report_path, index_path, root, max_news=2,
+                              review={"selected_event_ids": ["index-item-1", "index-item-0"]})
+    packet = load_artifact(Path(prepared["packet_paths"][0]), root)["payload"]["model_input"]
+    assert [row["event_id"] for row in packet["news"]] == ["index-item-1", "index-item-0"]
+    assert [row["title"] for row in packet["news"]] == ["新闻 1", "新闻 0"]
+    assert [len(row["sources"]) for row in packet["news"]] == [1, 1]
+    assert all(row["analyses"][0]["claim"] == "关联分析" for row in packet["news"])
+
+
+def test_index_review_resolves_canonical_alias_and_preserves_merge_member_ids(slide_case):
+    root, report_path, index_path, report, index = slide_case
+    alias = {**index["items"][0], "item_id": "alias", "url": "https://example.com/0/"}
+    index["items"].append(alias)
+    write_json(index_path, index)
+    prepared = prepare_slides(report_path, index_path, root, review={
+        "selected_event_ids": ["index-alias"],
+        "merge_groups": [["index-alias", "index-item-1"]]})
+    packet = load_artifact(Path(prepared["packet_paths"][0]), root)["payload"]["model_input"]
+    assert [row["event_id"] for row in packet["news"]] == ["index-alias"]
+    assert [row["item_id"] for row in packet["news"][0]["evidence"]] == ["alias", "item-1"]
+
+
+def test_image_prefetch_runs_before_authors_and_render_reuses_receipt(slide_case, monkeypatch):
+    from signaltrail.news_slides import prefetch_slide_images
+
+    root, report_path, index_path, _, _ = slide_case
+    prepared = prepare_slides(report_path, index_path, root, max_news=2)
+    plan = Path(prepared["plan_path"])
+    calls = []
+
+    def enrich(news, data_dir, config):
+        calls.append([item["event_id"] for item in news])
+        return deepcopy(news), {"sources_fetched": 2, "source_failures": [], "image_failures": []}
+
+    monkeypatch.setattr("signaltrail.slide_images.enrich_slide_images", enrich)
+    assert slides_status(plan, root)["pending_batches"]
+    receipt = prefetch_slide_images(plan, root)
+    assert receipt["status"] == "prefetched" and Path(receipt["receipt_path"]).is_file()
+    assert prefetch_slide_images(plan, root)["status"] == "reused" and len(calls) == 1
+    for packet in prepared["packet_paths"]:
+        submit_slides(Path(packet), author_packet(packet, root), root)
+    rendered = render_slides(plan, root)
+    assert len(calls) == 1
+    deck = load_artifact(Path(rendered["json_path"]), root)["payload"]
+    assert deck["image_enrichment"]["sources_fetched"] == 2
+
+
+def test_pending_slide_packet_lookup_ignores_author_input_sibling(slide_case):
+    from tests.test_source_launcher import launcher
+
+    root, report_path, index_path, _, _ = slide_case
+    prepared = prepare_slides(report_path, index_path, root, max_news=2)
+    packet = Path(prepared["packet_paths"][0])
+    packet.with_name(packet.stem + "-author-input.json").write_text("{}", encoding="utf-8")
+    plan = Path(prepared["plan_path"])
+    assert slides_status(plan, root)["pending_batches"] == [1]
+    assert launcher.dispatch_plan(plan, root)["tasks"][0]["packet_path"] == str(packet)
+
+
+def test_review_order_reaches_deck_without_resorting_by_old_importance(slide_case):
+    root, report_path, index_path, _, _ = slide_case
+    order = ["brief-item-2", "event-0"]
+    prepared = prepare_slides(report_path, index_path, root,
+                              review={"selected_event_ids": order,
+                                      "rank_reasons": {order[0]: "影响范围更广"}})
+    plan = load_artifact(Path(prepared["plan_path"]), root)["payload"]
+    assert [row["event_id"] for row in plan["news"]] == order
+    assert plan["candidate_review"]["rank_reasons"][order[0]] == "影响范围更广"
+    for packet in prepared["packet_paths"]:
+        submit_slides(Path(packet), author_packet(packet, root), root)
+    output = render_slides(Path(prepared["plan_path"]), root, refresh_images=False)
+    deck = load_artifact(Path(output["json_path"]), root)["payload"]
+    assert [row["event_id"] for row in deck["slides"]] == order
+
+
+def test_cli_prepare_returns_review_before_authoring(slide_case, capsys):
+    from signaltrail.cli import main
+
+    root, report_path, index_path, _, _ = slide_case
+    assert main(["--data-dir", str(root), "slides", "prepare", "--report", str(report_path),
+                 "--index", str(index_path)]) == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result["status"] == "review_required"
+    assert result["eligible_count"] == 16
+    assert not list(root.rglob("slides-packet-*.json"))
+
+
+def test_changed_legacy_slide_limit_requires_new_review(slide_case):
+    from signaltrail.workflow import _prepare_edition_slides
+
+    root, report_path, index_path, report, _ = slide_case
+    prepared = prepare_slides(report_path, index_path, root, max_news=50)
+    run_path = root / "runs" / report["date"] / "morning.json"
+    run = {"date": report["date"], "edition": "morning", "status": "completed",
+           "artifacts": {"json_path": str(report_path), "index_path": str(index_path),
+                         "slides": {**prepared, "max_news": 20, "status": "prepared"}}}
+    write_json(run_path, run)
+    _prepare_edition_slides(run, run_path, root)
+    result = json.loads(run_path.read_text(encoding="utf-8"))["artifacts"]["slides"]
+    assert result["status"] == "review_required"
+    assert result["max_news"] == 20
+    assert "plan_path" not in result
+    assert result["review"]["max_news"] == 20
+
+
+def test_empty_today_pool_reports_no_items_without_requesting_review(slide_case, capsys):
+    from signaltrail.cli import main
+
+    root, report_path, index_path, _, index = slide_case
+    for item in index["items"]:
+        item["published_at"] = "2026-09-22"
+    write_json(index_path, index)
+    assert main(["--data-dir", str(root), "slides", "prepare", "--report", str(report_path),
+                 "--index", str(index_path)]) == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result["status"] == "no_items"
+    assert result["eligible_count"] == 0
+    assert "report alone" in result["next_action"]
+    assert not list(root.rglob("slides-packet-*.json"))
+
+
+@pytest.mark.parametrize("all_old", [False, True])
+def test_extraction_rechecks_original_dates_and_preserves_review_order(slide_case, monkeypatch,
+                                                                       all_old):
+    from signaltrail.config import load_config
+
+    root, report_path, index_path, _, index = slide_case
+    config = load_config()
+    for item in index["items"][:3]:
+        item["source_id"] = config.sources[0].id
+        item["metadata"] = {"role": "discovery", "content_source": {
+            "published_at": index["date"]}}
+    write_json(index_path, index)
+
+    def extract(path, *_args, **_kwargs):
+        enriched = json.loads(path.read_text(encoding="utf-8"))
+        for number, item in enumerate(enriched["items"][:3]):
+            if number == 0 or all_old:
+                item["metadata"]["content_source"]["published_at"] = "2026-09-22"
+        return write_json(root / "indexes/enriched.json", enriched)
+
+    monkeypatch.setattr("signaltrail.content.extract_content", extract)
+    order = ["brief-item-2", "event-0", "brief-item-1"]
+    if all_old:
+        with pytest.raises(ValueError, match="No news matches the selection"):
+            prepare_slides(report_path, index_path, root, config=config,
+                           review={"selected_event_ids": order})
+        assert not list(root.rglob("slides-packet-*.json"))
+        return
+    prepared = prepare_slides(report_path, index_path, root, config=config,
+                              review={"selected_event_ids": order})
+    news = [item for path in prepared["packet_paths"]
+            for item in load_artifact(Path(path), root)["payload"]["model_input"]["news"]]
+    assert [item["event_id"] for item in news] == ["brief-item-2", "brief-item-1"]
+    assert prepared["news_count"] == 2

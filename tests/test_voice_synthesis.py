@@ -332,3 +332,28 @@ def test_qwen_checks_long_silence_after_gain_without_cutting_speech(tmp_path, mo
     with wave.open(str(output)) as stream:
         played = array.array('h', stream.readframes(stream.getnframes()))
     assert sum(value > 1800 for value in played) == 6400
+
+
+def test_qwen_worker_reuses_process_for_multiple_segments(monkeypatch, tmp_path):
+    import io
+    import json
+    from types import SimpleNamespace
+
+    launched = []
+    process = SimpleNamespace(
+        stdin=io.StringIO(), stdout=io.StringIO(
+            '{"ready":true}\n{"ok":true,"frames":12}\n{"ok":true,"frames":15}\n'),
+        wait=lambda **kwargs: 0)
+    def launch(arguments, **kwargs):
+        launched.append(arguments)
+        return process
+    monkeypatch.setattr(voice_synthesis.subprocess, 'Popen', launch)
+    worker = voice_synthesis.QwenWorker(['worker'])
+    for number in (1, 2):
+        worker.synthesize(tmp_path / f'{number}.txt', tmp_path / f'{number}.wav', 'zh')
+    requests = [json.loads(line) for line in process.stdin.getvalue().splitlines()]
+    assert len(launched) == 1
+    assert [Path(row['output']).name for row in requests] == ['1.wav', '2.wav']
+    assert 'generated 15 frames' in (tmp_path / '2.log').read_text(encoding='utf-8')
+    worker.close()
+    assert process.stdin.closed and process.stdout.closed

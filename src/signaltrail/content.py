@@ -18,11 +18,11 @@ from bs4 import BeautifulSoup
 from playwright.async_api import BrowserContext, Page, async_playwright
 
 from .access import classify_access_text, read_bounded_response
+from .article_time import original_publication_time, uses_platform_publication_time
 from .collection_diagnostics import content_gaps, has_local_content
 from .config import AppConfig, SourceConfig, resolve_browser_channel, resolve_profile_dir
 from .content_extraction import (
     ExtractedDocument,
-    extract_document,
     extract_with_fallback,
     input_fingerprint,
     is_navigation_only,
@@ -87,11 +87,16 @@ async def meta_content(page: Page, selectors: list[str]) -> str:
 def _apply_page_publication_time(item: dict[str, Any], published: str) -> None:
     """处理：把原网页日期写入直接来源，同时保留发现平台的发布时间。
     输入：规范索引条目和从原网页元数据读出的发布日期。
-    输出：直接来源条目采用原网页日期；discovery 条目继续保留平台发布时间。
+    输出：发布者日期按网页和Feed时区证据合并；真正平台保留提交时间。
     """
-    # discovery 的索引时间描述平台首次发布该链接；原文日期另存于 content_source。
-    if published and (item.get("metadata") or {}).get("role") != "discovery":
-        item["published_at"] = published
+    if not published or uses_platform_publication_time(item):
+        return
+    metadata = item.get("metadata") or {}
+    projected = {**item, "metadata": {**metadata, "content_source": {
+        **(metadata.get("content_source") or {}), "published_at": published}}}
+    resolved = original_publication_time(projected)
+    if resolved:
+        item["published_at"] = resolved
 
 
 async def meta_contents(page: Page, selectors: list[str]) -> list[str]:
@@ -257,18 +262,6 @@ def _apply_image_candidates(
         metadata["image_candidates"] = candidates
     else:
         metadata.pop("image_candidates", None)
-
-
-def _static_visible_text(
-    soup: BeautifulSoup,
-    selectors: list[str],
-) -> tuple[str, str | None]:
-    """处理：通过共享抽取器选择正文，供旧调用方获得结构保留的文本。
-    输入：不可信 HTML 解析树和来源选择器。
-    输出：派生正文文本与选中选择器；不再按字符长度扩大到 body。
-    """
-    document = extract_document(soup, selectors)
-    return document.text, document.selector
 
 
 def _content_output_path(
@@ -675,7 +668,7 @@ async def _extract_one(
         metadata["content_http_status"] = http_status
         metadata["content_http_final_url"] = page.url
         challenge = await detect_challenge(page, http_status)
-        if challenge["required"]:
+        if challenge["required"] or challenge["rate_limited"]:
             item["content_status"] = ContentStatus.VERIFICATION_REQUIRED
             metadata["content_challenge"] = challenge
             return

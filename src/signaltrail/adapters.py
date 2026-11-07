@@ -311,6 +311,10 @@ def browser_items_from_rows(
         # 从卡片上下文移除标题，避免把标题中的会议日等事件日期当作发布日期。
         context = clean_title(row.get("context", "")).replace(title, "")
         article.published_at = _published_at(context, url, discovered_at)
+        if source.id == "yicai_economy" and row.get("yicai_create_date"):
+            raw_date = row["yicai_create_date"]
+            article.published_at = normalize_time(raw_date, "Asia/Shanghai")
+            article.metadata["yicai_create_date"] = raw_date
         raw_candidates = row.get("image_candidates")
         if not isinstance(raw_candidates, list):
             raw_candidates = []
@@ -354,7 +358,8 @@ def browser_items_from_rows(
             continue
         seen.add(article.canonical_url)
         items.append(article)
-        if source.item_order != "published_at" and len(items) >= source.max_items:
+        if (not source.collect_all_items and source.item_order != "published_at"
+                and len(items) >= source.max_items):
             break
     return items
 
@@ -386,7 +391,7 @@ def arxiv_items_from_rows(
         article.description = clean_title(row.get("description", ""))
         seen.add(article.canonical_url)
         items.append(article)
-        if len(items) >= source.max_items:
+        if not source.collect_all_items and len(items) >= source.max_items:
             break
     return items
 
@@ -482,7 +487,7 @@ def twz_items_from_rows(
         article.description = clean_title(row.get("description", ""))
         seen.add(article.canonical_url)
         items.append(article)
-        if len(items) >= source.max_items:
+        if not source.collect_all_items and len(items) >= source.max_items:
             break
     return _clear_misattributed_descriptions(items)
 
@@ -564,7 +569,7 @@ def weibo_items_from_payload(
             }
         )
         items.append(article)
-        if len(items) >= source.max_items:
+        if not source.collect_all_items and len(items) >= source.max_items:
             break
     return items
 
@@ -614,7 +619,7 @@ def seed_items_from_payload(
             }
         )
         items.append(article)
-        if len(items) >= source.max_items:
+        if not source.collect_all_items and len(items) >= source.max_items:
             break
     return items
 
@@ -652,19 +657,6 @@ _ADAPTERS: dict[str, IndexAdapter] = {
     "twz_index": collect_twz_index,
     "weibo_api": collect_weibo_api,
 }
-
-
-def register_adapter(name: str, adapter: IndexAdapter) -> None:
-    """处理：把采集函数注册到适配器名称映射表。
-    输入：
-    - ``name``：待读取、注册或解析的稳定名称。
-    - ``adapter``：可选专用采集适配器名称或函数；未设置时使用来源 mode。
-    输出：不返回新数据；完成“把采集函数注册到适配器名称映射表”，
-      副作用限于该处理声明的受控对象或产物。
-    """
-    if name in _ADAPTERS:
-        raise ValueError(f"Adapter already registered: {name}")
-    _ADAPTERS[name] = adapter
 
 
 def collect_candidates(

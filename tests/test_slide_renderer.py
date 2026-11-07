@@ -57,7 +57,11 @@ def _deck() -> dict:
 
 
 def test_slides_include_story_content_controls_and_safe_image_caption_semantics():
-    rendered = render_slides_html(_deck())
+    deck = _deck()
+    deck["slides"][0]["sources"].extend([
+        dict(deck["slides"][0]["sources"][0]), {"name": "BBC", "url": "https://bbc.com/"},
+    ])
+    rendered = render_slides_html(deck)
     soup = BeautifulSoup(rendered, "html.parser")
 
     assert len(soup.select("article.slide")) == 2
@@ -78,6 +82,11 @@ def test_slides_include_story_content_controls_and_safe_image_caption_semantics(
     assert 'aria-label="下一张图片"' in rendered
     assert "prefers-reduced-motion" in rendered
     assert "data-image-next" in rendered
+    assert soup.select_one(".story-sources").get_text() == "来源 · BBC"
+    assert soup.select_one(".toc-copy .toc-sources").get_text() == "来源 · BBC"
+    assert soup.select(".toc-item")[1].select_one(".toc-sources") is None
+    assert soup.select_one(".headline").find_next_sibling()["class"] == ["story-sources"]
+    assert soup.select("article.slide")[1].select_one(".story-sources") is None
 
 
 def test_renderer_escapes_document_title_and_handles_empty_deck():

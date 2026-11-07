@@ -79,11 +79,6 @@ def load_artifact(
         parent = read_ref(ref, data_dir)
         if ref["path"].startswith("narratives/") and ref["path"].endswith(".json"):
             load_artifact(parent, data_dir, seen=seen | {marker})
-    if kind == "packet" or doc["kind"] == "packet":
-        from .narrative_contracts import POLICY
-
-        if doc["payload"]["policy"] != POLICY:
-            raise ValueError("Explainer policy changed; prepare a new packet")
     return doc
 
 

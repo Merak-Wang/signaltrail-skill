@@ -173,9 +173,16 @@ def render_slides_html(deck: dict, data_dir: Path | None = None) -> str:
     image_uri_cache: dict[str, str] = {}
     for index, slide in enumerate(deck.get("slides", [])):
         title = _text(slide.get("title"))
+        source_names = " · ".join(dict.fromkeys(
+            str(source["name"]).strip() for source in slide.get("sources", [])
+            if source.get("name") and str(source["name"]).strip()
+        ))
+        toc_sources = (f'<small class="toc-sources">{_text(source_names)}</small>'
+                       if source_names else "")
         toc.append(
             f'<button class="toc-item" data-go="{index}" aria-label="{index + 1}. {title}">'
-            f'<span>{index + 1:02}</span><strong>{title}</strong>'
+            f'<span>{index + 1:02}</span><span class="toc-copy"><strong>{title}</strong>'
+            f'{toc_sources}</span>'
             '<i aria-hidden="true">↗</i></button>'
         )
         narration = "".join(
@@ -187,6 +194,7 @@ def render_slides_html(deck: dict, data_dir: Path | None = None) -> str:
             slide.get("images", []), labels, data_dir, index + 1, image_uri_cache
         )
         sources = _source_markup(slide.get("sources", []), language)
+        byline = f'<p class="story-sources">{_text(source_names)}</p>' if source_names else ""
         story_grid_class = "story-grid" if slide.get("images") else "story-grid no-gallery"
         headline_class = "headline compact" if len(slide.get("title", "")) > 28 else "headline"
         slides.append(
@@ -195,6 +203,7 @@ def render_slides_html(deck: dict, data_dir: Path | None = None) -> str:
             f'<p class="eyebrow"><span class="story-badge">{index + 1:02}</span>'
             '<span>NEWS / FIELD NOTES</span><span class="eyebrow-line"></span></p>'
             f'<h2 class="{headline_class}" id="headline-{index}">{title}</h2>'
+            f'{byline}'
             f'<p class="summary">{_text(slide.get("summary"))}</p>'
             f'<section class="narration-section"><h3><span>↳</span> {labels[6]}</h3>'
             f'<div class="narration">{narration}</div></section>{sources}'

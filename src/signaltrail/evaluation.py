@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from copy import deepcopy
 from hashlib import sha256
 from pathlib import Path
@@ -95,8 +96,11 @@ def build_evaluation_dossier(
     输出：evaluations/dossiers 下按报告 ID 命名的不可变 JSON 路径。
     """
 
-    report = read_json(report_path)
-    index = read_json(index_path)
+    # 解析与文件哈希共用同一份字节，避免重复读取及两次读取间的内容漂移。
+    report_bytes = report_path.read_bytes()
+    index_bytes = index_path.read_bytes()
+    report = json.loads(report_bytes.decode("utf-8"))
+    index = json.loads(index_bytes.decode("utf-8"))
     if not isinstance(report, dict) or not isinstance(index, dict):
         raise ValueError("Evaluation report and index must be JSON objects")
     bound_content_hash = report_content_hash(report)
@@ -123,16 +127,13 @@ def build_evaluation_dossier(
     featured_item_ids = [
         str(item_id)
         for event in featured
-        for item_id in event.get("source_item_ids", [])
+        for item_id in (
+            event.get("source_item_ids")
+            or [reference.get("item_id") for reference in event.get("source_refs", [])
+                if isinstance(reference, dict)]
+        )
         if item_id
     ]
-    if not featured_item_ids:
-        featured_item_ids = [
-            str(reference.get("item_id"))
-            for event in featured
-            for reference in event.get("source_refs", [])
-            if isinstance(reference, dict) and reference.get("item_id")
-        ]
     evidence_item_ids = list(dict.fromkeys([*report_item_ids, *featured_item_ids]))
     contract_path = project_root() / "templates" / "report-contract.md"
     source_coverage: dict[str, dict[str, Any]] = {}
@@ -165,8 +166,8 @@ def build_evaluation_dossier(
         "policy": "independent_evaluation_dossier_v2",
         "report_id": report.get("report_id"),
         "report_content_hash": bound_content_hash,
-        "report_file_sha256": f"sha256:{sha256(report_path.read_bytes()).hexdigest()}",
-        "index_file_sha256": f"sha256:{sha256(index_path.read_bytes()).hexdigest()}",
+        "report_file_sha256": f"sha256:{sha256(report_bytes).hexdigest()}",
+        "index_file_sha256": f"sha256:{sha256(index_bytes).hexdigest()}",
         "contract_file_sha256": (
             f"sha256:{sha256(contract_path.read_bytes()).hexdigest()}"
         ),

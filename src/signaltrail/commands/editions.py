@@ -91,6 +91,7 @@ def handle_enrich_edition(args: argparse.Namespace, context: CommandContext) -> 
         headed=args.headed,
         profile_dir=args.profile_dir,
         browser_channel=args.browser_channel,
+        slides_candidates=args.slides_candidates,
     )
     print_command_result(read_json_object(output, "Command result"), context, output)
     return 0
@@ -200,7 +201,8 @@ def handle_brief_input(args: argparse.Namespace, context: CommandContext) -> int
     from ..authoring import brief_authoring_input
     from .common import print_json
 
-    print_json(brief_authoring_input(args.packet, context.data_dir), indent=None)
+    print_json(brief_authoring_input(
+        args.packet, context.data_dir, include_evidence=args.include_evidence), indent=None)
     return 0
 
 
@@ -323,6 +325,8 @@ def handle_finalize_edition(args: argparse.Namespace, context: CommandContext) -
         evaluate=args.evaluate,
         slides_max_news=args.slides_max_news,
         slides_exclude_event_ids=args.slides_exclude_event_id,
+        slides_review=args.slides_review,
+        slides_reuse_plan=args.slides_reuse_plan,
         evaluation_backend=args.evaluation_backend,
         app_config=config,
     )

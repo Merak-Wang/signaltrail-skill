@@ -8,6 +8,8 @@ from signaltrail.narrative_store import load_artifact
 from signaltrail.news_slides import (
     prepare_slides,
     render_slides,
+    review_candidates,
+    review_model_input,
     select_index_news,
     slides_status,
     submit_slides,
@@ -21,11 +23,14 @@ def index_case(root, count=8):
         body = root / "content" / f"item-{number}.md"
         body.parent.mkdir(exist_ok=True)
         body.write_text("Original evidence about a planned event. " * 20, encoding="utf-8")
-        items.append({"item_id": f"item-{number}", "title": f"Original title {number}",
+        items.append({"item_id": f"item-{number}", "source_id": "hacker_news",
+                      "title": f"Original title {number}",
                       "url": f"https://example.com/{number}", "source_name": "Original source",
                       "description": "The company plans a launch; it has not happened yet.",
                       "content_status": "full_text", "content_path": str(body),
-                      "published_at": None, "metadata": {"source_rank": number % 4 + 1}})
+                      "published_at": None, "metadata": {"source_rank": number % 4 + 1,
+                          "role": "discovery",
+                          "content_source": {"published_at": "2026-10-07"}}})
     return write_json(root / "indexes" / "index.json", {
         "date": "2026-10-07", "edition": "morning", "generated_at": None, "items": items})
 
@@ -63,6 +68,36 @@ def test_index_selection_preserves_manual_order_and_merges_original_urls(tmp_pat
     assert manual[0]["event_id"] == "index-item-6"
     with pytest.raises(ValueError, match="no importance"):
         select_index_news(index, min_importance=10)
+
+
+def test_review_keeps_full_pool_and_can_select_beyond_fiftieth_candidate(tmp_path):
+    index_path = index_case(tmp_path, 55)
+    index = json.loads(index_path.read_text(encoding="utf-8"))
+    review = review_candidates(None, index, max_news=50, data_dir=tmp_path)
+
+    assert review["max_news"] == 50
+    assert review["eligible_count"] == len(review["candidates"]) == 55
+    late = review["candidates"][50]
+    source = late["sources"][0]
+    assert source["source_id"] == "hacker_news"
+    assert source["source_name"] == "Original source"
+    assert source["publication_date"] == "2026-10-07"
+    assert source["access"] == "full_text" and source["lead"]
+    assert len(source["lead"]) <= 300 and "body" not in source
+    compact = review_model_input(review)
+    compact_late = compact["candidates"][50]
+    assert len(compact["candidates"]) == 55
+    assert compact_late[0] == late["event_id"]
+    assert compact_late[1][0][0] is None
+    assert compact_late[1][0][3] == ""
+    assert compact_late[1][0][4] == source["lead"]
+    assert compact["source_registry"] == [["hacker_news", "Original source"]]
+
+    prepared = prepare_slides(None, index_path, tmp_path, max_news=1,
+                              review={"selected_event_ids": [
+                                  late["event_id"], review["candidates"][51]["event_id"]]})
+    plan = load_artifact(Path(prepared["plan_path"]), tmp_path)["payload"]
+    assert [event["event_id"] for event in plan["news"]] == [late["event_id"]]
 
 
 def test_standalone_author_render_and_unknown_fields(tmp_path, monkeypatch):
@@ -192,6 +227,12 @@ def test_plain_cli_standalone_lifecycle_and_all_reused_render(tmp_path, monkeypa
     monkeypatch.delenv("DAILY_INTEL_DATA_DIR", raising=False)
     index_path = index_case(root, 2)
     assert main(["slides", "prepare", "--index", str(index_path)]) == 0
+    review_input = json.loads(capsys.readouterr().out)
+    assert review_input["status"] == "review_required"
+    review_path = write_json(root / "review.json", {"selected_event_ids": [
+        row["event_id"] for row in review_input["candidates"]]})
+    assert main(["slides", "prepare", "--index", str(index_path),
+                 "--review", str(review_path)]) == 0
     prepared = json.loads(capsys.readouterr().out)
     for number, path in enumerate(prepared["packet_paths"]):
         packet = load_artifact(Path(path), root)["payload"]
@@ -224,7 +265,8 @@ def test_plain_cli_standalone_lifecycle_and_all_reused_render(tmp_path, monkeypa
     next_index = write_json(
         root / "indexes" / "next-revision.json", json.loads(index_path.read_text(encoding="utf-8"))
     )
-    assert main(["slides", "prepare", "--index", str(next_index), "--reuse-plan", plan_path]) == 0
+    assert main(["slides", "prepare", "--index", str(next_index), "--reuse-plan", plan_path,
+                 "--review", str(review_path)]) == 0
     reused = json.loads(capsys.readouterr().out)
     assert reused["packet_paths"] == []
     assert reused["reused_count"] == 2
