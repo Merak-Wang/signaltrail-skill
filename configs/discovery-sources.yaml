@@ -1,7 +1,7 @@
 sources:
-  # Global and regional news. Enabled sources enter existing report sections.
-  # Each source retains all current-day items in its own publisher Top order.
+  # Enabled sources contribute to their configured report sections.
   - id: un_news
+    article_patterns: ['^https://news\.un\.org/(?:feed/view/)?en/story/\d{4}/\d{2}/\d+']
     name: UN News
     url: https://news.un.org/en/
     feed_urls: [https://news.un.org/feed/subscribe/en/news/all/rss.xml]
@@ -16,6 +16,7 @@ sources:
     coverage_regions: [global]
     publisher_group: united_nations
   - id: al_jazeera
+    article_patterns: ['^https://www\.aljazeera\.com/(?:[^/]+/)*\d{4}/\d{1,2}/\d{1,2}/[^/?#]+']
     name: Al Jazeera
     url: https://www.aljazeera.com/
     feed_urls: [https://www.aljazeera.com/xml/rss/all.xml]
@@ -29,7 +30,6 @@ sources:
     origin_scope: qa
     coverage_regions: [middle_east, global]
     publisher_group: al_jazeera
-  # Public endpoints probed on 2026-09-20; discovery only, no brief quotas.
   - id: tass_en
     name: TASS English
     url: https://tass.com/
@@ -46,24 +46,6 @@ sources:
     origin_scope: ru
     coverage_regions: [ru, global]
     publisher_group: tass
-  - id: cbr_en
-    name: Bank of Russia
-    url: https://www.cbr.ru/eng/about/rss/
-    feed_urls:
-      - https://www.cbr.ru/rss/EngRssPress
-      - https://www.cbr.ru/rss/EngRssNews
-    include_domains: [cbr.ru]
-    role: primary
-    tier: 1
-    bundle: markets
-    module: information
-    category: market
-    language: en
-    region: ru
-    origin_scope: ru
-    coverage_regions: [ru]
-    publisher_group: bank_of_russia
-    refresh_interval_minutes: 60
   - id: xinhua_en
     name: Xinhua English
     url: https://english.news.cn/
@@ -79,22 +61,6 @@ sources:
     origin_scope: cn
     coverage_regions: [cn, global]
     publisher_group: xinhua
-  - id: china_mfa
-    name: China MFA Spokesperson Remarks
-    url: https://www.fmprc.gov.cn/eng/xw/fyrbt/
-    include_domains: [fmprc.gov.cn]
-    article_patterns: ['^https://www\.fmprc\.gov\.cn/eng/xw/fyrbt/(?:[^/]+/)?\d{6}/t\d{8}_\d+\.html$']
-    role: primary
-    tier: 1
-    bundle: geopolitics
-    module: information
-    category: international
-    language: en
-    region: cn
-    origin_scope: cn
-    coverage_regions: [cn, global]
-    publisher_group: china_mfa
-    refresh_interval_minutes: 60
   - id: china_mofcom
     name: 商务部例行新闻发布会
     url: https://www.mofcom.gov.cn/xwfb/
@@ -126,21 +92,6 @@ sources:
     origin_scope: international_organization
     coverage_regions: [global]
     publisher_group: united_nations
-  # Keep unavailable candidates disabled until this deployment can extract items.
-  - id: anadolu_en
-    name: Anadolu Agency
-    enabled: false
-    url: https://www.aa.com.tr/en
-    feed_urls: ['https://www.aa.com.tr/en/rss/default?cat=live']
-    include_domains: [aa.com.tr]
-    article_patterns: ['^https://www\.aa\.com\.tr/en/[^/]+/[^/]+/\d+$']
-    role: evidence
-    bundle: geopolitics
-    language: en
-    region: middle_east
-    origin_scope: tr
-    coverage_regions: [middle_east, global]
-    publisher_group: anadolu
   - id: irna_en
     name: IRNA English
     enabled: false
@@ -167,6 +118,7 @@ sources:
     coverage_regions: [ae, middle_east]
     publisher_group: wam
   - id: dw_world
+    article_patterns: ['^https://www\.dw\.com/en/.+/(?:a|av|live)-\d+']
     name: DW
     url: https://www.dw.com/en/top-stories/s-9097
     feed_urls: [https://rss.dw.com/rdf/rss-en-all]
@@ -177,28 +129,6 @@ sources:
     category: international
     language: en
     region: eu
-  - id: france24_world
-    name: France 24
-    url: https://www.france24.com/en/
-    feed_urls: [https://www.france24.com/en/rss]
-    role: evidence
-    tier: 1
-    bundle: geopolitics
-    module: information
-    category: international
-    language: en
-    region: eu
-  - id: npr_world
-    name: NPR World
-    url: https://www.npr.org/sections/world/
-    feed_urls: [https://feeds.npr.org/1004/rss.xml]
-    role: evidence
-    tier: 1
-    bundle: geopolitics
-    module: information
-    category: international
-    language: en
-    region: us
   - id: nyt_world
     name: The New York Times World
     url: https://www.nytimes.com/section/world
@@ -211,6 +141,7 @@ sources:
     language: en
     region: us
   - id: cbc_world
+    article_patterns: ['^https://www\.cbc\.ca/(?:[^?#]+-\d\.\d+|player/play/(?:video/)?\d\.\d+)']
     name: CBC World
     url: https://www.cbc.ca/news/world
     feed_urls: [https://www.cbc.ca/cmlink/rss-world]
@@ -221,18 +152,8 @@ sources:
     category: international
     language: en
     region: ca
-  - id: abc_australia_world
-    name: ABC Australia World
-    url: https://www.abc.net.au/news/world
-    feed_urls: [https://www.abc.net.au/news/feed/51120/rss.xml]
-    role: evidence
-    tier: 2
-    bundle: geopolitics
-    module: information
-    category: international
-    language: en
-    region: au
   - id: japan_times
+    article_patterns: ['^https://www\.japantimes\.co\.jp/[^/]+/\d{4}/\d{2}/\d{2}/']
     name: The Japan Times
     url: https://www.japantimes.co.jp/news/
     feed_urls: [https://www.japantimes.co.jp/feed/]
@@ -246,6 +167,7 @@ sources:
   - id: google_news_china
     name: Google News · China
     url: https://news.google.com/
+    article_patterns: ['^https://news\.google\.com/(?:rss/articles|read|articles)/[a-zA-Z0-9_-]+/?(?:[?#]|$)']
     feed_urls:
       - https://news.google.com/rss/search?q=China%20policy%20OR%20economy&hl=en-US&gl=US&ceid=US:en
     role: discovery
@@ -255,174 +177,8 @@ sources:
     category: domestic
     language: en
     region: cn
-
-  # Markets, central banks, and official economic releases.
-  - id: ecb_press
-    name: European Central Bank
-    url: https://www.ecb.europa.eu/press/html/index.en.html
-    feed_urls: [https://www.ecb.europa.eu/rss/press.html]
-    role: primary
-    tier: 1
-    bundle: markets
-    module: information
-    category: market
-    language: en
-    region: eu
-  - id: bis_press
-    name: Bank for International Settlements
-    url: https://www.bis.org/media/news
-    feed_urls: [https://www.bis.org/doclist/all_pressrels.rss]
-    role: primary
-    tier: 1
-    bundle: markets
-    module: information
-    category: market
-    language: en
-    region: global
-  - id: bank_of_england_news
-    name: Bank of England
-    url: https://www.bankofengland.co.uk/news
-    feed_urls: [https://www.bankofengland.co.uk/rss/news]
-    role: primary
-    tier: 1
-    bundle: markets
-    module: information
-    category: market
-    language: en
-    region: uk
-  - id: imf_news
-    name: International Monetary Fund
-    url: https://www.imf.org/en/News
-    feed_urls: [https://www.imf.org/en/News/RSS]
-    role: primary
-    tier: 1
-    bundle: markets
-    module: information
-    category: market
-    language: en
-    region: global
-  - id: world_bank_news
-    name: World Bank
-    url: https://www.worldbank.org/en/news
-    role: primary
-    tier: 1
-    bundle: markets
-    module: information
-    category: market
-    language: en
-    region: global
-  - id: oecd_news
-    name: OECD
-    url: https://www.oecd.org/en/about/news.html
-    feed_urls: [https://www.oecd.org/newsroom/rss.xml]
-    role: primary
-    tier: 1
-    bundle: markets
-    module: information
-    category: market
-    language: en
-    region: global
-  - id: cnbc_markets_feed
-    name: CNBC Markets
-    url: https://www.cnbc.com/markets/
-    feed_urls: [https://www.cnbc.com/id/10000664/device/rss/rss.html]
-    role: evidence
-    tier: 1
-    bundle: markets
-    module: information
-    category: market
-    language: en
-    region: global
-  - id: marketwatch_top
-    name: MarketWatch
-    url: https://www.marketwatch.com/latest-news
-    feed_urls: [https://feeds.marketwatch.com/marketwatch/topstories/]
-    role: evidence
-    tier: 2
-    bundle: markets
-    module: information
-    category: market
-    language: en
-    region: us
-
-  # Military, security, policy, and think-tank analysis.
-  - id: us_dod_news
-    name: U.S. Department of Defense
-    url: https://www.defense.gov/News/
-    feed_urls:
-      - https://www.defense.gov/DesktopModules/ArticleCS/RSS.ashx?ContentType=400&Site=945&max=40
-    role: primary
-    tier: 1
-    bundle: military
-    module: information
-    category: military
-    language: en
-    region: us
-  - id: nato_news
-    name: NATO
-    url: https://www.nato.int/cps/en/natohq/news.htm
-    role: primary
-    tier: 1
-    bundle: military
-    module: information
-    category: military
-    language: en
-    region: eu
-  - id: breaking_defense
-    name: Breaking Defense
-    url: https://breakingdefense.com/
-    feed_urls: [https://breakingdefense.com/feed/]
-    role: evidence
-    tier: 1
-    bundle: military
-    module: information
-    category: military
-    language: en
-    region: global
-  - id: defense_one
-    name: Defense One
-    url: https://www.defenseone.com/
-    feed_urls: [https://www.defenseone.com/rss/all/]
-    role: evidence
-    tier: 1
-    bundle: military
-    module: information
-    category: military
-    language: en
-    region: us
-  - id: defense_news
-    name: Defense News
-    url: https://www.defensenews.com/
-    feed_urls: [https://www.defensenews.com/arc/outboundfeeds/rss/]
-    role: evidence
-    tier: 1
-    bundle: military
-    module: information
-    category: military
-    language: en
-    region: global
-  - id: war_on_the_rocks
-    name: War on the Rocks
-    url: https://warontherocks.com/
-    feed_urls: [https://warontherocks.com/feed/]
-    role: evidence
-    tier: 1
-    bundle: military
-    module: information
-    category: military
-    language: en
-    region: global
-  - id: csis_analysis
-    name: CSIS Analysis
-    url: https://www.csis.org/analysis
-    role: evidence
-    tier: 1
-    bundle: geopolitics
-    module: information
-    category: military
-    language: en
-    region: us
   - id: rand_research
+    article_patterns: ['^https://www\.rand\.org/pubs/(?:[^/]+/)+[^/?#]+\.html']
     name: RAND Research
     url: https://www.rand.org/pubs.html
     feed_urls: [https://www.rand.org/pubs.xml]
@@ -433,67 +189,13 @@ sources:
     category: military
     language: en
     region: us
-  - id: brookings_research
-    name: Brookings
-    url: https://www.brookings.edu/research/
-    feed_urls: [https://www.brookings.edu/feed/]
-    role: evidence
-    tier: 2
-    bundle: geopolitics
-    module: information
-    category: international
-    language: en
-    region: us
 
   # AI, software engineering, and the broader technology ecosystem.
   - id: github_blog
+    article_patterns: ['^https://github\.blog/(?!category/|tag/|author/)(?:[^/?#]+/)+[^/?#]+-[^/?#]+/?(?:[?#]|$)']
     name: GitHub Blog
     url: https://github.blog/
     feed_urls: [https://github.blog/feed/]
-    role: primary
-    tier: 1
-    bundle: ai
-    module: technology
-    category: news
-    language: en
-    region: global
-  - id: cloudflare_blog
-    name: Cloudflare Blog
-    url: https://blog.cloudflare.com/
-    feed_urls: [https://blog.cloudflare.com/rss/]
-    role: primary
-    tier: 1
-    bundle: ai
-    module: technology
-    category: news
-    language: en
-    region: global
-  - id: aws_ml_blog
-    name: AWS Machine Learning Blog
-    url: https://aws.amazon.com/blogs/machine-learning/
-    feed_urls: [https://aws.amazon.com/blogs/machine-learning/feed/]
-    role: primary
-    tier: 1
-    bundle: ai
-    module: technology
-    category: news
-    language: en
-    region: global
-  - id: microsoft_research_blog
-    name: Microsoft Research Blog
-    url: https://www.microsoft.com/en-us/research/blog/
-    feed_urls: [https://www.microsoft.com/en-us/research/feed/]
-    role: primary
-    tier: 1
-    bundle: ai
-    module: technology
-    category: news
-    language: en
-    region: global
-  - id: nvidia_blog
-    name: NVIDIA Blog
-    url: https://blogs.nvidia.com/
-    feed_urls: [https://blogs.nvidia.com/feed/]
     role: primary
     tier: 1
     bundle: ai
@@ -512,134 +214,10 @@ sources:
     category: news
     language: en
     region: global
-  - id: mozilla_hacks
-    name: Mozilla Hacks
-    url: https://hacks.mozilla.org/
-    feed_urls: [https://hacks.mozilla.org/feed/]
-    role: primary
-    tier: 2
-    bundle: ai
-    module: technology
-    category: news
-    language: en
-    region: global
-  - id: techcrunch_ai
-    name: TechCrunch AI
-    url: https://techcrunch.com/category/artificial-intelligence/
-    feed_urls: [https://techcrunch.com/category/artificial-intelligence/feed/]
-    role: discovery
-    tier: 2
-    bundle: ai
-    module: technology
-    category: news
-    language: en
-    region: global
-  - id: ars_technica
-    name: Ars Technica
-    url: https://arstechnica.com/
-    feed_urls: [https://feeds.arstechnica.com/arstechnica/index]
-    role: evidence
-    tier: 1
-    bundle: ai
-    module: technology
-    category: news
-    language: en
-    region: global
-  - id: the_verge
-    name: The Verge
-    url: https://www.theverge.com/
-    feed_urls: [https://www.theverge.com/rss/index.xml]
-    role: discovery
-    tier: 2
-    bundle: ai
-    module: technology
-    category: news
-    language: en
-    region: global
-  - id: ieee_spectrum
-    name: IEEE Spectrum
-    url: https://spectrum.ieee.org/
-    feed_urls: [https://spectrum.ieee.org/feeds/feed.rss]
-    role: evidence
-    tier: 1
-    bundle: ai
-    module: technology
-    category: news
-    language: en
-    region: global
-  - id: mit_technology_review
-    name: MIT Technology Review
-    url: https://www.technologyreview.com/
-    feed_urls: [https://www.technologyreview.com/feed/]
-    role: evidence
-    tier: 1
-    bundle: ai
-    module: technology
-    category: news
-    language: en
-    region: global
-  - id: google_security_blog
-    name: Google Security Blog
-    url: https://security.googleblog.com/
-    feed_urls: [https://security.googleblog.com/feeds/posts/default]
-    role: primary
-    tier: 1
-    bundle: cyber
-    module: technology
-    category: news
-    language: en
-    region: global
 
-  # Papers and research discovery.
-  - id: arxiv_machine_learning
-    name: arXiv Machine Learning
-    url: https://arxiv.org/list/cs.LG/recent
-    feed_urls:
-      - https://export.arxiv.org/api/query?search_query=cat:cs.LG&sortBy=submittedDate&sortOrder=descending&max_results=40
-    role: discovery
-    tier: 2
-    bundle: research
-    module: technology
-    category: papers
-    language: en
-    region: global
-  - id: arxiv_computation_language
-    name: arXiv Computation and Language
-    url: https://arxiv.org/list/cs.CL/recent
-    feed_urls:
-      - https://export.arxiv.org/api/query?search_query=cat:cs.CL&sortBy=submittedDate&sortOrder=descending&max_results=40
-    role: discovery
-    tier: 2
-    bundle: research
-    module: technology
-    category: papers
-    language: en
-    region: global
-  - id: arxiv_computer_vision
-    name: arXiv Computer Vision
-    url: https://arxiv.org/list/cs.CV/recent
-    feed_urls:
-      - https://export.arxiv.org/api/query?search_query=cat:cs.CV&sortBy=submittedDate&sortOrder=descending&max_results=40
-    role: discovery
-    tier: 2
-    bundle: research
-    module: technology
-    category: papers
-    language: en
-    region: global
-  - id: arxiv_robotics
-    name: arXiv Robotics
-    url: https://arxiv.org/list/cs.RO/recent
-    feed_urls:
-      - https://export.arxiv.org/api/query?search_query=cat:cs.RO&sortBy=submittedDate&sortOrder=descending&max_results=40
-    role: discovery
-    tier: 2
-    bundle: research
-    module: technology
-    category: papers
-    language: en
-    region: global
+  # Research publications.
   - id: nature_news
+    article_patterns: ['^https://www\.nature\.com/articles/[^/?#]+']
     name: Nature
     url: https://www.nature.com/nature/articles
     feed_urls: [https://www.nature.com/nature.rss]
@@ -650,300 +228,11 @@ sources:
     category: papers
     language: en
     region: global
-
-  # Cybersecurity and official public-interest signals.
-  - id: cisa_advisories
-    name: CISA Cybersecurity Advisories
-    url: https://www.cisa.gov/news-events/cybersecurity-advisories
-    feed_urls: [https://www.cisa.gov/cybersecurity-advisories/all.xml]
-    role: primary
-    tier: 1
-    bundle: cyber
-    module: technology
-    category: news
-    language: en
-    region: us
-  - id: bleeping_computer
-    name: BleepingComputer
-    url: https://www.bleepingcomputer.com/
-    feed_urls: [https://www.bleepingcomputer.com/feed/]
-    role: evidence
-    tier: 2
-    bundle: cyber
-    module: technology
-    category: news
-    language: en
-    region: global
-  - id: security_week
-    name: SecurityWeek
-    url: https://www.securityweek.com/
-    feed_urls: [https://www.securityweek.com/feed/]
-    role: evidence
-    tier: 2
-    bundle: cyber
-    module: technology
-    category: news
-    language: en
-    region: global
-  - id: krebs_security
-    name: Krebs on Security
-    url: https://krebsonsecurity.com/
-    feed_urls: [https://krebsonsecurity.com/feed/]
-    role: evidence
-    tier: 2
-    bundle: cyber
-    module: technology
-    category: news
-    language: en
-    region: global
-  - id: nasa_news
-    name: NASA News Releases
-    url: https://www.nasa.gov/news-release/
-    feed_urls: [https://www.nasa.gov/news-release/feed/]
-    role: primary
-    tier: 1
-    bundle: science
-    module: technology
-    category: news
-    language: en
-    region: us
-  - id: who_news
-    name: World Health Organization
-    url: https://www.who.int/news
-    feed_urls: [https://www.who.int/rss-feeds/news-english.xml]
-    role: primary
-    tier: 1
-    bundle: science
-    module: information
-    category: international
-    language: en
-    region: global
-
-  # Native RSS/Atom feeds parsed with article links on 2026-11-02.
-  # Discovery only: formal report quotas remain unchanged.
-  - id: ifanr
-    name: 爱范儿
-    url: https://www.ifanr.com/
-    feed_urls:
-    - https://www.ifanr.com/feed
-    enabled: true
-    role: discovery
-    tier: 2
-    bundle: technology
-    module: technology
-    category: news
-    language: zh-CN
-    region: cn
-    origin_scope: cn
-    coverage_regions:
-    - cn
-    publisher_group: ifanr
-    report_target: 0
-    report_max: 0
-    refresh_interval_minutes: 30
-  - id: ithome
-    name: IT之家
-    url: https://www.ithome.com/
-    feed_urls:
-    - https://www.ithome.com/rss/
-    enabled: true
-    role: discovery
-    tier: 2
-    bundle: technology
-    module: technology
-    category: news
-    language: zh-CN
-    region: cn
-    origin_scope: cn
-    coverage_regions:
-    - cn
-    publisher_group: ithome
-    report_target: 0
-    report_max: 0
-    refresh_interval_minutes: 30
-  - id: ithome_taiwan
-    name: iThome 台湾
-    url: https://www.ithome.com.tw/
-    feed_urls:
-    - https://www.ithome.com.tw/rss
-    enabled: true
-    role: discovery
-    tier: 2
-    bundle: technology
-    module: technology
-    category: news
-    language: zh-CN
-    region: tw
-    origin_scope: tw
-    coverage_regions:
-    - tw
-    publisher_group: ithome_taiwan
-    report_target: 0
-    report_max: 0
-    refresh_interval_minutes: 30
-  - id: sspai
-    name: 少数派
-    url: https://sspai.com/
-    feed_urls:
-    - https://sspai.com/feed
-    enabled: true
-    role: discovery
-    tier: 2
-    bundle: technology
-    module: technology
-    category: news
-    language: zh-CN
-    region: cn
-    origin_scope: cn
-    coverage_regions:
-    - cn
-    publisher_group: sspai
-    report_target: 0
-    report_max: 0
-    refresh_interval_minutes: 30
-  - id: geekpark
-    name: 极客公园
-    url: https://www.geekpark.net/
-    feed_urls:
-    - https://www.geekpark.net/rss
-    enabled: true
-    role: discovery
-    tier: 2
-    bundle: technology
-    module: technology
-    category: news
-    language: zh-CN
-    region: cn
-    origin_scope: cn
-    coverage_regions:
-    - cn
-    publisher_group: geekpark
-    report_target: 0
-    report_max: 0
-    refresh_interval_minutes: 30
-  - id: qbitai
-    name: 量子位
-    url: https://www.qbitai.com/
-    feed_urls:
-    - https://www.qbitai.com/feed
-    enabled: true
-    role: discovery
-    tier: 2
-    bundle: technology
-    module: technology
-    category: news
-    language: zh-CN
-    region: cn
-    origin_scope: cn
-    coverage_regions:
-    - cn
-    publisher_group: qbitai
-    report_target: 0
-    report_max: 0
-    refresh_interval_minutes: 30
-  - id: solidot
-    name: Solidot
-    url: https://www.solidot.org/
-    feed_urls:
-    - https://www.solidot.org/index.rss
-    enabled: true
-    role: discovery
-    tier: 2
-    bundle: technology
-    module: technology
-    category: open_source
-    language: zh-CN
-    region: cn
-    origin_scope: cn
-    coverage_regions:
-    - cn
-    publisher_group: solidot
-    report_target: 0
-    report_max: 0
-    refresh_interval_minutes: 30
-  - id: oschina
-    name: 开源中国
-    url: https://www.oschina.net/
-    feed_urls:
-    - https://www.oschina.net/news/rss
-    enabled: true
-    role: discovery
-    tier: 2
-    bundle: technology
-    module: technology
-    category: open_source
-    language: zh-CN
-    region: cn
-    origin_scope: cn
-    coverage_regions:
-    - cn
-    publisher_group: oschina
-    report_target: 0
-    report_max: 0
-    refresh_interval_minutes: 30
-  - id: tmtpost
-    name: 钛媒体
-    url: https://www.tmtpost.com/
-    feed_urls:
-    - https://www.tmtpost.com/rss.xml
-    enabled: true
-    role: discovery
-    tier: 2
-    bundle: geopolitics
-    module: information
-    category: domestic
-    language: zh-CN
-    region: cn
-    origin_scope: cn
-    coverage_regions:
-    - cn
-    publisher_group: tmtpost
-    report_target: 0
-    report_max: 0
-    refresh_interval_minutes: 30
-  - id: cna_finance
-    name: 中央社财经
-    url: https://www.cna.com.tw/list/asc.aspx
-    feed_urls:
-    - https://feeds.feedburner.com/rsscna/finance
-    enabled: true
-    role: discovery
-    tier: 2
-    bundle: markets
-    module: information
-    category: market
-    language: zh-CN
-    region: tw
-    origin_scope: tw
-    coverage_regions:
-    - tw
-    publisher_group: cna_taiwan
-    report_target: 0
-    report_max: 0
-    refresh_interval_minutes: 30
-  - id: cna_tech
-    name: 中央社科技
-    url: https://www.cna.com.tw/list/ait.aspx
-    feed_urls:
-    - https://feeds.feedburner.com/rsscna/technology
-    enabled: true
-    role: discovery
-    tier: 2
-    bundle: technology
-    module: technology
-    category: news
-    language: zh-CN
-    region: tw
-    origin_scope: tw
-    coverage_regions:
-    - tw
-    publisher_group: cna_taiwan
-    report_target: 0
-    report_max: 0
-    refresh_interval_minutes: 30
   - id: cna_mainland
     name: 中央社两岸
     url: https://www.cna.com.tw/list/acn.aspx
+    include_domains: [cna.com.tw]
+    article_patterns: ['^https://www\.cna\.com\.tw/news/acn/\d+\.aspx$']
     feed_urls:
     - https://feeds.feedburner.com/rsscna/mainland
     enabled: true
@@ -961,389 +250,15 @@ sources:
     report_target: 0
     report_max: 0
     refresh_interval_minutes: 30
-  - id: cna_asia
-    name: CNA Asia
-    url: https://www.channelnewsasia.com/
-    feed_urls:
-    - https://www.channelnewsasia.com/api/v1/rss-outbound-feed?_format=xml&category=6511
-    enabled: true
-    role: discovery
-    tier: 2
-    bundle: geopolitics
-    module: information
-    category: international
-    language: en
-    region: sg
-    origin_scope: sg
-    coverage_regions:
-    - sg
-    publisher_group: cna_asia
-    report_target: 0
-    report_max: 0
-    refresh_interval_minutes: 60
-  - id: the_hindu
-    name: The Hindu International
-    url: https://www.thehindu.com/
-    feed_urls:
-    - https://www.thehindu.com/news/international/feeder/default.rss
-    enabled: true
-    role: discovery
-    tier: 2
-    bundle: geopolitics
-    module: information
-    category: international
-    language: en
-    region: in
-    origin_scope: in
-    coverage_regions:
-    - in
-    publisher_group: the_hindu
-    report_target: 0
-    report_max: 0
-    refresh_interval_minutes: 60
-  - id: dawn
-    name: Dawn
-    url: https://www.dawn.com/
-    feed_urls:
-    - https://www.dawn.com/feeds/home
-    enabled: true
-    role: discovery
-    tier: 2
-    bundle: geopolitics
-    module: information
-    category: international
-    language: en
-    region: pk
-    origin_scope: pk
-    coverage_regions:
-    - pk
-    publisher_group: dawn
-    report_target: 0
-    report_max: 0
-    refresh_interval_minutes: 60
-  - id: bangkok_post
-    name: Bangkok Post
-    url: https://www.bangkokpost.com/
-    feed_urls:
-    - https://www.bangkokpost.com/rss/data/topstories.xml
-    enabled: true
-    role: discovery
-    tier: 2
-    bundle: geopolitics
-    module: information
-    category: international
-    language: en
-    region: th
-    origin_scope: th
-    coverage_regions:
-    - th
-    publisher_group: bangkok_post
-    report_target: 0
-    report_max: 0
-    refresh_interval_minutes: 60
-  - id: malay_mail
-    name: Malay Mail
-    url: https://www.malaymail.com/
-    feed_urls:
-    - https://www.malaymail.com/feed/rss/malaysia
-    enabled: true
-    role: discovery
-    tier: 2
-    bundle: geopolitics
-    module: information
-    category: international
-    language: en
-    region: my
-    origin_scope: my
-    coverage_regions:
-    - my
-    publisher_group: malay_mail
-    report_target: 0
-    report_max: 0
-    refresh_interval_minutes: 60
-  - id: rappler
-    name: Rappler
-    url: https://www.rappler.com/
-    feed_urls:
-    - https://www.rappler.com/feed/
-    enabled: true
-    role: discovery
-    tier: 2
-    bundle: geopolitics
-    module: information
-    category: international
-    language: en
-    region: ph
-    origin_scope: ph
-    coverage_regions:
-    - ph
-    publisher_group: rappler
-    report_target: 0
-    report_max: 0
-    refresh_interval_minutes: 60
-  - id: le_monde_en
-    name: Le Monde English
-    url: https://www.lemonde.fr/
-    feed_urls:
-    - https://www.lemonde.fr/en/rss/une.xml
-    enabled: true
-    role: discovery
-    tier: 2
-    bundle: geopolitics
-    module: information
-    category: international
-    language: en
-    region: fr
-    origin_scope: fr
-    coverage_regions:
-    - fr
-    publisher_group: le_monde_en
-    report_target: 0
-    report_max: 0
-    refresh_interval_minutes: 60
-  - id: euronews
-    name: Euronews
-    url: https://www.euronews.com/
-    feed_urls:
-    - https://www.euronews.com/rss?level=theme&name=news
-    enabled: true
-    role: discovery
-    tier: 2
-    bundle: geopolitics
-    module: information
-    category: international
-    language: en
-    region: eu
-    origin_scope: eu
-    coverage_regions:
-    - eu
-    publisher_group: euronews
-    report_target: 0
-    report_max: 0
-    refresh_interval_minutes: 60
-  - id: politico_eu
-    name: POLITICO Europe
-    url: https://www.politico.eu/
-    feed_urls:
-    - https://www.politico.eu/feed/
-    enabled: true
-    role: discovery
-    tier: 2
-    bundle: geopolitics
-    module: information
-    category: international
-    language: en
-    region: eu
-    origin_scope: eu
-    coverage_regions:
-    - eu
-    publisher_group: politico_eu
-    report_target: 0
-    report_max: 0
-    refresh_interval_minutes: 60
-  - id: al_monitor
-    name: Al-Monitor
-    url: https://www.al-monitor.com/
-    feed_urls:
-    - https://www.al-monitor.com/rss
-    enabled: true
-    role: discovery
-    tier: 2
-    bundle: geopolitics
-    module: information
-    category: international
-    language: en
-    region: middle_east
-    origin_scope: middle_east
-    coverage_regions:
-    - middle_east
-    publisher_group: al_monitor
-    report_target: 0
-    report_max: 0
-    refresh_interval_minutes: 60
-  - id: africanews
-    name: Africanews
-    url: https://www.africanews.com/
-    feed_urls:
-    - https://www.africanews.com/feed/rss
-    enabled: true
-    role: discovery
-    tier: 2
-    bundle: geopolitics
-    module: information
-    category: international
-    language: en
-    region: africa
-    origin_scope: africa
-    coverage_regions:
-    - africa
-    publisher_group: africanews
-    report_target: 0
-    report_max: 0
-    refresh_interval_minutes: 60
-  - id: daily_maverick
-    name: Daily Maverick
-    url: https://www.dailymaverick.co.za/
-    feed_urls:
-    - https://www.dailymaverick.co.za/dmrss/
-    enabled: true
-    role: discovery
-    tier: 2
-    bundle: geopolitics
-    module: information
-    category: international
-    language: en
-    region: za
-    origin_scope: za
-    coverage_regions:
-    - za
-    publisher_group: daily_maverick
-    report_target: 0
-    report_max: 0
-    refresh_interval_minutes: 60
-  - id: agencia_brasil
-    name: Agência Brasil
-    url: https://agenciabrasil.ebc.com.br/
-    feed_urls:
-    - https://agenciabrasil.ebc.com.br/rss/ultimasnoticias/feed.xml
-    enabled: true
-    role: discovery
-    tier: 2
-    bundle: geopolitics
-    module: information
-    category: international
-    language: pt
-    region: br
-    origin_scope: br
-    coverage_regions:
-    - br
-    publisher_group: agencia_brasil
-    report_target: 0
-    report_max: 0
-    refresh_interval_minutes: 60
-  - id: mercopress
-    name: MercoPress
-    url: https://en.mercopress.com/
-    feed_urls:
-    - https://en.mercopress.com/rss
-    enabled: true
-    role: discovery
-    tier: 2
-    bundle: geopolitics
-    module: information
-    category: international
-    language: en
-    region: latin_america
-    origin_scope: latin_america
-    coverage_regions:
-    - latin_america
-    publisher_group: mercopress
-    report_target: 0
-    report_max: 0
-    refresh_interval_minutes: 60
-  - id: linux_foundation
-    name: Linux Foundation
-    url: https://www.linuxfoundation.org/
-    feed_urls:
-    - https://www.linuxfoundation.org/blog/rss.xml
-    enabled: true
-    role: discovery
-    tier: 1
-    bundle: technology
-    module: technology
-    category: open_source
-    language: en
-    region: global
-    origin_scope: global
-    coverage_regions:
-    - global
-    publisher_group: linux_foundation
-    report_target: 0
-    report_max: 0
-    refresh_interval_minutes: 60
-  - id: kubernetes_blog
-    name: Kubernetes Blog
-    url: https://kubernetes.io/
-    feed_urls:
-    - https://kubernetes.io/feed.xml
-    enabled: true
-    role: discovery
-    tier: 1
-    bundle: technology
-    module: technology
-    category: open_source
-    language: en
-    region: global
-    origin_scope: global
-    coverage_regions:
-    - global
-    publisher_group: kubernetes_blog
-    report_target: 0
-    report_max: 0
-    refresh_interval_minutes: 60
-  - id: cncf_blog
-    name: CNCF Blog
-    url: https://www.cncf.io/
-    feed_urls:
-    - https://www.cncf.io/feed/
-    enabled: true
-    role: discovery
-    tier: 1
-    bundle: technology
-    module: technology
-    category: open_source
-    language: en
-    region: global
-    origin_scope: global
-    coverage_regions:
-    - global
-    publisher_group: cncf_blog
-    report_target: 0
-    report_max: 0
-    refresh_interval_minutes: 60
-  - id: rust_blog
-    name: Rust Blog
-    url: https://blog.rust-lang.org/
-    feed_urls:
-    - https://blog.rust-lang.org/feed.xml
-    enabled: true
-    role: discovery
-    tier: 1
-    bundle: technology
-    module: technology
-    category: open_source
-    language: en
-    region: global
-    origin_scope: global
-    coverage_regions:
-    - global
-    publisher_group: rust_blog
-    report_target: 0
-    report_max: 0
-    refresh_interval_minutes: 60
-  - id: europe_commission
-    name: European Commission Press
-    url: https://ec.europa.eu/commission/presscorner/home/en
-    feed_urls:
-    - https://ec.europa.eu/commission/presscorner/api/rss?language=en
-    enabled: true
-    role: discovery
-    tier: 1
-    bundle: geopolitics
-    module: information
-    category: international
-    language: en
-    region: eu
-    origin_scope: eu
-    coverage_regions:
-    - eu
-    publisher_group: europe_commission
-    report_target: 0
-    report_max: 0
-    refresh_interval_minutes: 60
   - id: boj_news
     name: Bank of Japan
     url: https://www.boj.or.jp/en/
+    article_patterns: ['^https?://www\.boj\.or\.jp/en/[^?#]+']
+    exclude_patterns:
+    - '^https?://www\.boj\.or\.jp/en/(?:[^/?#]+/){0,2}index\.htm(?:[?#]|$)'
+    - '^https?://www\.boj\.or\.jp/en/(?:mailing|snspolicy)\.htm(?:[?#]|$)'
+    - '^https?://www\.boj\.or\.jp/en/(?:about/(?:outline|organization|activities|services)|mopo/outline|paym/outline|note_tfjgs)/'
+    - '^https?://www\.boj\.or\.jp/en/(?:mopo/(?:mpmsche_minu|measures|mpmdeci)|paym/market|research/brp|statistics/outline)/(?:[^/?#]+/)+index\.htm(?:[?#]|$)'
     feed_urls:
     - https://www.boj.or.jp/en/rss/whatsnew.xml
     enabled: true
@@ -1361,49 +276,11 @@ sources:
     report_target: 0
     report_max: 0
     refresh_interval_minutes: 60
-  - id: pansci
-    name: 泛科学
-    url: https://pansci.asia/
-    feed_urls:
-    - https://pansci.asia/feed
-    enabled: true
-    role: discovery
-    tier: 2
-    bundle: technology
-    module: technology
-    category: news
-    language: zh-CN
-    region: tw
-    origin_scope: tw
-    coverage_regions:
-    - tw
-    publisher_group: pansci
-    report_target: 0
-    report_max: 0
-    refresh_interval_minutes: 30
-  - id: cnbeta
-    name: cnBeta
-    url: https://www.cnbeta.com.tw/
-    feed_urls:
-    - https://www.cnbeta.com.tw/backend.php
-    enabled: true
-    role: discovery
-    tier: 2
-    bundle: technology
-    module: technology
-    category: news
-    language: zh-CN
-    region: tw
-    origin_scope: tw
-    coverage_regions:
-    - tw
-    publisher_group: cnbeta
-    report_target: 0
-    report_max: 0
-    refresh_interval_minutes: 30
   - id: rthk_finance_alt
     name: 香港电台财经
     url: https://news.rthk.hk/rthk/ch/news-programmes.htm
+    include_domains: [news.rthk.hk]
+    article_patterns: ['^https://news\.rthk\.hk/rthk/ch/component/k2/\d+-\d{8}\.htm$']
     feed_urls:
     - https://rthk.hk/rthk/news/rss/c_expressnews_cfinance.xml
     enabled: true

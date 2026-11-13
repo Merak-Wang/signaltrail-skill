@@ -44,19 +44,21 @@ HTML 嵌入放映并保留独立入口，打印恢复摘要；图片更新和渲
 
 Python 拥有状态迁移、revision、访问等级映射、限额、验证和发布；brief authors 只产出 packet 约束的标题翻译与摘要，analysis author 只产出紧凑 analysis packet 约束的精选与研判；independent evaluator 只审查已经保存的不可变报告。事实身份校验在发布前完成，主报告不等待主观质量评分；后置评估只给修改和连续性建议，不修改报告。
 
+运行生成的独立评估数据包沿用定稿时冻结的简报计划和已授权的覆盖降级；脱离运行清单独立评估时使用索引覆盖策略。已保存的评估数据包保持原样。
+
 ## 内容模型
 
 资讯固定为国际、国内新闻、军事、市场；技术固定为技术新闻、值得阅读的论文、今日值得关注的开源项目；研判单独渲染。七个内容 section 始终存在。
 
-`briefs[]` 是来源展示与覆盖单位，保存标题、摘要、来源排名和引用；`items[]` 用于少量精选事件及深度研判。简报按来源收录全部合格当日条目，同源canonical去重；跨源各保item_id/source_ref/source_rank，相同原文可共用一次模型写作再派生展示视图。目标数为本源当日实际数，不设15条上限，不按固定配额补旧闻。JSON及各投影均保来源Top顺序，不按importance重排；source_rank显示原始来源TopN，过滤后不重编号。图文视频另做跨源语义事件合并和影响力排序。
+`briefs[]` 是来源展示与覆盖单位，保存标题、摘要、来源排名和引用；`items[]` 用于少量精选事件及深度研判。简报对合格当日条目同源canonical去重后，按原发时间从新到旧选取每源最多15条；跨源各保item_id/source_ref/source_rank，相同原文可共用一次模型写作再派生展示视图。目标数为本源入选实际数，不用旧闻补足15条。JSON及各投影保留选择顺序，不按importance重排；source_rank显示原始来源TopN，过滤后不重编号。图文视频另做跨源语义事件合并和影响力排序。
 
 研判固定分为“地缘政治专家视角”“AI 研究/开发工程师视角”“股票分析师视角”。schema 2.0 要求三个视角读取同一份 6—10 个精选事件 dossier，分别输出因果链、假设、时间跨度、证据缺口、相对上一版变化和失效条件；最后用跨视角综合显式记录共识、分歧来源、“地缘政治 → 技术 → 市场”传导链与共同观察信号。独立评估仅按用户明确要求运行，运行清单用 `evaluation_requested` 保存本轮选择；未评分历史仍按原有 selective 规则处理，未评分摘要不提升为 approved。已有独立评估控制下一次连续性可接受、选择性排除或完全拒绝的范围。
 
 ## 来源发现与验证
 
-来源配置保留两个文件：sources.yaml有32项，discovery-sources.yaml有95项（92启用），共127个唯一ID、124启用。启用来源均进入既有module/category日报栏目；去重ID只使用一个采集实现，元数据保留。日报按来源展示全部可验证的本版上海自然日原文，保留publisher Top与source_rank，不受旧report_target/report_max、共享30条或每源1/2/15条限制。新索引策略report_target/report_max记录本源当日实际数，configured_report_target/configured_report_max保留原配置值；selection_scope为all_today。有限Feed和配置页面完整采集，保留网络字节边界。跨源同原文保各来源位置并复用写作，图文视频另合并同一事件并按影响力排序至多50条。
+sources.yaml 与 discovery-sources.yaml 共配置 45 个来源 ID，其中 43 个启用。启用来源均进入既有module/category日报栏目；去重ID只使用一个采集实现，元数据保留。日报按原发时间展示每源最新最多15条可验证的本版上海自然日原文，保留原始source_rank，不受旧report_target/report_max、共享30条或每源1/2条限制。新索引策略report_target/report_max记录本源入选实际数，configured_report_target/configured_report_max保留原配置值；selection_scope为latest_15_today。有限Feed和配置页面完整采集，保留网络字节边界。跨源同原文保各来源位置并复用写作，图文视频另合并同一事件并按影响力排序至多50条。
 
-全局 `collection.item_order` 默认为 `source`，并可由单个来源覆盖。`source` 依据原始 `source_rank` 保留页面、榜单或 Feed Top 顺序，历史快照保留项置后；`published_at` 按有效发布时间倒序，时间缺失和并列时保持输入稳定顺序。采集、Feed、监控与多页合并都调用同一排序函数，随后把最终顺序写入当前 index；原始 `source_rank` 不随排序模式改变。context、编译器和所有阅读投影只消费当前 index 顺序，不再自行推导另一套时间或重要性顺序。
+全局 `collection.item_order` 默认为 `source`，并可由单个来源覆盖。`source` 依据原始 `source_rank` 保留页面、榜单或 Feed Top 顺序，历史快照保留项置后；`published_at` 按有效发布时间倒序，时间缺失和并列时保持输入稳定顺序。采集、Feed、监控与多页合并都调用同一排序函数，随后把最终顺序写入当前 index；原始 `source_rank` 不随排序模式改变。日报和图文候选在当日资格与同源去重后按原发时间倒序选取每源最多15条；原始采集索引继续保留完整观察结果。
 
 监控先读取 RSS/Atom，使用 `ETag`、`Last-Modified`、304、本地解析结果缓存、失败退避与 `Retry-After`。响应必须通过 XML/HTML 嗅探；验证码或 HTML 中间页不得按 feed 解析。来源没有 feed 或 feed 失败时，可自动发现页面声明的 feed，再回退到无脚本 HTML。发布时间缺失的条目保留并标记，只能以采集时间显示，不能参与 NEW/新鲜度。标题词法特征哈希与余弦相似度完成零模型 token 的事件聚类；上一快照的 item 身份用于稳定 story ID。
 
@@ -77,7 +79,7 @@ Feed 的 description 仍最多 600 字符。源实际提供的长字段单独保
 content/<source>/<item>/feed-<sha256>.json，metadata.feed_content_path/sha256/characters 指向该记录。
 记录含 RSS/Atom 格式、字段名、MIME、语言、base URL、全文字段的结构块、图片、原图注和链接。
 Atom text/html/xhtml 分别处理，嵌套 xml:base 在节点序列化前解析；完整保留 Feed 字段不等于文章全文。
-相同内容复用路径，同 URL 内容变化产生新文件。写作候选和分析候选透传 `feed_content_path`、`feed_content_characters` 与独立的 `feed_content_status=partial`，作者可直接读取已保存 JSON 的 text/blocks；正文路径优先，其次 Feed 长字段，再用短摘要。长文不嵌入索引或作者包，不复制 Markdown，也不因写作投影改变原条目的 content_status。选中网页富化的条目仍可将 Feed 作为部分正文底稿，网页补全失败时保留。
+相同内容复用路径，同 URL 内容变化产生新文件。冻结的写作候选和分析候选透传 `feed_content_path`、`feed_content_characters` 与独立的 `feed_content_status=partial`。索引和冻结任务包保存证据引用。简报作者的独立输入按正文、Feed 长字段、公开摘要的优先级内嵌完整证据，省去内部路径与证据中已有的重复摘要，保留原条目的 `content_status` 和证据限制。分析作者仍可按需读取包中列出的正文或 Feed JSON。选中网页富化的条目仍可将 Feed 作为部分正文底稿，网页补全失败时保留。
 
 来源可以声明 origin_scope、coverage_regions、publisher_group，分别记录机构来源、报道范围和出版组。
 它们进入来源健康记录和条目 metadata，不是立场/可靠性评分，也不增加独立佐证数。缺失值不猜测。
@@ -185,9 +187,9 @@ report JSON/Markdown revision 与内容寻址图片不可覆盖；它们是事�
 
 ## 上下文预算
 
-上下文不嵌入全文，也不重复整个 candidate index。当日计划内所有紧凑候选均保留，并原样保留采集层已经写入的当前 index 顺序；正文状态不能把 enriched 候选提到前面，context 也不能再次按发布时间排序，否则会改变本轮已分配的唯一简报位置。新索引的 `report_target` 与 `report_max` 为本源当日实际数；旧配置值不构成条数上限。上下文先读取 `state/semantic-cache.json`：只有内容指纹一致、独立评估通过门槛、输出语言一致且 item ID 位于本轮对应 `brief_plan.default_item_ids` 的 brief 才能进入 `reusable_briefs`；其余计划内 ID 进入 `author_item_ids`。编译器同样使用 `brief_plan.default_item_ids` 作为缓存补齐、草稿保留和普通 brief 排序的边界，不能用已分配位置之外的历史缓存补位；同源尾部替补在分配 default_item_ids 前完成。
+上下文不嵌入全文，也不重复整个 candidate index。当日计划内所有紧凑候选均保留；同源去重后按原发时间从新到旧选取每源最多15条，正文状态不能改变已分配的简报位置。新索引的 `report_target` 与 `report_max` 为本源入选实际数；旧配置值不构成条数上限。上下文先读取 `state/semantic-cache.json`：只有内容指纹一致、独立评估通过门槛、输出语言一致且 item ID 位于本轮对应 `brief_plan.default_item_ids` 的 brief 才能进入 `reusable_briefs`；其余计划内 ID 进入 `author_item_ids`。编译器同样使用 `brief_plan.default_item_ids` 作为缓存补齐、草稿保留和普通 brief 排序的边界，不能用已分配位置之外的历史缓存补位；同源尾部替补在分配 default_item_ids 前完成。已经冻结的历史计划继续按原合同验证，不因新规则改写。
 
-context 先剔除已分配唯一位置之外的备用候选和可复用语义，只把真实写作缺口按完整来源均衡拆成最多 12 个 `brief_authoring_batches`，目标约 45 条/包。authoring coordinator 按顺序调度，最多同时运行 3 包；一个 worker 完成后按序补入下一个。不支持隔离并发的宿主可以顺序处理。这个上限避免把满载约 480 条内容压进少数超大输出，也不规定宿主必须提供哪一种 delegation API。每个 brief author 的输入只有独立 packet 和其中列出的正文路径；其唯一写入输出是 packet 指定的 draft path，随后执行 packet 的提交命令。该角色不能浏览、搜索、运行其他脚本、生成全篇报告或处理其他批次。Brief 与 analysis packet 都携带接收器执行的 `output_schema`，完整约束嵌套类型、枚举、长度、额外字段和 Python-owned 身份；接收器先报告不复制草稿正文的路径/规则错误，再执行语言、摘要、证据与完整报告校验。若命令报告校验错误，最多修复并再次提交一次。Python 校验并原子接收各批，原样合并缓存与已接收 brief，再将最多 18 个高价值候选压缩为 analysis packet。analysis author 不再重读数百条 brief，只选择 packet 声明数量的精选事件并完成一次三视角研判。Python 最后装配完整 schema 2.0 草稿。Hermes 集成当前用 `delegate_task` 映射这些工作单元，其默认 `max_concurrent_children=3` 与上述波次上限一致；其他 harness 可以使用等价 worker 或顺序执行。
+context 先剔除已分配唯一位置之外的备用候选和可复用语义，只把真实写作缺口按完整来源均衡拆成最多 12 个 `brief_authoring_batches`，目标约 45 条/包。authoring coordinator 按顺序调度，最多同时运行 3 包；一个 worker 完成后按序补入下一个。不支持隔离并发的宿主可以顺序处理。这个上限避免把满载约 480 条内容压进少数超大输出，也不规定宿主必须提供哪一种 delegation API。每个 brief author 读取分配给自己的作者输入及内嵌证据；其唯一写入输出是任务指定的 draft path，随后按协调流程预检和提交。该角色不能浏览、搜索、运行其他脚本、生成全篇报告或处理其他批次。Brief 与 analysis packet 都携带接收器执行的 `output_schema`，完整约束嵌套类型、枚举、长度、额外字段和 Python-owned 身份；接收器先报告不复制草稿正文的路径/规则错误，再执行语言、摘要、证据与完整报告校验。若命令报告校验错误，最多修复并再次提交一次。Python 校验并原子接收各批，原样合并缓存与已接收 brief，再将最多 18 个高价值候选压缩为 analysis packet。analysis author 不再重读数百条 brief，只选择 packet 声明数量的精选事件并完成一次三视角研判。Python 最后装配完整 schema 2.0 草稿。Hermes 集成当前用 `delegate_task` 映射这些工作单元，其默认 `max_concurrent_children=3` 与上述波次上限一致；其他 harness 可以使用等价 worker 或顺序执行。
 
 authoring session 绑定 run attempt、context 绝对路径与 SHA-256，分发后 context 改变会硬失败，不能混合新旧批次。session 记录 run deadline 减去 120 秒的 `analysis_deadline_at`。`prepare-analysis` 在计算缺失批次前，会读取尚无不可变 receipt 的授权 draft，按原 packet 再次完整校验；合法草稿被原子接收并记录到 `recovered_batches`，非法或不完整草稿仍保持 missing。截止前缺批次必须等待或修复；截止后才允许确定性降级，coverage override 只能降低对应 missing batch 所负责来源的目标，其他完成批次来源仍保持本源当日实际计划目标，报告草稿不能自行降低目标。每批记录耗时、API、输入/输出 token、模型和退出原因；宿主若提供 queue、首 token、prefill、decode 和缓存 token，也以可选字段保留。宿主的自由文本完成通知和工具轨迹不进入运行指标。索引存在 section 候选但最终没有已校验 brief 时，投影列出每个缺失来源及“已验证摘要/计划”计数，即使同 section 的其他来源已成功；只有索引确实没有候选时才显示“未采集到可展示内容”。保存报告先写 pending cache，独立评估对事实可靠性、摘要准确性、合规边界和连续性给出合格结果后才提升为 approved；标题、URL、摘要、发布时间、正文状态或正文路径改变都会使指纹失效。每次累计最多读取 12 篇正文；历史报告只转换为稳定 ID、结构化判断和评估诊断。
 

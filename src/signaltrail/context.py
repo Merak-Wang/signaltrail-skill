@@ -6,6 +6,7 @@ from math import ceil
 from pathlib import Path
 from typing import Any
 
+from .article_time import original_publication_time
 from .authoring import (
     _brief_local_evidence,
     _brief_output_schema,
@@ -296,6 +297,10 @@ def _compact_candidates(
             if (rank > base_limit and item.get("content_status") not in {"full_text", "partial"}
                     and str(item["item_id"]) not in (selected_item_ids or set())):
                 continue
+            has_original_date = bool((metadata.get("content_source") or {}).get("published_at"))
+            published = original_publication_time(item) if has_original_date else item.get(
+                "published_at",
+            )
             compact.append(
                 {
                     **{
@@ -303,11 +308,14 @@ def _compact_candidates(
                         for key in _CANDIDATE_FIELDS
                         if item.get(key) is not None
                     },
+                    "published_at": published,
                     **{key: metadata[key] for key in (
                         "feed_content_path", "feed_content_characters", "feed_content_sha256",
                         "discovery_signal", "signal_at", "selection_reason", "suggested_status",
                         "published_precision", "updated_at", "first_discovered_at",
                     ) if metadata.get(key) is not None},
+                    **({"published_precision": "date" if len(published) == 10 else "datetime"}
+                       if has_original_date and published else {}),
                     **({"feed_content_status": "partial"}
                        if metadata.get("feed_content_path") else {}),
                     "source_candidate_rank": rank,
@@ -991,13 +999,12 @@ def build_context(
             "retain the diagnostic only. Never copy prior formatting or unscored prose."
         ),
         "selection_rule": (
-            "Keep each source's Top positions and deduplicate canonical articles within it. "
+            "Select each source's latest 15 eligible articles; deduplicate canonical URLs. "
             "Reuse one authored text for matching original articles across sources. "
-            "Cover all locally collected original publications from this edition date; "
-            "preserve source Top order without a per-source quota or importance-score cutoff. "
+            "Use original publication time order without an importance-score cutoff. "
             "A discovery_signal or rank rise is not a new publication. Honor suggested_status "
             "WATCH for research-radar observations and date-only overlap. "
-            "preserve the current index and brief_plan order for displayed briefs, and retain "
+            "Preserve brief_plan order for displayed briefs, and retain "
             "source_rank as the publisher's original popularity/order label. Original publication "
             "dates, rather than listing updates, determine this edition's eligibility. "
             "Reserve featured events/full-text loading for evidence "

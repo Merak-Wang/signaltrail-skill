@@ -42,7 +42,8 @@ def materialize_inputs(plan: dict, data_dir: Path) -> dict:
             continue
         packet = Path(task["packet_path"])
         source = json.loads(packet.read_text(encoding="utf-8"))
-        target = packet.parent / "author-inputs" / (packet.stem + "-author-input.json")
+        suffix = "-author-input-v2.json" if task["kind"] == "brief" else "-author-input.json"
+        target = packet.parent / "author-inputs" / (packet.stem + suffix)
         target.parent.mkdir(exist_ok=True)
         if not target.exists():
             if task["kind"] == "brief":
@@ -90,16 +91,36 @@ def materialize_inputs(plan: dict, data_dir: Path) -> dict:
     return plan
 
 
-def compact_dispatch(plan: dict, *, limit: int = 3, in_flight: tuple[str, ...] = ()) -> dict:
+def input_size_hint(task: dict) -> int:
+    """优先按已有投影的字节数排序，首次派发用原包大小估计。"""
+    packet = Path(task["packet_path"])
+    suffix = "-author-input-v2.json" if task["kind"] == "brief" else "-author-input.json"
+    projected = packet.parent / "author-inputs" / (packet.stem + suffix)
+    if projected.is_file():
+        return projected.stat().st_size
+    return packet.stat().st_size
+
+
+def compact_dispatch(plan: dict, *, limit: int = 3, in_flight: tuple[str, ...] = (),
+                     data_dir: Path | None = None) -> dict:
     """把完整任务和错误写到作者侧文件，协调者仅接收空槽所需的短任务票据。"""
     tasks = plan.get("tasks", [])
+    in_flight = set(in_flight)
+    selected = [
+        task for task in tasks
+        if str(task.get("batch_id") or task["kind"]) not in in_flight
+        and task["packet_path"] not in in_flight
+    ] if limit > 0 else []
+    if data_dir is not None and selected:
+        # 先选定空槽使用的批次，再读取完整输入、切块并生成票据。
+        plan = materialize_inputs({
+            **plan, "tasks": sorted(selected, key=input_size_hint, reverse=True)[:limit],
+        }, data_dir)
+        selected = plan["tasks"]
+    else:
+        selected = selected[:limit] if limit > 0 else []
     tickets = []
-    for task in tasks:
-        identity = str(task.get("batch_id") or task["kind"])
-        if identity in in_flight or task["packet_path"] in in_flight:
-            continue
-        if len(tickets) >= limit:
-            break
+    for task in selected:
         task_file = Path(task["draft_result_path"]).with_suffix(".dispatch-task.json")
         task_file.write_text(json.dumps(task, ensure_ascii=False, separators=(",", ":")),
                              encoding="utf-8")
@@ -114,7 +135,7 @@ def compact_dispatch(plan: dict, *, limit: int = 3, in_flight: tuple[str, ...] =
         tickets.append(ticket)
     receipt = {key: value for key, value in plan.items() if key not in {
         "tasks", "issues", "cli_prefix", "coordinator_commands", "execution", "delivery"}}
-    receipt.update(tasks=tickets, pending_task_count=len(tasks),
+    receipt.update(tasks=tickets, pending_task_count=plan.get("pending_task_count", len(tasks)),
                    dispatched_task_count=len(tickets), issue_count=len(plan.get("issues", [])))
     if "background_commands" in receipt:
         receipt["background_commands"] = [command for command in receipt["background_commands"]
@@ -133,6 +154,19 @@ def compact_dispatch(plan: dict, *, limit: int = 3, in_flight: tuple[str, ...] =
             delivery.get("slides", {}).items() if key in {
                 "status", "news_count", "html_path", "next_action", "error"}}
     return receipt
+
+
+def coordinator_dispatch(plan: dict, run: Path, data_dir: Path, *,
+                         started: str | None = None, slides_review: Path | None = None,
+                         in_flight: tuple[str, ...] = ()) -> dict:
+    """为单层协调保留恢复命令；旧交接标记兼容读取，不再强制更换协调者。"""
+    command = [sys.executable, str(Path(__file__).resolve()), "--advance-edition",
+               str(run.resolve()), "--data-dir", str(data_dir.resolve())]
+    if slides_review is not None:
+        command.extend(["--slides-review", str(slides_review.resolve())])
+    plan["continue_command"] = command
+    plan["coordination"] = {"mode": "single", "max_authors": 3}
+    return plan
 
 
 def dispatch_plan(session: Path, data_dir: Path | None = None,
@@ -172,6 +206,7 @@ def dispatch_plan(session: Path, data_dir: Path | None = None,
                               "--input", str(draft), "--check-only"]
             tasks.append(task("slides", packet, draft,
                               ["slides", "input", "--packet", str(packet)], check))
+            tasks[-1]["batch_id"] = number
         submit = prefix + ["slides", "submit", "--plan", str(session),
                            "--draft-dir", str(session.parent)]
         coordinator = [submit + ["--check-only"], submit]
@@ -207,6 +242,7 @@ def dispatch_plan(session: Path, data_dir: Path | None = None,
                 tasks.append(task("brief", packet, draft,
                                   ["brief-input", "--packet", str(packet),
                                    "--include-evidence"], check))
+                tasks[-1]["batch_id"] = batch["batch_id"]
             coordinator = [prefix + ["submit-authoring-batch", "--run", str(run), "--all"]]
     return {"max_workers": 3, "cli_prefix": prefix, "tasks": tasks,
             "coordinator_commands": coordinator,
@@ -215,7 +251,7 @@ def dispatch_plan(session: Path, data_dir: Path | None = None,
 
 
 def advance_dispatch(session: Path, data_dir: Path | None = None,
-                     run: Path | None = None) -> dict:
+                     run: Path | None = None, *, in_flight: tuple[str, ...] = ()) -> dict:
     """批量接收合格草稿，只将缺失和校验失败的批次交给作者。"""
     session = session.resolve()
     source = json.loads(session.read_text(encoding="utf-8"))
@@ -235,6 +271,8 @@ def advance_dispatch(session: Path, data_dir: Path | None = None,
             run = data_dir / "runs" / source["date"] / f"{source['edition']}.json"
         run = run.resolve()
         command = ["submit-authoring-batch", "--run", str(run), "--all"]
+    for identity in in_flight:
+        command.extend(["--skip-batch", identity])
     process = subprocess.run(prefix + command, capture_output=True, text=True,
                              encoding="utf-8", env={**os.environ, "PYTHONIOENCODING": "utf-8"})
     try:
@@ -279,8 +317,9 @@ def advance_dispatch(session: Path, data_dir: Path | None = None,
 
 
 def advance_edition(run: Path, data_dir: Path | None = None, *,
-                    slides_review: Path | None = None) -> dict:
-    """从现有会话推进接收、分析、发布和图文渲染，遇到模型任务时返回精简清单。"""
+                    slides_review: Path | None = None,
+                    in_flight: tuple[str, ...] = ()) -> dict:
+    """推进确定性步骤，返回待写清单，由派发入口按空槽物化作者输入。"""
     run = run.resolve()
     data_dir = (data_dir or run.parents[2]).resolve()
 
@@ -296,27 +335,33 @@ def advance_edition(run: Path, data_dir: Path | None = None, *,
                 "next_command": cli_prefix(data_dir) + ["begin-authoring", "--run", str(run)]}
     if saved["status"] == "awaiting_authoring":
         authoring = artifacts["authoring"]
-        plan = advance_dispatch(Path(authoring["session_path"]), data_dir, run)
+        plan = advance_dispatch(Path(authoring["session_path"]), data_dir, run,
+                                in_flight=in_flight)
         if plan["tasks"] or plan["issues"]:
             return {"stage": "briefs", "run_path": str(run),
-                    **materialize_inputs(plan, data_dir)}
+                    **plan}
         if not authoring.get("analysis_packet_path"):
             run_command(data_dir, ["prepare-analysis", "--run", str(run)])
             authoring = manifest()["artifacts"]["authoring"]
+        brief_accepted_count = plan["accepted_count"]
         analysis = Path(authoring["analysis_result_path"])
-        if not analysis.is_file():
-            plan = dispatch_plan(Path(authoring["analysis_packet_path"]), data_dir, run)
+        analysis_packet = Path(authoring["analysis_packet_path"])
+        if ("analysis" in in_flight or str(analysis_packet) in in_flight
+                or not analysis.is_file()):
+            plan = dispatch_plan(analysis_packet, data_dir, run)
             return {"stage": "analysis", "run_path": str(run),
-                    **materialize_inputs(plan, data_dir)}
+                    "accepted_count": brief_accepted_count,
+                    **plan}
         try:
             run_command(data_dir, ["assemble-authoring", "--run", str(run),
                                    "--analysis", str(analysis)])
         except RuntimeError as exc:
-            plan = dispatch_plan(Path(authoring["analysis_packet_path"]), data_dir, run)
+            plan = dispatch_plan(analysis_packet, data_dir, run)
             for task in plan["tasks"]:
                 task.update(action="repair", errors=[str(exc)])
             return {"stage": "analysis", "run_path": str(run),
-                    **materialize_inputs(plan, data_dir)}
+                    "accepted_count": brief_accepted_count,
+                    **plan}
         authoring = manifest()["artifacts"]["authoring"]
         command = ["finalize-edition", "--run", str(run), "--report",
                    authoring["report_draft_path"], "--defer-tail"]
@@ -335,7 +380,8 @@ def advance_edition(run: Path, data_dir: Path | None = None, *,
         artifacts = manifest()["artifacts"]
     slides = artifacts.get("slides", {})
     if slides.get("plan_path"):
-        plan = advance_dispatch(Path(slides["plan_path"]), data_dir, run)
+        plan = advance_dispatch(Path(slides["plan_path"]), data_dir, run,
+                                in_flight=in_flight)
         if plan["tasks"] or plan["issues"]:
             slide_plan = Path(slides["plan_path"])
             plan["background_commands"] = []
@@ -349,14 +395,17 @@ def advance_edition(run: Path, data_dir: Path | None = None, *,
                                                        str(slide_plan)],
                     "receipt_path": str(receipt_path)})
             return {"stage": "slides", "run_path": str(run),
-                    **materialize_inputs(plan, data_dir)}
+                    **plan}
+        if any(job in in_flight for job in ("edition-tail", "slides-images")):
+            return {"stage": "slides", "run_path": str(run), **plan}
     delivery = run_command(data_dir, ["edition-status", "--run", str(run)])
     if "tail" in delivery["pending_steps"]:
         run_command(data_dir, ["complete-edition-tail", "--run", str(run)])
     deck = None
     if "slides_render" in delivery["pending_steps"]:
         deck = run_command(data_dir, ["slides", "render", "--plan", slides["plan_path"]])
-    delivery = run_command(data_dir, ["edition-status", "--run", str(run)])
+    if "tail" in delivery["pending_steps"] or deck:
+        delivery = run_command(data_dir, ["edition-status", "--run", str(run)])
     return {"stage": "complete" if delivery["delivery_complete"] else "delivery",
             "run_path": str(run), "tasks": [], "delivery": delivery,
             **({"deck_path": deck["json_path"]} if deck else {})}
@@ -375,6 +424,8 @@ def main() -> None:
         parser.add_argument("--task-limit", type=int, default=3)
         parser.add_argument("--in-flight", action="append", default=[])
         parser.add_argument("--compact-dispatch", action="store_true")
+        parser.add_argument("--coordinator-start",
+                            help="Legacy checkpoint marker; accepted without forcing a handoff")
         args = parser.parse_args()
         if sys.argv[1] == "--prepare-input-parts":
             sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
@@ -385,19 +436,28 @@ def main() -> None:
             return
         if sys.argv[1] == "--advance-edition":
             result = advance_edition(args.advance_edition, args.data_dir,
-                                     slides_review=args.slides_review)
-            result = compact_dispatch(result, limit=args.task_limit, in_flight=args.in_flight)
+                                     slides_review=args.slides_review, in_flight=args.in_flight)
+            data_dir = args.data_dir or args.advance_edition.resolve().parents[2]
+            result = coordinator_dispatch(
+                result, args.advance_edition, data_dir,
+                started=args.coordinator_start, slides_review=args.slides_review,
+                in_flight=tuple(args.in_flight),
+            )
+            result = compact_dispatch(result, limit=args.task_limit, in_flight=args.in_flight,
+                                      data_dir=data_dir)
             print(json.dumps(result, ensure_ascii=False, separators=(",", ":")))
             return
         advance = sys.argv[1] == "--advance-dispatch"
         session = args.advance_dispatch if advance else args.dispatch_plan
-        result = (advance_dispatch if advance else dispatch_plan)(session, args.data_dir, args.run)
-        if args.materialize_inputs:
-            if args.data_dir is None:
-                parser.error("--materialize-inputs requires --data-dir")
-            result = materialize_inputs(result, args.data_dir)
+        result = (advance_dispatch(session, args.data_dir, args.run, in_flight=args.in_flight)
+                  if advance else dispatch_plan(session, args.data_dir, args.run))
+        if args.materialize_inputs and args.data_dir is None:
+            parser.error("--materialize-inputs requires --data-dir")
         if args.compact_dispatch:
-            result = compact_dispatch(result, limit=args.task_limit, in_flight=args.in_flight)
+            result = compact_dispatch(result, limit=args.task_limit, in_flight=args.in_flight,
+                                      data_dir=args.data_dir if args.materialize_inputs else None)
+        elif args.materialize_inputs:
+            result = materialize_inputs(result, args.data_dir)
         print(json.dumps(result, ensure_ascii=advance))
         return
     sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))

@@ -17,6 +17,7 @@ from threading import Lock
 
 from bs4 import BeautifulSoup
 
+from .config import project_root
 from .voice_synthesis import VoiceSynthesizer
 from .voice_synthesis import run_native as _run
 
@@ -24,6 +25,49 @@ _VIDEO_ZOOM = 1.4
 # 整数 CSS 视口在该像素比下精确生成 1920×1080，避免裁边或二次缩放。
 _VIDEO_DEVICE_SCALE = 1.4005
 _VIDEO_VIEWPORT = {"width": 1371, "height": 771}
+_VIDEO_CAPTURE_SCRIPT = """([label, scripts]) => {
+    document.documentElement.classList.add('embedded', 'video-capture');
+    document.querySelectorAll('.slide').forEach((slide, index) => {
+        slide.querySelector('.narration-section h3').textContent = `↳  ${label}`;
+        const paragraph = document.createElement('p');
+        paragraph.textContent = scripts[index];
+        slide.querySelector('.narration').replaceChildren(paragraph);
+    });
+}"""
+_VIDEO_SEEK_SCRIPT = """async ([s, i]) => {
+    let timer;
+    let timedOut;
+    try {
+        timedOut = await Promise.race([
+            window.signaltrailPlayback.seek(s, i).then(() => false),
+            new Promise(resolve => {
+                timer = setTimeout(() => {
+                    document.querySelectorAll('.slide.active figure.active img').forEach(image => {
+                        if (image.complete) return;
+                        image.classList.add('broken');
+                        image.closest('.image-frame')?.classList.add('has-error');
+                        image.removeAttribute('srcset');
+                        image.removeAttribute('src');
+                    });
+                    resolve(true);
+                }, 30000);
+            }),
+        ]);
+    } finally {
+        clearTimeout(timer);
+    }
+    window.scrollTo(0, 0);
+    return timedOut;
+}"""
+
+
+def _configure_video_capture(page, css: str, label: str, scripts: list[str]) -> None:
+    """处理：只在截图浏览器内应用视频样式并替换讲解。
+    输入：截图页面、视频样式、讲解标题和按页序排列的口播短稿。
+    输出：截图页面显示与配音一致的短稿，交互式图文文件保持原样。
+    """
+    page.add_style_tag(content=css)
+    page.evaluate(_VIDEO_CAPTURE_SCRIPT, [label, scripts])
 
 
 def _source_slides_html(deck_path: Path, data_dir: Path) -> tuple[Path, bool]:
@@ -120,10 +164,18 @@ def render_video(
     ffmpeg = str(runtime["ffmpeg"])
     setup_seconds = time.perf_counter() - started
     started = time.perf_counter()
-    playback_digest = hashlib.sha256(playback.encode("utf-8")).hexdigest()
+    video_style = project_root() / "assets" / "news-slides" / "video.css"
+    video_css = video_style.read_text(encoding="utf-8")
+    language = deck.get("language", "zh-CN")
+    label = "视频讲解" if language.lower().startswith("zh") else "Video narration"
+    scripts = [slide["video_tldr"].strip() for slide in deck["slides"]]
     for slide_node in source_slides:
         slide_node.extract()
-    shell_digest = hashlib.sha256(str(document).encode("utf-8")).hexdigest()
+        # 视频画面使用短稿；原图文长讲解的文字变化不影响片段缓存。
+        slide_node.select_one(".narration-section h3").clear()
+        slide_node.select_one(".narration").clear()
+    shell = [str(document), video_css, _VIDEO_CAPTURE_SCRIPT, _VIDEO_SEEK_SCRIPT, label]
+    shell_digest = hashlib.sha256("\0".join(shell).encode("utf-8")).hexdigest()
     synthesizer = VoiceSynthesizer(
         runtime, data_dir / "video-runtime" / "voice-cache", threads=threads
     )
@@ -161,7 +213,7 @@ def render_video(
         """
         nonlocal tts_seconds
         slide = deck["slides"][index]
-        brief = slide["video_tldr"].strip()
+        brief = scripts[index]
         # 短稿由模型阅读完整讲解后生成，音频缓存按标题与短稿定位。
         audio_key = hashlib.sha256(
             json.dumps([slide["title"], brief, deck.get("language")], ensure_ascii=False).encode()
@@ -170,7 +222,7 @@ def render_video(
         page_started = time.perf_counter()
         try:
             speech = synthesizer.page(
-                slide["title"], brief, wav, language=deck.get("language", "zh-CN")
+                slide["title"], brief, wav, language=language
             )
         except Exception:
             record_stage(
@@ -201,7 +253,7 @@ def render_video(
             wav, speech = speech_future.result()
             if index + 1 < len(deck["slides"]):
                 speech_future = speech_pool.submit(synthesize_page, index + 1)
-            brief = slide["video_tldr"].strip()
+            brief = scripts[index]
             duration = math.ceil(speech["duration"] * 25) / 25
             timeline.append(
                 {
@@ -224,7 +276,7 @@ def render_video(
             )
             settings = json.dumps(
                         [
-                            "original-slides-v3",
+                            "short-script-v1",
                             _VIDEO_ZOOM,
                             str(source_html.resolve()),
                             embedded,
@@ -241,18 +293,9 @@ def render_video(
                         ],
                         ensure_ascii=False,
                     )
-            legacy_key = hashlib.sha256((playback_digest + settings).encode()).hexdigest()
-            next_title = source_slides[(index + 1) % len(source_slides)].select_one("h2")
-            page_data = json.dumps([str(node), len(source_slides), next_title.get_text(strip=True)],
-                                   ensure_ascii=False)
+            page_data = json.dumps([str(node), len(source_slides), brief], ensure_ascii=False)
             key = hashlib.sha256((shell_digest + page_data + settings).encode()).hexdigest()
             clip = work / f"{key}.mp4"
-            legacy_clip = work / f"{legacy_key}.mp4"
-            if not dynamic_images and not clip.exists() and legacy_clip.is_file():
-                try:
-                    os.link(legacy_clip, clip)
-                except OSError:
-                    shutil.copy2(legacy_clip, clip)
             pages.append((index, count, dynamic_images, clip, entry))
             if not dynamic_images and clip.is_file():
                 reused += 1
@@ -284,38 +327,13 @@ def render_video(
                         wait_until="domcontentloaded",
                         timeout=120_000,
                     )
+                    _configure_video_capture(page, video_css, label, scripts)
                 page_started = time.perf_counter()
                 frames = work / f"frames-{clip.stem}"
                 frames.mkdir(exist_ok=True)
                 for image in range(count):
                     image_started = time.perf_counter()
-                    image_timed_out = page.evaluate(
-                        """async ([s, i]) => {
-                            let timer;
-                            try {
-                                return await Promise.race([
-                                    window.signaltrailPlayback.seek(s, i).then(() => false),
-                                    new Promise(resolve => {
-                                        timer = setTimeout(() => {
-                                            document.querySelectorAll(
-                                                '.slide.active figure.active img'
-                                            ).forEach(image => {
-                                                if (image.complete) return;
-                                                image.classList.add('broken');
-                                                image.closest('.image-frame')?.classList.add('has-error');
-                                                image.removeAttribute('srcset');
-                                                image.removeAttribute('src');
-                                            });
-                                            resolve(true);
-                                        }, 30000);
-                                    }),
-                                ]);
-                            } finally {
-                                clearTimeout(timer);
-                            }
-                        }""",
-                        [index, image],
-                    )
+                    image_timed_out = page.evaluate(_VIDEO_SEEK_SCRIPT, [index, image])
                     if image_timed_out:
                         record_stage(
                             "render_image", image_started, "timed_out",

@@ -7,9 +7,11 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from importlib.metadata import version
 from typing import Any
+from urllib.parse import urlsplit
 
 from bs4 import BeautifulSoup, Comment, NavigableString, Tag
 
+from .article_time import normalize_time
 from .models import ContentStatus
 
 NOISE_SELECTORS = [
@@ -378,7 +380,53 @@ def extract_with_fallback(
     return candidate
 
 
-def observed_source_metadata(soup: BeautifulSoup) -> dict[str, Any]:
+def publisher_dom_publication_date(soup: BeautifulSoup, page_url: str) -> str | None:
+    """处理：按已核验的中文来源发布栏读取日期，避开正文与推荐文章。
+    输入：原网页 DOM 和最终文章地址，地址缺失时使用网页声明的规范地址。
+    输出：上海时区的明确发布时间或日精度日期，未出现发布栏时为空。
+    """
+    if not page_url:
+        canonical = soup.select_one(
+            'link[rel="canonical"], meta[property="og:url"], meta[name="og:url"]',
+        )
+        page_url = (str(canonical.get("href") or canonical.get("content") or "")
+                    if canonical else "")
+    host = (urlsplit(page_url).hostname or "").removeprefix("www.")
+    selectors = {
+        "ithome.com": "#pubtime_baidu",
+        "ithome.com.tw": ".submitted .created",
+        "tmtpost.com": ".post_author_infor .time",
+        "geekpark.net": ".user-info .release-date",
+        "qbitai.com": ".article_info",
+        "solidot.org": ".talk_time",
+        "pansci.asia": ".stript > section .row.align-items-center .post-text-light",
+        "cnbeta.com.tw": ".cnbeta-article > header.title .meta > span:first-child",
+        "yicai.com": ".m-text > .title em.f-fl",
+        "news.rthk.hk": ".createddate",
+    }
+    selector = selectors.get(host)
+    node = soup.select_one(selector) if selector else None
+    if node is None:
+        return None
+    text = node.get_text(" ", strip=True)
+    text = re.sub(r"[年/月.]", "-", text).replace("日", " ")
+    text = text.replace("时", ":").replace("分", "").replace("HKT", "")
+    match = re.search(
+        r"20\d{2}-\d{1,2}-\d{1,2}(?:\s+\d{1,2}:\d{2}(?::\d{2})?)?", text,
+    )
+    if not match:
+        return None
+    for pattern in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d"):
+        try:
+            parsed = datetime.strptime(" ".join(match[0].split()), pattern)
+        except ValueError:
+            continue
+        return (parsed.date().isoformat() if pattern == "%Y-%m-%d" else
+                normalize_time(parsed.isoformat(), "Asia/Shanghai"))
+    return None
+
+
+def observed_source_metadata(soup: BeautifulSoup, page_url: str = "") -> dict[str, Any]:
     """处理：记录页面明确声明的作者、发布者、发布日期与语言。
     输入：清洗之前的页面 DOM；只接受发布语义元数据，不把更新时间当发布日期。
     输出：供出处和当天新闻筛选使用的有限字段；没有明确发布日期时保留未知。
@@ -405,7 +453,10 @@ def observed_source_metadata(soup: BeautifulSoup) -> dict[str, Any]:
             if published_at:
                 break
     if not published_at:
-        article_types = {"article", "newsarticle", "blogposting", "scholarlyarticle"}
+        article_types = {
+            "article", "newsarticle", "analysisnewsarticle", "reportagenewsarticle",
+            "blogposting", "scholarlyarticle",
+        }
 
         def article_dates(value: Any) -> list[str]:
             """处理：遍历 JSON-LD 数据图并提取指定文章类型的原始发布日期。
@@ -436,8 +487,20 @@ def observed_source_metadata(soup: BeautifulSoup) -> dict[str, Any]:
                 published_at = dates[0]
                 break
     if not published_at:
+        node = soup.select_one('[data-target="PaperContent"][data-props]')
+        if node:
+            try:
+                paper = json.loads(node["data-props"]).get("paper", {})
+            except (json.JSONDecodeError, TypeError):
+                paper = {}
+            # Hugging Face 分别声明论文发表与日榜提交日期，这里只读取原始发表。
+            date = paper.get("publishedAt")
+            if isinstance(date, str) and date.strip():
+                published_at = date.strip()
+    if not published_at:
         for node in soup.select(
-            'meta[name="citation_publication_date"], meta[name="citation_date"]'
+            'meta[name="citation_publication_date"], meta[name="citation_date"], '
+            'meta[name="PubDate" i]'
         ):
             published_at = str(node.get("content") or "").strip()
             if published_at:
@@ -451,6 +514,8 @@ def observed_source_metadata(soup: BeautifulSoup) -> dict[str, Any]:
                 published_at = datetime.strptime(text, "%B %d, %Y").date().isoformat()
             except ValueError:
                 published_at = None
+    if not published_at:
+        published_at = publisher_dom_publication_date(soup, page_url)
     values["published_at"] = published_at[:500] if published_at else None
     values["language"] = str(soup.html.get("lang") or "")[:80] or None if soup.html else None
     values.update(basis="page_declared", independent_origin=None)

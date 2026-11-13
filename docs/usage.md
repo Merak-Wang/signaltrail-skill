@@ -69,11 +69,11 @@ Titles, summaries, analysis, slides, and speech follow the selected language. Or
 
 ## Sources and article evidence
 
-Both [sources.yaml](../configs/sources.yaml) and [discovery-sources.yaml](../configs/discovery-sources.yaml) supply regular report sources through their existing module/category mappings. The 127 configured IDs include 124 enabled sources; disabled sources remain disabled. Every source retains all verifiable current-day stories in its original Top order within the finite public Feed/page response. Shared discovery slots and per-source 1/2/15-item quotas no longer limit reports. See [collection extensions](platform.md).
+Both [sources.yaml](../configs/sources.yaml) and [discovery-sources.yaml](../configs/discovery-sources.yaml) supply regular report sources through their existing module/category mappings. The default catalog has 45 source IDs, with 43 enabled. Each source contributes up to 15 verifiable current-day stories, newest original publication first, after same-source canonical de-duplication. Collection retains the observed evidence within finite public Feed/page boundaries. See [collection extensions](platform.md).
 
 `collection.item_order: source` preserves page, ranking, or feed order. `published_at` orders valid publication times newest first, retaining input order for ties and unknown dates. A source can override this setting. Publisher rank remains in `metadata.source_rank`; ranking sources such as Hugging Face Papers retain their discovery semantics.
 
-Source cache reuse preserves original evidence dates and publisher rank. Brief plans retain all eligible current-day entries in each source's Top order, de-duplicating only within that source. Cross-source references and positions remain visible while identical original writing is reused. There is no shared discovery quota or fixed target refill.
+Source cache reuse preserves original evidence dates and publisher rank. Brief plans select up to 15 eligible current-day entries per source, newest original publication first, after same-source canonical de-duplication. Cross-source references and positions remain visible while identical original writing is reused. There is no shared discovery quota or fixed target refill.
 
 Date-only publication values keep day precision and receive `WATCH`, as do unknown publication times. Source updates and first discovery remain separate fields. Older papers and repositories can enter the research radar through current listing, return, ranking-rise, or revision signals as `WATCH`; ordinary refreshes preserve the original signal time.
 
@@ -139,7 +139,7 @@ The driver returns at most three short task tickets with part-reading metadata, 
 
 Candidate review skips navigation when extracting its bounded lead and retains `body_chars` and `evidence_chars` in the compact input. These describe available material and do not exclude short announcements. A review prepared from the index resolves canonical URL aliases when binding report text, retaining its original event IDs and merged source references.
 
-`slides review --index INDEX.json --max-news 50 --model-input --parts-dir REVIEW_INPUT_DIR` prepares all eligible candidates with the same ordered reader. The reviewer reads all parts before merging and ranking events.
+`slides review --index INDEX.json --max-news 50 --model-input --parts-dir REVIEW_INPUT_DIR` prepares all candidates within the per-source limit with the same ordered reader. The reviewer reads all parts before merging and ranking events.
 
 Slide authoring returns `background_commands` for image prefetch and any unfinished edition tail/PDF. Start each once alongside the authors, retain the process handles and pass `--in-flight slides-images` / `--in-flight edition-tail` while running. Wait for both before rendering, since tail and rendering update the report projection. `slides prefetch-images --plan PLAN.json` writes enriched news and metrics atomically to `images-slides-plan-rN.json` beside the immutable plan; rendering reuses it without fetching pages again. `--refresh` refreshes the receipt. Without prefetch, rendering keeps its image-collection behavior.
 

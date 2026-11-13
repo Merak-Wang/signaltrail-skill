@@ -18,6 +18,7 @@ from .image_policy import (
     filter_editorial_templates,
     image_resolution_candidates,
     image_variant_groups,
+    image_variant_key,
     normalize_image_candidates,
     select_image_variants,
 )
@@ -35,6 +36,7 @@ from .media import (
 )
 
 _MAX_PAGE_BYTES = 2 * 1024 * 1024
+_ARXIV_HOSTS = {"arxiv.org", "www.arxiv.org"}
 
 
 class _ArxivFullTextFetchError(ImageDownloadError):
@@ -59,7 +61,7 @@ def _arxiv_fulltext_link(soup: BeautifulSoup, page_url: str) -> str | None:
     输出：可信范围内的全文 URL；页面未明确提供时返回 None。
     """
     page = urlsplit(page_url)
-    if page.hostname != "arxiv.org":
+    if page.hostname not in _ARXIV_HOSTS:
         return None
     match = re.fullmatch(r"/abs/(.+?)(?:v\d+)?/?", page.path)
     if not match:
@@ -71,7 +73,7 @@ def _arxiv_fulltext_link(soup: BeautifulSoup, page_url: str) -> str | None:
             continue
         target = urljoin(page_url, str(anchor.get("href") or ""))
         parsed = urlsplit(target)
-        if parsed.scheme != "https" or parsed.hostname != "arxiv.org":
+        if parsed.scheme != "https" or parsed.hostname not in _ARXIV_HOSTS:
             continue
         target_match = re.fullmatch(r"/html/(.+?)(?:v\d+)?/?", parsed.path)
         if target_match and target_match.group(1).rstrip("/") == paper_id:
@@ -180,11 +182,11 @@ def _attach_download(candidate: dict[str, Any], downloaded: DownloadedImage) -> 
 
 
 def enrich_slide_images(
-    news: list[dict], data_dir: Path, config: MediaConfig,
+    news: list[dict], data_dir: Path, config: MediaConfig, *, refresh: bool = False,
 ) -> tuple[list[dict], dict]:
     """处理：为日报入选新闻补抓发布页高清图片并复用媒体缓存。
-    输入：候选新闻（event_id/title/sources/images）、数据根和媒体配置；不改动正文或事实。
-    输出：图片候选合并后的新闻列表，以及抓取/下载计数和来源、图片失败摘要。
+    输入：候选新闻、正文阶段的发布页图片、数据根和媒体配置；显式刷新重新读取网页。
+    输出：图片候选合并后的新闻列表，以及抓取、复用、下载计数和失败摘要。
     """
     from copy import deepcopy
 
@@ -198,7 +200,8 @@ def enrich_slide_images(
             item["images"] = select_image_variants(images, data_dir=data_dir)
             deduplicated += len(images) - len(item["images"])
         return enriched, {
-            "sources_fetched": 0, "images_downloaded": 0, "images_reused": 0,
+            "sources_fetched": 0, "source_pages_reused": 0,
+            "images_downloaded": 0, "images_reused": 0,
             "images_deduplicated": deduplicated,
             "source_failures": [], "image_failures": [],
         }
@@ -209,10 +212,22 @@ def enrich_slide_images(
             if url:
                 source_rows.setdefault(url, (item, source))
     page_results: dict[str, tuple[list[dict[str, Any]], str]] = {}
+    if not refresh:
+        for item in enriched:
+            for url, candidates in item.get("image_source_pages", {}).items():
+                parsed = urlsplit(url)
+                # 摘要页仍需读取同篇 arXiv HTML 全文链接。
+                if (url in source_rows and candidates and not (
+                        parsed.hostname in _ARXIV_HOSTS and parsed.path.startswith("/abs/")
+                )):
+                    page_results.setdefault(url, (candidates, url))
+    source_pages_reused = len(page_results)
     source_failures: list[dict[str, str]] = []
-    if source_rows:
+    if len(source_rows) > source_pages_reused:
         domain_queues: dict[str, list[tuple[str, dict]]] = {}
         for url, (item, _source) in source_rows.items():
+            if url in page_results:
+                continue
             domain = (urlsplit(url).hostname or "unknown").casefold()
             domain_queues.setdefault(domain, []).append((url, item))
         domains = list(domain_queues)
@@ -316,6 +331,22 @@ def enrich_slide_images(
 
     cache = _load_image_cache(data_dir)
     resolved: dict[str, DownloadedImage | Exception] = {}
+    # 缩略图单独出现在本轮页面时，按原图身份查找先前已下载的高清版本。
+    known_assets = {
+        image_variant_key(url): (candidate, referer)
+        for url, (candidate, referer) in all_urls.items()
+    }
+    for url, entry in cache["entries"].items():
+        if url in all_urls or not isinstance(entry, dict) or entry.get("status") != "success":
+            continue
+        related = known_assets.get(image_variant_key(url))
+        if related is None:
+            continue
+        cached = _cached_download(url, entry, data_dir, config)
+        if isinstance(cached, DownloadedImage):
+            candidate, referer = related
+            all_urls[url] = (_attach_download({**candidate, "url": url}, cached), referer)
+            resolved[url] = cached
     groups = image_variant_groups([candidate for candidate, _ in all_urls.values()])
     pending_groups = list(enumerate(groups))
     selected: dict[int, dict] = {}
@@ -419,7 +450,7 @@ def enrich_slide_images(
             elif isinstance(value, Exception):
                 pass
             else:
-                # 超预算候选仍留在图集中；尺寸未知，由渲染器保留远端链接。
+                # 超预算候选保留未知尺寸，最终选择只展示已验证的图片。
                 candidate.setdefault("width", None)
                 candidate.setdefault("height", None)
             # 同一新闻内不同 URL 可能返回同一图片内容；按实际哈希保留先出现的那张。
@@ -444,7 +475,8 @@ def enrich_slide_images(
         item["images"] = select_image_variants(kept, data_dir=data_dir)
         deduplicated += len(kept) - len(item["images"])
     return enriched, {
-        "sources_fetched": len(page_results), "images_downloaded": len(downloaded_urls),
+        "sources_fetched": len(page_results) - source_pages_reused,
+        "source_pages_reused": source_pages_reused, "images_downloaded": len(downloaded_urls),
         "images_reused": len(reused_urls), "images_deduplicated": deduplicated,
         "source_failures": source_failures, "image_failures": image_failures,
     }

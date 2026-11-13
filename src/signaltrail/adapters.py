@@ -16,6 +16,7 @@ from .models import ArticleItem
 from .utils import canonicalize_url, clean_title, item_id, url_for_source_filter
 
 IndexAdapter = Callable[[Page, SourceConfig, str], list[ArticleItem]]
+_RELATIVE_TIME = re.compile(r"\b\d+\s*(?:min(?:ute)?s?|hrs?|hours?|days?)\s+ago\b", re.I)
 _LOW_INFORMATION_TITLES = {
     "abstract",
     "developers",
@@ -46,6 +47,8 @@ def is_article_link(title: str, url: str) -> bool:
     """
     title = clean_title(title)
     if title.casefold() in _LOW_INFORMATION_TITLES or title.startswith(("http://", "https://")):
+        return False
+    if re.fullmatch(r"(?:today|yesterday)?\s*\d{1,2}:\d{2}", title, re.I):
         return False
     path = urlsplit(url).path.lower().rstrip("/")
     return not (
@@ -232,6 +235,12 @@ def _published_at(value: str, url: str, discovered_at: str | None = None) -> str
                 )
             except ValueError:
                 continue
+    url_date = re.search(r"/(20\d{2}/[a-z]{3}/\d{1,2})/", url, re.I)
+    if url_date:
+        try:
+            return datetime.strptime(url_date[1], "%Y/%b/%d").date().isoformat()
+        except ValueError:
+            pass
     relative = re.search(
         r"\b(\d+)\s*(min(?:ute)?s?|hr|hrs|hour|hours|day|days)\s+ago\b",
         text,
@@ -256,6 +265,7 @@ def _published_at(value: str, url: str, discovered_at: str | None = None) -> str
         (r"\b([A-Z][a-z]{2,8} \d{1,2}, 20\d{2})\b", "%B %d, %Y"),
         (r"\b([A-Z][a-z]{2} \d{1,2}, 20\d{2})\b", "%b %d, %Y"),
         (r"\b(\d{1,2} [A-Z][a-z]{2} 20\d{2})\b", "%d %b %Y"),
+        (r"\b(\d{1,2} [A-Z][a-z]{2,8} 20\d{2})\b", "%d %B %Y"),
     ):
         match = re.search(pattern, text)
         if match:
@@ -310,11 +320,28 @@ def browser_items_from_rows(
         article = _article(source, title, url, discovered_at)
         # 从卡片上下文移除标题，避免把标题中的会议日等事件日期当作发布日期。
         context = clean_title(row.get("context", "")).replace(title, "")
-        article.published_at = _published_at(context, url, discovered_at)
+        article.published_at = _published_at(context, url)
+        if not article.published_at and _RELATIVE_TIME.search(context):
+            # 卡片相对时间可能是更新时刻，保留原文并交由原文日期探测确认。
+            article.metadata.update(publication_time_basis="relative", published_raw=context,
+                                    published_precision="relative")
+        if source.id == "china_mfa":
+            date_match = re.search(r"/t(20\d{6})_\d+\.html$", url)
+            if date_match:
+                article.published_at = _published_at("", "/" + date_match[1])
+        if source.publisher_group == "cna_taiwan":
+            date_match = re.search(r"/news/[a-z]+/(20\d{6})\d+\.aspx$", url)
+            if date_match:
+                article.published_at = article.published_at or _published_at(
+                    "", "/" + date_match[1],
+                )
         if source.id == "yicai_economy" and row.get("yicai_create_date"):
             raw_date = row["yicai_create_date"]
             article.published_at = normalize_time(raw_date, "Asia/Shanghai")
             article.metadata["yicai_create_date"] = raw_date
+            if (article.published_at
+                    and article.metadata.get("publication_time_basis") == "relative"):
+                article.metadata["publication_time_basis"] = "publisher"
         raw_candidates = row.get("image_candidates")
         if not isinstance(raw_candidates, list):
             raw_candidates = []
@@ -412,16 +439,24 @@ def collect_arxiv_index(
     return arxiv_items_from_rows(rows, source, discovered_at)
 
 
-def latest_year_url(rows: list[dict[str, str]]) -> str:
-    """处理：从年份导航记录中选择最新年份的索引 URL。
+def latest_year_url(rows: list[dict[str, str]], source_url: str = "") -> str:
+    """处理：从当前栏目内的年份导航选择最新年度，排除全站其他栏目。
     输入：
     - ``rows``：年度归档页解析得到的链接记录；每行读取 title 与 href，并从标题中提取四位年份。
+    - ``source_url``：当前栏目入口，限定年度链接所在的主机及目录。
     输出：经过选择、规范化或安全处理的 URL 字符串，供后续访问或渲染使用。
     """
     candidates: list[tuple[int, str]] = []
+    source = urlsplit(source_url)
+    directory = source.path.rsplit("/", 1)[0] + "/"
     for row in rows:
         title = clean_title(row.get("title", ""))
         href = row.get("href", "")
+        target = urlsplit(href)
+        if source_url and (
+            target.netloc != source.netloc or not target.path.startswith(directory)
+        ):
+            continue
         if re.fullmatch(r"20\d{2}", title) and href.startswith(("http://", "https://")):
             candidates.append((int(title), href))
     if not candidates:
@@ -444,7 +479,7 @@ def collect_latest_year_index(
       并保持当前处理定义的筛选与排序语义。
     """
     rows = page.locator("a[href]").evaluate_all(YEAR_ROWS_JS)
-    year_url = latest_year_url(rows)
+    year_url = latest_year_url(rows, source.url)
     response = page.goto(year_url, wait_until="domcontentloaded", timeout=45_000)
     if response is None or not response.ok:
         status = response.status if response else "no response"
@@ -483,7 +518,11 @@ def twz_items_from_rows(
                 datetime.strptime(posted.group(1), "%b %d, %Y").date().isoformat()
             )
         else:
-            article.published_at = _published_at(row.get("card_text", ""), url, discovered_at)
+            article.published_at = _published_at(row.get("card_text", ""), url)
+            if not article.published_at and _RELATIVE_TIME.search(row.get("card_text", "")):
+                article.metadata["publication_time_basis"] = "relative"
+                article.metadata["published_raw"] = row["card_text"]
+                article.metadata["published_precision"] = "relative"
         article.description = clean_title(row.get("description", ""))
         seen.add(article.canonical_url)
         items.append(article)
@@ -538,10 +577,19 @@ def weibo_items_from_payload(
     输入：页面 JSON、来源配置和观察时间。
     输出：去掉推广条目的热搜列表，供同步和异步浏览器入口共用。
     """
-    if payload.get("ok") != 1:
-        raise RuntimeError(f"Weibo API returned ok={payload.get('ok')!r}")
-    cards = payload.get("data", {}).get("cards", [])
-    group = cards[0].get("card_group", []) if cards else []
+    if isinstance(payload.get("data"), list):
+        if payload.get("code") != 200:
+            raise RuntimeError(f"Weibo listing provider returned code={payload.get('code')!r}")
+        group = [
+            {"desc": row["title"], "scheme": row["link"],
+             "desc_extr": row.get("hot_value"), "realpos": rank}
+            for rank, row in enumerate(payload["data"], start=1)
+        ]
+    else:
+        if payload.get("ok") != 1:
+            raise RuntimeError(f"Weibo API returned ok={payload.get('ok')!r}")
+        cards = payload.get("data", {}).get("cards", [])
+        group = cards[0].get("card_group", []) if cards else []
     items: list[ArticleItem] = []
     for list_position, row in enumerate(group, start=1):
         title = clean_title(row.get("desc", ""))

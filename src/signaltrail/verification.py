@@ -15,7 +15,7 @@ from .config import (
     resolve_browser_channel,
     resolve_profile_dir,
 )
-from .models import effective_page_results
+from .models import effective_page_results, effective_source_status
 from .storage import write_text_atomic
 from .utils import read_json
 from .workflow import adopt_index_for_run
@@ -144,9 +144,8 @@ def pending_verification_pages(index: dict) -> list[dict[str, str]]:
         source_id = str(row.get("source_id", ""))
         source_name = str(row.get("source_name", source_id))
         page_rows = []
-        for page in effective_page_results(row.get("page_results", [])):
-            if not isinstance(page, dict):
-                continue
+        effective_pages = effective_page_results(row.get("page_results", []))
+        for page in effective_pages:
             status = str(page.get("status", ""))
             if status == "no_items" and (
                 page.get("error")
@@ -160,9 +159,7 @@ def pending_verification_pages(index: dict) -> list[dict[str, str]]:
                 status = "failed"
             if status in {"verification_required", "rate_limited", "failed"}:
                 page_rows.append(page)
-        source_status = str(row.get("status", ""))
-        if source_status == "no_items" and row.get("error"):
-            source_status = "failed"
+        source_status = effective_source_status(row, effective_pages)
         if not page_rows and source_status in {
             "verification_required",
             "rate_limited",

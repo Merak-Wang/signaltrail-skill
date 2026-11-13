@@ -1,8 +1,8 @@
 # Development
 
-**Status:** Verified · **Owner:** Repository maintainers · **Last verified:** 2026-11-02
+**Status:** Verified · **Owner:** Repository maintainers · **Last verified:** 2026-11-13
 
-This guide covers local changes and test selection. Read [architecture](../ARCHITECTURE.md)
+This guide covers local changes and module evaluation. Read [architecture](../ARCHITECTURE.md)
 for code ownership and [AGENTS.md](../AGENTS.md) for invariants. [中文](zh-CN/development.md)
 
 ## Setup and checks
@@ -11,39 +11,56 @@ for code ownership and [AGENTS.md](../AGENTS.md) for invariants. [中文](zh-CN/
 python -m venv .venv
 # Activate .venv in your shell, then:
 python -m pip install -e ".[dev]"
-python -m pytest
+python scripts/evaluate_modules.py --repeat 3
 python -m ruff check .
-python -m compileall -q src tests scripts
+python -m compileall -q src scripts evals
 python scripts/check_code_comments.py
 python scripts/check_docs.py
 git diff --check
 ```
 
-Unit tests use temporary data roots and fake network/host responses. They need no production
-data, browser login, Notion credentials, or model calls. CI runs on Windows and Ubuntu with
-Python 3.11 and 3.12. Run a focused group while editing, then the full gate before submitting.
+## Module evaluation
 
-| Change | Focused tests |
-| --- | --- |
-| CLI options, aliases, dispatch | `tests/test_cli.py` |
-| Source configuration and filtering | `tests/test_config.py`, `tests/test_normalize.py`, `tests/test_collector.py` |
-| Feed, monitor, clustering | `tests/test_feeds.py`, `tests/test_monitor.py`, `tests/test_clustering.py` |
-| Context and writing | `tests/test_context.py`, `tests/test_authoring.py`, `tests/test_semantics.py` |
-| Report contract and persistence | `tests/test_reporting.py`, `tests/test_report_persistence.py`, `tests/test_storage.py` |
-| Run lifecycle and evaluation | `tests/test_workflow.py`, `tests/test_evaluation_workflow.py`, `tests/test_evaluation.py` |
-| Browser verification and Notion | `tests/test_verification.py`, `tests/test_notion.py` |
-| Local output and media | `tests/test_desktop_delivery.py`, `tests/test_content.py`, `tests/test_media.py` |
-| News slide authoring and reuse | `tests/test_news_slides.py`, `tests/test_standalone_slides.py`, `tests/test_slide_reuse.py` |
-| Slide rendering and images | `tests/test_slide_renderer.py`, `tests/test_slide_images.py`, `tests/test_image_policy.py`, `tests/test_content.py`, `tests/test_media.py` |
-| Narrated video and speech | `tests/test_slide_video.py`, `tests/test_voice_synthesis.py`, `tests/test_speech_text.py`, `tests/test_video_runtime.py` |
-| Experimental research and explainers | `tests/test_research.py`, `tests/test_story_stream.py`, `tests/test_narrative.py`, `tests/test_narrative_store.py`, `tests/test_narrative_verification.py` |
-| Usage and host integration | `tests/test_llm_usage*.py`, `tests/test_usage_cli.py`, `tests/test_hermes_runner.py` |
-| Packaging and documentation | `tests/test_hermes_package.py`, `tests/test_docs.py`, `tests/test_code_comments.py` |
+The default evaluation runs complete production paths with fixed external inputs and an isolated
+work directory for each sample. Select one or more modules with `--modules` while editing.
+The full default run covers the four offline modules below on Windows and Ubuntu.
 
-Shared report setup lives in `tests/report_helpers.py`. Keep a fixture local unless several
-tests need the same setup. Parameterize cases that differ only in inputs and expected outcomes;
-keep distinct failure and recovery scenarios readable. Do not test prose by matching sentences
-or delete regression coverage merely to reduce the test count.
+| Module | Workflow and quality evidence | Performance measures |
+| --- | --- | --- |
+| `collection` | Collect fixed source responses, resolve dates, enrich articles, and verify the resulting index, coverage, and access status | Stage time, article throughput, HTTP request and response reuse counts |
+| `report` | Compile fixed author drafts and source index, check coverage and evidence links, verify Markdown and HTML contents and PDF readability, reject an incomplete draft, and publish a revision | Save and revision time, briefs per second, output sizes |
+| `slides` | Prepare and accept fixed slide drafts, render the deck, and verify the delivered presentation | Stage time, pages per second, output size |
+| `orchestration` | Dispatch and accept 13 slide batches through the real CLI, retain active drafts, repair a rejected batch, and render all 50 pages with a single coordinator | Dispatch rounds, forced handoffs, author occupancy, complete workflow time and page throughput |
+| `video` | Export a supplied local deck with the production TTS and video runtime, decode the result, and repeat the export to measure reuse | First and repeat export time, output duration per wall second, cache hits and generated audio segments |
+
+Each sample records the workload, module pass/fail checks, wall time, throughput, Python CPU
+time, and peak resident memory for its Python process. Browser, encoder, and TTS subprocesses
+are outside the Python CPU and memory measurements. The receipt reports the median and range of
+module wall time across samples. The default output is a new directory under
+`output/module-evaluations/` with a `results.json` receipt and sample artifacts. Use a fresh path
+when specifying `--output` explicitly.
+
+Compare timings on the same machine and runtime with the same workload and cache conditions.
+Run comparisons serially without competing video exports or model jobs on the machine.
+Pass the earlier receipt as `--baseline` to apply a relative median wall-time limit. The command
+below uses a 20% limit and records environment or workload mismatches as incomparable.
+
+```sh
+python scripts/evaluate_modules.py --repeat 3 --baseline BASELINE.json --max-regression 0.2
+```
+
+Prepare the local video runtime before measuring. Run video separately with the accepted deck,
+its data root, and paths to the installed Qwen model, TTS executable, and resident worker. This
+keeps installation out of the comparison. The first export may reuse existing audio. Interpret
+the first and repeat export times alongside their actual cache hits and generated segment counts.
+
+```sh
+python scripts/evaluate_modules.py --modules video --video-deck DECK.json --data-dir DATA --device vulkan --model-dir MODEL --tts-executable EXE --tts-worker WORKER --repeat 1
+```
+
+Measure model latency and tokens in a separate host run with the same input, model, and scope.
+Use the host's request records and `scripts/measure_codex_turn.py` for Codex. The fixed author
+drafts in the module evaluation measure the application stages that consume those drafts.
 
 ## Names and modules
 

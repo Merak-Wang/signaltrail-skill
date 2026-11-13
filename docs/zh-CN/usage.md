@@ -60,11 +60,11 @@ output:
 
 ## 来源与正文证据
 
-[sources.yaml](../../configs/sources.yaml) 和 [discovery-sources.yaml](../../configs/discovery-sources.yaml) 中的启用来源均按现有module/category进入正式日报栏目。127项配置中124项启用，禁用项保持禁用。每源收录有限公开Feed/页面响应内全部可验证当日新闻，保留原Top顺序；不受旧共享30池或每源1/2/15条限额限制。见[采集扩展](platform.md)。
+[sources.yaml](../../configs/sources.yaml) 和 [discovery-sources.yaml](../../configs/discovery-sources.yaml) 中的启用来源均按现有module/category进入正式日报栏目。默认配置共 45 项，其中 43 项启用。每源从有限公开Feed/页面响应内的合格当日新闻中，同源去重后按原发时间选取最新最多15条；采集索引保留完整观察证据及来源状态。见[采集扩展](platform.md)。
 
 `collection.item_order: source` 保留页面、榜单或 Feed 顺序；`published_at` 按有效发布时间从新到旧排序，相同或未知时间保留输入顺序。来源可以单独覆盖设置。原站排名保留在 `metadata.source_rank`；Hugging Face Papers 等榜单来源沿用发现排名语义。
 
-来源缓存复用保留原文日期和来源排名。简报计划按每源Top保留全部当日合格条目，仅在同源内规范URL去重；跨源各保引用与位置，相同原文复用写作，不再使用共享补充名额或按固定目标补位。
+来源缓存复用保留原文日期和来源排名。简报计划对当日合格条目同源规范URL去重后，按原发时间从新到旧选取每源最多15条；跨源各保引用与位置，相同原文复用写作，不再使用共享补充名额或按固定目标补位。
 
 纯日期保留日粒度，与未知发表时间一样使用 `WATCH`。来源修订和首次发现时间分别保存。旧论文和仓库可以凭本期新上榜、重新上榜、排名上升或修订信号进入研究雷达，状态为 `WATCH`；普通刷新沿用原信号时间。
 
@@ -90,7 +90,7 @@ signaltrail --data-dir DATA_DIR serve --open
 
 整期推进程序在专用 `author-inputs/` 中生成完整输入，保留证据、顺序、写作风格和 Schema。简报、分析、图文任务均提供 `input_parts_dir` 和有序 `input_parts` 文件名，每块至多 7500 个 `o200k_base` token，按序拼接 UTF-8 字节可还原完整输入。作者逐块读取，每个工具结果只放一块，读完所有材料后写作。每项任务使用没有前批历史的新上下文；完整输入文件留作程序使用和审计。
 
-程序完成日期、证据检查、富化与输入冻结后，图文事件审阅可与简报作者并行。审阅仍覆盖全部合格候选，并在定稿前保存合并、排序决定；简报收录范围独立依据来源索引，不依赖图文前五十条的选题。
+程序完成日期、证据检查、富化与输入冻结后，图文事件审阅可与简报作者并行。审阅仍覆盖每源限额内的全部合格候选，并在定稿前保存合并、排序决定；简报收录范围独立依据来源索引，不依赖图文前五十条的选题。
 
 简报包携带日报日期与冻结采集窗口。作者结合本期新增进展、影响和时效评估重要性，旧研究保留原始发表时间与真实上榜变化，有据的重大持续影响仍可支持高分。对携带冻结结束时间的包，校验要求 `NEW` 有当天或前一天的明确发布时间，未知日期、纯日期与研究上榜信号使用 `WATCH`。推进程序统一校验提交的草稿，并返回具体修复错误。单独使用的旧包仍保留可选预检和提交命令，供手工恢复。
 
@@ -141,7 +141,7 @@ signaltrail --data-dir DATA_DIR cleanup --days 7 --apply
 
 候选审阅提取有界 lead 时跳过导航，并在精简输入中保留 `body_chars`、`evidence_chars`。这些字段说明材料量，短公告继续保留审阅资格。从索引提前生成的审阅在绑定报告文字时解析规范 URL 别名，保留原 event ID 以及合并的来源引用。
 
-`slides review --index INDEX.json --max-news 50 --model-input --parts-dir REVIEW_INPUT_DIR` 将全部合格候选按相同格式分块；审阅者读完所有块后合并、排序。
+`slides review --index INDEX.json --max-news 50 --model-input --parts-dir REVIEW_INPUT_DIR` 将每源限额内的全部合格候选按相同格式分块；审阅者读完所有块后合并、排序。
 
 图文作者阶段返回图片预取及未完成 tail/PDF 的 `background_commands`。与作者并行各启动一次，保留进程句柄，运行期间分别传 `--in-flight slides-images`、`--in-flight edition-tail`；渲染前等待全部结束，避免共同更新日报投影。`slides prefetch-images --plan PLAN.json` 将完整新闻图片和计量原子写入计划旁的 `images-slides-plan-rN.json`，渲染直接复用。`--refresh` 可重抓图片；未预取时保持原有渲染采图行为。
 

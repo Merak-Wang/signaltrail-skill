@@ -28,6 +28,12 @@ def normalize_time(value: str, timezone: str | tzinfo = "UTC") -> str | None:
             return datetime.strptime(text.replace("/", "-"), "%Y-%m-%d").date().isoformat()
         except ValueError:
             return None
+    if re.fullmatch(r"(?:\d{1,2} [A-Za-z]+ \d{4}|[A-Za-z]+ \d{1,2}, \d{4})", text):
+        for date_format in ("%d %B %Y", "%d %b %Y", "%B %d, %Y", "%b %d, %Y"):
+            try:
+                return datetime.strptime(text, date_format).date().isoformat()
+            except ValueError:
+                continue
     try:
         parsed = datetime.fromisoformat(text.replace("Z", "+00:00").replace("/", "-"))
     except ValueError:
@@ -47,12 +53,13 @@ def _declared_datetime(value: str) -> datetime | None:
     输出：未附加默认时区的时间，无法解析时为空。
     """
     try:
-        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+        return datetime.fromisoformat(value.replace("Z", "+00:00").replace("/", "-"))
     except ValueError:
         try:
             return parsedate_to_datetime(value)
         except (ValueError, TypeError, OverflowError):
-            return None
+            day = normalize_time(value)
+            return datetime.fromisoformat(day) if day and len(day) == 10 else None
 
 
 def uses_platform_publication_time(item: dict) -> bool:
@@ -71,6 +78,10 @@ def original_publication_time(item: dict, timezone: str = "Asia/Shanghai") -> st
     """
     metadata = item.get("metadata") or {}
     original = str((metadata.get("content_source") or {}).get("published_at") or "")
+    if item.get("source_id") == "bbc_world" and metadata.get("publication_time_missing"):
+        return normalize_time(original, timezone)
+    if metadata.get("publication_time_basis") == "relative" and not original:
+        return None
     if uses_platform_publication_time(item):
         return normalize_time(original, timezone)
     feed_raw = str(metadata.get("published_raw") or "")
@@ -80,8 +91,9 @@ def original_publication_time(item: dict, timezone: str = "Asia/Shanghai") -> st
     page_time = _declared_datetime(original)
     if page_time is None:
         return feed
-    if len(original) == 10 or page_time.tzinfo:
-        return normalize_time(original, timezone)
+    page_date = normalize_time(original, timezone)
+    if (page_date and len(page_date) == 10) or page_time.tzinfo:
+        return page_date
     if feed_time and feed_time.tzinfo:
         # 同一发布者同一文章的Feed原始偏移可解释网页未标时区的本地钟面时间。
         return normalize_time(page_time.replace(tzinfo=feed_time.tzinfo).isoformat(), timezone)

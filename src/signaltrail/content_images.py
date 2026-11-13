@@ -156,18 +156,19 @@ def article_image_candidates(
         picture = node.find_parent("picture")
         responsive = {}
         responsive_nodes = [*picture.select("source"), node] if picture else [node]
-        for number, responsive_node in enumerate(responsive_nodes):
+        default_group = f"{base_url}#image-{position}"
+        for responsive_node in responsive_nodes:
             variants = srcset_image_variants(
                 responsive_node.get("srcset") or responsive_node.get("data-srcset"),
             )
-            group = f"{base_url}#image-{position}-source-{number}"
+            media = str(responsive_node.get("media") or "")
+            # 同一视口的格式替代共享图源；不同视口可能各自采用不同构图。
+            group = f"{default_group}:{media}" if media else default_group
             for entry in variants:
-                responsive[urljoin(base_url, entry["url"])] = {
+                responsive.setdefault(urljoin(base_url, entry["url"]), {
                     **{key: value for key, value in entry.items() if key != "url"},
                     "responsive_group": group,
-                }
-            if variants and responsive_node is node and node.get("src"):
-                responsive.setdefault(urljoin(base_url, node["src"]), {"responsive_group": group})
+                })
         picture_urls = [
             url for source in picture.select("source")
             for url in srcset_candidates(source.get("srcset") or source.get("data-srcset"))
@@ -201,7 +202,7 @@ def article_image_candidates(
                 "declared_width": str(node.get("width") or ""),
                 "declared_height": str(node.get("height") or ""),
                 "position": position, "variant": variant,
-                **responsive.get(url, {}),
+                **responsive.get(url, {"responsive_group": default_group}),
             })
     return sorted(filter_editorial_templates(candidates), key=lambda entry: (
         -entry["relevance_score"], -bool(entry["caption"]), entry["position"], entry["variant"],

@@ -5,7 +5,7 @@ Python owns collection, state, validation, revisions, and publishing.
 
 1. Read [ARCHITECTURE.md](ARCHITECTURE.md) and the [documentation index](docs/README.md).
 2. Run `git status --short`. Preserve unrelated and user-authored changes.
-3. Read the affected module, its tests, and the relevant reference before editing.
+3. Read the affected module, its evaluation, and the relevant reference before editing.
 
 ## Boundaries
 
@@ -23,45 +23,45 @@ Python owns collection, state, validation, revisions, and publishing.
 - For cleanup of user or workspace files and directories, use the OS recycle bin. If that fails or is unavailable,
   leave the files in place and report it; never fall back to permanent deletion.
 
-When records disagree, follow schemas, enums, validators, and persistence code; then behavior tests;
+When records disagree, follow schemas, enums, validators, and persistence code; then module evaluations;
 then the report contract and `SKILL.md`; then architecture, references, and user documentation.
 Repair the lower-priority record in the same change.
 
 ## Find the relevant code
 
-| Work | Start with | Tests |
+| Work | Start with | Module evaluation |
 | --- | --- | --- |
-| CLI | `cli.py`, `commands/` | `test_cli.py` |
-| Sources and collection | `config.py`, `adapters.py`, `collector.py` | `test_config.py`, `test_normalize.py`, `test_collector.py` |
-| Monitor | `feeds.py`, `monitor.py`, `clustering.py` | Matching `test_*.py` files |
-| Evidence | `content.py`, `media.py`, `access.py` | `test_content.py`, `test_media.py` |
-| Writing | `context.py`, `authoring.py`, report contract | `test_context.py`, `test_authoring.py`, `test_semantics.py` |
-| Reports and recovery | `reporting.py`, `reports.py`, `workflow.py`, `storage.py` | `test_reporting.py`, `test_report_persistence.py`, `test_workflow.py`, `test_storage.py` |
-| Evaluation and usage | `evaluation.py`, `llm_usage/`, `hosts/` | `test_evaluation*.py`, `test_llm_usage*.py`, `test_hermes_runner.py` |
-| Delivery | `local_output.py`, `notion.py`, `verification.py` | `test_desktop_delivery.py`, `test_notion.py`, `test_verification.py` |
-| News slides | `news_slides.py`, `slide_images.py`, `slide_reuse.py`, `slide_renderer.py` | `test_news_slides.py`, `test_slide_images.py`, `test_slide_reuse.py`, `test_slide_renderer.py` |
-| Narrated video | `slide_video.py`, `voice_synthesis.py`, `speech_text.py`, `video_runtime.py`, `qwen_runtime.py` | `test_slide_video.py`, `test_voice_synthesis.py`, `test_speech_text.py`, `test_video_runtime.py` |
-| Packaging and docs | `scripts/`, `SKILL.md`, `docs/README.md` | `test_hermes_package.py`, `test_docs.py` |
+| Sources, collection, and evidence | `adapters.py`, `collector.py`, `content.py` | `collection` |
+| Report compilation and local delivery | `reporting.py`, `reports.py`, `local_output.py` | `report` |
+| News slides | `news_slides.py`, `slide_images.py`, `slide_reuse.py`, `slide_renderer.py` | `slides` |
+| Narrated video | `slide_video.py`, `voice_synthesis.py`, `video_runtime.py`, `qwen_runtime.py` | `video` with a local deck and TTS runtime |
 
-Paths above are relative to `src/signaltrail/` and `tests/`.
+Production paths above are relative to `src/signaltrail/`. For other entry points, see the
+[architecture code map](ARCHITECTURE.md#code-map).
 
 ## Before submitting
 
-Add or update behavior tests for source filters, statuses, validation, and publishing changes.
-Run focused tests while editing, then the full gate:
+Evaluate complete module paths through their production entry points. Cover changes to source
+selection, status, validation, and delivery in representative workloads. Record output quality,
+wall time, throughput, and process resources. Use the affected modules while editing, then run
+the default module evaluations and repository checks before submitting.
 
 ```sh
-python -m pytest
+python scripts/evaluate_modules.py --repeat 3
 python -m ruff check .
-python -m compileall -q src tests scripts
+python -m compileall -q src scripts evals
 python scripts/check_code_comments.py
 python scripts/check_docs.py
 git diff --check
 ```
 
+The default run writes a new receipt and sample artifacts under `output/module-evaluations/`.
+Run the local `video` evaluation for video changes. Use the
+[development guide](docs/development.md#module-evaluation) for reproducible comparisons.
+
 Use concise Chinese docstrings to explain logic, input provenance, and downstream output meaning.
 Avoid paraphrasing types or function names. Inline comments should explain non-obvious safety,
-state, compatibility, or concurrency decisions. Keep tests about behavior, not README wording.
+state, compatibility, or concurrency decisions.
 
 Update English engineering docs and their `docs/zh-CN/` mirrors together. Keep runtime steps in
 `SKILL.md` and detailed policy in `references/`. Writing and naming conventions live in the

@@ -13,7 +13,7 @@ import httpx
 from bs4 import BeautifulSoup, Tag
 
 from .access import classify_access_text, read_bounded_response
-from .adapters import browser_items_from_rows
+from .adapters import browser_items_from_rows, weibo_items_from_payload
 from .config import AppConfig, SourceConfig, source_urls
 from .image_policy import is_placeholder_image_url, srcset_candidates
 from .models import SourceResult, SourceStatus
@@ -210,6 +210,24 @@ async def _prefetch_one(
 
     encoding = response.encoding or "utf-8"
     body = content.decode(encoding, errors="replace")
+    if source.adapter_name == "weibo_api" and response.status_code < 400 and not truncated:
+        try:
+            items = weibo_items_from_payload(json.loads(body), source, collected_at)
+        except (ValueError, KeyError, TypeError, RuntimeError) as exc:
+            items = []
+            status = SourceStatus.FAILED
+            error = f"Invalid Weibo listing: {exc}"
+        else:
+            status = SourceStatus.SUCCESS if items else SourceStatus.NO_ITEMS
+            error = None
+            for item in items:
+                item.metadata["listing_endpoint"] = str(response.url)
+        return SourceResult(
+            source_id=source.id, source_name=source.name, source_url=url,
+            status=status, collected_at=collected_at, module=source.module,
+            category=source.category, final_url=str(response.url),
+            http_status=response.status_code, error=error, items=items,
+        )
     soup, title, rows = _html_index_document(body)
     if source.id == "yicai_economy":
         _yicai_publication_dates(soup, rows, str(response.url))
@@ -291,7 +309,7 @@ async def _prefetch_all(
         jobs = [
             (source, url)
             for source in sources
-            if source.adapter_name == "browser_index"
+            if source.adapter_name in {"browser_index", "weibo_api"}
             for url in source_urls(source, data_dir)
         ]
         results = await asyncio.gather(

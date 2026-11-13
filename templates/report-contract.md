@@ -25,11 +25,11 @@ Schema，也不能放宽下列安全和状态边界。
 3. 研判。
 4. 质量评估与用户反馈（无评分时显示尚未评分；仅按用户明确要求启动质量评分）。
 
-七个 section 由 Python 按输出语言补齐并排序。渲染器按 brief 来源形成三级标题。精选 `items[]` 在每个 section 内按 `importance` 降序，不要求跨 section 全局降序。Python 按来源保留本期当日可用条目，并依当前索引顺序分配唯一文章位置；同来源的同 canonical URL 只占一个位置，覆盖数由本轮 `brief_plan` 的实际条目数决定。同标题、不同地址的报道保留。默认 `collection.item_order: source` 保留来源原顺序；`published_at` 按有效发布时间从新到旧排列，缺失时间与并列时保持稳定输入顺序。两种模式和顺延补位都保留原始 `source_rank` 作为来源 Top 标签。普通 `briefs[]` 保持当前 `brief_plan` 的选择顺序，不按内部 `importance` 二次重排；`importance` 仍用于精选事件与研判选择。
+七个 section 由 Python 按输出语言补齐并排序。渲染器按 brief 来源形成三级标题。精选 `items[]` 在每个 section 内按 `importance` 降序，不要求跨 section 全局降序。Python 按来源筛选本期当日条目，按原发时间从新到旧为每源选取最多 15 条。同来源的同 canonical URL 只占一个位置，覆盖数由本轮 `brief_plan` 的实际条目数决定。同标题、不同地址的报道保留。采集索引默认 `collection.item_order: source` 保留来源原顺序；`published_at` 按有效发布时间从新到旧排列，缺失时间与并列时保持稳定输入顺序。简报保留原始 `source_rank` 作为来源 Top 标签。普通 `briefs[]` 保持当前 `brief_plan` 的选择顺序，`importance` 用于精选事件与研判选择。
 
 候选的发表、更新和发现时间分别解释。纯日期与未知发表时间使用 `WATCH`。论文、项目的 `discovery_signal` 和 `signal_at` 表达本期榜单观察，`selection_reason` 说明选材依据；遵守 `suggested_status=WATCH`。旧论文再次上榜或排名上升可说明其研究价值与关注变化，保留原发表日期。三视角分析继续围绕可追溯证据形成独立判断。
 
-每个 brief author 逐项完成其 packet 的 `author_item_ids`，并只把一个符合 `output_schema` 的 JSON 对象写入 `draft_result_path`；Python 验证各批次、原样合并同语言的 `reusable_briefs` 并执行覆盖校验。`target_count` 是本来源最低覆盖数，`default_item_ids` 是本版唯一、确定且有序的普通 brief 边界。Python 不会用模板生成译题或 TL;DR；semantic cache 只可复用内容指纹、输出语言一致且独立评估已批准、并且仍位于对应 `brief_plan.default_item_ids` 内的旧 brief，不得用本轮计划之外的历史条目补位，草稿中越界的 item 也必须丢弃。
+每个 brief author 逐项完成其 packet 的 `author_item_ids`，并只把一个符合 `output_schema` 的 JSON 对象写入 `draft_result_path`；Python 验证各批次、原样合并同语言的 `reusable_briefs` 并执行覆盖校验。`target_count` 是本来源最低覆盖数，`default_item_ids` 是本版唯一、确定且有序的普通 brief 边界。正文日期复核后，以冻结计划中每源的条目数计算覆盖目标，计划外的来源目标为零；独立校验缺少运行计划时沿用索引策略。Python 不会用模板生成译题或 TL;DR；semantic cache 只可复用内容指纹、输出语言一致且独立评估已批准、并且仍位于对应 `brief_plan.default_item_ids` 内的旧 brief，不得用本轮计划之外的历史条目补位，草稿中越界的 item 也必须丢弃。
 
 每个 brief 与 analysis packet 都携带接收器实际执行的 `output_schema`。它是根级和嵌套字段、
 类型、枚举、长度及 `additionalProperties` 边界的权威契约；本文解释语义，但不能放宽该

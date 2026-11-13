@@ -11,6 +11,7 @@ permissions:
 
 jobs:
   test:
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
@@ -25,35 +26,18 @@ jobs:
           cache: pip
       - name: Install
         run: python -m pip install --upgrade pip && python -m pip install -e ".[dev]"
-      - name: Prepare FFmpeg (Ubuntu)
-        if: runner.os == 'Linux'
-        shell: bash
-        run: |
-          if ! command -v ffmpeg >/dev/null; then
-            sudo apt-get update
-            sudo apt-get install -y ffmpeg
-          fi
-          ffmpeg -version
-      - name: Prepare FFmpeg (Windows)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          if (-not (Get-Command ffmpeg -ErrorAction SilentlyContinue)) {
-            choco install ffmpeg -y --no-progress
-            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-            $env:PATH = [Environment]::GetEnvironmentVariable('Path', 'Machine') + ';' +
-              [Environment]::GetEnvironmentVariable('Path', 'User')
-          }
-          $ffmpeg = (Get-Command ffmpeg -ErrorAction Stop).Source
-          Split-Path $ffmpeg | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-          & $ffmpeg -version
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Ruff
         run: python -m ruff check .
-      - name: Tests
-        run: python -m pytest
+      - name: Module quality and performance
+        run: python scripts/evaluate_modules.py --repeat 3 --output output/module-evaluation/results.json
+      - name: Save module evaluation
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: modules-${{ matrix.os }}-py${{ matrix.python-version }}
+          path: output/module-evaluation/
       - name: Compile package
-        run: python -m compileall -q src tests scripts
+        run: python -m compileall -q src scripts evals
       - name: Code documentation
         run: python scripts/check_code_comments.py
       - name: Documentation links and translations

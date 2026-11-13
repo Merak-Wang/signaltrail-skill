@@ -80,7 +80,7 @@ async def _candidates(page: Page, source: SourceConfig, result: SourceResult) ->
     if mode == "latest_year_index":
         rows = await page.locator("a[href]").evaluate_all(YEAR_ROWS_JS)
         response = await page.goto(
-            latest_year_url(rows), wait_until="domcontentloaded", timeout=45_000
+            latest_year_url(rows, source.url), wait_until="domcontentloaded", timeout=45_000
         )
         result.http_status = response.status if response else None
         if response is None or not response.ok:

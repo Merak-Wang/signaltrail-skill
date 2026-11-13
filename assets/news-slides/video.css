@@ -1,0 +1,25 @@
+html.video-capture { scroll-behavior: auto; }
+.video-capture .header-actions, .video-capture .keyboard-hint, .video-capture .navigation,
+.video-capture .up-next, .video-capture .gallery-controls, .video-capture .image-open,
+.video-capture .gallery-thumbnails, .video-capture .source-chips, .video-capture .source-list {
+  display: none;
+}
+.video-capture .masthead { height: 52px; }
+.video-capture .controls { min-height: 48px; padding: 7px 4vw; backdrop-filter: none; }
+.video-capture .progress { flex: 1; }
+.video-capture .progress i { transition: none; }
+.video-capture .stage { padding-bottom: 0; }
+.video-capture .slide { padding: 25px 0 0; }
+.video-capture .slide, .video-capture .slide * { animation: none !important; }
+.video-capture .story-grid { grid-template-columns: minmax(0, .95fr) minmax(0, 1.05fr); }
+.video-capture .headline, .video-capture .headline.compact {
+  font-size: 42px; line-height: 1.18; margin-bottom: 20px;
+}
+.video-capture .story-sources { margin: -8px 0 15px; }
+.video-capture .summary { max-width: none; font-size: 17px; line-height: 1.62; margin-bottom: 20px; }
+.video-capture .narration-section { padding-top: 15px; }
+.video-capture .narration-section h3 { margin-bottom: 7px; }
+.video-capture .narration { font-size: 17px; line-height: 1.65; }
+.video-capture .narration p { margin-bottom: 0; white-space: pre-line; }
+.video-capture .image-frame { max-height: 51svh; }
+.video-capture .visual-placeholder { min-height: 390px; }

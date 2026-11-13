@@ -12,6 +12,7 @@ import subprocess
 import sys
 import time
 import wave
+from collections import deque
 from contextlib import suppress
 from copy import deepcopy
 from pathlib import Path
@@ -24,6 +25,35 @@ class NativeInferenceError(RuntimeError):
     输入：原生进程返回的错误或设备加载诊断。
     输出：允许同模型 CPU 重试的错误，本地文件读写错误单独报告。
     """
+
+
+class QwenFrameLimitError(ValueError):
+    """处理：标记日志确认的帧数上限，允许原句拆分后重试。
+    输入：达到本轮帧数上限的诊断。
+    输出：由句段恢复逻辑处理的异常。
+    """
+
+
+def _split_frame_limited_text(text: str) -> list[str]:
+    """处理：优先在原标点或词界分割超帧句段，必要时按长度等分。
+    输入：生成帧数达到上限的原文。
+    输出：可原样拼回的两段，短文本返回空列表以停止恢复。
+    """
+    if len(text.strip()) < 8:
+        return []
+    boundaries = [match.end() for match in re.finditer(r'[。！？!?，,；;：:]\s*|\s+', text)
+                  if text[:match.end()].strip() and text[match.end():].strip()
+                  and not (text[match.start() - 1:match.start()].isdigit()
+                           and text[match.start() + 1:match.start() + 2].isdigit())]
+    if not boundaries:
+        # 连续中文可在字间缩短，英文单词、型号和数字表达保持完整。
+        boundaries = [match.start() for match in re.finditer(
+            r'(?<=[\u3400-\u9fff])(?=[\u3400-\u9fff])', text)]
+    if not boundaries:
+        return []
+    midpoint = len(text) // 2
+    boundary = min(boundaries, key=lambda position: abs(position - midpoint))
+    return [text[:boundary], text[boundary:]]
 
 
 def narration_sentences(text: str) -> list[str]:
@@ -265,7 +295,8 @@ def _check_qwen_log(path: Path, limit: int) -> None:
     if not frames:
         raise ValueError(f'Missing Qwen frame count: {path}')
     if int(frames.group(1)) >= limit:
-        raise ValueError('TTS reached the frame limit; split the original sentence at punctuation')
+        raise QwenFrameLimitError(
+            'TTS reached the frame limit; split the original sentence at punctuation')
 
 
 def _wave_digest(path: Path) -> str:
@@ -543,7 +574,7 @@ class VoiceSynthesizer:
 
     def _page(self, title: str, brief: str, destination: Path,
              *, language: str = "zh-CN") -> dict:
-        """处理：Qwen 按页合成并复用旧句子缓存，其他引擎按句合成；检查时长与峰值。
+        """处理：按意群合成并复用旧缓存，超帧原句拆分一次后拼接。
         输入：日报标题、已写短讲解和本次导出 WAV 路径。
         输出：原始及播放 WAV、合成命令和实际时长。
         """
@@ -555,7 +586,10 @@ class VoiceSynthesizer:
         else:
             parts.extend(narration_sentences(brief))
         segments, joined, parameters = [], array.array('h'), None
-        for index, text in enumerate(parts):
+        pending_parts = deque((part, index == 0, False) for index, part in enumerate(parts))
+        recoveries = []
+        while pending_parts:
+            text, title_end, recovered = pending_parts.popleft()
             spoken = spoken_narration(text, language, self.profile.get('pronunciations', {}))
             key = hashlib.sha256((language + '\0' + spoken).encode()).hexdigest()[:24]
             raw = self.cache / f'{key}.wav'
@@ -567,56 +601,76 @@ class VoiceSynthesizer:
                            'en' if language.lower().startswith('en') else 'zh',
                            '-f', str(text_file), '--output', str(raw.with_suffix('.pending.wav'))]
             started = time.perf_counter()
-            cached_audio = None
-            if raw.exists():
-                try:
-                    cached_audio = _wave_samples(raw)
+            log = raw.with_suffix('.log')
+            try:
+                cached_audio = None
+                if raw.exists():
+                    try:
+                        cached_audio = _wave_samples(raw)
+                        if self.engine == 'qwen3':
+                            _check_qwen_log(log, self.identity['frames'])
+                    except QwenFrameLimitError:
+                        raise
+                    except (ValueError, EOFError, wave.Error):
+                        cached_audio = None
+                        raw.rename(raw.with_name(raw.stem + f'.invalid-{time.time_ns()}.wav'))
+                if not raw.exists():
                     if self.engine == 'qwen3':
-                        _check_qwen_log(raw.with_suffix('.log'), self.identity['frames'])
-                except (ValueError, EOFError, wave.Error):
-                    cached_audio = None
-                    raw.rename(raw.with_name(raw.stem + f'.invalid-{time.time_ns()}.wav'))
-            if not raw.exists():
-                if self.engine == 'qwen3':
-                    worker_path = self.runtime.get('tts_worker_executable')
-                    if worker_path:
-                        if self.worker is None:
-                            self.worker = QwenWorker(
-                                [str(worker_path), *self.arguments[1:]],
-                                self.runtime.get('library_dir'), self.cache / 'worker.log',
-                                self.executable.parent)
-                        self.worker.synthesize(text_file, raw.with_suffix('.pending.wav'),
-                                               'en' if language.lower().startswith('en') else 'zh')
+                        log = raw.with_suffix('.pending.log')
+                        if log.is_file() and re.search(
+                                r'generated \d+ frames', log.read_text(encoding='utf-8')):
+                            # 前次已确认超帧的原句直接拆分，复用随后成功的子段。
+                            _check_qwen_log(log, self.identity['frames'])
+                        worker_path = self.runtime.get('tts_worker_executable')
+                        if worker_path:
+                            if self.worker is None:
+                                self.worker = QwenWorker(
+                                    [str(worker_path), *self.arguments[1:]],
+                                    self.runtime.get('library_dir'), self.cache / 'worker.log',
+                                    self.executable.parent)
+                            self.worker.synthesize(
+                                text_file, raw.with_suffix('.pending.wav'),
+                                'en' if language.lower().startswith('en') else 'zh')
+                        else:
+                            run_native(command, library_dir=self.runtime.get('library_dir'))
                     else:
-                        run_native(command, library_dir=self.runtime.get('library_dir'))
+                        run_native(command)
+                    if self.engine == 'qwen3':
+                        pending = raw.with_suffix('.pending.wav')
+                        _wave_samples(pending)
+                        log = pending.with_suffix('.log')
+                        _check_qwen_log(log, self.identity['frames'])
+                        pending.replace(raw)
+                        if log.exists():
+                            log.replace(raw.with_suffix('.log'))
+                    self.generated += 1
                 else:
-                    run_native(command)
-                if self.engine == 'qwen3':
-                    pending = raw.with_suffix('.pending.wav')
-                    _wave_samples(pending)
-                    log = pending.with_suffix('.log')
-                    _check_qwen_log(log, self.identity['frames'])
-                    pending.replace(raw)
-                    if log.exists():
-                        log.replace(raw.with_suffix('.log'))
-                self.generated += 1
-            else:
-                log = raw.with_suffix('.log')
-                if (log.exists() and re.search(
-                        r'OOV (?:word|character) skipped:|Skip unknown token:',
-                        log.read_text(encoding='utf-8'))):
-                    raise ValueError('Cached synthesis skipped words; add pronunciation aliases')
-                if (self.engine != 'qwen3' and self.provider == 'cuda' and log.exists()
-                        and 'fallback to cpu' in log.read_text(encoding='utf-8').lower()):
-                    raise RuntimeError('Cached CUDA synthesis fell back to CPU')
-                self.hits += 1
+                    log = raw.with_suffix('.log')
+                    if (log.exists() and re.search(
+                            r'OOV (?:word|character) skipped:|Skip unknown token:',
+                            log.read_text(encoding='utf-8'))):
+                        raise ValueError(
+                            'Cached synthesis skipped words; add pronunciation aliases')
+                    if (self.engine != 'qwen3' and self.provider == 'cuda' and log.exists()
+                            and 'fallback to cpu' in log.read_text(encoding='utf-8').lower()):
+                        raise RuntimeError('Cached CUDA synthesis fell back to CPU')
+                    self.hits += 1
+            except QwenFrameLimitError:
+                divided = _split_frame_limited_text(text) if not recovered else []
+                if not divided:
+                    raise
+                # 仅失败原句拆分一次，成功句段继续使用原缓存与同一声线。
+                recoveries.append({'text': text, 'parts': divided, 'log': str(log)})
+                pending_parts.appendleft((divided[1], title_end, True))
+                pending_parts.appendleft((divided[0], False, True))
+                continue
             # 缓存校验已读出 PCM，直接交给拼接，避免同一段音频再次读取。
             current, samples = cached_audio if cached_audio is not None else _wave_samples(raw)
             if parameters is not None and current[:3] != parameters[:3]:
                 raise ValueError('Voice segments have different audio formats')
             parameters = current
-            pause = (self.pauses['end'] if index == len(parts) - 1 else
-                     self.pauses['title'] if index == 0 else self.pauses['sentence'])
+            pause = (self.pauses['end'] if not pending_parts else
+                     self.pauses['title'] if title_end else self.pauses['sentence'])
             joined.extend(samples)
             joined.extend([0] * round(pause * parameters.framerate) * parameters.nchannels)
             segments.append({'text': text, 'display_text': text, 'spoken_text': spoken,
@@ -644,6 +698,7 @@ class VoiceSynthesizer:
                     'spoken_text': '\n'.join(segment['spoken_text'] for segment in segments),
                     'reference_id': self.reference['id'] if self.reference else None,
                     'settings': self.identity, 'segments': segments, 'duration': duration,
+                    'frame_limit_recoveries': recoveries,
                     'silence_removed_seconds': shortened, 'tempo': 1.08,
                     'raw_path': str(raw_page), 'audio_path': str(destination),
                     'gain_db': 20 * math.log10(gain), 'raw_peak': peak / 32768,

@@ -118,6 +118,9 @@ def handle_submit_authoring_batch(args: argparse.Namespace, context: CommandCont
     - ``context``：入口解析的 data_dir；提供运行配置和路径约束。
     输出：向标准输出报告操作结果，并返回供终端或宿主判断成败的退出码。
     """
+    skipped = set(args.skip_batch)
+    if skipped and not args.all:
+        raise ValueError("--skip-batch requires --all")
     if not args.all and not args.check_only:
         if not args.batch_id or not args.result:
             raise ValueError("--batch-id and --result are required without --all")
@@ -148,8 +151,9 @@ def handle_submit_authoring_batch(args: argparse.Namespace, context: CommandCont
             raise ValueError("--batch-id and --result are required without --all")
         entries = [(args.batch_id, args.result)]
     rows = []
+    batches = {str(batch["batch_id"]): batch for batch in session["batches"]}
     for batch_id, draft_path in entries:
-        batch = next((b for b in session["batches"] if str(b["batch_id"]) == batch_id), None)
+        batch = batches.get(batch_id)
         if batch is None:
             rows.append({"batch_id": batch_id, "draft_path": str(draft_path),
                          "expected_path": None, "errors": [f"Unknown authoring batch: {batch_id}"]})
@@ -164,6 +168,9 @@ def handle_submit_authoring_batch(args: argparse.Namespace, context: CommandCont
                 row = {"batch_id": batch_id, "draft_path": str(draft_path),
                        "expected_path": str(existing), "accepted_path": str(existing),
                        "errors": []}
+            elif batch_id in skipped or batch["packet_path"] in skipped:
+                row = {"batch_id": batch_id, "draft_path": str(draft_path),
+                       "expected_path": str(existing), "errors": [], "in_flight": True}
             else:
                 row = check_authoring_batch(
                     run, batch_id, draft_path, data_dir, _validated_session=session,
@@ -175,7 +182,7 @@ def handle_submit_authoring_batch(args: argparse.Namespace, context: CommandCont
     accepted = [row["accepted_path"] for row in rows if row.get("accepted_path")]
     if not args.check_only:
         for row in rows:
-            if not row["errors"] and not row.get("accepted_path"):
+            if not (row["errors"] or row.get("accepted_path") or row.get("in_flight")):
                 try:
                     path = accept_authoring_batch(run_path, row["batch_id"],
                                                   Path(row["draft_path"]), data_dir,

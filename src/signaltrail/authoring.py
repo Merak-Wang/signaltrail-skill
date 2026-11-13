@@ -1203,7 +1203,7 @@ def brief_authoring_input(
 ) -> dict[str, Any]:
     """处理：从单个受限写作包投影作者所需输入，省去接收与调度字段。
     输入：当前包路径和数据根；候选证据仅保留包内已列出的内容与路径。
-    输出：完整候选、风格、Schema 与草稿命令；旧包的非一一对应授权列表继续保留。
+    输出：候选、风格、Schema 与草稿命令；内嵌证据时省去重复的内部路径和原文片段。
     """
     packet_path = require_data_root_path(packet_path, data_dir, "Authoring packet")
     packet = read_json(packet_path)
@@ -1227,16 +1227,38 @@ def brief_authoring_input(
     if "output_schema" not in result and "required_output_fields" in packet:
         result["required_output_fields"] = packet["required_output_fields"]
     if include_evidence:
-        result["evidence_by_item_id"] = {
-            candidate["item_id"]: _brief_local_evidence(candidate, data_dir)
-            for candidate in packet["candidates"]
-        }
-        result["candidates"] = [
-            {key: value for key, value in candidate.items()
-             if key != "description" or result["evidence_by_item_id"][candidate["item_id"]][
-                 "kind"] != "description"}
-            for candidate in packet["candidates"]
-        ]
+        evidence_by_id = {}
+        candidates = []
+        for candidate in packet["candidates"]:
+            evidence = _brief_local_evidence(candidate, data_dir)
+            evidence.pop("path", None)
+            evidence_by_id[candidate["item_id"]] = evidence
+            projected = {key: value for key, value in candidate.items()
+                         if key not in {"content_path", "feed_content_path"}}
+            description = (candidate.get("description") or "").strip()
+            if evidence["kind"] == "description" or description in evidence["text"]:
+                projected.pop("description", None)
+            candidates.append(projected)
+        result["evidence_by_item_id"] = evidence_by_id
+        result["candidates"] = candidates
+
+        # 历史冻结包仍可重投影，指令改为读取已内嵌的正文、Feed 与表格。
+        if "task" in result:
+            result["task"] = result["task"].replace(
+                "读取列出的 feed_content_path JSON 的 text/blocks，",
+                "按 item_id 读取 evidence_by_item_id 中的正文、Feed 和表格，",
+            ).replace(
+                "Use article content_path first, then text/blocks in the listed "
+                "feed_content_path JSON, then public descriptions and titles.",
+                "Use the article, Feed text and tables, or public description in "
+                "evidence_by_item_id, matched by item_id, together with the candidate title.",
+            )
+        if "tool_policy" in result:
+            result["tool_policy"] = result["tool_policy"].replace(
+                "A listed content_path or feed_content_path may be read only when it already "
+                "exists.",
+                "Read the evidence embedded in this input.",
+            )
     return result
 
 

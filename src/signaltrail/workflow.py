@@ -536,6 +536,8 @@ def schedule_independent_evaluation(
     *,
     attempt: int = 1,
     usage_task_id: str | None = None,
+    brief_plan_item_ids: dict[str, list[str]] | None = None,
+    coverage_targets: dict[str, int] | None = None,
 ) -> dict[str, Any]:
     """处理：在本地交付后创建有界独立评估任务，远程发布保持可选。
     输入：
@@ -547,6 +549,7 @@ def schedule_independent_evaluation(
     - ``publish_notion``：独立评估完成后是否允许追加到已发布 Notion 页面。
     - ``attempt``：当前报告的有界评估尝试序号；初次为 1，最多允许一次恢复重试。
     - ``usage_task_id``：调度前创建的 evaluator usage task；用于后续 hook 关联。
+    - ``brief_plan_item_ids``、``coverage_targets``：已保存报告使用的冻结计划和覆盖目标。
     输出：“在本地交付后创建有界独立评估任务，远程发布保持可选”形成的结构化字典；
       典型键包括 attempts、detail、error、interval、job_id、status。
     """
@@ -572,7 +575,11 @@ def schedule_independent_evaluation(
     notion_flag = " --publish" if publish_notion else ""
     repository_root = project_root()
     source_root = repository_root / "src"
-    dossier_path = build_evaluation_dossier(report_path, index_path, data_dir)
+    dossier_path = build_evaluation_dossier(
+        report_path, index_path, data_dir,
+        brief_plan_item_ids=brief_plan_item_ids,
+        coverage_targets=coverage_targets,
+    )
     encoded_source_root = base64.urlsafe_b64encode(
         str(source_root).encode("utf-8")
     ).decode("ascii")
@@ -779,7 +786,9 @@ def _schedule_evaluation_attempt(
         if isinstance(scheduler, dict) and scheduler.get("backend") == "external":
             return evaluation
         dossier_path = build_evaluation_dossier(
-            report_path, Path(str(artifacts["index_path"])), data_dir
+            report_path, Path(str(artifacts["index_path"])), data_dir,
+            brief_plan_item_ids=brief_plan_item_ids_for_run(run, data_dir),
+            coverage_targets=_coverage_targets_for_run(run, data_dir),
         )
         draft_path = data_dir / "evaluations" / "drafts" / f"{report_id}.json"
         evaluation["status"] = "pending"
@@ -931,6 +940,8 @@ def _schedule_evaluation_attempt(
         publish_notion=publish_notion,
         attempt=attempt,
         usage_task_id=usage_task.task_id,
+        brief_plan_item_ids=brief_plan_item_ids_for_run(run, data_dir),
+        coverage_targets=_coverage_targets_for_run(run, data_dir),
     )
     result.setdefault("attempt", attempt)
     result.setdefault("max_attempts", MAX_EVALUATION_ATTEMPTS)
@@ -1926,7 +1937,7 @@ def enrich_edition(
             indexed = {item["item_id"]: item for item in index["items"]}
             review = review_candidates(None, index, 50)
             candidate_ids = list(dict.fromkeys(
-                source["item_id"] for row in [*review["candidates"], *review["reserves"]]
+                source["item_id"] for row in review["candidates"]
                 for source in row["sources"]
             ))
             unknown = set(selected_ids) - indexed.keys()

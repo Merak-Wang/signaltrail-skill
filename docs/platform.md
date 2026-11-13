@@ -2,7 +2,7 @@
 
 When live collection and the current monitor snapshot contain the same source and canonical article, live ranking and access status remain authoritative. Missing descriptions and matching, substantive Feed content can be reused from the snapshot; stale or navigation-only evidence is excluded.
 
-**Status:** Verified · **Owner:** Repository maintainers · **Last verified:** 2026-11-02
+**Status:** Verified · **Owner:** Repository maintainers · **Last verified:** 2026-11-11
 
 This guide covers the local collection monitor, supplementary discovery sources, RSSHub, Crawl4AI, and report and event APIs for integrations. [中文](zh-CN/platform.md)
 
@@ -26,17 +26,25 @@ Persistent events, articles and follows are stored in `DATA_DIR/platform/events.
 
 ## Discovery source configuration
 
-The [extension catalog](../configs/discovery-sources.yaml) covers international, domestic, markets, technology and open-source news. Enabled entries join the regular report sections; inspect actual source health for availability. Legacy zero target fields do not limit admission: the new edition policy records each source's actual current-day count.
+The [extension catalog](../configs/discovery-sources.yaml) covers international and domestic news, markets, defense, technology news, and papers. Enabled entries join the regular report sections; inspect actual source health for availability. Legacy zero target fields do not limit admission: the new edition policy records each source's actual current-day count.
 
 ## Collection window and source ordering
 
-Core-source cache eligibility uses the edition's frozen `collection_window`. Stale Feed responses, retained history, and explicitly out-of-window publication dates do not count as current coverage that can skip a source refresh; missing publication dates remain unknown.
+Daily sources collect all articles in their finite configured pages; reaching the old 15-item target does not skip those pages. Sources with an explicit item limit use original-publication date and the frozen cutoff to decide whether cached coverage is sufficient. Yesterday's articles, unknown original dates, and platform ranking times do not count toward that threshold. Stale Feed responses and retained history remain excluded.
 
-During an on-demand edition, a recent snapshot is also checked for newly enabled sources, changed Feed entries, and each source's own `checked_at`. Only missing, changed, or expired sources are collected again. Updating one source leaves other sources' observation times intact. Stale Feed items remain readable but allow alternate-Feed discovery and static HTML fallback; current Feed or HTML material replaces a stale copy of the same URL.
+During an on-demand edition, a recent snapshot is also checked for newly enabled sources, changed Feed entries, and each source's own `checked_at`. Only missing, changed, or expired sources are collected again. Updating one source preserves the observation times of other enabled sources. A refresh removes items and health rows for removed or disabled sources from the current snapshot while preserving historical archives. Stale Feed items remain readable but allow alternate-Feed discovery and static HTML fallback; current Feed or HTML material replaces a stale copy of the same URL.
 
 After collection, non-discovery sources place explicitly in-window items before unknown-date/history items, preserving order within each group and retaining publisher rank in `metadata.source_rank`. Sources whose role is `discovery`, such as paper and repository rankings, retain their ranking semantics. Core source targets stay unchanged.
 
-Brief planning retains every eligible current-day article in each source's original Top order. Same-source canonical duplicates merge; cross-source entries retain their own IDs, references and ranks while sharing identical original writing. Original rank is preserved after filtering. Semantic multi-publisher event merging and impact ranking belong to the separate visual stream.
+Brief planning selects up to 15 eligible current-day articles per source by original publication time, newest first. Same-source canonical duplicates merge; cross-source entries retain their own IDs, references and ranks while sharing identical original writing. Original rank is preserved after filtering. Semantic multi-publisher event merging and impact ranking belong to the separate visual stream.
+
+Collection keeps the complete observed article index and actual access statuses. Before daily admission, article links without an original publication date receive a bounded HTTP metadata request, deduplicated by canonical URL and reusing previously obtained dates. Publisher metadata, article JSON-LD, and source-specific listing fields supply publication dates; update times, ranking times and capture times remain separate. Navigation links are excluded by each publisher's article patterns. A source with accessible older or undated articles remains successful even when its current-day writing count is zero.
+
+For articles that pass the current edition's selection, a complete HTML response from the date probe can also supply the article body. The normal extractor saves reusable full text, structured blocks and image references in the content store. When the article is selected for enrichment, that evidence replaces a second HTTP request. Truncated responses, incomplete text and unresolved tables continue through normal enrichment. Browser responses remain in memory and are never saved as raw HTML.
+
+Weibo uses its official listing endpoint with a configurable public 60s API fallback. Each returned topic records `listing_endpoint`; a heat rank has no original publication date. Hugging Face paper pages supply `paper.publishedAt`, while `submittedOnDailyAt` remains a listing observation. A relative age such as “hours ago” requires an original-page date before daily admission. Year-only and month-only research catalog dates retain their uncertainty.
+
+Google News item dates remain separate from confirmed publisher dates. When an accessible static wrapper has no date, an anonymous browser follows its normal public redirect and reads the publisher's publication metadata. The publisher's complete HTML can supply reusable full text under the same rules. Publisher access failures remain visible, and the resolved original URL remains available for subsequent body retrieval. Aggregate topic pages are excluded from article candidates.
 
 Publication, revision, and observation have separate meanings. Dates are normalized from ISO, RFC, and explicit `YYYY/MM/DD` forms. A date without a time retains day precision in `metadata.published_precision`; `updated_at` records a source revision, while `first_discovered_at` records the earliest retained observation. Date-only candidates use calendar-day overlap with the frozen window and receive `published_date_overlap` and `WATCH`; unknown publication times also remain `WATCH`.
 
@@ -46,9 +54,9 @@ Saved Feed fields also remain available to brief and analysis authors through `f
 
 ## Use discovery sources in future daily editions
 
-Enabled sources in both bundles enter the existing report sections. The current configuration has 32 core and 95 extension entries, with 92 extensions enabled: 127 unique IDs and 124 enabled sources. Each source contributes every verifiable original article published on the edition's Asia/Shanghai day before the frozen cutoff, in its original source Top order. Finite Feed/page responses are read completely within the configured byte/page boundaries. Unknown/older originals and ranking/submission times do not qualify. Same-source canonical duplicates merge; cross-source positions remain visible and identical writing can be reused. The old shared 30-slot pool and per-source 1/2/15 limits do not apply. Slides/video separately merge semantic events and order up to 50 by impact.
+Enabled sources in both bundles enter the existing report sections. The default catalog has 45 source IDs across both bundles, with 43 enabled. Each source contributes up to 15 verifiable original articles published on the edition's Asia/Shanghai day before the frozen cutoff, newest first after same-source canonical de-duplication. Finite Feed/page responses are read completely within the configured byte/page boundaries. Unknown/older originals and ranking/submission times do not qualify. Same-source canonical duplicates merge; cross-source positions remain visible and identical writing can be reused. The old shared 30-slot pool and per-source 1/2 limits do not apply. Slides/video separately merge semantic events and order up to 50 by impact.
 
-Anadolu Agency (`anadolu_en`), IRNA English (`irna_en`) and Emirates News Agency (`wam_en`) remain disabled. Their bundle comment says to keep unavailable candidates disabled until this deployment can extract items; individual historical failure details are unknown.
+IRNA English (`irna_en`) and Emirates News Agency (`wam_en`) are disabled in the default configuration.
 
 ## Body enrichment
 
@@ -62,27 +70,9 @@ Trafilatura is a base dependency and the default local fallback when the built-i
 
 ## RSSHub sources
 
-RSSHub runs as an external service. Configure your own reachable instance and a source route; native feeds in `feed_urls` are tried first. The [platform source example](../configs/platform-sources.example.yaml) provides a complete discovery-only configuration.
+RSSHub runs as an external service. Copy the [platform source template](../configs/platform-sources.example.yaml) and set `rsshub.base_url` to your instance. For each source you add to `sources`, supply its `id`, `name`, `url`, and `rsshub_route`. SignalTrail tries any native feeds in `feed_urls` first.
 
-The default catalog uses native Feeds and has no active RSSHub route. The adapter becomes part of collection after an instance and routes are configured; ordinary report generation does not start an RSSHub service.
-
-```yaml
-rsshub:
-  base_url: http://127.0.0.1:1200
-sources:
-  - id: rsshub_updates
-    name: RSSHub Updates
-    url: https://t.me/s/awesomeRSSHub
-    feed_urls: []
-    rsshub_route: /telegram/channel/awesomeRSSHub
-    module: technology
-    category: open_source
-    role: discovery
-    report_target: 0
-    report_max: 0
-```
-
-Use `signaltrail --config configs/platform-sources.example.yaml --data-dir DATA_DIR refresh-monitor` to collect the example. Replace the address and route with your deployed instance. RSSHub route availability depends on the upstream site and that instance. The example route is a configuration example, not an acceptance-tested deployment. RSSHub is licensed under [AGPL-3.0](https://github.com/DIYgod/RSSHub/blob/master/LICENSE).
+Run `signaltrail --config CONFIG_FILE --data-dir DATA_DIR refresh-monitor` with the configured copy. Route availability depends on the upstream site and your RSSHub instance. RSSHub is licensed under [AGPL-3.0](https://github.com/DIYgod/RSSHub/blob/master/LICENSE).
 
 ## Optional Crawl4AI extraction
 

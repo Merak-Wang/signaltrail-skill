@@ -1,5 +1,6 @@
-# Copy this file to your own config path and start RSSHub on the configured address.
-# python -m signaltrail.cli --config configs/platform-sources.example.yaml refresh-monitor
+# Copy this template to your own config path and add sources under sources.
+# Configure your RSSHub instance and any rsshub_route entries for those sources.
+# python -m signaltrail.cli --config YOUR_CONFIG.yaml refresh-monitor
 timezone: Asia/Shanghai
 rsshub:
   base_url: http://127.0.0.1:1200
@@ -12,17 +13,4 @@ monitor:
   sources_file: null
   auto_discover_feeds: false
   html_fallback: false
-sources:
-  - id: rsshub_updates
-    name: RSSHub Updates
-    url: https://t.me/s/awesomeRSSHub
-    module: technology
-    category: open_source
-    language: en
-    role: discovery
-    tier: 2
-    report_target: 0
-    report_max: 0
-    rsshub_route: /telegram/channel/awesomeRSSHub
-    # Native RSS/Atom URLs can also be supplied in feed_urls; they stay first.
-    refresh_interval_minutes: 30
+sources: []

@@ -1,8 +1,8 @@
 # 开发指南
 
-**状态：** 已验证 · **负责人：** 仓库维护者 · **最后验证：** 2026-11-02
+**状态：** 已验证 · **负责人：** 仓库维护者 · **最后验证：** 2026-11-13
 
-本文说明本地开发和测试选择。代码归属见[架构](ARCHITECTURE.md)，不变量见
+本文说明本地开发和模块评估。代码归属见[架构](ARCHITECTURE.md)，不变量见
 [agent-instructions.md](agent-instructions.md)。[English](../development.md)
 
 ## 环境与检查
@@ -11,37 +11,50 @@
 python -m venv .venv
 # 在当前 shell 激活 .venv，然后运行：
 python -m pip install -e ".[dev]"
-python -m pytest
+python scripts/evaluate_modules.py --repeat 3
 python -m ruff check .
-python -m compileall -q src tests scripts
+python -m compileall -q src scripts evals
 python scripts/check_code_comments.py
 python scripts/check_docs.py
 git diff --check
 ```
 
-单元测试使用临时数据目录和模拟的网络、宿主响应，不需要生产数据、浏览器登录、Notion 凭据或
-模型调用。CI 覆盖 Windows、Ubuntu 和 Python 3.11、3.12。编辑时运行相关测试，提交前运行全量检查。
+## 模块评估
 
-| 改动 | 相关测试 |
-| --- | --- |
-| CLI 参数、别名、分派 | `tests/test_cli.py` |
-| 来源配置与过滤 | `tests/test_config.py`、`tests/test_normalize.py`、`tests/test_collector.py` |
-| Feed、监控、聚类 | `tests/test_feeds.py`、`tests/test_monitor.py`、`tests/test_clustering.py` |
-| 上下文与写作 | `tests/test_context.py`、`tests/test_authoring.py`、`tests/test_semantics.py` |
-| 报告契约与持久化 | `tests/test_reporting.py`、`tests/test_report_persistence.py`、`tests/test_storage.py` |
-| 运行状态与评估 | `tests/test_workflow.py`、`tests/test_evaluation_workflow.py`、`tests/test_evaluation.py` |
-| 浏览器验证与 Notion | `tests/test_verification.py`、`tests/test_notion.py` |
-| 本地交付与媒体 | `tests/test_desktop_delivery.py`、`tests/test_content.py`、`tests/test_media.py` |
-| 图文写作与复用 | `tests/test_news_slides.py`、`tests/test_standalone_slides.py`、`tests/test_slide_reuse.py` |
-| 图文渲染与图片 | `tests/test_slide_renderer.py`、`tests/test_slide_images.py`、`tests/test_image_policy.py`、`tests/test_content.py`、`tests/test_media.py` |
-| 配音视频与语音 | `tests/test_slide_video.py`、`tests/test_voice_synthesis.py`、`tests/test_speech_text.py`、`tests/test_video_runtime.py` |
-| 实验研究与讲解 | `tests/test_research.py`、`tests/test_story_stream.py`、`tests/test_narrative.py`、`tests/test_narrative_store.py`、`tests/test_narrative_verification.py` |
-| 用量与宿主接入 | `tests/test_llm_usage*.py`、`tests/test_usage_cli.py`、`tests/test_hermes_runner.py` |
-| 打包与文档 | `tests/test_hermes_package.py`、`tests/test_docs.py`、`tests/test_code_comments.py` |
+默认评估使用固定外部输入，运行完整生产链路，每个样本使用独立工作目录。编辑时用 `--modules`
+选择一个或多个受影响模块。默认完整评估在 Windows 和 Ubuntu 上覆盖下列四个离线模块。
 
-共用报告构造函数放在 `tests/report_helpers.py`。只有多个测试需要相同准备步骤时才提取共享代码。
-仅输入和预期结果不同的用例可参数化；不同的失败和恢复场景分别写清。
-不要用固定句子测试文案，也不要为了减少测试数量删除回归覆盖。
+| 模块 | 流程与质量证据 | 性能指标 |
+| --- | --- | --- |
+| `collection` | 采集固定来源响应、解析日期和补证，核对索引、覆盖及访问状态 | 分阶段时延、文章吞吐、HTTP 请求与响应复用数量 |
+| `report` | 编译固定作者稿和来源索引，核对覆盖与证据引用，检查 Markdown 和 HTML 内容及 PDF 可读性，拒绝缺稿并发布修订 | 保存与修订时延、每秒简报数、输出大小 |
+| `slides` | 准备并接受固定图文稿，渲染并校验交付的演示文档 | 分阶段时延、每秒页数、输出大小 |
+| `orchestration` | 经实际 CLI 派发和接收 13 批图文，保留在途草稿、修复失败批次，以单协调者完成 50 页渲染 | 派发轮数、强制交接数、作者占槽、整链时延和页面吞吐 |
+| `video` | 使用生产配音与视频运行时导出指定的本地图文稿，解码成片并复测缓存复用 | 首次与重复导出时延、每秒处理的成片时长、缓存命中与生成的语音片段 |
+
+每个样本记录负载、模块质量是否通过、墙钟时延、吞吐、Python 进程 CPU 时间和峰值驻留内存。
+浏览器、编码器与配音子进程的 CPU 时间和内存另属其进程。回执汇总各模块墙钟时延的中位数与范围。
+默认在 `output/module-evaluations/` 下创建新目录，保存 `results.json` 和样本产物。
+显式传入 `--output` 时使用新路径。
+
+性能对照使用同一机器、运行时、负载和缓存条件。串行运行对比，避免与同机的视频导出或模型任务
+争用资源。通过 `--baseline` 传入前一次回执，可以限制墙钟
+时延中位数的相对退化幅度。以下命令使用 20% 的上限，并将环境或负载不一致的结果记为不可比较。
+
+```sh
+python scripts/evaluate_modules.py --repeat 3 --baseline BASELINE.json --max-regression 0.2
+```
+
+测量前先准备本地视频运行环境。单独评估视频时，指定已接受的图文稿、对应数据根，以及已安装的
+Qwen 模型、配音可执行文件和常驻 worker 路径，以便排除安装开销。首次导出可能复用现有音频。
+解读首次和重复导出的时延时，结合各次实际缓存命中和新生成的语音片段数量。
+
+```sh
+python scripts/evaluate_modules.py --modules video --video-deck DECK.json --data-dir DATA --device vulkan --model-dir MODEL --tts-executable EXE --tts-worker WORKER --repeat 1
+```
+
+模型时延与 token 用量使用同一输入、模型和测量范围在宿主中实际运行。Codex 使用宿主请求记录及
+`scripts/measure_codex_turn.py` 汇总。模块评估的固定作者稿用于测量消费稿件的应用阶段。
 
 ## 名称与模块
 

@@ -9,6 +9,7 @@ from pathlib import Path
 
 COLLECTION_TREES = ("indexes", "content", "snapshots")
 TERMINAL = {"completed", "completed_partial", "failed"}
+RECYCLE_BATCH_SIZE = 128 if sys.platform == "win32" else 1
 
 
 def _local_references(value: object, root: Path, field: str = ""):
@@ -95,16 +96,16 @@ def _delivery_pending(record: dict, root: Path) -> bool:
     return True
 
 
-def _recycle(path: Path) -> None:
-    """处理：把文件或目录移入系统回收站。
-    输入：已经限定在采集目录内的过期路径。
-    输出：成功时移走原项；回收站错误向上报告，禁止永久删除回退。
+def _recycle(paths: list[Path]) -> None:
+    """处理：一次提交一批过期文件或目录给系统回收站。
+    输入：已限定在采集目录内的过期路径。
+    输出：系统移走可回收的项目，操作错误交给调用方记录。
     """
     if sys.platform == "win32":
         from send2trash.win.modern import send2trash
     else:
         from send2trash import send2trash
-    send2trash(str(path))
+    send2trash([str(path) for path in paths])
 
 
 def cleanup_collection(data_dir: Path, *, days: int = 7, apply: bool = False,
@@ -157,14 +158,21 @@ def cleanup_collection(data_dir: Path, *, days: int = 7, apply: bool = False,
     failures, recycled = [], 0
     recycled_media = []
     if apply:
-        for path in candidates:
+        for start in range(0, len(candidates), RECYCLE_BATCH_SIZE):
+            batch = candidates[start:start + RECYCLE_BATCH_SIZE]
+            reason = "Recycle bin left the item at its original path"
             try:
-                _recycle(path)
-                recycled += 1
-                if path.is_relative_to(root / "media" / "images"):
-                    recycled_media.append(path)
+                _recycle(batch)
             except Exception as exc:
-                failures.append({"path": str(path), "reason": f"{type(exc).__name__}: {exc}"})
+                reason = f"{type(exc).__name__}: {exc}"
+            # 系统可能只移走批次的一部分，媒体缓存仅移除已回收路径。
+            for path in batch:
+                if path.exists():
+                    failures.append({"path": str(path), "reason": reason})
+                else:
+                    recycled += 1
+                    if path.is_relative_to(root / "media" / "images"):
+                        recycled_media.append(path)
     removed_entries = 0
     cache_path = root / "media" / "image-cache.json"
     if recycled_media and cache_path.is_file():

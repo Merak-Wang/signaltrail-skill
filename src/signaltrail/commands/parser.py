@@ -242,6 +242,8 @@ def build_parser() -> argparse.ArgumentParser:
     submit.add_argument("--batch-id")
     submit.add_argument("--result", type=Path)
     submit.add_argument("--all", action="store_true", help="Check all assigned drafts")
+    submit.add_argument("--skip-batch", action="append", default=[],
+                        help="With --all, skip active batch IDs or packet paths")
     submit.add_argument(
         "--check-only", action="store_true", help="Validate without writing receipts"
     )

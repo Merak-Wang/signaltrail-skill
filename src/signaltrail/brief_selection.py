@@ -1,10 +1,11 @@
-"""逐来源收录当日原文并保留来源Top顺序。"""
+"""逐来源选择最新的合格原文。"""
 
 from __future__ import annotations
 
 from typing import Any
+from urllib.parse import urlsplit
 
-from .article_time import published_on_date
+from .article_time import original_publication_time, published_on_date
 from .utils import canonicalize_url
 
 
@@ -12,26 +13,31 @@ def select_brief_items(
     candidates: list[dict[str, Any]], source_configs: dict[str, Any],
     *, date_value: str | None = None, cutoff: str | None = None,
 ) -> list[dict[str, Any]]:
-    """处理：逐来源扫描全部当日原文，保留各源Top并在本源内去重。
-    输入：规范候选、来源配置及可选的本版自然日和冻结时刻。
-    输出：不受抽样名额限制的候选；跨源保留各自展示位置。
+    """处理：筛选当日原文并按每源发布时间倒序去重、截取。
+    输入：采集候选、来源配置以及可选的版本日期和截止时间。
+    输出：每源最新最多 15 篇，保留各条目的原始来源信息。
     """
     grouped: dict[str, list[dict[str, Any]]] = {}
     for item in candidates:
         if date_value and not published_on_date(item, date_value, cutoff):
             continue
-        if item.get("source_id"):
-            grouped.setdefault(str(item["source_id"]), []).append(item)
-    seen: set[str] = set()
+        source_id = str(item.get("source_id") or "item:" + str(item["item_id"]))
+        grouped.setdefault(source_id, []).append(item)
     selected = []
-    for source_id, items in grouped.items():
-        for item in sorted(items, key=lambda row: row.get("source_rank") or (
-                row.get("metadata") or {}).get("source_rank", float("inf"))):
+    for items in grouped.values():
+        seen: set[str] = set()
+        ordered = sorted(items, key=lambda row: original_publication_time(row) or "", reverse=True)
+        for item in ordered:
             raw_url = item.get("canonical_url") or item.get("url")
-            url = canonicalize_url(raw_url) if raw_url else ""
-            identity = source_id + ":" + (url or "item:" + str(item["item_id"]))
+            identity = canonicalize_url(raw_url) if raw_url else "item:" + str(item["item_id"])
+            parts = urlsplit(identity)
+            if (parts.hostname in {"bbc.com", "bbc.co.uk"}
+                    and parts.path.startswith("/news/articles/")):
+                identity = "bbc:" + parts.path.rstrip("/")
             if identity in seen:
                 continue
             selected.append(item)
             seen.add(identity)
+            if len(seen) == 15:
+                break
     return selected

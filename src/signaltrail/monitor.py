@@ -559,12 +559,14 @@ def _update_health(
     data_dir: Path,
     source_records: list[dict[str, Any]],
     generated_at: str,
+    enabled_source_ids: set[str],
 ) -> dict[str, Any]:
     """处理：结合上一快照和本轮来源状态更新连续成功、失败及最近错误健康记录。
     输入：
     - ``data_dir``：当前运行的唯一数据根；所有状态和版本化产物都必须位于其中。
     - ``source_records``：监控快照中的逐来源状态记录；用于更新连续成功/失败健康指标。
     - ``generated_at``：当前快照或产物的生成时间；用于时效计算和确定性排序。
+    - ``enabled_source_ids``：当前配置启用的来源；仅保留这些来源的健康记录。
     输出：“结合上一快照和本轮来源状态更新连续成功、失败及最近错误健康记录”形成的结构化字典；
       典型键包括 checks、consecutive_failures、error、last_checked_at、last_item_count、last_suc
       cess_at、methods、schema_version、source_id、source_name、sources、status。
@@ -574,7 +576,7 @@ def _update_health(
     rows = {
         str(row.get("source_id")): row
         for row in previous.get("sources", [])
-        if isinstance(row, dict) and row.get("source_id")
+        if isinstance(row, dict) and str(row.get("source_id")) in enabled_source_ids
     }
     for source in source_records:
         source_id = str(source["source_id"])
@@ -657,6 +659,13 @@ def refresh_monitor(
 
     data_dir.mkdir(parents=True, exist_ok=True)
     previous = _safe_read_object(data_dir / "monitor" / "snapshot.json")
+    enabled_source_ids = {source.id for source in config.report_sources if source.enabled}
+    # 局部刷新沿用其他启用来源的记录，聚类仍沿用上一轮的故事 ID。
+    for key in ("items", "sources"):
+        previous[key] = [
+            row for row in previous.get(key, [])
+            if isinstance(row, dict) and str(row.get("source_id")) in enabled_source_ids
+        ]
     feed_results, discovery_statuses, _registry = asyncio.run(
         _feed_phase(
             sources,
@@ -729,16 +738,15 @@ def refresh_monitor(
         config,
     )
     previous_source_records = {
-        str(row.get("source_id")): row
+        str(row["source_id"]): row
         for row in previous.get("sources", [])
-        if isinstance(row, dict) and row.get("source_id")
     }
     previous_source_records.update(
         {str(row["source_id"]): row for row in source_records}
     )
     # 局部刷新只覆盖被选来源；未选择来源的上一轮健康记录继续保留。
     all_source_records = list(previous_source_records.values())
-    health = _update_health(data_dir, source_records, generated_at)
+    health = _update_health(data_dir, source_records, generated_at, enabled_source_ids)
     clusters = cluster_articles(
         items,
         generated_at,

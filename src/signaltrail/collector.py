@@ -2,16 +2,26 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+from collections import defaultdict
 from dataclasses import replace
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
+import httpx
 from playwright.sync_api import BrowserContext, Page
 
 from .access import CHALLENGE_TEXTS, classify_access_text
 from .adapters import collect_candidates, is_eligible
-from .article_time import in_window, observe_items, original_publication_time
+from .article_time import (
+    in_window,
+    normalize_time,
+    observe_items,
+    original_publication_time,
+    published_on_date,
+    uses_platform_publication_time,
+)
 from .brief_selection import select_brief_items
 from .browser_collection import collect_browser_pages
 from .config import (
@@ -21,10 +31,17 @@ from .config import (
     resolve_profile_dir,
     source_urls,
 )
+from .content import (
+    _HTTP_ACCEPT,
+    PublicationPage,
+    prepare_publication_content,
+    probe_google_news_dates,
+    probe_publication_time,
+)
 from .content_extraction import is_navigation_only
 from .models import SourceResult, SourceStatus, effective_page_results, order_source_items
 from .monitor import load_monitor_results
-from .prefetch import page_needs_browser, prefetch_browser_pages
+from .prefetch import _USER_AGENT, page_needs_browser, prefetch_browser_pages
 from .storage import next_revision, write_immutable_json
 from .utils import canonicalize_url, now_iso, read_json, timestamp_slug, today_str, write_json
 
@@ -56,6 +73,27 @@ def _current_monitor_items(
     ]
 
 
+def _monitor_sufficient(
+    result: SourceResult | None, source: SourceConfig,
+    window: tuple[datetime, datetime] | None, date_value: str | None,
+) -> bool:
+    """处理：按简报的原文日期门槛统计可用的监控候选。
+    输入：监控结果、来源配置、冻结窗口及本版上海自然日。
+    输出：候选达到来源门槛时复用快照，否则采集实时页面。
+    """
+    if result is None or result.status not in {SourceStatus.SUCCESS, SourceStatus.PARTIAL}:
+        return False
+    if source.collect_all_items:
+        return False
+    items = _current_monitor_items(result.items, source, window)
+    if date_value:
+        cutoff = window[1].isoformat() if window else None
+        count = sum(published_on_date(item.to_dict(), date_value, cutoff) for item in items)
+    else:
+        count = len(items)
+    return count >= max(1, min(source.report_target, source.max_items))
+
+
 def _merge_monitor_evidence(item: Any, cached: Any, data_dir: Path) -> Any:
     """处理：用同源同文章的当前 Feed 补充实时条目。
     输入：实时条目、监控条目和内容文件所在数据根。
@@ -70,9 +108,10 @@ def _merge_monitor_evidence(item: Any, cached: Any, data_dir: Path) -> Any:
     published_at = item.published_at
     cached_original = original_publication_time(cached.to_dict())
     if not original_publication_time(item.to_dict()) and cached_original:
-        published_at = published_at or cached_original
+        relative = metadata.get("publication_time_basis") == "relative"
+        published_at = cached_original if relative else published_at or cached_original
         for key in ("published_raw", "published_precision", "feed_url"):
-            if cached.metadata.get(key):
+            if cached.metadata.get(key) and not (relative and key == "published_raw"):
                 metadata[key] = cached.metadata[key]
         if cached.metadata.get("content_source", {}).get("published_at"):
             metadata["content_source"] = {
@@ -80,6 +119,8 @@ def _merge_monitor_evidence(item: Any, cached: Any, data_dir: Path) -> Any:
                 "published_at": cached.metadata["content_source"]["published_at"],
             }
         metadata["publication_time_missing"] = False
+        if relative:
+            metadata["publication_time_basis"] = "publisher"
     if not description and cached.description and not is_navigation_only(cached.description):
         description = cached.description
     path = cached.metadata.get("feed_content_path")
@@ -248,7 +289,7 @@ def collect_source(
     prefetched_pages: dict[tuple[str, str], SourceResult] | None = None,
     monitor_result: SourceResult | None = None,
     browser_results: dict[tuple[str, str], SourceResult] | None = None,
-    *, window: tuple[datetime, datetime] | None = None,
+    *, window: tuple[datetime, datetime] | None = None, date_value: str | None = None,
 ) -> SourceResult:
     """处理：采集单个来源的主页和扩展页，并合并预取、监控或浏览器结果。
     输入：
@@ -259,10 +300,12 @@ def collect_source(
     - ``prefetched_pages``：HTTP 预取阶段按来源与 URL 保存的页面结果；可避免再次导航。
     - ``monitor_result``：零模型监控器为同一来源生成的结果；采集阶段可复用其条目和状态。
     - ``window``：本期冻结窗口；用于缓存刷新判断和候选的新鲜度分区。
+    - ``date_value``：本期上海自然日；用于缓存充足性判断。
     输出：供索引汇总的来源采集结果；包含明确状态、错误或挑战信息、页面元数据和规范文章条目。
     """
     prefetch_supplied = prefetched_pages is not None
     prefetched_pages = prefetched_pages or {}
+    monitor_sufficient = _monitor_sufficient(monitor_result, source, window, date_value)
     cache_result = replace(
         monitor_result, items=_current_monitor_items(monitor_result.items),
     ) if monitor_result is not None else None
@@ -272,11 +315,6 @@ def collect_source(
             monitor_result,
             items=_current_monitor_items(monitor_result.items, source, window),
         )
-    target = max(1, min(source.report_target, source.max_items))
-    monitor_sufficient = bool(
-        monitor_result and monitor_result.status in {SourceStatus.SUCCESS, SourceStatus.PARTIAL}
-        and len(monitor_result.items) >= target
-    )
     page_results: list[SourceResult] = [monitor_result] if monitor_result else []
     attempts: list[tuple[SourceResult, str]] = (
         [(monitor_result, "monitor_cache")] if monitor_result else []
@@ -403,7 +441,8 @@ def collect_source(
         collected_at=now_iso(config.timezone),
         module=source.module,
         category=source.category,
-        error="; ".join(result.error for result in page_results if result.error) or None,
+        error="; ".join(result.error for result in page_results
+                        if result.error and result.status != SourceStatus.SUCCESS) or None,
         page_results=[
             {
                 "url": result.source_url,
@@ -419,6 +458,130 @@ def collect_source(
         ],
         items=items,
     )
+
+
+async def _complete_publication_times(
+    results: list[SourceResult], config: AppConfig, previous: dict[str, Any],
+    *, date_value: str | None = None,
+) -> dict[str, PublicationPage]:
+    """处理：为缺少原文日期的候选复用已知日期或并发读取公开页面日期。
+    输入：本轮采集结果、并发配置及前次索引，按文章规范地址合并同文请求。
+    输出：补充日期和探测结果；为本版候选在内存中保留完整响应。
+    """
+    known_dates = {}
+    for item in previous.get("items", []):
+        content_source = (item.get("metadata") or {}).get("content_source") or {}
+        if not content_source.get("published_at"):
+            continue
+        date = original_publication_time(item, config.timezone)
+        if date:
+            known_dates[canonicalize_url(item.get("canonical_url") or item["url"])] = (
+                date, content_source.get("url"),
+            )
+    source_configs = {source.id: source for source in config.report_sources}
+    pending: dict[str, list[Any]] = defaultdict(list)
+    for result in results:
+        for item in result.items:
+            relative = item.metadata.get("publication_time_basis") == "relative"
+            # BBC 的 Feed 日期也可能是更新时刻，文章需以原文声明为准。
+            bbc_article = (item.source_id == "bbc_world"
+                           and urlsplit(item.url).path.startswith("/news/articles/"))
+            page_date = (item.metadata.get("content_source") or {}).get("published_at")
+            if result.source_id == "weibo_hot" or (
+                original_publication_time(item.to_dict()) and not relative
+                and (not bbc_article or page_date)
+            ):
+                continue
+            source = source_configs[result.source_id]
+            article_link = source.article_patterns and is_eligible(source, item.title, item.url)
+            if not (article_link or item.metadata.get("acquisition_method") == "feed"):
+                continue
+            url = canonicalize_url(item.canonical_url or item.url)
+            if url in known_dates:
+                date, publisher_url = known_dates[url]
+                content_source = item.metadata.setdefault("content_source", {})
+                content_source["published_at"] = date
+                if publisher_url:
+                    content_source["url"] = publisher_url
+                item.metadata["publication_time_basis"] = "publisher"
+                item.metadata["publication_time_missing"] = False
+                if not uses_platform_publication_time(item.to_dict()):
+                    item.published_at = date
+            else:
+                key = urlsplit(url).path if bbc_article else url
+                pending[key].append(item)
+    if not pending:
+        return {}
+    pages: dict[str, PublicationPage] = {}
+
+    def retain(url: str, probe: dict, page: PublicationPage) -> None:
+        """处理：按上海自然日暂存可能入选的完整响应。
+        输入：原始链接、日期回执及完整网页。
+        输出：本版候选可继续使用的网页材料，历史文章仅保留日期。
+        """
+        raw_date = probe.get("published_at") or ""
+        stamp = normalize_time(raw_date, config.timezone)
+        if stamp and (stamp[:10] == date_value or raw_date[:10] == date_value):
+            pages[url] = page
+
+    global_limit = asyncio.Semaphore(config.browser.collection_global_concurrency)
+    domain_limits = defaultdict(
+        lambda: asyncio.Semaphore(config.browser.collection_per_domain_concurrency)
+    )
+    async with httpx.AsyncClient(
+        timeout=config.browser.http_prefetch_timeout_ms / 1000,
+        follow_redirects=True, headers={"User-Agent": _USER_AGENT, "Accept": _HTTP_ACCEPT},
+    ) as client:
+
+        async def read_date(article_url: str) -> dict:
+            """处理：在全局和同域配额内读取一份日期证据。
+            输入：同文去重后的来源原始 URL。
+            输出：供同文全部候选复用的探测回执。
+            """
+            async with domain_limits[urlsplit(article_url).netloc], global_limit:
+                if date_value:
+                    return await probe_publication_time(client, article_url, retain=retain)
+                return await probe_publication_time(client, article_url)
+
+        groups: dict[str, list[Any]] = defaultdict(list)
+        for items in pending.values():
+            groups[items[0].url].extend(items)
+        probes = dict(zip(groups, await asyncio.gather(*(read_date(url) for url in groups)),
+                          strict=True))
+    google_wrappers = [
+        url for url, items in groups.items()
+        if any(item.source_id == "google_news_china" for item in items)
+        and urlsplit(url).hostname == "news.google.com"
+        and urlsplit(probes[url].get("final_url") or "").hostname == "news.google.com"
+        and probes[url]["status"] == "success" and not probes[url].get("published_at")
+    ]
+    if google_wrappers:
+        resolved = (await probe_google_news_dates(google_wrappers, config, retain=retain)
+                    if date_value else await probe_google_news_dates(google_wrappers, config))
+        probes.update({url: {**probe, "acquisition_method": "browser"}
+                       for url, probe in resolved.items()})
+    for url, items in groups.items():
+        probe = probes[url]
+        raw_date = probe.get("published_at")
+        valid = probe["status"] == "success" and normalize_time(raw_date or "", config.timezone)
+        final_url = probe.get("final_url")
+        for item in items:
+            item.metadata["publication_time_probe"] = probe
+            if url in pages:
+                # 同一规范文章的镜像共用一次公开响应。
+                pages[item.url] = pages[url]
+            if item.source_id == "bbc_world" and not valid:
+                item.metadata["publication_time_missing"] = True
+            if (item.source_id == "google_news_china" and final_url
+                    and urlsplit(final_url).hostname != "news.google.com"):
+                item.metadata.setdefault("content_source", {})["url"] = final_url
+            if valid:
+                item.metadata.setdefault("content_source", {})["published_at"] = raw_date
+                item.metadata["publication_time_basis"] = "publisher"
+                item.metadata["publication_time_missing"] = False
+                if not uses_platform_publication_time(item.to_dict()):
+                    item.published_at = original_publication_time(item.to_dict())
+    return pages
 
 
 def _safe_title(page: Page) -> str:
@@ -492,13 +655,7 @@ def collect_sources(
     html_sources = [
         source
         for source in selected
-        if (
-            len(_current_monitor_items(monitor_results[source.id].items, source, window))
-            if source.id in monitor_results
-            and monitor_results[source.id].status in {SourceStatus.SUCCESS, SourceStatus.PARTIAL}
-            else 0
-        )
-        < max(1, min(source.report_target, source.max_items))
+        if not _monitor_sufficient(monitor_results.get(source.id), source, window, date_value)
     ]
     prefetched_pages = (
         {} if headed else prefetch_browser_pages(html_sources, config, data_dir)
@@ -515,21 +672,32 @@ def collect_sources(
     results = [
         collect_source(
             None, source, config, data_dir, prefetched_pages,
-            monitor_results.get(source.id), browser_results, window=window,
+            monitor_results.get(source.id), browser_results, window=window, date_value=date_value,
         )
         for source in selected
     ]
-    # 当前自然日的原文保留本源Top；旧文、未知日期和平台上榜时间不占日报位置。
+    prior_path = data_dir / "indexes" / "latest.json"
+    previous = read_json(prior_path) if prior_path.exists() else {}
+    pages = asyncio.run(_complete_publication_times(
+        results, config, previous, date_value=date_value,
+    ))
+    # 索引保留实际采集结果；本版合格数量只控制下游写作计划。
     source_configs = {source.id: source for source in selected}
+    counts = {}
     for result in results:
-        ids = {item["item_id"] for item in select_brief_items(
+        eligible = select_brief_items(
             [item.to_dict() for item in result.items], source_configs,
-            date_value=date_value, cutoff=end.isoformat())}
-        result.items = [item for item in result.items if item.item_id in ids]
-        if not result.items and result.status == SourceStatus.SUCCESS:
-            result.status = SourceStatus.NO_ITEMS
-
-    counts = {result.source_id: len(result.items) for result in results}
+            date_value=date_value, cutoff=end.isoformat(),
+        )
+        counts[result.source_id] = len(eligible)
+        by_id = {item.item_id: item for item in result.items}
+        for item in eligible:
+            if (page := pages.get(item["url"])) is not None:
+                prepared = prepare_publication_content(
+                    item, page, source_configs[result.source_id], config, data_dir,
+                )
+                if prepared:
+                    by_id[item["item_id"]].metadata["publication_probe_content"] = prepared
     return write_results_index(
         results,
         data_dir,
@@ -551,7 +719,7 @@ def collect_sources(
                 **source.origin_metadata,
                 "module": source.module,
                 "category": source.category,
-                "selection_scope": "all_today",
+                "selection_scope": "latest_15_today",
             }
             for source in selected
         },

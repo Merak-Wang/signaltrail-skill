@@ -22,14 +22,14 @@
 | `scripts/` | 安装、打包、开发检查和测量脚本 |
 | `references/` | 按当前流程选读的运行细则 |
 | `docs/`、`docs/zh-CN/` | 英文工程记录及中文镜像，索引分别列出当前说明与历史记录 |
-| `tests/`、`evals/` | 行为测试及夹具、skill 触发案例 |
-| `examples/` | 当前与历史公开样例；测试也读取 `sample_report.json` |
+| `evals/` | 模块评估负载、质量检查与 Skill 触发案例 |
+| `examples/` | 当前与历史公开样例，含日报评估使用的合成文本样例 |
 | `.github/workflows/ci.yml` | 仓库 CI 检查 |
 
 发布包包含 `scripts/install.ps1`、`install.sh`、`build_hermes_skill.py` 、`measure_codex_turn.py`、`run_signaltrail.py` 和 `build_qwen_worker.py`。
-源码仓库另有 `check_code_comments.py`、`check_docs.py`、`benchmark_slide_efficiency.py`，
-用于开发检查和手动基准。发布范围由构建脚本白名单定义，与 Python 导入关系分别维护；
-独立脚本、Schema 和提示词也可以由人、宿主或测试直接使用。
+源码仓库另有 `check_code_comments.py`、`check_docs.py`、`evaluate_modules.py` 和
+`benchmark_slide_efficiency.py`，用于开发检查和基准。发布范围由构建脚本白名单定义，与 Python
+导入关系分别维护。独立脚本、Schema 和提示词也可以由人、宿主或评估直接使用。
 
 默认构建只读取 Git 已跟踪文件。新运行模块和音色资源须与功能一起纳入版本控制后再发布，
 `--include-uncommitted` 用于显式本地构建。本地 `data/` 保存证据、已接受草稿、报告、模型和缓存；
@@ -65,15 +65,15 @@ Python 合成器逐段发送请求，并在导出完成后关闭进程。维护�
 `scripts/build_qwen_worker.py` 基于固定 llama.cpp 源码构建。音频和单页画面缓存用于后续导出。
 
 监控独立采集 RSS/Atom 与静态 HTML，聚类条目并记录来源健康，全程不调用模型。
-完整采集复用新鲜监控快照；启用扩展来源均作为正式栏目来源收录全部合格当日条目。首页使用 `assets/monitor/`。
+完整采集复用新鲜监控快照；启用扩展来源均作为正式栏目来源，每源按原发时间从新到旧选取最多15条合格当日条目。首页使用 `assets/monitor/`。
 日报与事件 API 提供已保存版本与 `platform/events.sqlite` 长期事件档案；
 见[采集与档案接口](platform.md)。
 
 `scripts/run_signaltrail.py` 将 CLI 导入绑定到当前工作区；其 `--advance-edition` 模式接收草稿，
-推进分析准备、组装、定稿、尾任务和图文渲染，遇到模型任务时返回。完整作者输入保存到独立文件，
-协调者只取得精简任务路径；宿主为每项任务创建新上下文，动态填满最多三个作者槽位。
-Python 负责校验和提交；单独会话仍可使用 `--advance-dispatch` 和 `--dispatch-plan`。
-长进程在一次工具运行时内等待，作者完成通知触发派发，执行示例见 `SKILL.md`。
+推进分析准备、组装、定稿、尾任务和图文渲染，遇到模型任务时返回。程序校验时跳过在途草稿，
+只为当前空闲槽位生成完整作者输入。宿主为每位作者创建新上下文；单独会话仍可使用
+`--advance-dispatch` 和 `--dispatch-plan`。作者完成通知触发派发，长进程在工具运行时内等待。
+整期由一位协调者直接管理最多三名独立作者、阻塞与交付；阶段变化和批次数不产生额外监督者或接班协调者。恢复使用已保存的继续命令，执行示例见 `SKILL.md`。
 
 研判默认由一个新上下文作者完成。可选 `prepare-analysis --parallel` 路径依次处理选题、
 三个领域、综合和组装，各阶段会重复读取共享输入。全局 `--compact` 压缩命令输出，保存文件保留完整内容。
@@ -90,7 +90,7 @@ Python 负责校验和提交；单独会话仍可使用 `--advance-dispatch` 和
 | 采集诊断 | `collection_diagnostics` | 已配置来源覆盖、有界正文缺口建议和本地产物完整性 |
 | 采集保留 | `retention` | 将超过七天的采集文件移入回收站，保留运行中依赖和全部报告／媒体产物 |
 | 证据 | `content`、`content_extraction`、`pdf_content`、`content_images`、`media`、`image_policy`、`monitor` | 结构化正文块、有界文本 PDF 证据、抽取质量、含上下文的配图候选、快照和证据关联 |
-| 写作 | `context`、`brief_selection`、`authoring`、`author_inputs`、`analysis_parallel`、`semantics`、`state` | 每源全部当日Top、同源规范URL去重、跨源保视图并复用原文写作、有界数据包、按token切分的有序输入块、已接收批次、可选并行研判、连续状态和缓存 |
+| 写作 | `context`、`brief_selection`、`authoring`、`author_inputs`、`analysis_parallel`、`semantics`、`state` | 同源规范URL去重后按原发时间选取每源最新最多15条当日条目、跨源保视图并复用原文写作、有界数据包、按token切分的有序输入块、已接收批次、可选并行研判、连续状态和缓存 |
 | 报告契约 | `reporting` | 编译草稿、补齐证据、校验 Schema 及跨字段规则 |
 | 图文共享产物 | `narrative_store` | 不可变图文包、已接受写作和精确修订重放；沿用既有产物格式 |
 | 报告存储 | `reports` | 保存报告和评估、渲染 Markdown、更新派生状态 |
@@ -157,6 +157,6 @@ Schema 1.1–1.5 报告保持可读，新报告使用 2.0 并要求跨视角综�
 [Hermes 集成参考](../../references/hermes-integration.md)。
 
 编译器、校验器和渲染器中的超长函数仍记为[技术债](exec-plans/tech-debt-tracker.md) TD-002。
-测试选择和完整检查见[开发指南](development.md)。
+模块评估和完整检查见[开发指南](development.md)。
 
-两份来源配置共127项、124启用，全部启用源按现有栏目映射进入日报；有限公开Feed/页面内的可验证当日原文按各来源Top完整呈现，不设共享30池或每源1/2/15限额。
+两份来源配置共 45 项，其中 43 项启用，全部启用源按现有栏目映射进入日报；有限公开Feed/页面内的可验证当日原文按原发时间从新到旧选取每源最多15条；采集索引保留完整观察证据和来源状态。

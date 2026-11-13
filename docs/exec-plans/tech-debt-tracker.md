@@ -46,6 +46,20 @@ opt-in; compacting requested evaluations, aligning extraction with analysis, and
 non-story candidates remain open. Old papers in current source-ranked Top15 are permitted;
 publication age and a real update must still be distinguished.
 
+## 2026-11-13 performance follow-up
+
+The audit removed mandatory coordinator handoffs, compacted fully embedded brief inputs,
+shared validated slide parent reads, and reused verified article-page image extraction.
+The remaining items below require module-level quality and performance evidence before changes.
+
+| ID | Priority | Gap and evidence | Exit condition |
+| --- | --- | --- | --- |
+| TD-042 | Medium | A cold monitor HTML fallback can fetch a listing that the subsequent `collect_all_items` collector fetches again. Monitor snapshots cannot simply replace complete collection. | Reuse only the same run's equivalent response, preserve Feed evidence, full listing order and time window, and measure duplicate requests with unchanged coverage. |
+| TD-043 | Medium | Context construction creates author packets before enrichment and creates them again after evidence freezes; author preflight and acceptance also repeat bound-input validation. | Delay only unused packet materialization and share verified work within an operation; preserve frozen evidence, rejection and recovery, with whole-authoring latency and read-volume measurements. |
+| TD-044 | Medium | Hermes request hooks reread accumulated ledger events under a shared observer lock; the repeated total read volume grows with request history. This path was not active in the November 13 Codex generation. | Incremental, fingerprint-bound accounting preserves exact totals, late events and unknown usage; measure hook overhead and budget reconciliation on a full request trace. |
+| TD-045 | Low | An unchanged cached video still concatenates audio and remuxes the final MP4; cold video remains dominated by local speech inference. | A final-output receipt binds all page/audio/frame/encoding inputs before reuse; cold and warm exports retain identical narration, timing and decoded tracks. |
+| TD-046 | Medium | Concurrent image-cache writers can overwrite one another's read-modify-write snapshots despite atomic file replacement. | Merge explicit entry deltas under the storage lock, preserve deletion semantics, and verify complete image outputs and request counts across interleaved jobs. |
+
 ## Resolved Items
 
 Resolved in the 2026-09-12 [cost and latency optimization](completed-2026-09-12-runtime-cost-optimization.md):

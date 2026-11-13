@@ -875,6 +875,7 @@ def save_report(
         index,
         existing_events,
         coverage_targets=coverage_targets,
+        brief_plan_item_ids=brief_plan_item_ids,
     )
     if errors:
         raise ValueError("Report validation failed: " + "; ".join(errors))
@@ -902,6 +903,7 @@ def save_report(
         index,
         existing_events,
         coverage_targets=coverage_targets,
+        brief_plan_item_ids=brief_plan_item_ids,
     )
     warnings = list(
         dict.fromkeys(

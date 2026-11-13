@@ -24,15 +24,15 @@ this architecture map, bilingual READMEs, release/security/license records, and 
 | `scripts/` | Installation, packaging, contributor checks and measurements |
 | `references/` | Runtime policies selected by the active workflow |
 | `docs/`, `docs/zh-CN/` | English engineering records and Chinese mirrors; current and historical material has separate index entries |
-| `tests/`, `evals/` | Behavior tests and fixtures; skill activation examples |
-| `examples/` | Current and historical public samples; tests also consume `sample_report.json` |
+| `evals/` | Module workloads, quality checks, and skill activation examples |
+| `examples/` | Current and historical public samples, including the report evaluation's synthetic text seed |
 | `.github/workflows/ci.yml` | Repository validation in CI |
 
 The package includes `scripts/install.ps1`, `install.sh`, `build_hermes_skill.py` and
 `measure_codex_turn.py`, `run_signaltrail.py` and `build_qwen_worker.py`. The source checkout additionally contains `check_code_comments.py`,
-`check_docs.py`, `benchmark_slide_efficiency.py` for contributor
-checks and manual benchmarks. Package inclusion follows the build script's allowlist, independently
-of Python imports. Scripts, schemas and prompts can be consumed directly by people, hosts or tests.
+`check_docs.py`, `evaluate_modules.py`, and `benchmark_slide_efficiency.py` for contributor
+checks and benchmarks. Package inclusion follows the build script's allowlist, independently
+of Python imports. Scripts, schemas and prompts can be consumed directly by people, hosts or evaluations.
 
 Default builds include Git-tracked files only. Add new runtime modules and voice assets to version
 control with the feature before release; `--include-uncommitted` is an explicit local build option.
@@ -79,18 +79,19 @@ segment to that process and closes it after export. The maintained worker source
 Audio and page caches support repeat exports.
 
 The monitor independently collects RSS/Atom and static HTML, clusters items and records source
-health without model calls. Both source bundles supply regular report sections: 124 of 127 configured IDs are enabled.
-Reports retain all current-day articles per source in original Top order, without discovery quotas;
+health without model calls. Both source bundles supply regular report sections: 43 of 45 configured IDs are enabled.
+Reports select up to 15 eligible current-day articles per source by original publication time, newest first;
 finite Feed/page responses retain byte/page bounds. The homepage serves `assets/monitor/`. Report and event
 APIs expose saved editions and the persistent `platform/events.sqlite` archive. See [collection and archive APIs](docs/platform.md).
 
 `scripts/run_signaltrail.py` binds CLI imports to the current checkout. Its `--advance-edition`
 mode accepts drafts and advances analysis preparation, assembly, finalization, tail and rendering
-until model work remains. It materializes complete author inputs and returns compact task paths;
-the host creates a new context for every task and fills up to three worker slots. Validation and
-submission happen in Python. Individual sessions retain `--advance-dispatch` and `--dispatch-plan`.
-Long process waits stay inside one host tool runtime; author completion notifications trigger
-dispatch, as described in `SKILL.md`.
+until model work remains. It skips active drafts during validation and materializes complete inputs
+only for the available worker slots. The host creates a fresh context for each author. Individual
+sessions retain `--advance-dispatch` and `--dispatch-plan`. Author completion notifications trigger
+dispatch; long subprocess waits stay within the tool runtime. One coordinator directly manages
+up to three fresh authors, blockers, and delivery receipts. Stage changes and batch counts do not
+create supervisor or replacement-coordinator roles; recovery follows saved commands in `SKILL.md`.
 
 Analysis normally uses one fresh-context author. The optional `prepare-analysis --parallel`
 path separates selection, three domains, synthesis and assembly; its stages repeat shared input.
@@ -108,7 +109,7 @@ All modules below live in `src/signaltrail/`.
 | Collection diagnostics | `collection_diagnostics` | Configured-source coverage, bounded body-gap suggestions, local artifact integrity |
 | Collection retention | `retention` | Recycle collection files older than seven days while preserving active-run evidence and all report/media outputs |
 | Evidence | `content`, `content_extraction`, `pdf_content`, `content_images`, `media`, `image_policy`, `monitor` | Structured article blocks, bounded text-PDF evidence, extraction quality, contextual image candidates, snapshots, evidence lineage |
-| Writing | `context`, `brief_selection`, `authoring`, `author_inputs`, `analysis_parallel`, `semantics`, `state` | All current-day source Top entries, same-source canonical de-duplication, cross-source views with shared original writing, bounded packets, ordered token-bounded input parts, accepted batches, optional parallel analysis, continuity and cache |
+| Writing | `context`, `brief_selection`, `authoring`, `author_inputs`, `analysis_parallel`, `semantics`, `state` | Up to 15 newest eligible entries per source after same-source canonical de-duplication, cross-source views with shared original writing, bounded packets, ordered token-bounded input parts, accepted batches, optional parallel analysis, continuity and cache |
 | Report contract | `reporting` | Compile drafts, hydrate evidence, validate schema and cross-field rules |
 | Shared slide artifacts | `narrative_store` | Immutable slide packets, accepted writing and exact revision replay; preserves existing artifact formats |
 | Report storage | `reports` | Save reports and evaluations, render Markdown, update derived state |
@@ -184,5 +185,5 @@ backend choice. Adapter formats and coverage limits live in [usage metering](ref
 and the [Hermes integration reference](references/hermes-integration.md).
 
 Remaining large compiler, validator, and renderer functions are tracked as TD-002 in the
-[technical-debt tracker](docs/exec-plans/tech-debt-tracker.md). Test selection and the full gate
+[technical-debt tracker](docs/exec-plans/tech-debt-tracker.md). Module evaluation and the full gate
 are in the [development guide](docs/development.md).

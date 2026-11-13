@@ -206,6 +206,23 @@ def effective_page_results(pages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     )]
 
 
+def effective_source_status(source: dict[str, Any], pages: list[dict[str, Any]]) -> str:
+    """处理：将旧索引中实际访问失败的空来源恢复为失败。
+    输入：来源汇总和筛选后的有效页面结果。
+    输出：保留正常空来源，剔除成功页面遗留的诊断信息对状态的影响。
+    """
+    status = str(source.get("status", ""))
+    error = source.get("error")
+    if status == SourceStatus.NO_ITEMS and error:
+        success_diagnostics = "; ".join(
+            str(page["error"]) for page in pages
+            if page.get("status") == SourceStatus.SUCCESS and page.get("error")
+        )
+        if error != success_diagnostics:
+            return SourceStatus.FAILED
+    return status
+
+
 @dataclass(slots=True)
 class SourceResult:
     """处理：封装来源结果相关的数据与行为。

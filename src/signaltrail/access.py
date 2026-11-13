@@ -14,6 +14,8 @@ CHALLENGE_TEXTS = (
     "enable javascript and cookies",
     "robot check",
     "sina visitor system",
+    "client challenge",
+    "transferring to the website...",
 )
 RATE_LIMIT_TEXTS = (
     "temporarily limited",

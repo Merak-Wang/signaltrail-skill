@@ -23,7 +23,7 @@ from .localization import (
     translated_title,
     translated_title_field,
 )
-from .models import effective_page_results
+from .models import effective_page_results, effective_source_status
 from .semantics import (
     brief_requires_watch,
     reusable_semantic_brief,
@@ -560,9 +560,8 @@ def _pending_from_index(
         source_id = str(source.get("source_id", ""))
         source_name = str(source.get("source_name", source_id))
         page_rows = []
-        for page in effective_page_results(source.get("page_results", [])):
-            if not isinstance(page, dict):
-                continue
+        effective_pages = effective_page_results(source.get("page_results", []))
+        for page in effective_pages:
             status = str(page.get("status", ""))
             if status == "no_items" and (
                 page.get("error")
@@ -575,9 +574,7 @@ def _pending_from_index(
                 status = "failed"
             if status in {"verification_required", "rate_limited", "failed"}:
                 page_rows.append(page)
-        source_status = str(source.get("status", ""))
-        if source_status == "no_items" and source.get("error"):
-            source_status = "failed"
+        source_status = effective_source_status(source, effective_pages)
         if not page_rows and source_status in {
             "verification_required",
             "rate_limited",
@@ -1427,6 +1424,8 @@ def validate_report_data(
     index: object | None = None,
     existing_events: list[dict] | None = None,
     coverage_targets: dict[str, int] | None = None,
+    *,
+    brief_plan_item_ids: dict[str, list[str]] | None = None,
 ) -> tuple[list[str], list[str]]:
     """处理：校验报告数据并在不满足约束时报告错误。
     输入：
@@ -1434,6 +1433,7 @@ def validate_report_data(
     - ``index``：当前来源索引对象；包含规范条目、来源结果、策略和采集时间。
     - ``existing_events``：已在其他栏目登记的事件；用于阻止跨栏目重复 item_id。
     - ``coverage_targets``：按来源 ID 指定的最小报告覆盖数；由运行情境拥有。
+    - ``brief_plan_item_ids``：冻结计划中的每源条目与顺序，决定覆盖目标；独立评估可使用已编译名次。
     输出：阻断错误和非阻断警告两个列表；调用方只有在错误列表为空时才能持久化或发布报告。
     """
     if isinstance(report, dict):
@@ -1471,6 +1471,12 @@ def validate_report_data(
             validation_source_positions.setdefault(
                 source_id, len(validation_source_positions)
             )
+    if brief_plan_item_ids is not None:
+        validation_item_positions.update(
+            (item_id, position)
+            for item_ids in brief_plan_item_ids.values()
+            for position, item_id in enumerate(item_ids, start=1)
+        )
 
     def require_output_language(value: object, location: str) -> None:
         """处理：读取当前校验节点的输出语言，并把缺失或非法值加入报告错误列表。
@@ -1618,7 +1624,9 @@ def validate_report_data(
                         str(brief.get("primary_source", {}).get("id") or ""),
                         1_000_000,
                     ),
-                    validation_item_positions.get(
+                    brief["selection_rank"]
+                    if brief_plan_item_ids is None and type(brief.get("selection_rank")) is int
+                    else validation_item_positions.get(
                         str(brief.get("item_id") or ""),
                         1_000_000,
                     ),
@@ -1628,7 +1636,7 @@ def validate_report_data(
             ]
             if brief_order_values != sorted(brief_order_values):
                 errors.append(
-                    f"{prefix}: briefs must preserve the current index source order"
+                    f"{prefix}: briefs must preserve the planned source and item order"
                 )
 
         for brief_index, brief in enumerate(briefs):
@@ -1957,24 +1965,29 @@ def validate_report_data(
                     "the current index order remains authoritative"
                 )
         if isinstance(index, dict):
-            indexed_counts = Counter(
-                str(item.get("source_id"))
-                for item in index.get("items", [])
-                if isinstance(item, dict) and item.get("source_id")
-            )
-            policies = (
-                index.get("source_policies", {})
-                if isinstance(index.get("source_policies"), dict)
-                else {}
-            )
-            for source_id, policy in sorted(policies.items()):
-                if not isinstance(policy, dict) or not indexed_counts[source_id]:
-                    continue
-                target = min(
-                    indexed_counts[source_id],
-                    int(policy.get("report_target", indexed_counts[source_id])),
-                    int(policy.get("report_max", indexed_counts[source_id])),
+            if brief_plan_item_ids is not None:
+                # 正文日期复核后以计划内条目计数，未入计划的来源覆盖目标为零。
+                targets = {
+                    source_id: len(item_ids) for source_id, item_ids in brief_plan_item_ids.items()
+                }
+            else:
+                indexed_counts = Counter(
+                    str(item.get("source_id"))
+                    for item in index.get("items", [])
+                    if isinstance(item, dict) and item.get("source_id")
                 )
+                policies = index.get("source_policies")
+                policies = policies if isinstance(policies, dict) else {}
+                targets = {
+                    source_id: min(
+                        indexed_counts[source_id],
+                        int(policy.get("report_target", indexed_counts[source_id])),
+                        int(policy.get("report_max", indexed_counts[source_id])),
+                    )
+                    for source_id, policy in policies.items()
+                    if isinstance(policy, dict) and indexed_counts[source_id]
+                }
+            for source_id, target in sorted(targets.items()):
                 if coverage_targets is not None and source_id in coverage_targets:
                     override = coverage_targets[source_id]
                     if (
@@ -2420,6 +2433,7 @@ def validate_report(
         index,
         existing_events,
         coverage_targets=coverage_targets,
+        brief_plan_item_ids=brief_plan_item_ids,
     )
     return errors, [*compile_warnings, *validation_warnings]
 

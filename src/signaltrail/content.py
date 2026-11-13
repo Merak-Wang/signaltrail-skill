@@ -7,15 +7,18 @@ import hashlib
 import html
 import json
 import time
+from collections.abc import Callable
+from dataclasses import dataclass
 from importlib import import_module
 from pathlib import Path
 from typing import Any
-from urllib.parse import urljoin, urlsplit
+from urllib.parse import urldefrag, urljoin, urlsplit
 from uuid import uuid4
 
 import httpx
 from bs4 import BeautifulSoup
 from playwright.async_api import BrowserContext, Page, async_playwright
+from playwright.async_api import Error as PlaywrightError
 
 from .access import classify_access_text, read_bounded_response
 from .article_time import original_publication_time, uses_platform_publication_time
@@ -26,6 +29,7 @@ from .content_extraction import (
     extract_with_fallback,
     input_fingerprint,
     is_navigation_only,
+    observed_source_metadata,
 )
 from .content_images import article_image_candidates
 from .image_policy import normalize_image_candidates
@@ -40,6 +44,21 @@ _HTTP_USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
     "AppleWebKit/537.36 (KHTML, like Gecko) Edg/131.0 Safari/537.36"
 )
+_HTTP_ACCEPT = "text/html,application/xhtml+xml,text/plain;q=0.8"
+
+
+@dataclass(slots=True)
+class PublicationPage:
+    """处理：暂存可用于正文提取的完整公开响应。
+    输入：日期探测取得的字节、编码、最终地址和访问方式。
+    输出：仅在采集进程内传递的网页材料。
+    """
+
+    body: bytes
+    encoding: str
+    url: str
+    status_code: int
+    acquisition: str
 
 
 def synchronize_nested_items(payload: dict[str, Any]) -> None:
@@ -97,6 +116,148 @@ def _apply_page_publication_time(item: dict[str, Any], published: str) -> None:
     resolved = original_publication_time(projected)
     if resolved:
         item["published_at"] = resolved
+
+
+def _content_url(item: dict[str, Any]) -> str:
+    """处理：正文抓取优先使用日期探测已解析的 Google News 发布者地址。
+    输入：规范索引条目和已有原文地址。
+    输出：供 HTTP 与浏览器共用的请求地址，条目标识继续使用索引 URL。
+    """
+    if item.get("source_id") == "google_news_china":
+        source = (item.get("metadata") or {}).get("content_source") or {}
+        if source.get("url"):
+            return str(source["url"])
+    return str(item["url"])
+
+
+async def probe_publication_time(
+    client: httpx.AsyncClient, url: str, *, max_bytes: int = 1024 * 1024,
+    retain: Callable[[str, dict, PublicationPage], None] | None = None,
+) -> dict[str, Any]:
+    """处理：读取有界网页日期，并将完整 HTML 交给本轮采集器暂存。
+    输入：HTTP 客户端、原文地址、响应上限和可选的暂存回调。
+    输出：发布者原始日期及访问状态，正文响应留在内存中。
+    """
+    try:
+        async with client.stream("GET", url) as response:
+            content, truncated = await read_bounded_response(response, max_bytes)
+    except httpx.HTTPError as exc:
+        return {"status": "failed", "published_at": None,
+                "error": f"{type(exc).__name__}: {exc}"}
+    result = {
+        **_publication_probe_result(content, response.status_code, str(response.url)),
+        "bytes": len(content), "truncated": truncated,
+    }
+    if retain is not None and not truncated and result["status"] == "success":
+        _retain_publication_page(url, result, content, response.headers, "http", retain,
+                                 encoding=response.encoding)
+    return result
+
+
+def _retain_publication_page(
+    url: str, result: dict, body: bytes, headers: Any, acquisition: str,
+    retain: Callable[[str, dict, PublicationPage], None], *, encoding: str | None = None,
+) -> None:
+    """处理：将完整网页连同编码和最终地址交给本轮采集。
+    输入：响应字节、HTTP 头、访问方式及暂存回调。
+    输出：回调接收网页材料，非网页响应仅保留原日期回执。
+    """
+    content_type = headers.get("content-type", "").lower()
+    if content_type and not any(kind in content_type for kind in (
+            "text/html", "application/xhtml+xml", "text/plain")):
+        return
+    if encoding is None:
+        encoding = httpx.Response(200, headers={"content-type": content_type}).encoding
+    retain(url, result, PublicationPage(
+        body, encoding or "utf-8", result["final_url"], result["http_status"], acquisition,
+    ))
+
+
+def _publication_probe_result(content: bytes, status_code: int, url: str) -> dict[str, Any]:
+    """处理：从同一份发布者 HTML 识别访问状态和原始日期。
+    输入：有界 HTTP 响应、状态码和最终页面地址。
+    输出：保留验证、限流或失败语义的日期探测回执。
+    """
+    soup = BeautifulSoup(content, "html.parser")
+    title = soup.title.get_text(" ", strip=True) if soup.title else ""
+    access = classify_access_text(status_code, title, soup.get_text(" ", strip=True))
+    status = ("rate_limited" if access["rate_limited"] else
+              "verification_required" if access["required"] else
+              "failed" if status_code >= 400 else "success")
+    return {"status": status,
+            "published_at": observed_source_metadata(soup, url)["published_at"]
+            if status == "success" else None,
+            "http_status": status_code, "final_url": url}
+
+
+async def probe_google_news_dates(
+    urls: list[str], config: AppConfig, *,
+    retain: Callable[[str, dict, PublicationPage], None] | None = None,
+) -> dict[str, dict]:
+    """处理：在无账号浏览器中等待 Google News 公开跳转，再读取发布者日期。
+    输入：静态请求仍停在 Google News 的包装地址与浏览器并发配置。
+    输出：各包装地址对应的原文日期、最终 URL 和实际访问状态。
+    """
+    limit = asyncio.Semaphore(config.browser.global_concurrency)
+    timeout = min(config.browser.navigation_timeout_ms, 8000)
+    results = {}
+    try:
+        async with async_playwright() as playwright:
+            browser = await playwright.chromium.launch(
+                headless=True, channel=resolve_browser_channel(config),
+            )
+            try:
+                context = await browser.new_context()
+
+                async def probe(url: str) -> None:
+                    """处理：监听主框架的公开跳转并读取最终文档。
+                    输入：一条待解析的 Google News 包装地址。
+                    输出：把原文或访问失败的短回执写入对应地址的结果。
+                    """
+                    async with limit:
+                        page = await context.new_page()
+                        try:
+                            await page.route(
+                                "**/*", lambda route: route.abort()
+                                if route.request.resource_type in {"image", "media", "font"}
+                                else route.continue_(),
+                            )
+                            async with page.expect_response(
+                                lambda response: response.request.is_navigation_request()
+                                and response.request.frame == page.main_frame
+                                and not f".{urlsplit(response.url).hostname}".endswith(
+                                    ".google.com"
+                                )
+                                and not 300 <= response.status < 400,
+                                timeout=timeout,
+                            ) as final:
+                                await page.goto(url, wait_until="commit", timeout=timeout)
+                            response = await final.value
+                            content = await asyncio.wait_for(response.body(), timeout / 1000)
+                            result = _publication_probe_result(
+                                content[:1024 * 1024], response.status, response.url,
+                            )
+                            results[url] = result
+                            if (retain is not None and len(content) <= _MAX_CONTENT_BYTES
+                                    and result["status"] == "success"):
+                                _retain_publication_page(
+                                    url, result, content, response.headers, "browser_response",
+                                    retain,
+                                )
+                        except (PlaywrightError, TimeoutError) as exc:
+                            results[url] = {"status": "failed", "published_at": None,
+                                            "final_url": page.url, "error": str(exc)}
+                        finally:
+                            await page.close()
+
+                await asyncio.gather(*(probe(url) for url in urls))
+            finally:
+                await browser.close()
+    except PlaywrightError as exc:
+        for url in urls:
+            results.setdefault(url, {"status": "failed", "published_at": None,
+                                     "final_url": url, "error": str(exc)})
+    return results
 
 
 async def meta_contents(page: Page, selectors: list[str]) -> list[str]:
@@ -308,6 +469,11 @@ def _save_document(
     metadata["content_selector"] = document.selector
     metadata["content_quality"] = document.quality
     metadata["content_input"] = document.provenance
+    if item.get("source_id") == "google_news_china":
+        previous_source = metadata.get("content_source") or {}
+        for field in ("url", "published_at"):
+            if previous_source.get(field) and not document.source_metadata.get(field):
+                document.source_metadata[field] = previous_source[field]
     metadata["content_source"] = document.source_metadata
     metadata["content_text_sha256"] = hashlib.sha256(document.text.encode("utf-8")).hexdigest()
     item.pop("content_path", None)
@@ -359,6 +525,7 @@ def _apply_http_document(
     truncated: bool = False,
     raw_content: bytes | None = None,
     acquisition: str = "http",
+    require_complete: bool = False,
 ) -> bool:
     """处理：应用惰性 HTTP 正文，并判断浏览器回退是否仍有价值。
     输入：
@@ -370,6 +537,7 @@ def _apply_http_document(
     - ``config``：已校验的应用配置；提供时区、来源策略、并发限制、预算和输出选项。
     - ``data_dir``：当前运行的唯一数据根；所有状态和版本化产物都必须位于其中。
     - ``acquisition``：HTTP 或动态浏览器渠道；动态页面只保存抽取正文及指纹。
+    - ``require_complete``：日期探测只保存可直接复用的全文，正文阶段负责处理其他证据。
     输出：布尔判断；True 表示满足处理说明中的条件，False 表示不满足且不产生该结果。
     """
     metadata = item.setdefault("metadata", {})
@@ -390,6 +558,7 @@ def _apply_http_document(
     metadata["content_http_status"] = http_status
     metadata["content_http_final_url"] = final_url
     metadata["content_acquisition"] = acquisition
+    metadata.pop("content_image_evidence", None)
     if challenge["required"] or challenge["rate_limited"]:
         item["content_status"] = ContentStatus.VERIFICATION_REQUIRED
         metadata["content_challenge"] = challenge
@@ -418,7 +587,8 @@ def _apply_http_document(
         item["description"] = html.unescape(description)
     image_candidates = _html_meta_values(
         soup,
-        ['meta[property="og:image"]', 'meta[name="twitter:image"]'],
+        ['meta[property="og:image"]', 'meta[name="og:image"]',
+         'meta[name="twitter:image"]', 'meta[property="twitter:image"]'],
     )
     input_bytes = body_html.encode("utf-8") if raw_content is None else raw_content
     document = extract_with_fallback(
@@ -426,12 +596,16 @@ def _apply_http_document(
         expected_title=str(metadata.get("discovered_title") or ""),
         fallback=config.collection.fallback_extractor,
     )
+    if require_complete and (document.status != ContentStatus.FULL_TEXT
+                             or document.quality.get("numeric_tables_without_headers")):
+        return True
     _apply_page_publication_time(
         item, str(document.source_metadata.get("published_at") or "")
     )
     document.provenance = input_fingerprint(
         input_bytes,
         "visible_dom_utf8" if acquisition == "crawl4ai" else
+        "browser_response_body" if acquisition == "browser_response" else
         "decoded_html_utf8" if raw_content is None else "http_response_body",
         truncated,
     )
@@ -443,10 +617,52 @@ def _apply_http_document(
         item, document, source, config, data_dir,
         raw_content=input_bytes if acquisition == "http" else None,
     )
+    article_url = urldefrag(item["url"]).url
+    if (
+        acquisition == "http" and raw_content is not None and not truncated
+        and item["content_status"] == ContentStatus.FULL_TEXT
+        and article_url == urldefrag(final_url).url
+        and set(source.content_selectors) <= {"article", "main", "body", "html"}
+        and any(image.get("provenance") == "article_body"
+                for image in metadata.get("image_candidate_details", []))
+    ):
+        metadata["content_image_evidence"] = {
+            "url": article_url, "input_sha256": document.provenance["sha256"],
+        }
     # 已明确截断的传输和订阅提示不会靠重开浏览器消除；其他正文缺口最多升级一次。
     return document.status != ContentStatus.FULL_TEXT and not truncated and not (
         document.quality.get("incomplete_marker") and document.status == ContentStatus.PARTIAL
     )
+
+
+def prepare_publication_content(
+    item: dict, page: PublicationPage, source: SourceConfig, config: AppConfig, data_dir: Path,
+) -> dict | None:
+    """处理：用完整日期探测响应执行标准正文提取。
+    输入：通过当日筛选的条目、网页材料及正文存储配置。
+    输出：可供选中正文任务复用的快照，包含全文和图片引用。
+    """
+    enriched = copy.deepcopy(item)
+    _apply_http_document(
+        enriched, source, page.body.decode(page.encoding, errors="replace"),
+        page.url, page.status_code, config, data_dir, raw_content=page.body,
+        acquisition=page.acquisition, require_complete=True,
+    )
+    if not _has_reusable_content(enriched, data_dir):
+        return None
+    # 日期与来源原始字段留在采集索引；正文阶段再应用网页标题、图片和证据。
+    metadata = enriched["metadata"]
+    return {
+        "image_url": enriched.get("image_url"),
+        **{key: enriched[key] for key in (
+            "title", "description", "content_status", "content_path",
+            "content_characters",
+        ) if key in enriched},
+        "metadata": {key: value for key, value in metadata.items()
+                     if key.startswith("content_") or key in {
+                         "discovered_title", "image_candidates", "image_candidate_details",
+                     }},
+    }
 
 
 async def _read_bounded_html(
@@ -482,7 +698,7 @@ async def _extract_http_one(
         metadata = {}
         item["metadata"] = metadata
     try:
-        async with client.stream("GET", str(item["url"])) as response:
+        async with client.stream("GET", _content_url(item)) as response:
             # 外部响应始终只按不可信数据解析；不会执行页面脚本或其中的文字指令。
             content_type = response.headers.get("content-type", "").casefold()
             if response.status_code < 400 and "application/pdf" in content_type:
@@ -555,7 +771,7 @@ async def _run_http_extraction(
         timeout=max(1, config.browser.http_prefetch_timeout_ms) / 1000,
         headers={
             "User-Agent": _HTTP_USER_AGENT,
-            "Accept": "text/html,application/xhtml+xml,text/plain;q=0.8",
+            "Accept": _HTTP_ACCEPT,
         },
         transport=transport,
     ) as client:
@@ -567,7 +783,7 @@ async def _run_http_extraction(
             输出：“在并发限制内执行单项任务”得到的固定结构结果；
               返回位置依次对应 item、await _extract_http_one(client, 。
             """
-            domain = _domain_key(str(item.get("url", "")))
+            domain = _domain_key(_content_url(item))
             domain_limit = domain_semaphores.setdefault(
                 domain,
                 asyncio.Semaphore(per_domain),
@@ -656,7 +872,7 @@ async def _extract_one(
     response = None
     try:
         response = await page.goto(
-            str(item["url"]),
+            _content_url(item),
             wait_until="domcontentloaded",
             timeout=config.browser.navigation_timeout_ms,
         )
@@ -765,7 +981,7 @@ async def _run_parallel_extraction(
         输出：不返回新数据；完成“在并发限制内执行单项任务”，
           副作用限于该处理声明的受控对象或产物。
         """
-        domain = _domain_key(str(item.get("url", "")))
+        domain = _domain_key(_content_url(item))
         domain_semaphore = domain_semaphores.setdefault(
             domain, asyncio.Semaphore(domain_limit)
         )
@@ -822,7 +1038,7 @@ async def _extract_with_crawl4ai(
     from .crawl4ai_adapter import crawl_pages
 
     pages = await crawl_pages(
-        [str(item["url"]) for item in targets],
+        [_content_url(item) for item in targets],
         timeout_ms=config.browser.navigation_timeout_ms,
         concurrency=config.browser.global_concurrency,
         per_domain_concurrency=config.browser.per_domain_concurrency,
@@ -915,12 +1131,22 @@ async def _extract_pipeline(
       tp_successful、selected、successful、total_seconds。
     """
     started = time.perf_counter()
+    probe_hits = set()
     for item in targets:
-        _reuse_feed_content(item, config, data_dir)
+        metadata = item.setdefault("metadata", {})
+        prepared = metadata.pop("publication_probe_content", None)
+        if prepared and not headed and _has_reusable_content(prepared, data_dir):
+            item.update({key: value for key, value in prepared.items() if key != "metadata"})
+            metadata.pop("image_candidates", None)
+            metadata.pop("image_candidate_details", None)
+            metadata.update(prepared["metadata"])
+            probe_hits.add(id(item))
+        else:
+            _reuse_feed_content(item, config, data_dir)
     reusable = [item for item in targets if _has_reusable_content(item, data_dir)]
     for item in reusable:
         metadata = item.setdefault("metadata", {})
-        if isinstance(metadata, dict):
+        if isinstance(metadata, dict) and id(item) not in probe_hits:
             metadata["content_acquisition"] = "cache"
     reusable_ids = {id(item) for item in reusable}
     pending = [item for item in targets if id(item) not in reusable_ids]
@@ -988,6 +1214,7 @@ async def _extract_pipeline(
     return {
         "selected": len(targets),
         "cache_hits": len(reusable),
+        "publication_probe_hits": len(probe_hits),
         "http_attempted": len(pending),
         "http_successful": sum(
             attempt["channel"] == "http" and attempt["status"] in {"full_text", "partial"}

@@ -9,7 +9,7 @@ mirrors under [zh-CN/](zh-CN/README.md).
 | --- | --- |
 | [Usage](usage.md) | Installation, data paths, language, sources, metered runs, recovery |
 | [Collection extensions and archive APIs](platform.md) | Collection monitor, RSSHub/Crawl4AI, discovery briefs, and report/event archive APIs |
-| [Development](development.md) | Test selection, naming, code and documentation conventions |
+| [Development](development.md) | Module evaluation, naming, code and documentation conventions |
 | [Architecture](../ARCHITECTURE.md) | Module ownership, state, files, model boundaries |
 | [Agent instructions](../AGENTS.md) | Rules for changing this repository |
 | [News slides](news-slides.md) | Report and index inputs, illustrated presentations, local video, and voice setup |
@@ -26,9 +26,8 @@ mirrors under [zh-CN/](zh-CN/README.md).
 | `references/` | Detailed runtime policies and recovery instructions linked by the skill. |
 | `docs/research/` | Dated research and experimental proposals. |
 | `docs/exec-plans/` | Historical implementation records and the active technical-debt tracker. |
-| `examples/` | Current and historical report, slide, and video examples; synthetic test fixtures. |
-| `evals/` | Skill trigger examples for evaluation. |
-| `tests/` | Behavior and regression tests for the maintained implementation. |
+| `examples/` | Current and historical report, slide, and video examples, including synthetic evaluation inputs. |
+| `evals/` | Module workloads, quality checks, and Skill trigger examples. |
 
 ## Historical research
 

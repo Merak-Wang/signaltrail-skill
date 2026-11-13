@@ -61,6 +61,8 @@ def add_slides_parser(sub: argparse._SubParsersAction) -> None:
     submit.add_argument("--input", type=Path)
     submit.add_argument("--plan", type=Path, help="Check all batches of this plan")
     submit.add_argument("--draft-dir", type=Path, help="Directory of batch-N-draft.json files")
+    submit.add_argument("--skip-batch", action="append", default=[],
+                        help="With --plan, skip active batch IDs or packet paths")
     submit.add_argument("--check-only", action="store_true", help="Validate without saving results")
     video = stages.add_parser("video", help="Export locally narrated MP4 from a saved deck")
     video.add_argument("--title", help="Topic-specific title for this video")
@@ -219,6 +221,9 @@ def _submit_many(args: argparse.Namespace, data_dir: Path) -> dict:
     """
     from ..narrative_store import load_artifact
 
+    skipped = set(args.skip_batch)
+    if skipped and not args.plan:
+        raise ValueError("--skip-batch requires --plan")
     if args.plan:
         if not args.draft_dir or args.packet or args.input:
             raise ValueError("--plan requires --draft-dir and excludes --packet/--input")
@@ -254,6 +259,8 @@ def _submit_many(args: argparse.Namespace, data_dir: Path) -> dict:
                 row["accepted_path"] = str(existing[0])
                 row["expected_path"] = str(existing[0])
                 row["errors"] = []
+            elif str(number) in skipped or str(packet) in skipped:
+                row.update(errors=[], in_flight=True)
             else:
                 draft = read_json_object(draft_path, "Slide draft")
                 row["errors"] = check_slides(packet, draft, data_dir)
@@ -263,7 +270,7 @@ def _submit_many(args: argparse.Namespace, data_dir: Path) -> dict:
     accepted = [row["accepted_path"] for row in rows if row.get("accepted_path")]
     if not args.check_only:
         for row in rows:
-            if not row["errors"] and not row.get("accepted_path"):
+            if not (row["errors"] or row.get("accepted_path") or row.get("in_flight")):
                 try:
                     path = submit_slides(Path(row["packet_path"]),
                         read_json_object(Path(row["draft_path"]), "Slide draft"), data_dir)

@@ -217,7 +217,9 @@ def render_slides_html(deck: dict, data_dir: Path | None = None) -> str:
     replacements = {
         "LANG": language,
         "TITLE": _text(deck.get("title") or "SignalTrail"),
-        "AS_OF": _text(str(deck.get("as_of") or "")[:10].replace("-", " / ")),
+        "AS_OF": _text(
+            str(deck.get("publication_date") or deck.get("as_of") or "")[:10].replace("-", " / ")
+        ),
         "REPORT_ID": _text(deck.get("report_id")),
         "CSS": (_ASSET_DIR / "slides.css").read_text(encoding="utf-8"),
         "JS": (_ASSET_DIR / "slides.js").read_text(encoding="utf-8"),

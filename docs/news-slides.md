@@ -1,6 +1,6 @@
 # News slides and narrated video
 
-**Status:** Verified · **Owner:** Repository maintainers · **Last verified:** 2026-11-02
+**Status:** Verified · **Owner:** Repository maintainers · **Last verified:** 2026-11-11
 
 Create an illustrated HTML presentation from a saved report or an independently collected index, then export a narrated MP4 when requested. Each story has its own page, sources, summary, available images, and model-written narration. [中文](zh-CN/news-slides.md)
 
@@ -11,7 +11,7 @@ Create an illustrated HTML presentation from a saved report or an independently 
 | Saved report and matching index | Review current candidates, merge coverage of the same event while retaining references, and rank up to 50 by impact. |
 | Index alone | Ask the host model to choose and order 50 item IDs by importance, then pass repeated `--item-id` options. Preparation without explicit IDs uses the CLI's source-rank fallback. |
 
-Use `--max-news N` for another positive limit. Report finalization accepts `--slides-max-news N`; resuming a run preserves its previous limit unless explicitly changed. There is no per-source quota. Missing images do not exclude a story; unknown publication dates are ineligible for today's stream.
+Use `--max-news N` for another positive limit. Report finalization accepts `--slides-max-news N`; resuming a run preserves its previous limit unless explicitly changed. The review pool contains up to 15 eligible stories per source, ordered by original publication time after same-source canonical de-duplication. Missing images do not exclude a story; unknown publication dates are ineligible for today's stream.
 
 ```sh
 signaltrail --data-dir DATA_DIR slides prepare --report REPORT.json --index INDEX.json
@@ -51,7 +51,9 @@ Completion requires `delivery_complete: true`, no pending steps, and rendered sl
 
 ## Images and report reading
 
-Online rendering adds publisher images and captions from public article pages. When a publisher supplies several sizes of one photo, SignalTrail tries the largest first and falls back to a smaller copy if the download fails or exceeds the configured budget. The gallery keeps the highest-resolution available copy per photo, including when rendering from previously saved images. It offers thumbnails, an enlarged view, original-size inspection, and an original-image link. Missing publisher captions stay empty.
+Online rendering adds publisher images and captions from public article pages. Complete, untruncated article extraction can supply the same page images without another publisher-page request when the original, final, and slide source URLs match exactly apart from fragments. Missing evidence, changed URLs, and explicit refresh retain page fetching; image downloads and quality selection still run. Metrics distinguish `sources_fetched` from `source_pages_reused`. When a publisher supplies several sizes of one photo, SignalTrail tries the largest first and falls back to a smaller copy if the download fails or exceeds the configured budget. The gallery keeps the highest-resolution available copy per photo, including when rendering from previously saved images. It offers thumbnails, an enlarged view, original-size inspection, and an original-image link. Missing publisher captions stay empty.
+
+Responsive `srcset`, same-viewport `picture` format alternatives, fallback images and known publisher resize URLs share one photo group before downloading. A matching higher-resolution copy in the local cache also participates in selection. The selected file counts once toward the slide image budget; distinct encodings or sizes that can only be matched after downloading have already consumed download bytes. Existing files referenced by older reports remain subject to the normal retention policy.
 
 BBC Feed thumbnails use the publisher's public resize route to try a 1920-pixel version, including when a small image is already cached. Stored dimensions come from the downloaded file. BBC path sizes and WordPress query sizes are grouped by original photo and crop; signatures and different crops remain distinct. The slide contents show publisher names beneath each title, and the report contents link directly to source groups.
 
@@ -76,9 +78,11 @@ signaltrail --data-dir DATA_DIR slides video --deck DECK.json --output VIDEO.mp4
 
 The default engine is native Qwen3-TTS 1.7B Q8 with the bundled reference voice. Setup downloads the platform's programs, model, FFmpeg, and browser; subsequent exports reuse the cache. GPU synthesis is preferred after a synthesis probe, with CPU fallback. Select `--device auto|cpu|cuda|vulkan|metal` when needed. Windows ARM64 requires an explicit `--ffmpeg`; Linux needs browser system libraries and Chinese fonts.
 
-Video captures the presentation's existing text, images, columns, and page order at 140% whole-page zoom. Measured speech duration controls page changes and image rotation. Speech plays at 1.08× speed. Matching speech segments, page audio, and rendered page clips are cached. Keep the output path stable to reuse the adjacent work directory. Export returns the video, timeline, diagnostics, actual device, and cache counters.
+Video captures the presentation at 140% whole-page zoom, with the same short script on screen and in the audio. The video retains the title, summary, source names, images, captions, and page order. The interactive HTML retains the full narration and source links. Measured speech duration controls page changes and image rotation. Speech plays at 1.08× speed. Matching speech segments, page audio, and rendered page clips are cached separately. Keep the output path stable to reuse the adjacent work directory. Export returns the video, timeline, diagnostics, actual device, and cache counters.
 
 Frame capture advances CSS animations to their final state. Each selected image has a 30-second loading budget. A timed-out image uses the existing unavailable-image layout and adds a `render_image` / `timed_out` diagnostic with its event and image number, allowing the remaining frames to finish.
+
+When a Qwen log confirms that a segment reached the frame limit, synthesis splits that segment once at original punctuation or a word boundary. Continuous Chinese text can split between characters near its midpoint. Completed segments keep their cache, and the same model, device, voice and full text are used. A child segment reaching the limit stops export with its diagnostic. The voice manifest records the original segment, replacement parts and failed log in `frame_limit_recoveries`.
 
 Video export prefetches one page of speech with a single worker while the main thread captures and encodes the current page in one browser session. Measured audio duration fixes each page's timing before frame capture. Completed page caches remain reusable after a failed export. `tts_seconds`, `render_seconds`, and `encode_seconds` record work performed by each stage; overlapping stages can run at the same time. `pipeline_seconds` measures elapsed time for speech, frame capture, and page encoding together, before final audio concatenation and MP4 assembly.
 

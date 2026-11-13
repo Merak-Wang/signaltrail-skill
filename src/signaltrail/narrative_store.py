@@ -49,37 +49,114 @@ def read_ref(ref: dict, data_dir: Path) -> Path:
     return path
 
 
-def load_artifact(
-    path: Path, data_dir: Path, *, kind: str | None = None, seen: frozenset[str] = frozenset()
-) -> dict:
-    """处理：加载子产物并递归核对所有父引用。
-    输入：明确指定的修订路径，不搜索所谓最新文件；seen 防止引用环。
-    输出：通过自身摘要和父闭包校验的记录，供语义门禁及渲染消费。
+class ArtifactReader:
+    """处理：在一次操作内共享不可变产物的字节摘要与已验证父链。
+    输入：本次操作的唯一数据根，每条父引用仍与所读字节比较。
+    输出：供当前操作只读使用的产物记录；下一次操作重新读取文件。
     """
-    path = require_data_root_path(path, data_dir, "Explainer artifact")
-    marker = str(path)
-    if marker in seen or len(seen) > 24:
-        raise ValueError("Explainer parent cycle or excessive depth")
-    doc = json.loads(path.read_text(encoding="utf-8"))
-    if doc.get("schema_version") != "explainer-1.0" or (kind and doc.get("kind") != kind):
-        raise ValueError("Unexpected explainer artifact kind/schema")
-    if digest({k: v for k, v in doc.items() if k != "content_hash"}) != doc["content_hash"]:
-        raise ValueError("Explainer artifact content hash mismatch")
-    pair = (
-        path.parent
-        if path.name == "artifact.json"
-        else path.parent / f"{doc['kind']}-r{doc['revision']}"
-    ) / "artifact.md"
-    if (
-        doc.get("markdown_sha256")
-        and sha256(pair.read_bytes()).hexdigest() != (doc["markdown_sha256"])
-    ):
-        raise ValueError("Explainer authoritative Markdown changed")
-    for ref in doc["parents"].values():
-        parent = read_ref(ref, data_dir)
-        if ref["path"].startswith("narratives/") and ref["path"].endswith(".json"):
-            load_artifact(parent, data_dir, seen=seen | {marker})
-    return doc
+
+    def __init__(self, data_dir: Path) -> None:
+        """处理：创建本次操作的空读取表。
+        输入：产物和父文件所在的已绑定数据根。
+        输出：缓存仅随该读取器存活，不跨操作保存。
+        """
+        self.data_dir = data_dir.resolve()
+        self._hashes: dict[Path, str] = {}
+        self._artifacts: dict[Path, tuple[dict, int]] = {}
+
+    def _hash(self, path: Path) -> str:
+        """处理：首次读取文件并记录字节摘要。
+        输入：已经限定在数据根的文件路径。
+        输出：字节摘要，供同一操作中的多个父引用比较。
+        """
+        if path not in self._hashes:
+            self._hashes[path] = sha256(path.read_bytes()).hexdigest()
+        return self._hashes[path]
+
+    def parent_path(self, doc: dict, name: str) -> Path:
+        """处理：定位并核对指定父文件的摘要。
+        输入：已加载子产物及其依赖名称。
+        输出：已核对的父文件路径，摘要不同则拒绝引用。
+        """
+        ref = doc["parents"][name]
+        path = require_data_root_path(self.data_dir / ref["path"], self.data_dir,
+                                      "Explainer parent")
+        if self._hash(path) != ref["sha256"]:
+            raise ValueError(f"Explainer parent changed: {ref['path']}")
+        return path
+
+    def parent_json(self, doc: dict, name: str) -> dict:
+        """处理：按摘要校验后解码索引或报告父文件。
+        输入：已加载子产物的父引用。
+        输出：直接从已核对字节解码的对象，供渲染消费。
+        """
+        ref = doc["parents"][name]
+        path = require_data_root_path(self.data_dir / ref["path"], self.data_dir,
+                                      "Explainer parent")
+        raw = path.read_bytes()
+        if sha256(raw).hexdigest() != ref["sha256"]:
+            raise ValueError(f"Explainer parent changed: {ref['path']}")
+        value = json.loads(raw.decode("utf-8"))
+        if not isinstance(value, dict):
+            raise ValueError(f"Explainer parent must contain a JSON object: {ref['path']}")
+        return value
+
+    def validated_ref(self, path: Path) -> dict:
+        """处理：导出本次操作已验证产物的摘要引用。
+        输入：通过本读取器加载并完成闭包校验的路径。
+        输出：供提交阶段核对的原始父引用，不重新读取或绑定新版本。
+        """
+        path = require_data_root_path(path, self.data_dir, "Explainer parent")
+        if path not in self._artifacts:
+            raise ValueError(f"Artifact was not validated: {path.relative_to(self.data_dir)}")
+        return {"path": path.relative_to(self.data_dir).as_posix(), "sha256": self._hashes[path]}
+
+    def load(self, path: Path, *, kind: str | None = None,
+             seen: frozenset[Path] = frozenset()) -> dict:
+        """处理：验证 JSON、权威 Markdown 和全部父引用。
+        输入：修订路径、可选类型与当前递归路径。
+        输出：只读记录；共享父链只解码一次，仍限制最长引用深度。
+        """
+        path = require_data_root_path(path, self.data_dir, "Explainer artifact")
+        if path in seen or len(seen) > 24:
+            raise ValueError("Explainer parent cycle or excessive depth")
+        if path in self._artifacts:
+            doc, depth = self._artifacts[path]
+            if len(seen) + depth > 24:
+                raise ValueError("Explainer parent cycle or excessive depth")
+            if kind and doc.get("kind") != kind:
+                raise ValueError("Unexpected explainer artifact kind/schema")
+            return doc
+        raw = path.read_bytes()
+        file_hash = sha256(raw).hexdigest()
+        if path in self._hashes and self._hashes[path] != file_hash:
+            raise ValueError(f"Explainer parent changed: {path.relative_to(self.data_dir)}")
+        self._hashes[path] = file_hash
+        doc = json.loads(raw.decode("utf-8"))
+        if doc.get("schema_version") != "explainer-1.0" or (kind and doc.get("kind") != kind):
+            raise ValueError("Unexpected explainer artifact kind/schema")
+        if digest({k: v for k, v in doc.items() if k != "content_hash"}) != doc["content_hash"]:
+            raise ValueError("Explainer artifact content hash mismatch")
+        pair = (path.parent if path.name == "artifact.json" else
+                path.parent / f"{doc['kind']}-r{doc['revision']}") / "artifact.md"
+        if doc.get("markdown_sha256") and self._hash(pair) != doc["markdown_sha256"]:
+            raise ValueError("Explainer authoritative Markdown changed")
+        depth = 0
+        for name, ref in doc["parents"].items():
+            parent = self.parent_path(doc, name)
+            if ref["path"].startswith("narratives/") and ref["path"].endswith(".json"):
+                self.load(parent, seen=seen | {path})
+                depth = max(depth, self._artifacts[parent][1] + 1)
+        self._artifacts[path] = (doc, depth)
+        return doc
+
+
+def load_artifact(path: Path, data_dir: Path, *, kind: str | None = None) -> dict:
+    """处理：独立加载子产物并递归核对所有父引用。
+    输入：调用者指定的修订文件、数据根和可选类型。
+    输出：通过自身摘要和父闭包校验的记录，下一次调用重新验证。
+    """
+    return ArtifactReader(data_dir).load(path, kind=kind)
 
 
 def save_artifact(
@@ -89,9 +166,11 @@ def save_artifact(
     payload: dict,
     parents: dict[str, Path],
     markdown: str = "",
+    *,
+    expected_parents: dict[str, dict] | None = None,
 ) -> Path:
     """处理：在锁内创建一对不可变 JSON/Markdown 修订并支持精确重放。
-    输入：程序分配的会话、类型、已验证内容及明确父版本；Markdown 已确定语义。
+    输入：会话、类型、已验证内容及父版本，可附构造内容时验证的父摘要。
     输出：提交成功的 JSON 路径；中断只留下不可见临时目录，不暴露半对文件。
     """
     if not all(c.isalnum() or c in "-_" for c in session + kind):
@@ -99,21 +178,24 @@ def save_artifact(
     directory = data_dir / "narratives" / session
     directory.mkdir(parents=True, exist_ok=True)
     with exclusive_lock(directory / ".write.lock", {"kind": kind}):
+        reader = ArtifactReader(data_dir)
         references = {name: file_ref(path, data_dir) for name, path in parents.items()}
+        if expected_parents is not None and references != expected_parents:
+            raise ValueError("Explainer parent changed before artifact commit")
         # 所有写入前重读父闭包，隔离旧工作流的可变 packet 和锁前快照问题。
-        for ref in references.values():
+        for name, ref in references.items():
             if ref["path"].startswith("narratives/") and ref["path"].endswith(".json"):
-                load_artifact(read_ref(ref, data_dir), data_dir)
+                reader.load(reader.parent_path({"parents": references}, name))
         content = {"payload": payload, "parents": references, "markdown": markdown}
         replay_hash = digest(content)
         for existing in sorted(directory.glob(f"{kind}-r*.json")):
-            old = load_artifact(existing, data_dir)
+            old = reader.load(existing)
             if old["replay_hash"] == replay_hash:
                 return existing
         revision = next_revision(directory, kind)
         # 目录已原子提交但索引未完成时，重放修复索引而不再分配新修订。
         for committed in sorted(directory.glob(f"{kind}-r*/artifact.json")):
-            old = load_artifact(committed, data_dir)
+            old = reader.load(committed)
             indexed = directory / f"{kind}-r{old['revision']}.json"
             if old["replay_hash"] == replay_hash and not indexed.exists():
                 os.link(committed, indexed)

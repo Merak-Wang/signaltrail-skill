@@ -87,12 +87,17 @@ def build_evaluation_dossier(
     report_path: Path,
     index_path: Path,
     data_dir: Path,
+    *,
+    brief_plan_item_ids: dict[str, list[str]] | None = None,
+    coverage_targets: dict[str, int] | None = None,
 ) -> Path:
     """处理：为独立评估生成带源哈希、可复算验证结果和最小语义文本的数据包。
     输入：
     - ``report_path``：待评不可变报告 JSON；提供读者语义和内容 Hash 事实源。
     - ``index_path``：报告绑定的权威来源索引；提供来源覆盖和可引用证据。
     - ``data_dir``：当前运行唯一数据根；限定 evaluator dossier 的输出位置。
+    - ``brief_plan_item_ids``：定稿时使用的最终简报条目及顺序。
+    - ``coverage_targets``：定稿时使用的来源覆盖目标，包含已授权的降级。
     输出：evaluations/dossiers 下按报告 ID 命名的不可变 JSON 路径。
     """
 
@@ -104,7 +109,11 @@ def build_evaluation_dossier(
     if not isinstance(report, dict) or not isinstance(index, dict):
         raise ValueError("Evaluation report and index must be JSON objects")
     bound_content_hash = report_content_hash(report)
-    errors, warnings = validate_report_data(deepcopy(report), index)
+    errors, warnings = validate_report_data(
+        deepcopy(report), index,
+        brief_plan_item_ids=brief_plan_item_ids,
+        coverage_targets=coverage_targets,
+    )
     indexed_items = {
         str(item.get("item_id")): item
         for item in index.get("items", [])
@@ -332,6 +341,9 @@ def build_evaluation_dossier(
         return write_immutable_json(output, dossier)
     except FileExistsError:
         existing = read_json(output)
-        if existing != dossier:
+        # 历史任务继续引用原数据包；覆盖校验方式改变不产生同版冲突。
+        if not isinstance(existing, dict) or {
+            **existing, "validation": dossier["validation"],
+        } != dossier:
             raise RuntimeError(f"Conflicting immutable evaluation dossier: {output}") from None
         return output

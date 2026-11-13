@@ -5,7 +5,7 @@ Python 负责采集、状态、校验、版本和发布。
 
 1. 阅读[架构](ARCHITECTURE.md)和[文档目录](README.md)。
 2. 运行 `git status --short`，保留无关改动和用户改动。
-3. 修改前阅读受影响模块、测试及对应参考文档。
+3. 修改前阅读受影响模块、模块评估及对应参考文档。
 
 ## 边界
 
@@ -19,43 +19,39 @@ Python 负责采集、状态、校验、版本和发布。
 - 不提交运行数据、密钥、Cookie、浏览器配置、认证 HTML 或账号截图。
 - 清理用户或工作区文件、目录时，使用系统回收站；若回收站不可用或操作失败，保留原项并报告，绝不改为永久删除。
 
-记录冲突时，优先采用 Schema、枚举、校验器和持久化代码，其次是行为测试，
+记录冲突时，优先采用 Schema、枚举、校验器和持久化代码，其次是模块评估，
 再次是报告契约和 `SKILL.md`，最后是架构、参考资料和用户文档。同次修改修复低优先级记录。
 
 ## 按任务找代码
 
-| 工作 | 从这里开始 | 测试 |
+| 工作 | 从这里开始 | 模块评估 |
 | --- | --- | --- |
-| CLI | `cli.py`、`commands/` | `test_cli.py` |
-| 来源与采集 | `config.py`、`adapters.py`、`collector.py` | `test_config.py`、`test_normalize.py`、`test_collector.py` |
-| 监控 | `feeds.py`、`monitor.py`、`clustering.py` | 同名 `test_*.py` |
-| 证据 | `content.py`、`media.py`、`access.py` | `test_content.py`、`test_media.py` |
-| 写作 | `context.py`、`authoring.py`、报告契约 | `test_context.py`、`test_authoring.py`、`test_semantics.py` |
-| 报告与恢复 | `reporting.py`、`reports.py`、`workflow.py`、`storage.py` | `test_reporting.py`、`test_report_persistence.py`、`test_workflow.py`、`test_storage.py` |
-| 评估与用量 | `evaluation.py`、`llm_usage/`、`hosts/` | `test_evaluation*.py`、`test_llm_usage*.py`、`test_hermes_runner.py` |
-| 交付 | `local_output.py`、`notion.py`、`verification.py` | `test_desktop_delivery.py`、`test_notion.py`、`test_verification.py` |
-| 新闻图文流 | `news_slides.py`、`slide_images.py`、`slide_reuse.py`、`slide_renderer.py` | `test_news_slides.py`、`test_slide_images.py`、`test_slide_reuse.py`、`test_slide_renderer.py` |
-| 配音视频 | `slide_video.py`、`voice_synthesis.py`、`speech_text.py`、`video_runtime.py`、`qwen_runtime.py` | `test_slide_video.py`、`test_voice_synthesis.py`、`test_speech_text.py`、`test_video_runtime.py` |
-| 打包与文档 | `scripts/`、`SKILL.md`、`docs/README.md` | `test_hermes_package.py`、`test_docs.py` |
+| 来源、采集和证据 | `adapters.py`、`collector.py`、`content.py` | `collection` |
+| 日报编译与本地交付 | `reporting.py`、`reports.py`、`local_output.py` | `report` |
+| 新闻图文流 | `news_slides.py`、`slide_images.py`、`slide_reuse.py`、`slide_renderer.py` | `slides` |
+| 配音视频 | `slide_video.py`、`voice_synthesis.py`、`video_runtime.py`、`qwen_runtime.py` | `video`，使用本地图文稿和配音运行时 |
 
-上表代码和测试路径分别相对于 `src/signaltrail/` 与 `tests/`。
+上表生产代码路径相对于 `src/signaltrail/`，其余入口见[架构代码地图](ARCHITECTURE.md#代码地图)。
 
 ## 提交前
 
-来源过滤、状态、校验和发布行为改变时，新增或更新行为测试。编辑时运行相关测试，
-提交前运行完整检查：
+从生产入口评估完整模块流程，在代表性负载中覆盖来源选择、状态、校验和交付变化。
+记录产物质量、墙钟时延、吞吐和进程资源。编辑时运行受影响模块，提交前运行默认模块评估和仓库检查。
 
 ```sh
-python -m pytest
+python scripts/evaluate_modules.py --repeat 3
 python -m ruff check .
-python -m compileall -q src tests scripts
+python -m compileall -q src scripts evals
 python scripts/check_code_comments.py
 python scripts/check_docs.py
 git diff --check
 ```
 
+默认将回执和样本产物写到 `output/module-evaluations/` 下的新目录。视频改动另行运行本地
+`video` 评估。可复现的对照方法见[开发指南](development.md#模块评估)。
+
 用简短中文 docstring 说明逻辑、输入来源及输出对下游的意义，避免复述类型或函数名。
-行内注释只解释不直观的安全、状态、兼容和并发决定。测试检查行为，不锁定 README 措辞。
+行内注释只解释不直观的安全、状态、兼容和并发决定。
 
 英文工程记录和 `docs/zh-CN/` 译文一起更新。`SKILL.md` 保留运行步骤，详细策略放入
 `references/`。写作与命名约定见[开发指南](development.md)，已知问题记入

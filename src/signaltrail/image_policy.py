@@ -63,7 +63,34 @@ def is_editorial_template(image: dict) -> bool:
     path = unquote(parsed.path).casefold()
     label = str(image.get("alt") or "") + " " + str(image.get("caption") or "")
     return bool(
-        re.search(r"(?:qrcode|qr[-_]code|download[-_]app|app[-_]download|/emoji/)", path)
+        re.search(
+            r"(?:qrcode|qr[-_]code|download[-_]app|app[-_]download|/emoji/"
+            r"|/file/authors/|/articles/programs/africanews/)", path,
+        )
+        or "/tracking/" in path
+        or (parsed.hostname == "agenciabrasil.ebc.com.br" and path in {"/ebc.png", "/ebc.gif"})
+        or (parsed.hostname == "www.euronews.com" and path.startswith("/images/vector/"))
+        or (parsed.hostname == "imgcdn.cna.com.tw" and path in {
+            "/www/website/img/support.svg", "/www/website/img/appstore.svg",
+            "/www/website/img/googleplay.svg",
+        })
+        or re.search(r"\b(?:headshot|avatar)\b", label, re.I)
+        or (
+            (parsed.hostname or "").endswith("theverge.com")
+            and str(image.get("width") or "") == "96"
+            and str(image.get("height") or "") == "96"
+        )
+        or (
+            (parsed.hostname or "").endswith("aljazeera.com")
+            and image.get("provenance") == "page_metadata"
+            and str(image.get("width") or "") == "270"
+        )
+        or (
+            (parsed.hostname or "").endswith("rappler.com")
+            and image.get("provenance") == "index_card"
+            and str(image.get("width") or "") == "75"
+            and str(image.get("height") or "") == "75"
+        )
         or re.search(
             r"(?:扫码|二维码).{0,12}(?:关注|下载|订阅|app)"
             r"|下载.{0,8}app|关注.{0,6}公众号",
@@ -81,6 +108,9 @@ def is_editorial_template(image: dict) -> bool:
         )
         or parsed.hostname == "www.yicai.com"
         and re.fullmatch(r"/img/article_(?:lock|float)_[a-z]+\.[a-z0-9]+\.png", parsed.path, re.I)
+        or parsed.hostname == "static.bangkokpost.com"
+        and path == "/v3/assets/images/icon/google_preferred.png"
+        or parsed.hostname == "imgcdn.cna.com.tw" and path == "/www/website/img/google-news.png"
     )
 
 
@@ -160,6 +190,22 @@ def image_variant_key(url: str) -> tuple:
     host = (parsed.hostname or "").casefold()
     path = parsed.path
     query = tuple(parse_qsl(parsed.query, keep_blank_values=True))
+    if host == "media.npr.org" and path.startswith("/assets/img/"):
+        return "npr-photo", host, path, tuple(
+            (key, value) for key, value in query if key not in {"s", "c", "f"}
+        )
+    if host == "npr.brightspotcdn.com" and path.startswith("/dims3/"):
+        # 保留发布者指定的裁切与原始资产 URL，只忽略编码和输出尺寸。
+        original = re.sub(r"/(?:resize|quality|format)/[^/]+", "", path)
+        return "npr-photo", host, original, query
+    if host == "cdn.dailymaverick.co.za":
+        match = re.fullmatch(
+            r"/i/[^/]+/(\d+)x(\d+)/(smart/)?filters:strip_exif\(\)/file/(.+)", path,
+        )
+        if match:
+            width, height = map(int, match.group(1, 2))
+            ratio = round(width / height, 2) if height else None
+            return "dailymaverick-photo", host, match[4], bool(height and match[3]), ratio, query
     if path == "/_next/image":
         parameters = dict(query)
         original = urljoin(url, parameters.get("url", ""))
@@ -249,6 +295,16 @@ def _image_pixels(image: dict) -> float:
     if dimensions:
         return float(dimensions[1]) * float(dimensions[2])
     query = parse_qs(parsed.query)
+    if parsed.hostname == "media.npr.org":
+        width = _image_dimension((query.get("s") or [0])[0])
+        if width:
+            return width ** 2
+    if parsed.hostname in {"npr.brightspotcdn.com", "cdn.dailymaverick.co.za"}:
+        dimensions = re.search(r"/(?:resize/|i/[^/]+/)(\d+)(?:x(\d+))?/", parsed.path)
+        if dimensions:
+            width = float(dimensions[1])
+            height = _image_dimension(dimensions[2])
+            return width * (height or width)
     width = _image_dimension((query.get("width") or query.get("w") or [0])[0])
     height = _image_dimension((query.get("height") or query.get("h") or [0])[0])
     density = _image_dimension((query.get("dpr") or [1])[0]) or 1
@@ -284,22 +340,54 @@ def image_resolution_candidates(url: str) -> list[str]:
     return [url]
 
 
-def image_variant_groups(images: list[dict]) -> list[list[dict]]:
-    """处理：按原图稳定分组，组内优先实际或声明分辨率较高的候选。
-    输入：采集、下载或旧 deck 的图片详情；明确 srcset 组可补充同图关系。
-    输出：每组保留全部地址供失败回退，组间原始新闻图片顺序保持稳定。
+def _image_quality(image: dict) -> float:
+    """处理：读取发布者的编码质量声明。
+    输入：单个图片版本。
+    输出：同原图且像素相等时的排序分数。
     """
-    groups = {}
-    for image in images:
+    parsed = urlsplit(str(image.get("url") or image.get("resolved_url") or ""))
+    if parsed.hostname == "npr.brightspotcdn.com":
+        match = re.search(r"/quality/(\d+)/", parsed.path)
+        return float(match[1]) if match else 0
+    query = dict(parse_qsl(parsed.query))
+    return _image_dimension(query.get("c") if parsed.hostname == "media.npr.org"
+                            else query.get("quality") or query.get("q"))
+
+
+def image_variant_groups(images: list[dict]) -> list[list[dict]]:
+    """处理：合并发布方原图身份与响应式图源关联，再按像素从大到小排列。
+    输入：同一批次的候选图片。
+    输出：依照首次出现顺序排列的原图组，组内保留低清回退地址。
+    """
+    parents = list(range(len(images)))
+    by_key = {}
+
+    def root(position: int) -> int:
+        """处理：沿已归并位置找组首，压缩查询路径。
+        输入：候选图片的位置。
+        输出：该组最早出现的图片位置。
+        """
+        while parents[position] != position:
+            parents[position] = parents[parents[position]]
+            position = parents[position]
+        return position
+
+    for position, image in enumerate(images):
         url = str(image.get("url") or image.get("resolved_url") or image.get("source_url") or "")
-        key = image_variant_key(url)
-        if key[0] == "url" and image.get("responsive_group"):
-            key = "responsive", image["responsive_group"]
-        groups.setdefault(key, []).append(image)
-    return [sorted(group, key=_image_pixels, reverse=True) for group in groups.values()]
+        keys = [image_variant_key(url)]
+        if image.get("responsive_group"):
+            keys.append(("responsive", image["responsive_group"]))
+        for key in keys:
+            first, current = root(by_key.setdefault(key, position)), root(position)
+            parents[max(first, current)] = min(first, current)
+    groups = {}
+    for position, image in enumerate(images):
+        groups.setdefault(root(position), []).append(image)
+    return [sorted(group, key=lambda row: (_image_pixels(row), _image_quality(row)), reverse=True)
+            for group in groups.values()]
 
 
-def _available_image_rank(image: dict, data_dir: Path | None) -> tuple[bool, float]:
+def _available_image_rank(image: dict, data_dir: Path | None) -> tuple[bool, float, float]:
     """处理：最终展示先选实际可读的本地图，再比较分辨率。
     输入：候选元数据与可选数据根；远程未知原图仅参与下载排序。
     输出：可用性和像素排序键，不发起网络请求。
@@ -313,7 +401,7 @@ def _available_image_rank(image: dict, data_dir: Path | None) -> tuple[bool, flo
             available = path.is_file()
         except ValueError:
             available = False
-    return available, _image_pixels(image)
+    return available, _image_pixels(image), _image_quality(image)
 
 
 def select_image_variants(images: list[dict], *, data_dir: Path | None = None) -> list[dict]:
@@ -323,6 +411,10 @@ def select_image_variants(images: list[dict], *, data_dir: Path | None = None) -
     """
     from PIL import ImageChops, ImageStat
 
+    images = filter_editorial_templates(images)
+    if data_dir is not None:
+        images = [image for image in images if image.get("local_path")
+                  or image.get("remote_verified")]
     groups = []
     previews = []
     for variants in image_variant_groups(images):
