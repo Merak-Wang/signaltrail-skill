@@ -4,7 +4,7 @@ import re
 from typing import Any
 from urllib.parse import parse_qs, urljoin, urlsplit
 
-from bs4 import Tag
+from bs4 import BeautifulSoup, Tag
 
 from .content_extraction import ExtractedDocument, _inline_text
 from .image_policy import (
@@ -14,6 +14,22 @@ from .image_policy import (
     srcset_candidates,
     srcset_image_variants,
 )
+
+IMAGE_EVIDENCE_VERSION = 2
+PAGE_IMAGE_META_SELECTOR = (
+    'head > meta[property="og:image"], head > meta[name="og:image"], '
+    'head > meta[name="twitter:image"], head > meta[property="twitter:image"]'
+)
+
+
+def publisher_image_urls(soup: BeautifulSoup, base_url: str) -> list[str]:
+    """处理：只读取页面 head 的分享图声明，排除嵌入卡片的元标签。
+    输入：未经正文清洗的 HTML 与页面最终 URL。
+    输出：已规范化的发布页分享图地址，供正文和图文阶段复用。
+    """
+    return normalize_image_candidates(
+        (node.get("content") for node in soup.select(PAGE_IMAGE_META_SELECTOR)), base_url,
+    )
 
 
 def _image_caption(node: Tag, root: Tag) -> str:
@@ -110,19 +126,14 @@ def _pixel_width(url: str) -> float:
 def article_image_candidates(
     document: ExtractedDocument, title: str, base_url: str,
 ) -> list[dict[str, Any]]:
-    """处理：从具体正文收集配图；空图片卡片回退到其有图的 main 页面。
-    输入：正文抽取结果、当前条目标题与页面最终 URL；独立 article 仍优先。
+    """处理：在选中的具体正文区域内收集配图。
+    输入：正文抽取结果、当前条目标题与页面最终 URL。
     输出：按图注、词法关联和原始顺序排列的正文候选；过滤导航、标志和侧栏。
     """
     root = document.node
-    if root is None or document.quality.get("region") != "specific":
+    if (root is None or document.quality.get("region") != "specific"
+            or document.quality.get("video_player_only")):
         return []
-    if not root.select_one("img"):
-        main = root.find_parent("main")
-        # 空任务卡片可能抢占正文选择；仅在页面主区确有多张配图时扩大范围。
-        if main is None or len(main.select("img")) < 3:
-            return []
-        root = main
     candidates = []
     title_terms = _terms(title)
     for position, node in enumerate(root.select("img")):

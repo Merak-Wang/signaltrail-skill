@@ -1151,11 +1151,18 @@ def brief_writing_style(output_language: str) -> str:
     return localized(
         output_language,
         "用一段自然、紧凑的新闻语言说明主体、动作和影响，保留姓名、职务、关键数字、"
-        "时间、适用条件及计划或涉嫌等限定。每句提供有据的信息，短摘要聚焦事实。",
+        "时间、适用条件及计划或涉嫌等限定。以包内 collection_window.end（缺失时用 date）"
+        "为时态参照，区分文章发布时间与事件发生时间；明确晚于截止时刻的里程碑用预计或计划，"
+        "即使标题用了完成时也不能写成已经发生。标题与正文时间冲突时，以明确时间约束表述，"
+        "仍无法判断则向协调者报告。每句提供有据的信息，短摘要聚焦事实。",
         "Write one concise, natural news paragraph about the actor, action and impact. "
         "Retain names, roles, key numbers, dates, conditions and qualifiers such as "
-        "planned or alleged. Ground each sentence in the evidence and focus short "
-        "summaries on facts.",
+        "planned or alleged. Use the packet's collection_window.end (or date when absent) "
+        "as the tense reference. Distinguish publication time from event time; describe a "
+        "milestone explicitly after that cutoff as expected or planned even when the headline "
+        "uses completed tense. Resolve headline/body conflicts using explicit event times, "
+        "or report unresolved timing to the coordinator. Ground each sentence in the evidence "
+        "and focus short summaries on facts.",
     )
 
 
@@ -1164,7 +1171,7 @@ def _brief_local_evidence(candidate: dict[str, Any], data_dir: Path) -> dict[str
     输入：当前写作包候选和已绑定的数据根，仅读取候选列出的路径。
     输出：未截断文本、表格及来源和部分证据语义，不带原始网页或图片。
     """
-    from .content_extraction import strip_content_frontmatter
+    from .content_extraction import is_video_player_only, strip_content_frontmatter
 
     for field, kind in (("content_path", "article"), ("feed_content_path", "feed")):
         if not candidate.get(field):
@@ -1190,7 +1197,7 @@ def _brief_local_evidence(candidate: dict[str, Any], data_dir: Path) -> dict[str
                     "\t".join(cell.get("text", "") for cell in row)
                     for row in block.get("rows", []))
                 for block in blocks if block.get("type") != "image")
-        if text.strip() or tables:
+        if (text.strip() or tables) and not is_video_player_only(text):
             return {"kind": kind, "path": str(path), "text": text,
                     "partial": kind == "feed" or candidate.get("content_status") != "full_text",
                     **({"tables": tables} if tables else {})}

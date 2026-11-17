@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 from collections import Counter
+from dataclasses import replace
 from datetime import datetime, timedelta
 from html import escape
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -18,10 +19,17 @@ from PIL import Image, ImageDraw
 
 from signaltrail.brief_selection import select_brief_items
 from signaltrail.collector import collect_sources
-from signaltrail.config import AppConfig, BrowserConfig, BudgetConfig, MediaConfig, SourceConfig
+from signaltrail.config import (
+    AppConfig,
+    BrowserConfig,
+    BudgetConfig,
+    CollectionConfig,
+    MediaConfig,
+    SourceConfig,
+)
 from signaltrail.content import extract_content
 from signaltrail.media import ImageDownloadError, download_image
-from signaltrail.news_slides import _index_candidate
+from signaltrail.news_slides import _index_candidate, select_index_news
 from signaltrail.slide_images import enrich_slide_images
 from signaltrail.utils import read_json
 
@@ -30,6 +38,11 @@ CUTOFF = f"{DATE}T12:00:00+08:00"
 PUBLISHERS = 4
 ARTICLES_PER_PUBLISHER = 24
 MEDIA_STORIES = 8
+SHORT_NOTICE_PATH = "/articles/3/story-22"
+VIDEO_FALLBACK_DURATIONS = {
+    "/articles/2/story-23": "01:22",
+    "/articles/3/story-23": "Video Duration 01 minutes 22 seconds 01:22",
+}
 ARTICLE_BLOCKS = (
     "The publisher released a written account of the review and the supporting evidence.",
     "The review committee examined the original records and compared the documented findings.",
@@ -101,15 +114,25 @@ def _corpus() -> tuple[dict[str, tuple[int, bytes]], dict[str, str]]:
                     '</figcaption></figure>'
                 )
                 bodies[path] += f"\n\nReview chart {number} from the publisher."
+                # 同页推荐卡可能带自己条目的分享图元标签。
+                figure += (
+                    '<aside><meta property="og:image" content="/images/2-recommendation.png">'
+                    '<img src="/images/2-recommendation.png"></aside>'
+                )
+                routes["/images/2-recommendation.png"] = (200, _picture(99, 800))
+            paragraphs_html = "".join(f"<p>{escape(paragraph)}</p>" for paragraph in paragraphs)
+            article = f"<article>{paragraphs_html}{figure}</article>"
+            if path in VIDEO_FALLBACK_DURATIONS:
+                article = f"<main><p>{escape(ARTICLE_BLOCKS[0])}</p></main>"
+            elif path == SHORT_NOTICE_PATH:
+                article = f"<article><p>{escape(ARTICLE_BLOCKS[0])}</p></article>"
             html = (
                 f'<html><head><title>{escape(title)}</title>'
                 f'<meta property="og:title" content="{escape(title)}">'
                 f'<meta property="article:published_time" '
                 f'content="{publication_time.isoformat()}">'
                 f'<meta property="og:image" content="/images/{publisher}-{number:02}.png">'
-                f'</head><body><nav>Publisher navigation</nav><article>'
-                + "".join(f"<p>{escape(paragraph)}</p>" for paragraph in paragraphs) + figure
-                + "</article></body></html>"
+                f'</head><body><nav>Publisher navigation</nav>{article}</body></html>'
             )
             routes[path] = (200, html.encode())
         routes[f"/publishers/{publisher}"] = (
@@ -190,6 +213,18 @@ def _evaluate_images(work_dir: Path, host: str, items: list[dict], requests: Cou
             image["caption"], image.get("credit"), image["width"], image["height"],
         ) for image in row["images"] if image.get("local_path")] for row in rows]
 
+    recommendation = f"{host}/images/2-recommendation.png"
+    clean_index = all(
+        image["url"] != recommendation
+        for item in articles for image in item["metadata"]["image_candidate_details"]
+    )
+    # 模拟此前持久化的错误候选。新页面和已验证页面复用应产生相同的干净图集。
+    for item in news:
+        item["images"].append({
+            "url": recommendation, "source_url": item["sources"][0]["url"],
+            "provenance": "page_metadata", "purpose": "publisher_selected",
+        })
+
     # 生产媒体拒绝回环 URL。只在固定评估进程的传输入口注入本地语料白名单。
     with (
         patch("signaltrail.slide_images.assert_public_image_url", fixture_url_only),
@@ -216,6 +251,9 @@ def _evaluate_images(work_dir: Path, host: str, items: list[dict], requests: Cou
     return {
         "metrics": metrics,
         "checks": {
+            "nested_and_stale_recommendation_images_never_requested": (
+                clean_index and not requests["/images/2-recommendation.png"]
+            ),
             "slide_images_reuse_complete_page_and_fetch_distinct_url": (
                 metrics["slide_images_refresh_page_requests"] == MEDIA_STORIES
                 and metrics["slide_images_reuse_page_requests"] == 1
@@ -228,6 +266,91 @@ def _evaluate_images(work_dir: Path, host: str, items: list[dict], requests: Cou
                         for row in reused[0])
             ),
         },
+    }
+
+
+def _evaluate_body_regions(
+    index_path: Path, items: list[dict], config: AppConfig, work_dir: Path, profile: Path,
+) -> dict:
+    """用真实 HTTP 和固定的浏览器 DOM 响应评估播放器及短公告的正文边界。"""
+    paths = {SHORT_NOTICE_PATH, *VIDEO_FALLBACK_DURATIONS}
+    ids = [item["item_id"] for item in items if urlsplit(item["url"]).path in paths]
+
+    async def player_page(urls: list[str], **options: object) -> list[dict]:
+        """固定浏览器 SDK 的最外层返回，保留后续生产判定和回退流程。"""
+        return [
+            {"url": url, "status_code": 200, "success": True, "error": None, "media": {},
+             "html": '<article><h1>Publisher coverage</h1><p>Now Playing</p>'
+                     f'<ul><li>{VIDEO_FALLBACK_DURATIONS[urlsplit(url).path]}</li></ul>'
+                     '<p>Video title about the ongoing review.</p>'
+                     '</article>'}
+            for url in urls
+        ]
+
+    started = perf_counter()
+    config = replace(config, collection=CollectionConfig(
+        browser_extractor="crawl4ai", fallback_extractor="none",
+    ))
+    with patch("signaltrail.crawl4ai_adapter.crawl_pages", player_page):
+        path = extract_content(
+            index_path, config, work_dir, ids, max_items=len(paths),
+            headed=False, profile_dir=profile,
+        )
+    index = read_json(path)
+    records = {urlsplit(item["url"]).path: item for item in index["items"]}
+    notice = records[SHORT_NOTICE_PATH]
+    player_checks = {}
+    for fixture_path, check in zip(VIDEO_FALLBACK_DURATIONS, (
+        "video_player_does_not_replace_partial_article",
+        "accessible_video_duration_does_not_replace_partial_article",
+    ), strict=True):
+        player = records[fixture_path]
+        metadata = player["metadata"]
+        attempts = metadata["content_attempts"]
+        player_checks[check] = (
+            player["content_status"] == "partial"
+            and metadata["content_completion"]["status"] == "with_gaps"
+            and [(attempt["channel"], attempt["status"]) for attempt in attempts] == [
+                ("http", "partial"), ("crawl4ai", "metadata_only"),
+            ]
+            and "video_player_only" in attempts[1]["gaps"]
+            and ARTICLE_BLOCKS[0] in Path(player["content_path"]).read_text(encoding="utf-8")
+        )
+    return {
+        "checks": {
+            **player_checks,
+            "short_standalone_notice_remains_complete": (
+                notice["content_status"] == "full_text"
+                and notice["metadata"]["content_quality"]["extraction_status"] == "short_complete"
+            ),
+        },
+        "metrics": {"body_region_replay_seconds": perf_counter() - started},
+    }
+
+
+def _evaluate_article_aliases() -> dict:
+    """在日报及图文选择入口检查同篇标题路径变化和不同原文的边界。"""
+    items = [
+        {"item_id": key, "source_id": "dw_world", "url": f"https://www.dw.com/{path}",
+         "published_at": f"{DATE}T09:0{minute}:00+08:00",
+         "metadata": {"published_precision": "datetime", "source_rank": rank}}
+        for rank, (key, path, minute) in enumerate((
+            ("old-slug", "en/older-headline/a-79961817?maca=en-rss", 0),
+            ("new-slug", "en/updated-headline/a-79961817", 1),
+            ("other-story", "en/updated-headline/a-79961818", 2),
+            ("other-language", "de/deutscher-titel/a-79961817", 3),
+        ), 1)
+    ]
+    expected = ["other-language", "other-story", "new-slug"]
+    return {
+        "publisher_aliases_share_one_slot_without_rewriting_references": (
+            [(item["item_id"], item["metadata"]["source_rank"]) for item in
+             select_brief_items(items, {}, date_value=DATE, cutoff=CUTOFF)]
+            == list(zip(expected, (4, 3, 2), strict=True))
+            and [event["event_id"] for event in
+                 select_index_news({"items": items, "date": DATE, "generated_at": CUTOFF})]
+            == [f"index-{item_id}" for item_id in expected]
+        ),
     }
 
 
@@ -326,6 +449,7 @@ def _evaluate_corpus(
     request_count = requests.total()
     probe_reused_once = all(requests[path] == 1 for path in reused_paths)
     images = _evaluate_images(work_dir, host, final_items, requests)
+    body_regions = _evaluate_body_regions(final_path, final["items"], config, work_dir, profile)
     return {
         "workload": {
             "name": "fixed-local-publisher-pages",
@@ -335,6 +459,8 @@ def _evaluate_corpus(
             "unavailable_sources": 2,
             "expected_eligible": 60,
             "slide_image_stories": MEDIA_STORIES,
+            "body_region_replay_cases": 1 + len(VIDEO_FALLBACK_DURATIONS),
+            "article_alias_cases": 4,
         },
         "checks": {
             "all_source_outcomes_preserved": statuses == {
@@ -368,6 +494,8 @@ def _evaluate_corpus(
                 and request_count - initial_request_count == 33
             ),
             **images["checks"],
+            **body_regions["checks"],
+            **_evaluate_article_aliases(),
         },
         "metrics": {
             "collect_seconds": collect_seconds,
@@ -384,6 +512,7 @@ def _evaluate_corpus(
             "publication_probe_hits": probe_hits,
             "publication_probe_reuse_fraction": probe_hits / len(selected),
             **images["metrics"],
+            **body_regions["metrics"],
         },
         "artifacts": {"source_index": str(initial_path), "enriched_index": str(final_path)},
         "limitations": [

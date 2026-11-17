@@ -13,9 +13,10 @@ from urllib.parse import parse_qs, parse_qsl, urldefrag, urlsplit
 from jsonschema import Draft202012Validator
 
 from .article_time import original_publication_time
-from .brief_selection import select_brief_items
+from .brief_selection import dw_article_identity, select_brief_items
 from .config import AppConfig, MediaConfig, project_root
-from .content_extraction import is_navigation_only, strip_content_frontmatter
+from .content_extraction import is_navigation_only, is_video_player_only, strip_content_frontmatter
+from .content_images import IMAGE_EVIDENCE_VERSION
 from .image_policy import (
     _image_dimension,
     filter_editorial_templates,
@@ -93,7 +94,9 @@ def _publication_date(item: dict) -> str | None:
     return value[:10] if value else None
 
 
-def _current_events(events: list[dict], index: dict) -> list[dict]:
+def _current_events(
+    events: list[dict], index: dict, *, collapse_dw_aliases: bool = True,
+) -> list[dict]:
     """处理：按版本自然日及冻结上界过滤事件资格。
     输入：事件引用和规范索引；各来源日期独立判断。
     输出：保留当日且在来源额度内的引用及其事件。
@@ -101,6 +104,7 @@ def _current_events(events: list[dict], index: dict) -> list[dict]:
     allowed = {item["item_id"] for item in select_brief_items(
         index["items"], {}, date_value=index["date"],
         cutoff=(index.get("collection_window") or {}).get("end") or index.get("generated_at"),
+        collapse_dw_aliases=collapse_dw_aliases,
     )}
     current = []
     for event in events:
@@ -189,9 +193,10 @@ def review_candidates(report: dict | None, index: dict, max_news: int = 50,
                 completion = evidence["content_completion"] or {}
                 lead, evidence_chars = _review_lead(body, evidence["description"])
                 issues = [evidence["content_gap"]] if evidence.get("content_gap") else []
-                issues.extend(key for key in ("response_truncated", "incomplete_marker",
-                                               "numeric_tables_without_headers")
-                              if quality.get(key))
+                issues.extend(key for key in (
+                    "response_truncated", "incomplete_marker", "numeric_tables_without_headers",
+                    "video_player_only",
+                ) if quality.get(key))
                 source.update({
                     "lead": lead,
                     "body_chars": len(body),
@@ -283,6 +288,7 @@ def select_index_news(
     item_ids: list[str] | None = None,
     max_news: int = 50,
     exclude_event_ids: list[str] | None = None,
+    collapse_dw_aliases: bool = True,
 ) -> list[dict]:
     """处理：从各来源最新候选中合并原文，排除指定事件后截取。
     输入：规范索引、手选条目和数量限制；不虚构重要性分数。
@@ -294,6 +300,7 @@ def select_index_news(
     eligible = select_brief_items(
         index["items"], {}, date_value=index["date"],
         cutoff=(index.get("collection_window") or {}).get("end") or index.get("generated_at"),
+        collapse_dw_aliases=collapse_dw_aliases,
     )
     eligible_ids = {item["item_id"] for item in eligible}
     if item_ids:
@@ -310,7 +317,9 @@ def select_index_news(
         ordered = [item for item in ordered if item["importance"] >= min_importance]
     selected, positions = [], {}
     for item in ordered:
-        identity = _source_story_identity(item.get("canonical_url") or item["url"])
+        identity = _source_story_identity(
+            item.get("canonical_url") or item["url"], collapse_dw_aliases=collapse_dw_aliases,
+        )
         identity = identity or ("item", item["item_id"])
         if identity in positions:
             selected[positions[identity]]["source_refs"].append({"item_id": item["item_id"]})
@@ -322,8 +331,10 @@ def select_index_news(
     unknown = excluded - {event["event_id"] for event in selected}
     if unknown:
         raise ValueError("Excluded event IDs are not in this index: " + ", ".join(sorted(unknown)))
-    return _current_events([event for event in selected
-                            if event["event_id"] not in excluded], index)[:max_news]
+    return _current_events(
+        [event for event in selected if event["event_id"] not in excluded], index,
+        collapse_dw_aliases=collapse_dw_aliases,
+    )[:max_news]
 
 
 def _index_candidate(event: dict, indexed: dict, data_dir: Path) -> dict:
@@ -331,15 +342,16 @@ def _index_candidate(event: dict, indexed: dict, data_dir: Path) -> dict:
     输入：已选原文引用、规范条目映射与正文所在数据根。
     输出：含未截断正文的候选证据，不生成事实摘要或报告分析。
     """
+    evidence = _article_evidence(event, indexed, data_dir)
     sources = []
-    for ref in event["source_refs"]:
+    for ref, row in zip(event["source_refs"], evidence, strict=True):
         item = indexed[ref["item_id"]]
         sources.append({"name": item["source_name"], "title": item["title"],
                         "url": ref.get("url") or item["url"],
                         "published_at": item.get("published_at"),
-                        "access": item.get("content_status", "not_fetched")})
+                        "access": row["content_status"]})
     return {"event_id": event["event_id"], "sources": sources,
-            "evidence": _article_evidence(event, indexed, data_dir),
+            "evidence": evidence,
             "analyses": [], "images": _news_images(event, {}, indexed),
             "image_source_pages": _image_source_pages(event, indexed)}
 
@@ -358,6 +370,7 @@ def _image_source_pages(event: dict, indexed: dict) -> dict[str, list[dict]]:
         url = ref.get("url") or item["url"]
         if (
             item.get("content_status") != "full_text" or metadata.get("content_needs_refresh")
+            or bound.get("image_evidence_version") != IMAGE_EVIDENCE_VERSION
             or fingerprint.get("kind") != "http_response_body" or fingerprint.get("truncated")
             or not fingerprint.get("sha256") or bound.get("input_sha256") != fingerprint["sha256"]
             or bound.get("url") != urldefrag(url).url
@@ -391,6 +404,16 @@ def _article_evidence(event: dict, indexed: dict, data_dir: Path) -> list[dict]:
             body = strip_content_frontmatter(body)
         description = item.get("description") or ""
         navigation_only = bool(metadata.get("feed_navigation_only"))
+        content_status = item.get("content_status", "not_fetched")
+        content_quality = metadata.get("content_quality")
+        content_completion = metadata.get("content_completion")
+        legacy_player = is_video_player_only(body)
+        if legacy_player:
+            body = ""
+            content_status = "metadata_only"
+            content_quality = {"extraction_status": "insufficient", "video_player_only": True}
+            content_completion = {"status": "with_gaps", "unresolved": ["video_player_only"],
+                                  "claim_sufficiency": "not_assessed"}
         if is_navigation_only(body):
             navigation_only = True
             body = ""
@@ -405,16 +428,18 @@ def _article_evidence(event: dict, indexed: dict, data_dir: Path) -> list[dict]:
                 feed_text = read_json_object(path, "Feed evidence").get("text") or ""
                 if is_navigation_only(feed_text):
                     navigation_only = True
-                else:
+                elif not is_video_player_only(feed_text):
                     body = feed_text
+                    if legacy_player and body:
+                        content_status = "partial"
         evidence.append({"item_id": item["item_id"],
                          "title": item.get("title") or ref.get("title", ""),
                          "description": description, "body": body,
                          **({"content_gap": "navigation_only"}
                             if navigation_only and not (body or description) else {}),
-                         "content_status": item.get("content_status", "not_fetched"),
-                         "content_quality": metadata.get("content_quality"),
-                         "content_completion": metadata.get("content_completion")})
+                         "content_status": content_status,
+                         "content_quality": content_quality,
+                         "content_completion": content_completion})
     return evidence
 
 
@@ -427,7 +452,7 @@ def estimate_tokens(value: object) -> int:
     return ceil(len(text.encode("utf-8")) / 2)
 
 
-def _source_story_identity(url: str) -> tuple | None:
+def _source_story_identity(url: str, *, collapse_dw_aliases: bool = True) -> tuple | None:
     """处理：规范化单篇文章 URL，忽略协议、www、片段和已知跟踪参数。
     输入：来源引用中的绝对 HTTP(S) 原文 URL；有意义的路径与查询值保持不变。
     输出：可用于跨转载来源合并的文章身份；非 HTTP(S) 或相对 URL 不参与合并。
@@ -436,6 +461,9 @@ def _source_story_identity(url: str) -> tuple | None:
     scheme = parts.scheme.casefold()
     if scheme not in {"http", "https"} or not parts.netloc:
         return None
+    dw_identity = dw_article_identity(url.strip()) if collapse_dw_aliases else None
+    if dw_identity:
+        return ("dw", dw_identity)
     host = parts.netloc.casefold().removeprefix("www.")
     query = tuple(
         (key, value) for key, value in parse_qsl(parts.query, keep_blank_values=True)
@@ -452,6 +480,7 @@ def select_news(
     item_ids: list[str] | None = None,
     max_news: int = 50,
     exclude_event_ids: list[str] | None = None,
+    collapse_dw_aliases: bool = True,
 ) -> list[dict]:
     """处理：合并日报中的精选事件与简报，去重并排除指定事件后按重要性截取。
     输入：已存日报、权威索引及可选 ID、分数门槛和条数上限。
@@ -489,7 +518,8 @@ def select_news(
     single_source_positions: dict[tuple, int] = {}
     for event in unique:
         refs = event.get("source_refs", [])
-        identity = (_source_story_identity(str(refs[0].get("url") or ""))
+        identity = (_source_story_identity(str(refs[0].get("url") or ""),
+                                           collapse_dw_aliases=collapse_dw_aliases)
                     if len(refs) == 1 else None)
         if identity is None or identity not in single_source_positions:
             if identity is not None:
@@ -511,7 +541,7 @@ def select_news(
         raise ValueError("Excluded event IDs are not in this report: " + ", ".join(sorted(unknown)))
     eligible = [e for e in merged if e["event_id"] not in excluded
                 and (selected or e.get("importance", 0) >= min_importance)]
-    return sorted(_current_events(eligible, index),
+    return sorted(_current_events(eligible, index, collapse_dw_aliases=collapse_dw_aliases),
                   key=lambda e: -e.get("importance", 0))[:max_news]
 
 
@@ -837,14 +867,15 @@ def _candidate(event: dict, report: dict, briefs: dict, indexed: dict, data_dir:
     输入：已选新闻与只读来源映射；研判仅匹配该事件的 evidence_event_ids。
     输出：供分批写作和确定性版面组装共同使用的完整新闻记录。
     """
+    evidence = _article_evidence(event, indexed, data_dir)
     sources = []
-    for ref in event["source_refs"]:
+    for ref, row in zip(event["source_refs"], evidence, strict=True):
         item = indexed.get(ref["item_id"], {})
         source = briefs.get(ref["item_id"], {}).get("primary_source", event["primary_source"])
         sources.append({
             "name": item.get("source_name") or source["name"], "title": ref["title"],
             "url": ref["url"], "published_at": item.get("published_at"),
-            "access": item.get("content_status") or ref.get("access", "metadata_only"),
+            "access": row["content_status"],
         })
     item_ids = {ref["item_id"] for ref in event["source_refs"]}
     related_event_ids = {event["event_id"]} | {
@@ -855,7 +886,7 @@ def _candidate(event: dict, report: dict, briefs: dict, indexed: dict, data_dir:
         "event_id": event["event_id"], "title": event["title"], "summary": event["tldr"],
         "why_it_matters": event.get("why_it_matters", ""),
         "evidence_notes": event.get("evidence_notes", []), "sources": sources,
-        "evidence": _article_evidence(event, indexed, data_dir),
+        "evidence": evidence,
         "analyses": [{k: a.get(k) for k in (
             "domain", "claim", "narrative", "counter_evidence", "watch_signals"
         )} for a in report.get("analyses", [])
@@ -968,16 +999,26 @@ def _batch_model_input(
     return model_input
 
 
+def _reviewed_event_ids(review: dict) -> set[str]:
+    """处理：汇总审核明确裁决的事件标识。
+    输入：冻结的选取、排除和合并决策。
+    输出：重放前需要在候选集中逐一解析的标识集合。
+    """
+    return {
+        *review.get("selected_event_ids", []), *review.get("exclude_event_ids", []),
+        *(key for group in review.get("merge_groups", []) for key in group),
+    }
+
+
 def _bind_index_review_events(
     events: list[dict], index: dict, review: dict, report: dict,
+    *, collapse_dw_aliases: bool = True,
 ) -> list[dict]:
     """处理：把报告前已审阅的索引事件按条目身份绑定到报告文字。
     输入：报告事件、同版索引和提前完成的候选决定。
     输出：保留索引事件身份与来源边界的报告候选，审阅决定无需改写或重复运行。
     """
-    ids = [*review.get("selected_event_ids", []), *review.get("exclude_event_ids", []),
-           *(key for group in review.get("merge_groups", []) for key in group)]
-    if not any(key.startswith("index-") for key in ids):
+    if not any(key.startswith("index-") for key in _reviewed_event_ids(review)):
         return events
     report_by_item = {ref["item_id"]: event for event in events for ref in event["source_refs"]}
     refs_by_item = {ref["item_id"]: ref for event in events for ref in event["source_refs"]}
@@ -985,14 +1026,18 @@ def _bind_index_review_events(
     by_identity = {}
     for item_id in report_by_item:
         item = indexed.get(item_id, refs_by_item[item_id])
-        identity = canonicalize_url(item.get("canonical_url") or item.get("url", ""))
+        url = item.get("canonical_url") or item.get("url", "")
+        dw_identity = dw_article_identity(url) if collapse_dw_aliases else None
+        identity = dw_identity or canonicalize_url(url)
         if identity:
             by_identity.setdefault(identity, item_id)
     # 同源去重可能让审阅的条目只剩报告中的原文代表；保留审阅 ID 和实际来源引用。
     for item_id, item in indexed.items():
         if item_id in report_by_item:
             continue
-        identity = canonicalize_url(item.get("canonical_url") or item.get("url", ""))
+        url = item.get("canonical_url") or item.get("url", "")
+        dw_identity = dw_article_identity(url) if collapse_dw_aliases else None
+        identity = dw_identity or canonicalize_url(url)
         representative = by_identity.get(identity)
         if representative is not None:
             report_by_item[item_id] = report_by_item[representative]
@@ -1004,7 +1049,8 @@ def _bind_index_review_events(
     briefs = {brief["item_id"]: brief for section in report["sections"]
               for brief in section.get("briefs", [])}
     bound = []
-    for event in select_index_news(index, max_news=len(index["items"])):
+    for event in select_index_news(index, max_news=len(index["items"]),
+                                   collapse_dw_aliases=collapse_dw_aliases):
         item_ids = [ref["item_id"] for ref in event["source_refs"]]
         available = [item_id for item_id in item_ids if item_id in report_by_item]
         if not available:
@@ -1049,13 +1095,30 @@ def prepare_slides(
     mode = "report" if report else "index"
     if report and any(report[key] != index[key] for key in ("date", "edition")):
         raise ValueError("Report and index must belong to the same edition")
-    events = (select_news(report, index, min_importance=min_importance, item_ids=item_ids,
-                          max_news=len(index["items"]),
-                          exclude_event_ids=exclude_event_ids) if report else
-              select_index_news(index, min_importance=min_importance, item_ids=item_ids,
-                                max_news=len(index["items"]), exclude_event_ids=exclude_event_ids))
-    if report and review:
-        events = _bind_index_review_events(events, index, review, report)
+    def select_events(collapse_dw_aliases: bool) -> list[dict]:
+        """处理：在候选选择和报告绑定中应用同一原文身份规则。
+        输入：当前原文去重是否折叠 DW 地址变体。
+        输出：与该规则一致的可审核候选。
+        """
+        options = dict(min_importance=min_importance, item_ids=item_ids,
+                       max_news=len(index["items"]), exclude_event_ids=exclude_event_ids,
+                       collapse_dw_aliases=collapse_dw_aliases)
+        if report is None:
+            return select_index_news(index, **options)
+        rows = select_news(report, index, **options)
+        return (_bind_index_review_events(rows, index, review, report,
+                                          collapse_dw_aliases=collapse_dw_aliases)
+                if review else rows)
+
+    collapse_dw_aliases = True
+    events = select_events(collapse_dw_aliases)
+    reviewed_ids = _reviewed_event_ids(review or {})
+    if reviewed_ids - {event["event_id"] for event in events}:
+        # 已保存审核可能分别裁决了两个在新规则下合并的地址，按原候选边界重放。
+        legacy_events = select_events(False)
+        if reviewed_ids <= {event["event_id"] for event in legacy_events}:
+            events = legacy_events
+            collapse_dw_aliases = False
     events = apply_candidate_review(events, review or {})[:max_news]
     if not events:
         raise ValueError("No news matches the selection")
@@ -1088,7 +1151,7 @@ def prepare_slides(
             )
             index = read_json_object(index_path, "Enriched slide index")
             indexed = {item["item_id"]: item for item in index["items"]}
-            events = _current_events(events, index)
+            events = _current_events(events, index, collapse_dw_aliases=collapse_dw_aliases)
             if not events:
                 raise ValueError("No news matches the selection")
     briefs = ({b["item_id"]: b for s in report["sections"] for b in s.get("briefs", [])}

@@ -24,10 +24,20 @@ def run_command(data_dir: Path, arguments: list[str]) -> dict:
     process = subprocess.run(cli_prefix(data_dir) + arguments, capture_output=True,
                              text=True, encoding="utf-8",
                              env={**os.environ, "PYTHONIOENCODING": "utf-8"})
-    result = json.loads(process.stdout)
     if process.returncode:
-        raise RuntimeError(result.get("error") or result.get("errors") or process.stderr or result)
-    return result
+        try:
+            result = json.loads(process.stdout)
+        except json.JSONDecodeError:
+            # 定稿校验等异常只写入 stderr，不能让空 stdout 的解析错误覆盖诊断。
+            result = None
+        errors = (result.get("error") or result.get("errors")
+                  if isinstance(result, dict) else None)
+        detail = errors or process.stderr.strip() or process.stdout.strip()
+        raise RuntimeError(
+            f"{arguments[0]} exited with code {process.returncode}"
+            + (f": {detail}" if detail else "")
+        )
+    return json.loads(process.stdout)
 
 
 def materialize_inputs(plan: dict, data_dir: Path) -> dict:

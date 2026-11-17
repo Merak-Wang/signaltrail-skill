@@ -7,11 +7,17 @@ from collections import Counter
 from pathlib import Path
 from time import perf_counter
 
-from scripts.run_signaltrail import advance_dispatch, compact_dispatch, coordinator_dispatch
+from scripts.run_signaltrail import (
+    advance_dispatch,
+    compact_dispatch,
+    coordinator_dispatch,
+    run_command,
+)
 from signaltrail.narrative_store import load_artifact
 from signaltrail.news_slides import prepare_slides, render_slides
-from signaltrail.utils import write_json
+from signaltrail.utils import read_json, write_json
 
+from .report import _frozen_report_inputs
 from .slides import PAGE_COUNT, _make_fixture, _rendered_pages
 
 AUTHOR_LIMIT = 3
@@ -30,6 +36,63 @@ def _author_payload(ticket: dict, drafts: dict, data_dir: Path) -> tuple[dict, b
     if "video_title" in recovered["output_schema"]["properties"]:
         result["video_title"] = "社区公共服务试点公报"
     return result, complete == encoded_packet
+
+
+def _check_finalize_diagnostic(data_dir: Path) -> tuple[dict, dict]:
+    """通过正式定稿命令复现字段校验失败，并核对修正草稿后可恢复发布。"""
+    draft, index, item_plan = _frozen_report_inputs()
+    date = draft["date"]
+    position = draft["analyses"][1]["stakeholder_positions"][1]
+    original = position["stakeholder"]
+    position["stakeholder"] = "OpenAI"
+    draft_path = write_json(data_dir / "draft.json", draft)
+    index_path = write_json(data_dir / "index.json", index)
+    context_path = write_json(data_dir / "context.json", {
+        "schema_version": draft["schema_version"],
+        "brief_plan": [
+            {"source_id": source, "default_item_ids": items}
+            for source, items in item_plan.items()
+        ],
+    })
+    run_path = write_json(data_dir / "runs" / date / "daily.json", {
+        "date": date, "edition": "daily", "status": "awaiting_authoring",
+        "data_root": str(data_dir),
+        "artifacts": {"index_path": str(index_path), "context_path": str(context_path)},
+    })
+    command = ["finalize-edition", "--run", str(run_path), "--report",
+               str(draft_path), "--defer-tail"]
+    started = perf_counter()
+    diagnostic = ""
+    try:
+        run_command(data_dir, command)
+    except (RuntimeError, json.JSONDecodeError) as error:
+        diagnostic = str(error)
+    failed_at = perf_counter()
+    rejected = read_json(run_path)
+    field = "analyses[1].stakeholder_positions[1].stakeholder"
+    reported_error = rejected.get("error", "")
+    visible_field_error = (
+        field in reported_error and reported_error in diagnostic
+        and "finalize-edition exited with code" in diagnostic
+        and rejected["status"] == "awaiting_authoring"
+        and not (data_dir / "reports").exists()
+    )
+
+    position["stakeholder"] = original
+    write_json(draft_path, draft)
+    result = run_command(data_dir, command)
+    saved_path = Path(result["artifacts"]["json_path"])
+    return ({
+        "finalize_reports_child_field_validation_error": visible_field_error,
+        "finalize_succeeds_after_correcting_field": (
+            result["status"] == "completed" and saved_path.name == "daily-r1.json"
+            and read_json(saved_path)["analyses"][1]["stakeholder_positions"][1]["stakeholder"]
+            == original
+        ),
+    }, {
+        "finalize_rejection_seconds": failed_at - started,
+        "finalize_recovery_seconds": perf_counter() - failed_at,
+    })
 
 
 def evaluate(work_dir: Path) -> dict:
@@ -109,14 +172,17 @@ def evaluate(work_dir: Path) -> dict:
     html_path = Path(rendered["html_path"])
     deck = load_artifact(Path(rendered["json_path"]), data_dir, kind="slides-deck")["payload"]
     pages = _rendered_pages(deck, html_path, selected, drafts, evidence)
+    finalize_checks, finalize_metrics = _check_finalize_diagnostic(data_dir / "finalize-diagnostic")
 
     return {
         "workload": {
             "target_pages": PAGE_COUNT, "pages_per_batch": BATCH_SIZE,
             "expected_batches": (PAGE_COUNT + BATCH_SIZE - 1) // BATCH_SIZE,
             "author_slots": AUTHOR_LIMIT, "drafts": "fixed", "images": "local",
+            "finalize_failure": "invalid report stakeholder language",
         },
         "checks": {
+            **finalize_checks,
             "full_author_input_parts_restore_packet_bytes": full_inputs,
             "fills_three_slots_and_excludes_in_flight": (
                 slots_respected and peak_authors == AUTHOR_LIMIT
@@ -137,6 +203,7 @@ def evaluate(work_dir: Path) -> dict:
             ),
         },
         "metrics": {
+            **finalize_metrics,
             "dispatch_rounds": turns, "dispatched_tickets": sum(dispatches.values()),
             "forced_handoffs": forced_handoffs, "max_active_authors": peak_authors,
             "accepted_counts_by_round": accepted,

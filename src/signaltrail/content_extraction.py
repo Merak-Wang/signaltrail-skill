@@ -31,6 +31,11 @@ _INCOMPLETE = re.compile(
     r"|continue reading|read (?:the )?full (?:article|story))\b"
     r"|加载中|订阅后阅读|登录后阅读|展开全文|阅读全文", re.I,
 )
+_VIDEO_DURATION = re.compile(
+    r"(?:video duration (?:\d{1,2} hours? )?\d{1,2} minutes? \d{1,2} seconds? )?"
+    r"(?:\d{1,2}:)?\d{1,2}:[0-5]\d",
+    re.I,
+)
 
 
 def strip_content_frontmatter(text: str) -> str:
@@ -58,6 +63,19 @@ def is_navigation_only(text: str) -> bool:
         "", text, flags=re.I,
     )
     return bool(text) and not remaining.strip(" \t\r\n|-")
+
+
+def is_video_player_only(text: str) -> bool:
+    """处理：识别只包含播放标签、时长和单条标题的播放器卡片。
+    输入：抽取文本或历史正文 Markdown。
+    输出：片段独立构成播放器卡片时返回真，供正文过滤与复用校验使用。
+    """
+    body = strip_content_frontmatter(text).strip()
+    if len(body) > 240:
+        return False
+    lines = [line.strip() for line in body.splitlines() if line.strip()]
+    return (2 <= len(lines) <= 3 and lines[0].casefold() in {"now playing", "正在播放"}
+            and any(_VIDEO_DURATION.fullmatch(line) for line in lines[1:]))
 
 
 @dataclass
@@ -235,7 +253,11 @@ def extract_document(
                     for row in block["rows"] for cell in row
                 )
             ]
-            usable = substantive and link_density < 0.5
+            video_player_only = is_video_player_only(text) or (
+                blocks[0]["type"] == "heading"
+                and is_video_player_only("\n\n".join(block["text"] for block in blocks[1:]))
+            )
+            usable = substantive and link_density < 0.5 and not video_player_only
             complete = usable and specific and not incomplete and not truncated and not table_gaps
             quality = {
                 "extractor": "builtin", "extractor_version": "2",
@@ -243,6 +265,7 @@ def extract_document(
                 "characters": characters, "block_count": len(blocks),
                 "link_density": round(link_density, 4),
                 "incomplete_marker": incomplete, "response_truncated": truncated,
+                "video_player_only": video_player_only,
                 "extraction_status": (
                     "short_complete" if complete and characters < 1500 else
                     "complete" if complete else "partial" if usable else "insufficient"

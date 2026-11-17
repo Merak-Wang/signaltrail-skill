@@ -60,6 +60,9 @@ sources.yaml 与 discovery-sources.yaml 共配置 45 个来源 ID，其中 43 �
 
 全局 `collection.item_order` 默认为 `source`，并可由单个来源覆盖。`source` 依据原始 `source_rank` 保留页面、榜单或 Feed Top 顺序，历史快照保留项置后；`published_at` 按有效发布时间倒序，时间缺失和并列时保持输入稳定顺序。采集、Feed、监控与多页合并都调用同一排序函数，随后把最终顺序写入当前 index；原始 `source_rank` 不随排序模式改变。日报和图文候选在当日资格与同源去重后按原发时间倒序选取每源最多15条；原始采集索引继续保留完整观察结果。
 
+DW 文章以语言与 `a-编号` 识别原文，标题路径或跟踪参数变动不另占简报位置。已保存的图文审核
+若仍引用旧候选，只有旧选择规则能够解析全部裁决 ID 时才恢复其候选边界。
+
 监控先读取 RSS/Atom，使用 `ETag`、`Last-Modified`、304、本地解析结果缓存、失败退避与 `Retry-After`。响应必须通过 XML/HTML 嗅探；验证码或 HTML 中间页不得按 feed 解析。来源没有 feed 或 feed 失败时，可自动发现页面声明的 feed，再回退到无脚本 HTML。发布时间缺失的条目保留并标记，只能以采集时间显示，不能参与 NEW/新鲜度。标题词法特征哈希与余弦相似度完成零模型 token 的事件聚类；上一快照的 item 身份用于稳定 story ID。
 
 已知 Feed 立即入队；未知来源各自完成发现后抓取，不等待全体发现结束。同域许可先于全局许可取得，
@@ -96,7 +99,8 @@ Atom text/html/xhtml 分别处理，嵌套 xml:base 在节点序列化前解析�
 正文抽取在 HTTP 与浏览器路径共享 `content_extraction` 规则。具体正文区域优先于宽泛
 `main/body`，候选同时检查正文块、链接密度和不完整提示；达到字符数不再自动证明完整。
 短公告可标为 `full_text`，并在 `metadata.content_quality.extraction_status` 记录
-`short_complete`；宽泛区域、截断响应或可见的不完整提示最多为 `partial`。这些结果是
+`short_complete`；宽泛区域、截断响应或可见的不完整提示最多为 `partial`。只含播放标签、
+视频时长和标题的卡片不能算正文，旧缓存中的此类文本也不复用。这些结果是
 `structural_heuristic`，不是事实核验。只有标题、加载提示或链接列表时仍为 `metadata_only`。
 HTTP 非 HTML 错误响应也保留失败或待验证状态。
 

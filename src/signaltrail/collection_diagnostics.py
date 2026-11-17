@@ -6,11 +6,11 @@ from pathlib import Path
 from typing import Any
 
 from .config import SourceConfig
-from .content_extraction import is_navigation_only
+from .content_extraction import is_navigation_only, is_video_player_only
 
 
 def has_local_content(item: dict[str, Any], data_dir: Path) -> bool:
-    """处理：检查数据根内的证据文件及已有哈希，排除纯评论入口与评分记录。
+    """处理：检查数据根内的证据文件及已有哈希，排除纯导航和视频卡片。
     输入：索引中的正文路径、可选结构路径与溯源指纹，以及当前数据根。
     输出：可读取且未检测到损坏时返回真；旧版无哈希文件保持兼容。
     """
@@ -31,8 +31,10 @@ def has_local_content(item: dict[str, Any], data_dir: Path) -> bool:
             if not path.is_file():
                 return False
             content = path.read_bytes()
-            if position == 0 and is_navigation_only(content.decode("utf-8")):
-                return False
+            if position == 0:
+                body = content.decode("utf-8")
+                if is_navigation_only(body) or is_video_player_only(body):
+                    return False
             if expected_hash and hashlib.sha256(content).hexdigest() != expected_hash:
                 return False
     except (OSError, ValueError):
@@ -65,6 +67,7 @@ def content_gaps(item: dict[str, Any], data_dir: Path) -> list[str]:
     for field, gap in (
         ("response_truncated", "response_truncated"),
         ("incomplete_marker", "incomplete_marker"),
+        ("video_player_only", "video_player_only"),
         ("numeric_tables_without_headers", "table_headers"),
     ):
         if quality.get(field):

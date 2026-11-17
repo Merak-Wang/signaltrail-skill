@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -9,9 +10,23 @@ from .article_time import original_publication_time, published_on_date
 from .utils import canonicalize_url
 
 
+def dw_article_identity(url: str) -> str | None:
+    """处理：按 DW 语言与文章编号识别原文。
+    输入：来源链接，标题路径和跟踪参数可变化。
+    输出：用于去重的稳定键，未知地址返回空。
+    """
+    parts = urlsplit(url)
+    if (parts.scheme not in {"http", "https"}
+            or parts.netloc.lower().removeprefix("www.") != "dw.com"):
+        return None
+    match = re.fullmatch(r"/([a-z]{2}(?:-[a-z]{2})?)/[^/]+/(a-\d+)/?", parts.path)
+    return f"dw:{match[1]}:{match[2]}" if match else None
+
+
 def select_brief_items(
     candidates: list[dict[str, Any]], source_configs: dict[str, Any],
     *, date_value: str | None = None, cutoff: str | None = None,
+    collapse_dw_aliases: bool = True,
 ) -> list[dict[str, Any]]:
     """处理：筛选当日原文并按每源发布时间倒序去重、截取。
     输入：采集候选、来源配置以及可选的版本日期和截止时间。
@@ -34,6 +49,8 @@ def select_brief_items(
             if (parts.hostname in {"bbc.com", "bbc.co.uk"}
                     and parts.path.startswith("/news/articles/")):
                 identity = "bbc:" + parts.path.rstrip("/")
+            elif collapse_dw_aliases:
+                identity = dw_article_identity(identity) or identity
             if identity in seen:
                 continue
             selected.append(item)

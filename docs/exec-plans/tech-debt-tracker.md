@@ -62,6 +62,18 @@ The remaining items below require module-level quality and performance evidence 
 
 ## Resolved Items
 
+The 2026-11-17 delivery audit fixed four concrete failures:
+
+- DW article aliases now share one source-selection slot by language and article ID; frozen slide reviews retain their original candidate boundary when replayed.
+- Explicit short video-player cards no longer qualify as complete article text or reusable writing evidence; genuine short notices remain supported.
+- Page sharing images come from the document head, and article images stay inside the selected body. Successful refresh removes unconfirmed older page candidates; failed refresh still falls back to saved candidates.
+- Automatic finalization preserves the subprocess validation error and exit code instead of masking them with a JSON decoding error.
+
+These fixes cover observed counterexamples, not the full TD-040 corpus requirement. Brief writing
+now explicitly compares event time with the frozen cutoff; this remains a writing instruction,
+not an automatic factual validator. Publisher access restrictions and intermittent image-network
+failures remain observable external conditions and must not be converted to empty-source success.
+
 Resolved in the 2026-09-12 [cost and latency optimization](completed-2026-09-12-runtime-cost-optimization.md):
 
 - TD-006: enrichment resumes its bound selection; completed extraction checkpoints avoid reacquisition after index/context commit failures. An interrupted acquisition stage may still repeat bounded work.

@@ -31,7 +31,12 @@ from .content_extraction import (
     is_navigation_only,
     observed_source_metadata,
 )
-from .content_images import article_image_candidates
+from .content_images import (
+    IMAGE_EVIDENCE_VERSION,
+    PAGE_IMAGE_META_SELECTOR,
+    article_image_candidates,
+    publisher_image_urls,
+)
 from .image_policy import normalize_image_candidates
 from .models import ContentStatus
 from .pdf_content import extract_pdf
@@ -350,33 +355,13 @@ def _html_meta(soup: BeautifulSoup, selectors: list[str]) -> str:
     return ""
 
 
-def _html_meta_values(soup: BeautifulSoup, selectors: list[str]) -> list[str]:
-    """处理：从静态 HTML 中收集全部匹配的元数据值。
-    输入：
-    - ``soup``：由不可信 HTML 构建的 BeautifulSoup 文档；不会执行任何脚本。
-    - ``selectors``：按优先级排列的 CSS 选择器；用于寻找元数据或正文区域。
-    输出：“从静态 HTML 中收集全部匹配的元数据值”得到的字符串列表；
-      顺序保持确定并可供下一步骤逐项处理。
-    """
-    values: list[str] = []
-    for selector in selectors:
-        for node in soup.select(selector):
-            value = (
-                node.get("content")
-                or node.get("datetime")
-                or node.get_text(" ", strip=True)
-            )
-            if value:
-                values.append(str(value).strip())
-    return values
-
-
 def _apply_image_candidates(
     item: dict[str, Any],
     values: list[object],
     base_url: str,
     *,
     details: list[dict[str, Any]] | None = None,
+    replace_page_candidates: bool = False,
 ) -> None:
     """处理：规范化图片候选，并同步主图片与候选元数据。
     输入：
@@ -393,12 +378,22 @@ def _apply_image_candidates(
     stored_candidates = metadata.get("image_candidates")
     if not isinstance(stored_candidates, list):
         stored_candidates = []
+    old_primary = item.get("image_url")
+    if replace_page_candidates:
+        old_page_urls = {
+            entry.get("url") for entry in metadata.get("image_candidate_details", [])
+            if isinstance(entry, dict)
+            and entry.get("provenance") in {"article_body", "page_metadata"}
+        }
+        stored_candidates = [url for url in stored_candidates if url not in old_page_urls]
+        if old_primary in old_page_urls:
+            old_primary = None
     details = details or []
     contextual = [entry["url"] for entry in details if (
         entry.get("caption") or entry.get("relevance_score", 0) > 0
     )]
     candidates = normalize_image_candidates(
-        [*contextual, *values, item.get("image_url"),
+        [*contextual, *values, old_primary,
          *(entry["url"] for entry in details), *stored_candidates],
         base_url,
     )
@@ -585,11 +580,7 @@ def _apply_http_document(
     )
     if description:
         item["description"] = html.unescape(description)
-    image_candidates = _html_meta_values(
-        soup,
-        ['meta[property="og:image"]', 'meta[name="og:image"]',
-         'meta[name="twitter:image"]', 'meta[property="twitter:image"]'],
-    )
+    image_candidates = publisher_image_urls(soup, final_url)
     input_bytes = body_html.encode("utf-8") if raw_content is None else raw_content
     document = extract_with_fallback(
         soup, source.content_selectors, truncated=truncated,
@@ -612,6 +603,7 @@ def _apply_http_document(
     _apply_image_candidates(
         item, image_candidates, final_url,
         details=article_image_candidates(document, str(item.get("title") or ""), final_url),
+        replace_page_candidates=True,
     )
     _save_document(
         item, document, source, config, data_dir,
@@ -628,6 +620,7 @@ def _apply_http_document(
     ):
         metadata["content_image_evidence"] = {
             "url": article_url, "input_sha256": document.provenance["sha256"],
+            "image_evidence_version": IMAGE_EVIDENCE_VERSION,
         }
     # 已明确截断的传输和订阅提示不会靠重开浏览器消除；其他正文缺口最多升级一次。
     return document.status != ContentStatus.FULL_TEXT and not truncated and not (
@@ -909,8 +902,7 @@ async def _extract_one(
         if description:
             item["description"] = html.unescape(description)
         image_candidates = await meta_contents(
-            page,
-            ['meta[property="og:image"]', 'meta[name="twitter:image"]'],
+            page, [PAGE_IMAGE_META_SELECTOR],
         )
         document = await _browser_document(
             page, source.content_selectors,
@@ -923,6 +915,7 @@ async def _extract_one(
         _apply_image_candidates(
             item, image_candidates, page.url,
             details=article_image_candidates(document, str(item.get("title") or ""), page.url),
+            replace_page_candidates=True,
         )
         metadata["content_http_status"] = http_status
         _save_document(item, document, source, config, data_dir)
@@ -1068,10 +1061,7 @@ async def _extract_with_crawl4ai(
                 metadata["content_error"] = page["error"] or "Dynamic page extraction failed"
             continue
         media = page["media"]
-        _apply_image_candidates(
-            item, [entry["src"] for entry in media.get("images", []) if entry.get("src")],
-            page["url"], details=metadata.get("image_candidate_details", []),
-        )
+        # SDK 图片列表缺少正文位置，也会包含预载和推荐图。图片统一由正文和 head 提取。
         videos = [
             {"url": urljoin(page["url"], entry["src"]), "source_url": page["url"]}
             for entry in media.get("videos", []) if entry.get("src")

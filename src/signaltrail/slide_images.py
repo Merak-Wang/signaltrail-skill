@@ -13,13 +13,12 @@ from bs4 import BeautifulSoup
 from .access import classify_access_text
 from .config import MediaConfig
 from .content_extraction import extract_document
-from .content_images import article_image_candidates
+from .content_images import article_image_candidates, publisher_image_urls
 from .image_policy import (
     filter_editorial_templates,
     image_resolution_candidates,
     image_variant_groups,
     image_variant_key,
-    normalize_image_candidates,
     select_image_variants,
 )
 from .media import (
@@ -141,19 +140,10 @@ def _read_page(
     # 正文抽取器负责选取具体正文区域并清理相关推荐等噪声；只取图片，不保存正文。
     document = extract_document(soup, [], expected_title=title)
     candidates = article_image_candidates(document, title, current)
-    og = [
-        node.get("content") for node in soup.select(
-            'meta[property="og:image"], meta[name="og:image"], '
-            'meta[name="twitter:image"], meta[property="twitter:image"]'
-        ) if node.get("content")
-    ]
-    # 主图由发布者显式声明，正文配图仍由具体正文节点提供，不将头像和推荐图混入。
-    for raw in og:
-        for variant, image_url in enumerate(normalize_image_candidates([raw], current)):
-            candidates.append({
-                "url": image_url, "provenance": "page_metadata", "purpose": "publisher_selected",
-                "caption": "", "position": -1, "variant": variant,
-            })
+    candidates.extend({
+        "url": image_url, "provenance": "page_metadata", "purpose": "publisher_selected",
+        "caption": "", "position": -1, "variant": variant,
+    } for variant, image_url in enumerate(publisher_image_urls(soup, current)))
     fulltext_url = _arxiv_fulltext_link(soup, current)
     if fulltext_url:
         try:
@@ -224,12 +214,13 @@ def enrich_slide_images(
     source_pages_reused = len(page_results)
     source_failures: list[dict[str, str]] = []
     if len(source_rows) > source_pages_reused:
-        domain_queues: dict[str, list[tuple[str, dict]]] = {}
-        for url, (item, _source) in source_rows.items():
+        domain_queues: dict[str, list[tuple[str, str]]] = {}
+        for url, (item, source) in source_rows.items():
             if url in page_results:
                 continue
             domain = (urlsplit(url).hostname or "unknown").casefold()
-            domain_queues.setdefault(domain, []).append((url, item))
+            title = str(source.get("title") or item.get("title") or "")
+            domain_queues.setdefault(domain, []).append((url, title))
         domains = list(domain_queues)
         domain_active = dict.fromkeys(domains, 0)
         domain_cursor = dict.fromkeys(domains, 0)
@@ -253,22 +244,15 @@ def enrich_slide_images(
                         queue = domain_queues[domain]
                         if (cursor < len(queue)
                                 and domain_active[domain] < config.per_domain_concurrency):
-                            url, item = queue[cursor]
+                            url, title = queue[cursor]
                             domain_cursor[domain] = cursor + 1
                             domain_active[domain] += 1
-                            future = pool.submit(read_source, url, item)
+                            future = pool.submit(_read_page, url, title, config, client)
                             pending[future] = (url, domain)
                             submitted = True
                             break
                     if not submitted:
                         break
-
-            def read_source(url: str, item: dict) -> tuple[list[dict[str, Any]], str]:
-                """处理：通过本轮共享 HTTP 客户端读取一篇来源文章的图片。
-                输入：来源 URL、标题与共享客户端；任务提交前已取得对应域名并发名额。
-                输出：正文图片候选与重定向后的文章 URL，供同一新闻合并使用。
-                """
-                return _read_page(url, str(item.get("title") or ""), config, client)
 
             pending: dict = {}
             submit_ready(pending)
@@ -287,6 +271,7 @@ def enrich_slide_images(
 
     # 用现有合并规则折叠原图、已缓存图与刚抽出的高清变体。
     all_urls: dict[str, tuple[dict[str, Any], str]] = {}
+    failed_sources = {failure["url"] for failure in source_failures}
     for item in enriched:
         refs, indexed, briefs = [], {}, {}
         source_urls = [str(source.get("url") or "") for source in item.get("sources", [])]
@@ -304,6 +289,13 @@ def enrich_slide_images(
                 and (image.get("url") or image.get("resolved_url"))
             ]
             if page:
+                if source_url not in failed_sources:
+                    confirmed = {image_variant_key(image["url"]) for image in page[0]}
+                    details = [
+                        image for image in details
+                        if image.get("provenance") not in {"page_metadata", "article_body"}
+                        or image_variant_key(image["url"]) in confirmed
+                    ]
                 details.extend(page[0])
             indexed[item_id] = {
                 "url": source.get("url"), "source_name": source.get("name"),
