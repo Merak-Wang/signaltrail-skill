@@ -6,7 +6,8 @@ import argparse
 import hashlib
 import json
 import re
-from collections import Counter, defaultdict
+from collections import Counter, defaultdict, deque
+from collections.abc import Callable, Iterable
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -61,47 +62,56 @@ def category(path: str, root: bool) -> str:
     return "other_agents"
 
 
-def summarize(records: list[dict], *, incomplete: bool = False) -> dict:
-    """合计已知值，任一请求缺失字段时保留未知状态。"""
-    result = {"responses": len(records)}
-    for field in FIELDS:
-        values = [item.get(field) for item in records]
-        observed = [
-            value
-            for value in values
-            if isinstance(value, int) and not isinstance(value, bool) and value >= 0
-        ]
-        known = sum(observed) if observed else None
-        complete = bool(observed) and len(observed) == len(values) and not incomplete
-        result[field] = known if complete else None
+def valid_token(value: object) -> bool:
+    """识别原生用量行中的非负整数。"""
+    return type(value) is int and value >= 0
+
+
+def summarize_fields(
+    records: list[dict], fields: tuple[str, ...], *, known_default: int | None = None,
+    countable: Callable[[object], bool] = valid_token, incomplete: bool = False,
+) -> dict:
+    """合计各字段可观测部分，仅在每条请求都有该字段时给出完整总量。"""
+    result = {}
+    for field in fields:
+        observed = [value for record in records if countable(value := record.get(field))]
+        known = sum(observed) if observed else known_default
+        result[field] = known if len(observed) == len(records) and not incomplete else None
         result[f"{field}_known"] = known
-    inp, cached = result["input_tokens"], result["cached_input_tokens"]
-    result["uncached_input_tokens"] = (
-        inp - cached if inp is not None and cached is not None and inp >= cached else None
-    )
     return result
 
 
-def completed_turn_bounds(paths: list[Path], root: str, turn: str) -> tuple[datetime, datetime]:
+def summarize(records: list[dict], *, incomplete: bool = False) -> dict:
+    """补齐逐请求数和未缓存输入，作为会话、模型及整轮的同一口径。"""
+    result = summarize_fields(records, FIELDS, incomplete=incomplete)
+    inp, cached = result["input_tokens"], result["cached_input_tokens"]
+    return {
+        "responses": len(records), **result,
+        "uncached_input_tokens": (
+            inp - cached if inp is not None and cached is not None and inp >= cached else None
+        ),
+    }
+
+
+def completed_turn_bounds(events: list[dict], root: str, turn: str) -> tuple[datetime, datetime]:
     """读取原生用户指令和最终回复事件，只接受独立且已完成的根轮次。"""
     starts, instructions, replies, completions = (set() for _ in range(4))
-    for path in paths:
-        for row in rows(path):
-            payload = row.get("payload", {})
-            if row["type"] != "event_msg" or payload.get("turn_id") != turn:
-                continue
-            kind = payload.get("type")
-            if kind == "task_started" and payload.get("root_turn_id") == turn:
-                if (payload.get("turn_attribution") or {}).get("turn_trigger") == "composer":
-                    starts.add(timestamp(row["timestamp"]))
-            elif kind == "task_complete" and payload.get("root_turn_id") == turn:
-                completions.add(timestamp(row["timestamp"]))
-            elif kind == "item_completed" and payload.get("thread_id") == root:
-                item = payload.get("item") or {}
-                if item.get("type") == "UserMessage":
-                    instructions.add((item["id"], timestamp(row["timestamp"])))
-                elif item.get("type") == "AgentMessage" and item.get("phase") == "final_answer":
-                    replies.add((item["id"], timestamp(row["timestamp"])))
+    for row in events:
+        payload = row.get("payload", {})
+        if payload.get("turn_id") != turn:
+            continue
+        kind = payload.get("type")
+        if kind == "task_started" and payload.get("root_turn_id") == turn:
+            if (payload.get("turn_attribution") or {}).get("turn_trigger") == "composer":
+                starts.add(timestamp(row["timestamp"]))
+        elif kind == "task_complete" and payload.get("root_turn_id") == turn:
+            completions.add(timestamp(row["timestamp"]))
+        elif kind == "item_completed" and payload.get("thread_id") == root:
+            item = payload.get("item") or {}
+            if item.get("type") == "UserMessage":
+                instructions.add((item["id"], timestamp(row["timestamp"])))
+            elif item.get("type") == "AgentMessage" and item.get("phase") == "final_answer":
+                replies.add((item["id"], timestamp(row["timestamp"])))
     if any(len(events) != 1 for events in (starts, instructions, replies, completions)):
         raise ValueError("A completed turn requires one composer start, user instruction, "
                          "final reply and native completion. Use a manual window for diagnostics.")
@@ -113,16 +123,9 @@ def completed_turn_bounds(paths: list[Path], root: str, turn: str) -> tuple[date
     return instruction, reply
 
 
-def completed_subtree_bounds(paths: list[Path], root_turn: str) -> tuple[str, datetime, datetime]:
+def completed_subtree_bounds(rows: list[dict], root_turn: str) -> tuple[str, datetime, datetime]:
     """以专用子任务首次启动到最终回复为边界，后续复用属于其他工作。"""
-    events = [
-        (timestamp(row["timestamp"]), row["type"], row["payload"])
-        for path in paths for row in rows(path)
-        if row["type"] in {"event_msg", "inter_agent_communication_metadata"}
-        and (row["type"] != "event_msg" or row.get("payload", {}).get("type") in {
-            "task_started", "task_complete", "item_completed",
-        })
-    ]
+    events = [(timestamp(row["timestamp"]), row["type"], row["payload"]) for row in rows]
     starts = [(stamp, event) for stamp, _, event in events if event.get("type") == "task_started"]
     if not starts:
         raise ValueError("Dedicated generation subtree has no native start")
@@ -154,23 +157,34 @@ def completed_subtree_bounds(paths: list[Path], root_turn: str) -> tuple[str, da
     return turn, start, end
 
 
-def subtree_turns(paths: list[Path], anchor_turn: str, root_turn: str) -> set[str]:
-    """沿原生父轮次关系收集首次任务及其全部子轮次。"""
-    parents = {}
-    for path in paths:
-        for row in rows(path):
-            payload = row.get("payload", {})
-            if (row["type"] == "event_msg" and payload.get("type") == "task_started"
-                    and payload.get("root_turn_id") == root_turn):
-                parents[payload["turn_id"]] = (
-                    (payload.get("turn_attribution") or {}).get("parent_turn_id")
-                )
-    turns = {anchor_turn}
-    while True:
-        expanded = turns | {turn for turn, parent in parents.items() if parent in turns}
-        if expanded == turns:
-            return turns
-        turns = expanded
+def descendants_of(anchor: str, links: Iterable[tuple[str, str | None]]) -> set[str]:
+    """沿父子索引遍历可达会话或轮次，每个节点最多处理一次。"""
+    children = defaultdict(list)
+    for child, parent in links:
+        children[parent].append(child)
+    descendants = {anchor}
+    pending = deque([anchor])
+    while pending:
+        new = set(children[pending.popleft()]) - descendants
+        descendants.update(new)
+        pending.extend(new)
+    return descendants
+
+
+def model_effort_rows(counts: Counter[tuple[str, str]]) -> list[dict]:
+    """按模型和推理力度排序，供两种计量回执共用。"""
+    return [
+        {"model": model, "effort": effort, "responses": count}
+        for (model, effort), count in sorted(counts.items())
+    ]
+
+
+def write_receipt(path: Path, receipt: dict, *, newline: bool = True) -> None:
+    """排他保存用量或资源回执，保留原有的 JSON 文本格式。"""
+    with path.open("x", encoding="utf-8") as stream:
+        json.dump(receipt, stream, ensure_ascii=False, indent=2)
+        if newline:
+            stream.write("\n")
 
 
 def measure(
@@ -198,81 +212,114 @@ def measure(
                     )
                 )
                 break
-    def descendants_of(thread: str) -> set[str]:
-        """从已记录的父子关系计算给定任务及其全部后代。"""
-        descendants = {thread}
-        while True:
-            expanded = descendants | {
-                tid for _, tid, parent, _ in files if parent in descendants and tid
-            }
-            if expanded == descendants:
-                return descendants
-            descendants = expanded
-
-    descendants = descendants_of(root)
+    thread_links = [(tid, parent) for _, tid, parent, _ in files if tid]
+    descendants = descendants_of(root, thread_links)
     if subtree_thread_id:
         if subtree_thread_id not in descendants:
             raise ValueError("Requested generation subtree does not belong to this root thread")
-        descendants = descendants_of(subtree_thread_id)
+        descendants = descendants_of(subtree_thread_id, thread_links)
     anchor = subtree_thread_id or root
-    anchor_turn = turn
-    bound_turns = None
-    if completed:
-        if any(value is not None for value in (start, end, include_agent_paths)):
-            raise ValueError("A completed turn uses native bounds and excludes path filters")
-        anchor_paths = [path for path, tid, _, _ in files if tid == anchor]
-        if subtree_thread_id:
-            anchor_turn, start, end = completed_subtree_bounds(anchor_paths, turn)
-            bound_turns = subtree_turns(
-                [path for path, tid, _, _ in files if tid in descendants], anchor_turn, turn,
-            )
-        else:
-            start, end = completed_turn_bounds(anchor_paths, root, turn)
-    elif start is None or end is None or end < start:
+    scoped_files = [
+        (path, tid, agent_path) for path, tid, _, agent_path in files
+        if tid in descendants and (
+            include_agent_paths is None or tid == anchor or agent_path in include_agent_paths
+        )
+    ]
+    if completed and any(value is not None for value in (start, end, include_agent_paths)):
+        raise ValueError("A completed turn uses native bounds and excludes path filters")
+    if not completed and (start is None or end is None or end < start):
         raise ValueError("A manual window requires ordered start and end timestamps")
+
     damaged: Counter[Path] = Counter()
-    conflicts: set[str] = set()
-    conflict_files: set[Path] = set()
-    seen = {}
+    parents = {}
+    anchor_rows = []
     scoped = []
-    all_usage = []
-    agents = []
-    requests = []
-    model_effort_counts: Counter[tuple[str, str]] = Counter()
-    for path, tid, _, agent_path in files:
-        if tid not in descendants:
-            continue
-        if (include_agent_paths is not None and tid != anchor
-                and agent_path not in include_agent_paths):
-            continue
-        contexts = {}
-        efforts = {}
-        selected = []
+    for path, tid, agent_path in scoped_files:
+        contexts, efforts, recorded = {}, {}, []
+        scoped.append((path, tid, agent_path, contexts, efforts, recorded))
         for row in rows(path, damaged):
-            payload = row.get("payload", {})
-            if row.get("type") == "turn_context":
-                model = payload.get("model")
-                context_id = payload.get("turn_id")
+            kind, payload = row["type"], row.get("payload", {})
+            if completed:
+                event = payload.get("type")
+                if (subtree_thread_id and kind == "event_msg" and event == "task_started"
+                        and payload.get("root_turn_id") == turn):
+                    parents[payload["turn_id"]] = (
+                        (payload.get("turn_attribution") or {}).get("parent_turn_id")
+                    )
+                if tid == anchor:
+                    if subtree_thread_id and (
+                        kind == "inter_agent_communication_metadata"
+                        or kind == "event_msg" and event == "item_completed"
+                    ):
+                        timestamp(row["timestamp"])
+                    if kind == "event_msg" and event in {"task_started", "task_complete"}:
+                        anchor_rows.append(row)
+                    elif kind == "event_msg" and event == "item_completed" and (
+                        subtree_thread_id or (
+                            payload.get("turn_id") == turn and payload.get("thread_id") == root
+                        )
+                    ):
+                        item = payload.get("item") or {}
+                        if isinstance(item, dict):
+                            item_type = item.get("type")
+                            if item_type != "UserMessage" and (
+                                item_type != "AgentMessage" or item.get("phase") != "final_answer"
+                            ):
+                                continue
+                            item = {key: item[key] for key in ("id", "type", "phase")
+                                    if key in item}
+                        elif isinstance(item, str):
+                            item = "?"
+                        elif isinstance(item, list):
+                            item = [None]
+                        boundary = {key: payload.get(key) for key in (
+                            "type", "thread_id", "turn_id",
+                        )}
+                        anchor_rows.append({
+                            key: row[key] for key in ("type", "timestamp") if key in row
+                        } | {"payload": boundary | {"item": item}})
+                    elif (kind == "inter_agent_communication_metadata" and subtree_thread_id
+                          and payload.get("trigger_turn")):
+                        anchor_rows.append({"type": kind, "timestamp": row["timestamp"],
+                                            "payload": {"trigger_turn": True}})
+            if kind == "turn_context":
+                model, context_id, effort = (payload.get(k) for k in ("model", "turn_id", "effort"))
                 if not isinstance(context_id, str):
                     damaged[path] += 1
                     continue
                 contexts[context_id] = (
-                    model
-                    if isinstance(model, str) and re.fullmatch(r"[A-Za-z0-9._-]{1,80}", model)
+                    model if isinstance(model, str) and re.fullmatch(r"[A-Za-z0-9._-]{1,80}", model)
                     else "unknown"
                 )
-                effort = payload.get("effort")
                 if isinstance(effort, str) and re.fullmatch(r"[A-Za-z0-9_-]{1,20}", effort):
                     efforts[context_id] = effort
-            if (
-                row.get("type") != "token_usage_record"
-                or payload.get("thread_id") != tid
-                or payload.get("root_turn_id") != turn
-                or (tid == root and payload.get("turn_id") != turn)
-                or (bound_turns is not None and payload.get("turn_id") not in bound_turns)
-            ):
+            elif (kind == "token_usage_record" and payload.get("thread_id") == tid
+                  and payload.get("root_turn_id") == turn
+                  and (tid != root or payload.get("turn_id") == turn)):
+                raw_usage = payload["usage"] if isinstance(payload.get("usage"), dict) else {}
+                usage = {field: value for field in FIELDS[:-1]
+                         if valid_token(value := raw_usage.get(field))}
+                recorded.append((row.get("timestamp"), payload.get("turn_id"),
+                                 payload.get("response_id"), usage))
+
+    anchor_turn = turn
+    bound_turns = None
+    if completed:
+        if subtree_thread_id:
+            anchor_turn, start, end = completed_subtree_bounds(anchor_rows, turn)
+            bound_turns = descendants_of(anchor_turn, parents.items())
+        else:
+            start, end = completed_turn_bounds(anchor_rows, root, turn)
+    conflicts: set[str] = set()
+    conflict_files: set[Path] = set()
+    seen = {}
+    all_usage, agents, requests = [], [], []
+    model_effort_counts: Counter[tuple[str, str]] = Counter()
+    for path, tid, _, _, _, recorded in scoped:
+        selected = []
+        for raw_stamp, turn_id, response, valid_usage in recorded:
+            if bound_turns is not None and turn_id not in bound_turns:
                 continue
-            raw_stamp = row.get("timestamp")
             try:
                 stamp = timestamp(raw_stamp) if isinstance(raw_stamp, str) else None
             except ValueError:
@@ -282,22 +329,11 @@ def measure(
                 continue
             if not completed and not start <= stamp <= end:
                 continue
-            response = payload.get("response_id")
-            usage = payload.get("usage")
-            valid_usage = {
-                field: value
-                for field in FIELDS
-                if isinstance(usage, dict)
-                and isinstance(value := usage.get(field), int)
-                and not isinstance(value, bool) and value >= 0
-            }
             # 宿主 input 已包含缓存部分，output 已包含其中的推理输出。
-            valid_usage.pop("total_tokens", None)
             if "input_tokens" in valid_usage and "output_tokens" in valid_usage:
                 valid_usage["total_tokens"] = (
                     valid_usage["input_tokens"] + valid_usage["output_tokens"]
                 )
-            turn_id = payload.get("turn_id")
             if not isinstance(turn_id, str) or (
                 response is not None and not isinstance(response, str)
             ) or (
@@ -317,53 +353,51 @@ def measure(
                     continue
                 seen[response] = (path, identity)
             selected.append((turn_id, valid_usage, stamp, response))
-        scoped.append((path, tid, agent_path, contexts, efforts, selected))
+        recorded[:] = selected
 
+    post_reply = 0
     for path, tid, agent_path, contexts, efforts, entries in scoped:
         selected = [
             (turn_id, usage, stamp) for turn_id, usage, stamp, response in entries
             if response not in conflicts
         ]
-        if selected:
-            incomplete = path in damaged or path in conflict_files
-            by_model = defaultdict(list)
-            agent_category = category(agent_path or "", tid == anchor)
-            for turn_id, usage, stamp in selected:
-                model = contexts.get(turn_id, "unknown")
-                model_effort_counts[model, efforts.get(turn_id, "unknown")] += 1
-                by_model[model].append(usage)
-                if per_request:
-                    request_usage = summarize([usage])
-                    requests.append({
-                        "timestamp_utc": stamp.isoformat(),
-                        "agent_path": agent_path or "/root",
-                        "category": agent_category,
-                        "model": model if model != "unknown" else None,
-                        "usage": {field: request_usage[field] for field in FIELDS},
-                    })
-            usages = [usage for _, usage, _ in selected]
-            all_usage.extend(usages)
-            agents.append(
-                {
+        if not selected:
+            continue
+        incomplete = path in damaged or path in conflict_files
+        by_model = defaultdict(list)
+        agent_category = category(agent_path or "", tid == anchor)
+        for turn_id, usage, stamp in selected:
+            model = contexts.get(turn_id, "unknown")
+            model_effort_counts[model, efforts.get(turn_id, "unknown")] += 1
+            by_model[model].append(usage)
+            # 最终回复落盘后仍可能记录该请求的用量。
+            post_reply += stamp > end
+            if per_request:
+                requests.append({
+                    "timestamp_utc": stamp.isoformat(),
                     "agent_path": agent_path or "/root",
                     "category": agent_category,
-                    "turn_count": len({t for t, _, _ in selected if t is not None}),
-                    "reasoning_efforts": sorted({
-                        efforts[t] for t, _, _ in selected if t in efforts
-                    }),
-                    "models": {
-                        model: summarize(values, incomplete=incomplete)
-                        for model, values in sorted(by_model.items())
-                    },
-                    "usage": summarize(usages, incomplete=incomplete),
-                }
-            )
-    anchor_found = any(tid == anchor for _, tid, *_ in scoped)
+                    "model": model if model != "unknown" else None,
+                    "usage": {field: usage.get(field) for field in FIELDS},
+                })
+        usages = [usage for _, usage, _ in selected]
+        all_usage.extend(usages)
+        agents.append({
+            "agent_path": agent_path or "/root",
+            "category": agent_category,
+            "turn_count": len({t for t, _, _ in selected}),
+            "reasoning_efforts": sorted({
+                efforts[t] for t, _, _ in selected if t in efforts
+            }),
+            "models": {
+                model: summarize(values, incomplete=incomplete)
+                for model, values in sorted(by_model.items())
+            },
+            "usage": summarize(usages, incomplete=incomplete),
+        })
+    anchor_found = any(tid == anchor for _, tid, _ in scoped_files)
     total = summarize(all_usage, incomplete=bool(damaged or conflicts or not anchor_found))
     unknown_fields = [field for field in FIELDS if total[field] is None]
-    # 最终回复落盘后仍可能记录该请求的用量，计量范围按归属而非回复时标裁剪。
-    post_reply = sum(stamp > end for _, _, _, _, _, entries in scoped
-                     for _, _, stamp, response in entries if response not in conflicts)
     result = {
         "root_thread_id": root,
         "root_turn_id": turn,
@@ -379,7 +413,7 @@ def measure(
         ),
         "token_basis": "input_tokens_plus_output_tokens",
         "integrity": {
-            "selected_session_files": len(scoped),
+            "selected_session_files": len(scoped_files),
             "anchor_session_found": anchor_found,
             "damaged_selected_rows": sum(damaged.values()),
             "conflicting_response_ids_excluded": len(conflicts),
@@ -392,15 +426,12 @@ def measure(
         "cost_usd": None,
         "total": total,
         "agents": agents,
-        "model_effort_response_counts": [
-            {"model": model, "effort": effort, "responses": count}
-            for (model, effort), count in sorted(model_effort_counts.items())
-        ],
+        "model_effort_response_counts": model_effort_rows(model_effort_counts),
     }
     if completed and subtree_thread_id:
         result["dedicated_subtree"] = {
             "thread_id": anchor, "first_turn_id": anchor_turn,
-            "agent_path": next((path for _, tid, _, path in files if tid == anchor), None),
+            "agent_path": next((path for _, tid, path in scoped_files if tid == anchor), None),
         }
     if run_path is not None:
         run = run_path.read_bytes()
@@ -440,9 +471,7 @@ def main() -> None:
         )
     except ValueError as exc:
         parser.error(str(exc))
-    with args.output.open("x", encoding="utf-8") as stream:
-        json.dump(result, stream, ensure_ascii=False, indent=2)
-        stream.write("\n")
+    write_receipt(args.output, result)
     print(
         json.dumps(
             {"total": result["total"], "output": str(args.output.resolve())}, ensure_ascii=False

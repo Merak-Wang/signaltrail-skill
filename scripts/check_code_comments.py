@@ -15,6 +15,9 @@ MAINTENANCE_SCRIPTS = (
 )
 EMPTY_DESCRIPTION_PATTERNS = (
     "类型的处理结果",
+    "其字段和方法共同承担上述职责",
+    "副作用限于该处理声明的受控对象或产物",
+    "键值表达该处理定义的业务记录或查找关系",
     "元素结构见调用处",
     "参与“",
     "上述处理通过更新",
@@ -36,23 +39,14 @@ EMPTY_DESCRIPTION_PATTERNS = (
 
 
 def python_targets(root: Path = ROOT) -> list[Path]:
-    """处理：列出规范实现和仓库维护脚本，不检查生成或安装快照。
-    输入：
-    - ``root``：安全边界或检查根目录；目标路径必须位于其中。
-    输出：需要接受中文注释门禁的源码 Path 列表；包含规范包模块和三份维护脚本，
-      不含测试与发布快照。
-    """
+    """列出规范包及维护脚本中需要检查中文说明的 Python 文件。"""
     source_files = sorted((root / "src" / "signaltrail").rglob("*.py"))
     script_files = [root / "scripts" / name for name in MAINTENANCE_SCRIPTS]
     return [*source_files, *script_files]
 
 
 def definition_errors(path: Path, root: Path = ROOT) -> list[str]:
-    """处理：检查一个 Python 文件内所有函数和类的中文结构化说明。
-    输入：本地文件路径。
-    - ``root``：安全边界或检查根目录；目标路径必须位于其中。
-    输出：可操作的校验错误消息列表；空列表表示通过当前规则。
-    """
+    """检查源码中函数和类的中文说明，返回带相对路径、行号和定义名的问题。"""
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
     errors: list[str] = []
     relative = path.relative_to(root)
@@ -64,22 +58,17 @@ def definition_errors(path: Path, root: Path = ROOT) -> list[str]:
         if not docstring:
             errors.append(f"{label}: missing docstring")
             continue
-        if not CHINESE_PATTERN.search(docstring):
-            errors.append(f"{label}: docstring must contain Chinese text")
-        if not docstring.startswith("处理："):
-            errors.append(f"{label}: docstring must start with 处理：")
         summary = docstring.splitlines()[0]
-        if "``" in summary:
+        if not CHINESE_PATTERN.search(summary.removeprefix("处理：")):
+            errors.append(f"{label}: explain the behavior in Chinese")
+        if f"``{node.name}``" in summary:
             errors.append(f"{label}: summary must explain behavior, not repeat its identifier")
-        for marker in ("输入：", "输出："):
-            if marker not in docstring:
-                errors.append(f"{label}: docstring is missing {marker}")
-        # 短输入说明与多参数列表都可用；不为了满足格式强迫简单函数扩写模板。
+        # 复杂契约可分段说明；简单转换在一句话中写清输入、行为和用途。
         for marker, following in (("输入：", "输出："), ("输出：", None)):
-            section = docstring.partition(marker)[2]
+            _, present, section = docstring.partition(marker)
             if following:
                 section = section.partition(following)[0]
-            if not CHINESE_PATTERN.search(section):
+            if present and not CHINESE_PATTERN.search(section):
                 errors.append(f"{label}: {marker} needs a concrete Chinese description")
         for empty_pattern in EMPTY_DESCRIPTION_PATTERNS:
             if empty_pattern in docstring:
@@ -90,11 +79,7 @@ def definition_errors(path: Path, root: Path = ROOT) -> list[str]:
 
 
 def validate_code_comments(root: Path = ROOT) -> list[str]:
-    """处理：汇总规范 Python 文件的函数、类注释错误。
-    输入：
-    - ``root``：安全边界或检查根目录；目标路径必须位于其中。
-    输出：可操作的校验错误消息列表；空列表表示通过当前规则。
-    """
+    """汇总规范包与维护脚本的缺失文件和注释错误。"""
     errors: list[str] = []
     for path in python_targets(root):
         if not path.is_file():
@@ -105,11 +90,7 @@ def validate_code_comments(root: Path = ROOT) -> list[str]:
 
 
 def main() -> int:
-    """处理：运行中文代码注释门禁并输出适合命令行阅读的结果。
-    输入：
-    - 无显式业务参数：不接收参数；扫描规范源码和维护脚本，检查每个定义的中文语义注释。
-    输出：进程退出码；0 表示检查通过，非 0 表示存在已输出的错误。
-    """
+    """输出注释检查结果，有错误时返回非零退出码。"""
     errors = validate_code_comments()
     if errors:
         for error in errors:

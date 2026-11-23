@@ -23,11 +23,9 @@ SOURCE_NAME_ALIASES = {
 
 
 def import_legacy(path: Path, config: AppConfig, data_dir: Path, edition: str = "imported") -> Path:
-    """处理：读取旧版日报和状态文件，转换后写入当前数据目录结构。
+    """读取旧版日报和状态文件，转换后写入当前数据目录结构。
     输入：本地文件路径、已校验的采集和输出配置、本次运行的数据根。
     - ``edition``：日报版本标识，通常为 morning 或 evening；参与窗口和产物命名。
-    输出：指向“读取旧版日报和状态文件，
-      转换后写入当前数据目录结构”所生成、定位或确认产物的本地路径。
     """
     raw = read_json(path)
     if not isinstance(raw, list):

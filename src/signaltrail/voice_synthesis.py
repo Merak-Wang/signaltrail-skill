@@ -18,6 +18,7 @@ from copy import deepcopy
 from pathlib import Path
 
 from .speech_text import spoken_numbers
+from .utils import sha256_file
 
 
 class NativeInferenceError(RuntimeError):
@@ -308,8 +309,7 @@ def _wave_digest(path: Path) -> str:
         expected = source.getnframes() * source.getnchannels() * source.getsampwidth()
         if source.getnframes() <= 0 or source.getsampwidth() != 2 or path.stat().st_size < expected:
             raise ValueError(f'Incomplete WAV: {path}')
-    with path.open('rb') as source:
-        return hashlib.file_digest(source, 'sha256').hexdigest()
+    return sha256_file(path)
 
 
 def _shorten_long_silences(samples: array.array, parameters: tuple) -> tuple[array.array, float]:

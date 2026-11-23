@@ -76,10 +76,9 @@ def _map_legacy_value(value: Any, root: Path, previous_root: Path | None) -> Any
 
 
 def require_data_root_path(path: Path, data_dir: Path, label: str) -> Path:
-    """处理：拒绝不属于当前数据根的控制或数据 artifact。
+    """拒绝不属于当前数据根的控制或数据 artifact。
     输入：本地文件路径、本次运行的数据根。
     - ``label``：用于错误消息的字段或产物名称，使失败能定位到具体输入。
-    输出：指向“拒绝不属于当前数据根的控制或数据 artifact”所生成、定位或确认产物的本地路径。
     """
     root = data_dir.expanduser().resolve()
     resolved = _map_legacy_path(path, root)
@@ -93,11 +92,7 @@ def require_data_root_path(path: Path, data_dir: Path, label: str) -> Path:
 
 
 def resolved_data_root_hint(path: Path) -> str:
-    """处理：从已知 artifact 目录推断数据根，以生成可操作错误。
-    输入：本地文件路径。
-    输出：“从已知 artifact 目录推断数据根，以生成可操作错误”得到的规范字符串，
-      供调用方存储、比较或展示。
-    """
+    """从已知 artifact 目录推断数据根，以生成可操作错误。"""
     artifact_directories = {
         "runs",
         "indexes",
@@ -118,10 +113,7 @@ def resolved_data_root_hint(path: Path) -> str:
 
 
 def validate_run_data_root(run: dict[str, Any], run_path: Path, data_dir: Path) -> Path:
-    """处理：校验运行数据根目录并在不满足约束时报告错误。
-    输入：记录阶段与产物的运行清单、运行清单路径、本次运行的数据根。
-    输出：指向“校验运行数据根目录并在不满足约束时报告错误”所生成、定位或确认产物的本地路径。
-    """
+    """校验运行数据根目录并在不满足约束时报告错误。"""
     root = data_dir.expanduser().resolve()
     # 所有清单与其引用的产物必须属于同一数据根，防止跨运行串写状态。
     require_data_root_path(run_path, root, "Run manifest")

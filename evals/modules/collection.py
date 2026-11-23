@@ -66,6 +66,11 @@ ARTICLE_BLOCKS = (
 )
 
 
+PUBLICATION_ARTICLE = ("<article><h1>Publication fixture</h1>"
+                       + "".join(f"<p>{paragraph}</p>" for paragraph in ARTICLE_BLOCKS)
+                       + "</article>")
+
+
 def _picture(story: int, width: int) -> bytes:
     """生成同图的两种固定尺寸，供生产媒体下载选择。"""
     buffer = BytesIO()
@@ -486,6 +491,13 @@ def _evaluate_article_aliases() -> dict:
     }
 
 
+def _collect_fixture(config: AppConfig, data_dir: Path, window: dict[str, str],
+                     **options) -> Path:
+    """让普通、共享列表和日期场景使用同一个日报采集入口。"""
+    return collect_sources(config, data_dir, "daily", False, profile_dir=data_dir / "profile",
+                           date_value=DATE, collection_window=window, **options)
+
+
 def _evaluate_cold_listing_reuse(
     work_dir: Path, host: str, requests: Counter[str], config: AppConfig, window: dict[str, str],
 ) -> dict:
@@ -504,10 +516,7 @@ def _evaluate_cold_listing_reuse(
         started = perf_counter()
         pages = {} if share else None
         refresh_monitor(config, data_dir, now=observed_at, shared_listing_pages=pages)
-        path = collect_sources(
-            config, data_dir, "daily", False, profile_dir=data_dir / "profile",
-            date_value=DATE, collection_window=window, shared_listing_pages=pages,
-        )
+        path = _collect_fixture(config, data_dir, window, shared_listing_pages=pages)
         run_requests = requests - current_requests
         metrics[f"cold_listing_{name}_seconds"] = perf_counter() - started
         metrics[f"cold_listing_{name}_requests"] = sum(
@@ -566,8 +575,7 @@ def _evaluate_feed_date_precision(work_dir: Path, host: str, window: dict[str, s
                        monitor=MonitorConfig(auto_discover_feeds=False))
     started = perf_counter()
     refresh_monitor(config, data_dir)
-    path = collect_sources(config, data_dir, "daily", False, profile_dir=data_dir / "profile",
-                           date_value=DATE, collection_window=window)
+    path = _collect_fixture(config, data_dir, window)
     rows = read_json(path)["items"]
     by_path = {urlsplit(item["url"]).path: item for item in rows}
     ready = select_brief_items(rows, {}, date_value=DATE, cutoff=CUTOFF)
@@ -743,9 +751,7 @@ def _check_paper_dates(data_dir: Path) -> bool:
     """用原文与收录链接验证补正文后仍按 arXiv 的首次提交时刻选稿。"""
     publisher = "https://arxiv.org/abs/2607.12345v1"
     timestamp = "2026-07-23T23:05:00Z"
-    html = ('<meta name="citation_publication_date" content="2026-07-23">'
-            '<article><h1>Publication fixture</h1>'
-            + "".join(f"<p>{paragraph}</p>" for paragraph in ARTICLE_BLOCKS) + "</article>")
+    html = '<meta name="citation_publication_date" content="2026-07-23">' + PUBLICATION_ARTICLE
     page = PublicationPage(html.encode(), "utf-8", publisher, 200, "http")
     sources = [
         SourceConfig("arxiv_ai", "arXiv", "https://arxiv.org"),
@@ -784,9 +790,7 @@ def _check_xinhua_publication(data_dir: Path) -> bool:
                      '<meta itemprop="dateModified" content="' + DATE + 'T23:30:00+08:00">'
                      '<div class="conTop"><div class="infoBox"><div class="info">'
                      '<p class="time">{stamp}</p></div></div></div>'
-                     '<article><h1>Publication fixture</h1>'
-                     + "".join(f"<p>{paragraph}</p>" for paragraph in ARTICLE_BLOCKS)
-                     + '</article><aside><p class="time">' + DATE + ' 17:30:00</p></aside>')
+                     + PUBLICATION_ARTICLE + f'<aside><p class="time">{DATE} 17:30:00</p></aside>')
     expected = f"{DATE}T08:30:45+08:00"
     for clock in ("08:30:45", "00:30:45 UTC"):
         html = page_template.format(stamp=f"{DATE} {clock}")
@@ -830,36 +834,29 @@ def _evaluate_corpus(
     profile = work_dir / "profile"
 
     started = perf_counter()
-    initial_path = collect_sources(
-        config, work_dir, "daily", False, profile_dir=profile,
-        date_value=DATE, collection_window=window,
-    )
+    initial_path = _collect_fixture(config, work_dir, window)
     collect_seconds = perf_counter() - started
+    def eligible(index: dict) -> list[dict]:
+        return select_brief_items(index["items"], by_id, date_value=DATE, cutoff=CUTOFF)
+
+    def enrich(path: Path, ids: list[str]) -> Path:
+        return extract_content(path, config, work_dir, ids, max_items=None,
+                               headed=False, profile_dir=profile)
+
     raw = read_json(initial_path)
-    selected = select_brief_items(raw["items"], by_id, date_value=DATE, cutoff=CUTOFF)
+    selected = eligible(raw)
+    selected_ids = [item["item_id"] for item in selected]
     initial_request_count = requests.total()
     started = perf_counter()
-    intermediate_path = extract_content(
-        initial_path, config, work_dir, [item["item_id"] for item in selected],
-        max_items=None, headed=False, profile_dir=profile,
-    )
+    intermediate_path = enrich(initial_path, selected_ids)
     intermediate = read_json(intermediate_path)
-    selected_after_date_review = select_brief_items(
-        intermediate["items"], by_id, date_value=DATE, cutoff=CUTOFF,
-    )
-    replacement = {item["item_id"] for item in selected_after_date_review} - {
-        item["item_id"] for item in selected
-    }
-    final_path = (
-        extract_content(
-            intermediate_path, config, work_dir, sorted(replacement),
-            max_items=None, headed=False, profile_dir=profile,
-        )
-        if replacement else intermediate_path
-    )
+    replacement = {item["item_id"] for item in eligible(intermediate)}.difference(selected_ids)
+    final_path = intermediate_path
+    if replacement:
+        final_path = enrich(intermediate_path, sorted(replacement))
     enrich_seconds = perf_counter() - started
     final = read_json(final_path)
-    final_items = select_brief_items(final["items"], by_id, date_value=DATE, cutoff=CUTOFF)
+    final_items = eligible(final)
     expected_paths = [
         f"/articles/{publisher}/story-{number:02}"
         for publisher in range(PUBLISHERS)

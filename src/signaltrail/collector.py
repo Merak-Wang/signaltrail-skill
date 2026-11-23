@@ -183,10 +183,8 @@ def _merge_monitor_evidence(item: Any, cached: Any, data_dir: Path) -> Any:
 
 
 def detect_challenge(page: Page, http_status: int | None) -> dict[str, Any]:
-    """处理：从页面标题、正文和 iframe 迹象识别登录、验证码或限流挑战。
+    """从页面标题、正文和 iframe 迹象识别登录、验证码或限流挑战。
     输入：已加载的 Playwright 页面、页面最近一次 HTTP 状态码。
-    输出：“从页面标题、正文和 iframe 迹象识别登录、验证码或限流挑战”形成的结构化字典；
-      键值表达该处理定义的业务记录或查找关系。
     """
     title = ""
     body = ""
@@ -613,11 +611,7 @@ async def _complete_publication_times(
 
 
 def _safe_title(page: Page) -> str:
-    """处理：读取页面标题；浏览器访问失败时返回空字符串。
-    输入：已加载的 Playwright 页面。
-    输出：“读取页面标题；浏览器访问失败时返回空字符串”得到的规范字符串，
-      供调用方存储、比较或展示。
-    """
+    """读取页面标题；浏览器访问失败时返回空字符串。"""
     try:
         return page.title()
     except Exception:
@@ -639,7 +633,7 @@ def collect_sources(
     collection_window: dict[str, str] | None = None,
     shared_listing_pages: dict[tuple[str, str], SourceResult] | None = None,
 ) -> Path:
-    """处理：按并发预算采集选定来源，并为每个来源保留成功、空、失败或挑战状态。
+    """按并发预算采集选定来源，并为每个来源保留成功、空、失败或挑战状态。
     输入：已校验的采集和输出配置、本次运行的数据根、浏览器窗口显示选项、持久化浏览器配置目录、浏览器通道。
     - ``edition``：日报版本标识，daily 为默认值，morning/evening 兼容历史运行；参与窗口和产物命名。
     - ``only_source_ids``：调用方限定的来源 ID 集合；为空时处理配置选中的全部来源。
@@ -648,8 +642,6 @@ def collect_sources(
     - ``date_value``：调用方冻结的日报日期；采集跨午夜时保持运行与索引日期一致。
     - ``collection_window``：本期冻结窗口；核心来源据此刷新缓存、优先新报道，发现池仅选窗内条目。
     - ``shared_listing_pages``：同轮监控用本配置取得的成功页面，按入口 URL 复用。
-    输出：指向“按并发预算采集选定来源，
-      并为每个来源保留成功、空、失败或挑战状态”所生成、定位或确认产物的本地路径。
     """
     date_value = date_value or today_str(config.timezone)
     selected = [
@@ -771,7 +763,7 @@ def write_results_index(
     date_value: str | None = None,
     collection_window: dict[str, str] | None = None,
 ) -> Path:
-    """处理：把来源结果和根级条目写成新的不可变索引修订。
+    """把来源结果和根级条目写成新的不可变索引修订。
     输入：本次运行的数据根、用于解释本地日期的 IANA 时区。
     - ``results``：本轮各来源的采集结果；每项含状态、错误、页面证据和规范文章条目。
     - ``edition``：日报版本标识，daily 为默认值，morning/evening 兼容历史运行；参与窗口和产物命名。
@@ -781,7 +773,6 @@ def write_results_index(
     - ``temporary``：是否生成重试或验证用的临时索引，而不是正式不可变索引。
     - ``date_value``：调用方冻结的日报日期；采集跨午夜时保持运行与索引日期一致。
     - ``collection_window``：实际筛选使用的时间窗口，供后续写作和图文沿用。
-    输出：指向“把来源结果和根级条目写成新的不可变索引修订”所生成、定位或确认产物的本地路径。
     """
     date = date_value or today_str(timezone)
     generated_at = now_iso(timezone)
@@ -840,11 +831,10 @@ def write_results_index(
 
 
 def merge_resume_index(original_path: Path, retry_path: Path, data_dir: Path) -> Path:
-    """处理：用重试来源替换原索引中的对应来源并生成新修订。
+    """用重试来源替换原索引中的对应来源并生成新修订。
     输入：本次运行的数据根。
     - ``original_path``：原始不可变来源索引路径；合并时保留其未重试来源和历史证据。
     - ``retry_path``：仅包含失败来源重试结果的索引路径；成功结果覆盖同来源旧状态。
-    输出：指向“用重试来源替换原索引中的对应来源并生成新修订”所生成、定位或确认产物的本地路径。
     """
     original = read_json(original_path)
     retry = read_json(retry_path)
@@ -913,12 +903,10 @@ def merge_verified_results(
     captured: list[SourceResult],
     data_dir: Path,
 ) -> Path:
-    """处理：把人工验证后采集的页面结果合并回原索引并生成新修订。
+    """把人工验证后采集的页面结果合并回原索引并生成新修订。
     输入：本次运行的数据根。
     - ``original_path``：原始不可变来源索引路径；合并时保留其未重试来源和历史证据。
     - ``captured``：人工验证后重新采集成功的来源结果；用于替换待验证状态。
-    输出：指向“把人工验证后采集的页面结果合并回原索引并生成新修订”所生成、定位或确认产物的本地路
-      径。
     """
     original = read_json(original_path)
     if not isinstance(original, dict):

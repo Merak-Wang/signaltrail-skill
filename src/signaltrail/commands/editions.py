@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 from collections.abc import Collection
+from contextlib import nullcontext
 from pathlib import Path
 
 from ..utils import read_json_object, write_json
@@ -28,10 +29,7 @@ from .common import CommandContext, batch_submission_result, print_command_resul
 
 
 def handle_run_edition(args: argparse.Namespace, context: CommandContext) -> int:
-    """处理：准备日报并按显式选项执行人工验证。
-    输入：已解析的命令选项、当前命令的运行上下文。
-    输出：终端结果及供宿主判断成败的退出码。
-    """
+    """准备日报并按显式选项执行人工验证。"""
     config = context.config
     data_dir = context.data_dir
     output = prepare_edition(
@@ -73,10 +71,7 @@ def handle_run_edition(args: argparse.Namespace, context: CommandContext) -> int
 
 
 def handle_enrich_edition(args: argparse.Namespace, context: CommandContext) -> int:
-    """处理：为日报补充正文并刷新上下文。
-    输入：已解析的命令选项、当前命令的运行上下文。
-    输出：终端结果及供宿主判断成败的退出码。
-    """
+    """为日报补充正文并刷新上下文。"""
     config = context.config
     data_dir = context.data_dir
     complete = args.all_slide_candidates
@@ -100,10 +95,7 @@ def handle_enrich_edition(args: argparse.Namespace, context: CommandContext) -> 
 
 
 def handle_begin_authoring(args: argparse.Namespace, context: CommandContext) -> int:
-    """处理：创建本轮写作会话与批次路径。
-    输入：已解析的命令选项、当前命令的运行上下文。
-    输出：终端结果及供宿主判断成败的退出码。
-    """
+    """创建本轮写作会话与批次路径。"""
     data_dir = context.data_dir
     output = begin_authoring(args.run, data_dir, config=context.config,
                              refresh_context=args.refresh_context)
@@ -112,10 +104,7 @@ def handle_begin_authoring(args: argparse.Namespace, context: CommandContext) ->
 
 
 def handle_submit_authoring_batch(args: argparse.Namespace, context: CommandContext) -> int:
-    """处理：校验并接收指定批次的写作结果。
-    输入：已解析的命令选项、当前命令的运行上下文。
-    输出：终端结果及供宿主判断成败的退出码。
-    """
+    """校验并接收指定批次的写作结果。"""
     if args.all:
         if args.batch_id or args.result:
             raise ValueError("--all cannot be combined with --batch-id or --result")
@@ -138,75 +127,74 @@ def handle_submit_authoring_batch(args: argparse.Namespace, context: CommandCont
 
 def submit_brief_batches(run_path: Path, data_dir: Path, *,
                          entry: tuple[str, Path] | None = None, check_only: bool = False,
-                         skip_batch: Collection[str] = ()) -> dict:
-    """处理：核对简报写作会话中已就绪的草稿，跳过在写批次。
-    输入：正式运行、数据根和可选的单批选择。
-    输出：预检或接收结果，供命令行和进程内调度共用。
+                         skip_batch: Collection[str] = (), dispatch: bool = False) -> dict:
+    """处理：读取一次简报会话，逐批预检或在同一运行锁内提交就绪稿。
+    输入：正式运行、数据根、批次选择和在途列表。
+    输出：逐批状态与错误，调度时附上已经读取的作者包路径。
     """
     from ..authoring import (
-        CheckedAuthoringDraft,
+        BriefDraftError,
+        _load_authoring_session,
         _validate_session_binding,
         check_authoring_batch,
+        submit_authoring_batch,
     )
-    from ..runtime import require_data_root_path, validate_run_data_root
+    from ..runtime import require_data_root_path
+    from ..workflow import RunStatus, _load_run_manifest, _locked_authoring_run
 
-    run_path = require_data_root_path(run_path, data_dir, "Run manifest")
-    run = read_json_object(run_path, "Run manifest")
-    validate_run_data_root(run, run_path, data_dir)
-    if run.get("status") != "awaiting_authoring":
-        raise RuntimeError(f"Run must be awaiting authoring, got {run.get('status')!r}")
-    session_path = require_data_root_path(
-        Path(run["artifacts"]["authoring"]["session_path"]), data_dir, "Authoring session")
-    session = read_json_object(session_path, "Authoring session")
-    _validate_session_binding(run, session, data_dir)
-    entries = ([entry] if entry else
-               [(str(b["batch_id"]), Path(b["draft_result_path"])) for b in session["batches"]])
-    rows = []
-    checked_drafts: dict[str, CheckedAuthoringDraft] = {}
-    batches = {str(batch["batch_id"]): batch for batch in session["batches"]}
-    for batch_id, draft_path in entries:
-        batch = batches.get(batch_id)
-        if batch is None:
-            rows.append({"batch_id": batch_id, "draft_path": str(draft_path),
-                         "expected_path": None, "errors": [f"Unknown authoring batch: {batch_id}"]})
-            continue
-        try:
-            existing = require_data_root_path(Path(batch["result_path"]), data_dir,
-                                              "Authoring batch result")
-            if existing.is_file() and (entry is None or not draft_path.is_file()):
-                accepted_record = read_json_object(existing, "Authoring batch result")
-                if str(accepted_record.get("batch_id")) != batch_id:
-                    raise ValueError("Accepted batch ID mismatch")
-                row = {"batch_id": batch_id, "draft_path": str(draft_path),
-                       "expected_path": str(existing), "accepted_path": str(existing),
-                       "errors": []}
-            elif batch_id in skip_batch or batch["packet_path"] in skip_batch:
-                row = {"batch_id": batch_id, "draft_path": str(draft_path),
-                       "expected_path": str(existing), "errors": [], "in_flight": True}
-            else:
-                row = check_authoring_batch(
-                    run, batch_id, draft_path, data_dir, _validated_session=session,
-                    checked_drafts=None if check_only else checked_drafts,
-                )
-        except (ValueError, KeyError, OSError, RuntimeError) as exc:
-            row = {"batch_id": batch_id, "draft_path": str(draft_path),
-                   "expected_path": str(batch["result_path"]), "errors": [str(exc)]}
-        rows.append(row)
-    accepted = [row["accepted_path"] for row in rows if row.get("accepted_path")]
-    if not check_only:
-        for row in rows:
-            if not (row["errors"] or row.get("accepted_path") or row.get("in_flight")):
-                try:
-                    path = accept_authoring_batch(
-                        run_path, row["batch_id"], Path(row["draft_path"]), data_dir,
-                        _validated_session=session,
-                        checked_draft=checked_drafts.pop(row["batch_id"], None),
+    manifest = (nullcontext(_load_run_manifest(run_path, data_dir)) if check_only
+                else _locked_authoring_run(run_path, data_dir, timezone="Asia/Shanghai"))
+    skipped = set(skip_batch)
+    rows, accepted, submitted = [], [], []
+    with manifest as (_, run):
+        if run.get("status") != RunStatus.AWAITING_AUTHORING:
+            raise RuntimeError(f"Run must be awaiting authoring, got {run.get('status')!r}")
+        _, session = _load_authoring_session(run, data_dir)
+        _validate_session_binding(run, session, data_dir)
+        batches = {str(batch["batch_id"]): batch for batch in session["batches"]}
+        entries = [entry] if entry else [
+            (batch_id, Path(batch["draft_result_path"])) for batch_id, batch in batches.items()
+        ]
+        for batch_id, draft_path in entries:
+            batch = batches.get(batch_id)
+            row = {"batch_id": batch_id, "draft_path": str(draft_path), "expected_path": None,
+                   "errors": []}
+            rows.append(row)
+            if batch is None:
+                row["errors"] = [f"Unknown authoring batch: {batch_id}"]
+                continue
+            row["expected_path"] = str(batch["result_path"])
+            if dispatch:
+                row["packet_path"] = batch["packet_path"]
+            try:
+                existing = require_data_root_path(Path(batch["result_path"]), data_dir,
+                                                  "Authoring batch result")
+                row["expected_path"] = str(existing)
+                if existing.is_file() and (entry is None or not draft_path.is_file()):
+                    if str(read_json_object(existing, "Authoring batch result").get(
+                        "batch_id"
+                    )) != batch_id:
+                        raise ValueError("Accepted batch ID mismatch")
+                    row["accepted_path"] = str(existing)
+                    accepted.append(str(existing))
+                elif batch_id in skipped or batch["packet_path"] in skipped:
+                    row["in_flight"] = True
+                elif check_only:
+                    row.update(check_authoring_batch(
+                        run, batch_id, draft_path, data_dir, _validated_session=session,
+                    ))
+                else:
+                    path = submit_authoring_batch(
+                        run, batch_id, draft_path, data_dir, _validated_session=session,
+                        record_rejection=False,
                     )
                     row["accepted_path"] = str(path)
-                    accepted.append(str(path))
-                except (ValueError, KeyError, OSError, RuntimeError) as exc:
-                    row["errors"].append(str(exc))
-    return batch_submission_result(rows, accepted, check_only)
+                    submitted.append(str(path))
+            except BriefDraftError as exc:
+                row["errors"] = exc.errors
+            except (ValueError, KeyError, OSError, RuntimeError) as exc:
+                row["errors"] = [str(exc)]
+    return batch_submission_result(rows, accepted + submitted, check_only)
 
 
 def handle_brief_input(args: argparse.Namespace, context: CommandContext) -> int:
@@ -223,10 +211,7 @@ def handle_brief_input(args: argparse.Namespace, context: CommandContext) -> int
 
 
 def handle_record_authoring_metrics(args: argparse.Namespace, context: CommandContext) -> int:
-    """处理：保存宿主返回的写作计量数据。
-    输入：已解析的命令选项、当前命令的运行上下文。
-    输出：终端结果及供宿主判断成败的退出码。
-    """
+    """保存宿主返回的写作计量数据。"""
     data_dir = context.data_dir
     output = accept_authoring_metrics(
         args.run,
@@ -238,20 +223,14 @@ def handle_record_authoring_metrics(args: argparse.Namespace, context: CommandCo
 
 
 def handle_authoring_status(args: argparse.Namespace, context: CommandContext) -> int:
-    """处理：读取批次完成情况与写作期限。
-    输入：已解析的命令选项、当前命令的运行上下文。
-    输出：终端结果及供宿主判断成败的退出码。
-    """
+    """读取批次完成情况与写作期限。"""
     data_dir = context.data_dir
     print_command_result(get_authoring_status(args.run, data_dir), context, args.run)
     return 0
 
 
 def handle_prefetch_media(args: argparse.Namespace, context: CommandContext) -> int:
-    """处理：预取本轮报告使用的图片缓存。
-    输入：已解析的命令选项、当前命令的运行上下文。
-    输出：终端结果及供宿主判断成败的退出码。
-    """
+    """预取本轮报告使用的图片缓存。"""
     config = context.config
     data_dir = context.data_dir
     print_command_result(prefetch_authoring_media(args.run, data_dir, config.media),
@@ -260,10 +239,7 @@ def handle_prefetch_media(args: argparse.Namespace, context: CommandContext) -> 
 
 
 def handle_prepare_analysis(args: argparse.Namespace, context: CommandContext) -> int:
-    """处理：合并已接收摘要并准备研判数据包。
-    输入：已解析的命令选项、当前命令的运行上下文。
-    输出：终端结果及供宿主判断成败的退出码。
-    """
+    """合并已接收摘要并准备研判数据包。"""
     data_dir = context.data_dir
     output = prepare_authoring_analysis(
         args.run,
@@ -299,10 +275,7 @@ def handle_analysis_stage(args: argparse.Namespace, context: CommandContext) -> 
 
 
 def handle_assemble_authoring(args: argparse.Namespace, context: CommandContext) -> int:
-    """处理：合并研判与摘要形成报告草稿。
-    输入：已解析的命令选项、当前命令的运行上下文。
-    输出：终端结果及供宿主判断成败的退出码。
-    """
+    """合并研判与摘要形成报告草稿。"""
     data_dir = context.data_dir
     output = assemble_authoring(args.run, args.analysis, data_dir)
     print_command_result(read_json_object(output, "Command result"), context, output)
@@ -310,10 +283,7 @@ def handle_assemble_authoring(args: argparse.Namespace, context: CommandContext)
 
 
 def handle_finalize_edition(args: argparse.Namespace, context: CommandContext) -> int:
-    """处理：校验日报草稿并保存本地报告。
-    输入：已解析的命令选项、当前命令的运行上下文。
-    输出：终端结果及供宿主判断成败的退出码。
-    """
+    """校验日报草稿并保存本地报告。"""
     config = context.config
     data_dir = context.data_dir
     output = finalize_edition(
@@ -341,10 +311,7 @@ def handle_finalize_edition(args: argparse.Namespace, context: CommandContext) -
 
 
 def handle_complete_edition_tail(args: argparse.Namespace, context: CommandContext) -> int:
-    """处理：完成可重试的报告投影和评估调度。
-    输入：已解析的命令选项、当前命令的运行上下文。
-    输出：终端结果及供宿主判断成败的退出码。
-    """
+    """完成可重试的报告投影和评估调度。"""
     config = context.config
     data_dir = context.data_dir
     output = complete_edition_tail(

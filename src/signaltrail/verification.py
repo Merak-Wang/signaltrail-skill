@@ -2,20 +2,21 @@ from __future__ import annotations
 
 import html
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import closing, contextmanager
 from dataclasses import replace
 from pathlib import Path
 
-from playwright.sync_api import sync_playwright
+from playwright.sync_api import BrowserContext, sync_playwright
 
+from .access import pending_access_pages
 from .collector import collect_loaded_page, detect_challenge, merge_verified_results
 from .config import (
     AppConfig,
-    canonical_source_page_url,
+    persistent_browser_options,
     resolve_browser_channel,
     resolve_profile_dir,
 )
-from .models import effective_page_results, effective_source_status
 from .storage import write_text_atomic
 from .utils import read_json
 from .workflow import adopt_index_for_run
@@ -26,13 +27,12 @@ def wait_for_visible_verification(
     timeout_seconds: int,
     on_verified: Callable[[str, object], None] | None = None,
 ) -> dict[str, dict]:
-    """处理：轮询已打开页面，等待挑战消失后触发已验证采集。
+    """轮询已打开页面，等待挑战消失后触发已验证采集。
     输入：
     - ``pages``：等待人工验证的一组浏览器页面及其来源身份和初始 HTTP 状态。
     - ``timeout_seconds``：允许等待整个交互或网络流程的总秒数。
     - ``on_verified``：页面验证通过后执行结构化采集的回调。
-    输出：“轮询已打开页面，等待挑战消失后触发已验证采集”形成的结构化字典；
-      典型键包括 closed_by_user、error、required、skipped、status、stopped。
+    输出：字段包括 closed_by_user、error、required、skipped、status、stopped。
     """
     deadline = time.monotonic() + timeout_seconds
     started = time.monotonic()
@@ -112,11 +112,7 @@ def wait_for_visible_verification(
 
 
 def capture_verified_page(page: object, source: object, config: object) -> object:
-    """处理：直接提取当前已验证页面，不重新导航或再次触发挑战。
-    输入：已加载的 Playwright 页面、带入口与筛选规则的来源配置、已校验的采集和输出配置。
-    输出：封装“直接提取当前已验证页面，不重新导航或再次触发挑战”业务结果的 ``object`` 对象；
-      调用方据此继续相邻阶段或识别无结果状态。
-    """
+    """直接提取当前已验证页面，不重新导航或再次触发挑战。"""
     page.wait_for_timeout(source.wait_ms or config.browser.default_wait_ms)
     result = collect_loaded_page(page, source, config, None)
     if result.status in {"verification_required", "rate_limited", "failed"}:
@@ -127,66 +123,13 @@ def capture_verified_page(page: object, source: object, config: object) -> objec
 
 
 def pending_verification_pages(index: dict) -> list[dict[str, str]]:
-    """处理：按来源和页面顺序返回去重后的失败或待验证页面。
-    输入：规范来源索引。
-    输出：“按来源和页面顺序返回去重后的失败或待验证页面”得到的有序结构化记录；
-      典型字段包括 error、key、source_id、source_name、status、target、url，可直接交给下一阶段。
+    """按来源和页面顺序返回去重后的失败或待验证页面。
+    输出：字段包括 error、key、source_id、source_name、status、target、url。
     """
-    pending: list[dict[str, str]] = []
-    seen: set[tuple[str, str]] = set()
-    for row in index.get("sources", []):
-        if not isinstance(row, dict):
-            continue
-        source_id = str(row.get("source_id", ""))
-        source_name = str(row.get("source_name", source_id))
-        page_rows = []
-        effective_pages = effective_page_results(row.get("page_results", []))
-        for page in effective_pages:
-            status = str(page.get("status", ""))
-            if status == "no_items" and (
-                page.get("error")
-                or (
-                    isinstance(page.get("http_status"), int)
-                    and int(page["http_status"]) >= 400
-                )
-            ):
-                # 带错误或 HTTP 失败的旧 no_items 记录属于访问失败，必须恢复真实语义。
-                page = {**page, "status": "failed"}
-                status = "failed"
-            if status in {"verification_required", "rate_limited", "failed"}:
-                page_rows.append(page)
-        source_status = effective_source_status(row, effective_pages)
-        if not page_rows and source_status in {
-            "verification_required",
-            "rate_limited",
-            "failed",
-        }:
-            page_rows = [
-                {
-                    "url": row.get("source_url"),
-                    "status": source_status,
-                    "error": row.get("error"),
-                }
-            ]
-        for position, page in enumerate(page_rows):
-            url = canonical_source_page_url(
-                source_id,
-                str(page.get("url") or row.get("source_url") or ""),
-            )
-            if not url.startswith(("http://", "https://")) or (source_id, url) in seen:
-                continue
-            seen.add((source_id, url))
-            key = f"{source_id}--{position}"
-            pending.append(
-                {
-                    "key": key,
-                    "target": f"daily_intel_verify__{key}",
-                    "source_id": source_id,
-                    "source_name": source_name,
-                    "url": url,
-                    "status": str(page.get("status")),
-                }
-            )
+    pending = []
+    for position, page in pending_access_pages(index):
+        key = f"{page['source_id']}--{position}"
+        pending.append({"key": key, "target": f"daily_intel_verify__{key}", **page})
     return pending
 
 
@@ -195,11 +138,10 @@ def write_verification_queue(
     index: dict,
     pending: list[dict[str, str]],
 ) -> tuple[Path, Path]:
-    """处理：把待验证来源写成可交互 HTML 队列和 Markdown 清单。
+    """把待验证来源写成可交互 HTML 队列和 Markdown 清单。
     输入：本次运行的数据根、规范来源索引。
     - ``pending``：等待人工验证的来源页面记录；包含 source_id、名称、URL 和挑战详情。
-    输出：“把待验证来源写成可交互 HTML 队列和 Markdown 清单”得到的固定结构结果；
-      返回位置依次对应 markdown_path、html_path。
+    输出：验证清单的 Markdown 路径和 HTML 路径。
     """
     date = str(index.get("date", "unknown-date"))
     edition = str(index.get("edition", "unknown-edition"))
@@ -311,15 +253,13 @@ def update_verification_portal(
     *,
     connected: bool | None = None,
 ) -> None:
-    """处理：更新本地验证队列界面，界面失败不得影响采集。
+    """更新本地验证队列界面，界面失败不得影响采集。
     输入：
     - ``portal_page``：浏览器中打开的本地验证队列页面；仅用于展示状态和接收点击事件。
     - ``key``：当前集合、登记表或界面记录使用的稳定键。
     - ``status``：当前操作或来源状态；值必须属于对应的显式状态模型。
     - ``detail``：验证队列界面展示的当前操作或错误详情。
     - ``connected``：验证队列是否已连接到活动浏览器监听器。
-    输出：不返回新数据；完成“更新本地验证队列界面，界面失败不得影响采集”，
-      副作用限于该处理声明的受控对象或产物。
     """
     try:
         if connected is not None:
@@ -344,15 +284,14 @@ def wait_for_clicked_verifications(
     timeout_seconds: int,
     on_verified: Callable[[str, object], None],
 ) -> dict[str, dict]:
-    """处理：监听队列打开的标签页，完成验证后自动采集结构化条目。
+    """监听队列打开的标签页，完成验证后自动采集结构化条目。
     输入：
     - ``context``：浏览器、写作或报告上下文对象；包含当前阶段已经绑定的受控状态。
     - ``portal_page``：浏览器中打开的本地验证队列页面；仅用于展示状态和接收点击事件。
     - ``pending``：等待人工验证的来源页面记录；包含 source_id、名称、URL 和挑战详情。
     - ``timeout_seconds``：允许等待整个交互或网络流程的总秒数。
     - ``on_verified``：页面验证通过后执行结构化采集的回调。
-    输出：“监听队列打开的标签页，完成验证后自动采集结构化条目”形成的结构化字典；
-      典型键包括 error、status、url。
+    输出：字段包括 error、status、url。
     """
     deadline = time.monotonic() + timeout_seconds
     by_target = {item["target"]: item for item in pending}
@@ -443,6 +382,25 @@ def wait_for_clicked_verifications(
     return results
 
 
+@contextmanager
+def open_verification_browser(
+    config: AppConfig, profile_dir: Path | None, browser_channel: str | None,
+) -> Iterator[BrowserContext]:
+    """处理：启动和关闭人工验证使用的可见浏览器。
+    输入：应用配置、可选配置目录和浏览器通道。
+    输出：保持窗口打开期间可用的 Playwright 会话。
+    """
+    profile = resolve_profile_dir(config, profile_dir)
+    profile.mkdir(parents=True, exist_ok=True)
+    channel = resolve_browser_channel(config, browser_channel)
+    with sync_playwright() as playwright, closing(
+        playwright.chromium.launch_persistent_context(
+            **persistent_browser_options(config, profile, channel, headed=True)
+        )
+    ) as browser:
+        yield browser
+
+
 def run_pending_verification(
     index_path: Path,
     config: AppConfig,
@@ -451,12 +409,10 @@ def run_pending_verification(
     browser_channel: str | None = None,
     timeout_seconds: int = 300,
 ) -> dict[str, object]:
-    """处理：打开连接式验证入口，并合并成功捕获的页面。
+    """打开连接式验证入口，并合并成功捕获的页面。
     输入：版本化来源索引路径、已校验的采集和输出配置、本次运行的数据根、持久化浏览器配置目录、浏览器通道。
     - ``timeout_seconds``：允许等待整个交互或网络流程的总秒数。
-    输出：“打开连接式验证入口，并合并成功捕获的页面”形成的结构化字典；
-      典型键包括 captured_pages、headless、height、index_path、locale、next_action、queue_html、
-      queue_markdown、results、run_path、status、timezone_id。
+    输出：队列和索引路径、逐页处理结果和本次成功提取的页面数。
     """
     index = read_json(index_path)
     if not isinstance(index, dict):
@@ -481,49 +437,31 @@ def run_pending_verification(
     }
 
     def capture_pending(key: str, page: object) -> None:
-        """处理：采集一个已由用户完成验证的待处理页面。
+        """采集一个已由用户完成验证的待处理页面。
         输入：已加载的 Playwright 页面。
         - ``key``：当前集合、登记表或界面记录使用的稳定键。
-        输出：不返回新数据；完成“采集一个已由用户完成验证的待处理页面”，
-          副作用限于该处理声明的受控对象或产物。
         """
         source = page_sources[key]
         captured.append(capture_verified_page(page, source, config))
 
-    profile = resolve_profile_dir(config, profile_dir)
-    profile.mkdir(parents=True, exist_ok=True)
-    channel = resolve_browser_channel(config, browser_channel)
     queue_markdown, queue_html = write_verification_queue(data_dir, index, pending_pages)
-    with sync_playwright() as playwright:
-        kwargs = {
-            "user_data_dir": str(profile),
-            "headless": False,
-            "locale": "en-US",
-            "timezone_id": config.timezone,
-            "viewport": {"width": 1440, "height": 1000},
-        }
-        if channel:
-            kwargs["channel"] = channel
-        context = playwright.chromium.launch_persistent_context(**kwargs)
-        portal_page = context.pages[0] if context.pages else context.new_page()
-        try:
-            portal_page.goto(queue_html.resolve().as_uri(), wait_until="domcontentloaded")
-            update_verification_portal(portal_page, connected=True)
-            portal_page.bring_to_front()
-            print(
-                f"Opened Edge verification queue with {len(pending_pages)} links. "
-                "Click any link; successful pages are captured automatically. "
-                "Close the queue tab when finished."
-            )
-            results = wait_for_clicked_verifications(
-                context,
-                portal_page,
-                pending_pages,
-                timeout_seconds,
-                capture_pending,
-            )
-        finally:
-            context.close()
+    with open_verification_browser(config, profile_dir, browser_channel) as browser:
+        portal_page = browser.pages[0] if browser.pages else browser.new_page()
+        portal_page.goto(queue_html.resolve().as_uri(), wait_until="domcontentloaded")
+        update_verification_portal(portal_page, connected=True)
+        portal_page.bring_to_front()
+        print(
+            f"Opened Edge verification queue with {len(pending_pages)} links. "
+            "Click any link; successful pages are captured automatically. "
+            "Close the queue tab when finished."
+        )
+        results = wait_for_clicked_verifications(
+            browser,
+            portal_page,
+            pending_pages,
+            timeout_seconds,
+            capture_pending,
+        )
 
     merged_index = None
     run_path = None

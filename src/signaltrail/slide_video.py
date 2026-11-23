@@ -22,7 +22,7 @@ from bs4 import BeautifulSoup
 
 from .slide_renderer import display_slide_title
 from .storage import write_immutable_json
-from .utils import read_json, write_json
+from .utils import read_json, sha256_file, write_json
 from .voice_synthesis import VoiceSynthesizer
 from .voice_synthesis import run_native as _run
 
@@ -85,15 +85,6 @@ def _progress(stage: str, **details: object) -> None:
     print(json.dumps({"stage": stage, **details}, ensure_ascii=False), file=sys.stderr, flush=True)
 
 
-def _file_digest(path: Path) -> str:
-    """处理：流式计算文件的字节指纹。
-    输入：封装器、已选页面素材或已导出的成片路径。
-    输出：用于绑定成片回执的 SHA-256 十六进制值。
-    """
-    with path.open("rb") as handle:
-        return hashlib.file_digest(handle, "sha256").hexdigest()
-
-
 def _matching_video_receipt(path: Path, output: Path, inputs: dict) -> dict | None:
     """处理：核对封装输入及现存成片的字节指纹。
     输入：上次成功导出的回执、目标成片和本轮选出的素材及封装参数。
@@ -104,7 +95,7 @@ def _matching_video_receipt(path: Path, output: Path, inputs: dict) -> dict | No
         if (
             isinstance(receipt, dict)
             and receipt.get("inputs") == inputs
-            and receipt.get("output_sha256") == _file_digest(output)
+            and receipt.get("output_sha256") == sha256_file(output)
         ):
             return receipt
     except (OSError, ValueError):
@@ -659,11 +650,11 @@ def _render_video_locked(
     receipt_inputs = {
         "version": 1,
         "command": command,
-        "ffmpeg_sha256": _file_digest(Path(ffmpeg)),
+        "ffmpeg_sha256": sha256_file(Path(ffmpeg)),
         "pages": [
             {
-                "audio_sha256": _file_digest(work / entry["audio"]),
-                "clip_sha256": _file_digest(clip),
+                "audio_sha256": sha256_file(work / entry["audio"]),
+                "clip_sha256": sha256_file(clip),
                 "duration": entry["duration"],
                 "event_id": entry["event_id"],
             }
@@ -699,7 +690,7 @@ def _render_video_locked(
             )
             _progress("concat", pages=len(clips))
             _run([*command, str(pending_output)])
-            output_digest = _file_digest(pending_output)
+            output_digest = sha256_file(pending_output)
             os.replace(pending_output, output)
         except Exception:
             record_stage("concat", concat_started, "failed", input=str(listing), output=str(output))

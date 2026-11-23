@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+from collections.abc import Iterator
 from typing import Any
 
 import httpx
 
-from .models import SourceStatus
+from .config import canonical_source_page_url
+from .models import SourceStatus, effective_page_results, effective_source_status
 
 CHALLENGE_TEXTS = (
     "verify you are human",
@@ -89,3 +91,38 @@ def classify_source_status(
     if http_status is not None and http_status >= 400:
         return SourceStatus.FAILED
     return SourceStatus.SUCCESS if has_items else SourceStatus.NO_ITEMS
+
+
+def pending_access_pages(index: dict) -> Iterator[tuple[int, dict[str, str]]]:
+    """从采集索引按来源顺序产出待处理页面，保留来源内序号供验证队列生成稳定链接。"""
+    pending_statuses = {"verification_required", "rate_limited", "failed"}
+    seen = set()
+    for source in index.get("sources", []):
+        if not isinstance(source, dict):
+            continue
+        source_id = str(source.get("source_id", ""))
+        pages = effective_page_results(source.get("page_results", []))
+        failures = []
+        for page in pages:
+            status = str(page.get("status", ""))
+            http_status = page.get("http_status")
+            if status == "no_items" and (
+                page.get("error") or isinstance(http_status, int) and http_status >= 400
+            ):
+                status = "failed"
+            if status in pending_statuses:
+                failures.append((page.get("url"), status))
+        if not failures:
+            status = effective_source_status(source, pages)
+            if status in pending_statuses:
+                failures.append((None, status))
+        for position, (page_url, status) in enumerate(failures):
+            raw_url = page_url or source.get("source_url") or ""
+            url = canonical_source_page_url(source_id, str(raw_url))
+            if url.startswith(("http://", "https://")) and (source_id, url) not in seen:
+                seen.add((source_id, url))
+                yield position, {
+                    "source_id": source_id,
+                    "source_name": str(source.get("source_name", source_id)),
+                    "url": url, "status": status,
+                }

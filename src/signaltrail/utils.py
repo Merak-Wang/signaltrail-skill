@@ -22,44 +22,45 @@ _ATOMIC_REPLACE_BASE_DELAY_SECONDS = 0.01
 _ATOMIC_REPLACE_MAX_DELAY_SECONDS = 0.2
 
 
+def sha256_file(path: Path) -> str:
+    """处理：流式计算文件的 SHA-256。
+    输入：需校验的证据、缓存或成片路径。
+    输出：文件内容的十六进制摘要。
+    """
+    with path.open("rb") as stream:
+        return hashlib.file_digest(stream, "sha256").hexdigest()
+
+
 def environment_value(name: str) -> str | None:
-    """处理：读取调用方声明的环境变量，不让工具层耦合具体秘密名称。
-    输入：
-    - ``name``：待读取、注册或解析的稳定名称。
-    输出：封装“读取调用方声明的环境变量，
-      不让工具层耦合具体秘密名称”业务结果的 ``str | None`` 对象；
-      调用方据此继续相邻阶段或识别无结果状态。
+    """读取调用方声明的环境变量，不让工具层耦合具体秘密名称。
+    输入：``name``：待读取、注册或解析的稳定名称。
     """
     return os.getenv(name)
 
 
 def now_iso(timezone: str) -> str:
-    """处理：返回配置时区中的秒级 ISO 当前时间。
+    """返回配置时区中的秒级 ISO 当前时间。
     输入：用于解释本地日期的 IANA 时区。
-    输出：“返回配置时区中的秒级 ISO 当前时间”得到的规范字符串，供调用方存储、比较或展示。
     """
     return datetime.now(ZoneInfo(timezone)).isoformat(timespec="seconds")
 
 
 def today_str(timezone: str) -> str:
-    """处理：返回配置时区中的当前日期字符串。
+    """返回配置时区中的当前日期字符串。
     输入：用于解释本地日期的 IANA 时区。
-    输出：“返回配置时区中的当前日期字符串”得到的规范字符串，供调用方存储、比较或展示。
     """
     return datetime.now(ZoneInfo(timezone)).date().isoformat()
 
 
 def timestamp_slug(timezone: str) -> str:
-    """处理：生成适合文件名的配置时区时间戳。
+    """生成适合文件名的配置时区时间戳。
     输入：用于解释本地日期的 IANA 时区。
-    输出：“生成适合文件名的配置时区时间戳”得到的规范字符串，供调用方存储、比较或展示。
     """
     return datetime.now(ZoneInfo(timezone)).strftime("%Y-%m-%d_%H-%M-%S")
 
 
 def canonicalize_url(url: str) -> str:
-    """处理：统一 HTTP(S) 协议、主机、路径和查询参数，并移除跟踪字段。
-    输入：待处理的 URL。
+    """统一 HTTP(S) 协议、主机、路径和查询参数，并移除跟踪字段。
     输出：经过选择、规范化或安全处理的 URL 字符串，供后续访问或渲染使用。
     """
     parts = urlsplit(url.strip())
@@ -77,8 +78,7 @@ def canonicalize_url(url: str) -> str:
 
 
 def url_for_source_filter(url: str) -> str:
-    """处理：移除跟踪参数，同时保留来源过滤规则使用的 URL 形状。
-    输入：待处理的 URL。
+    """移除跟踪参数，同时保留来源过滤规则使用的 URL 形状。
     输出：经过选择、规范化或安全处理的 URL 字符串，供后续访问或渲染使用。
     """
     parts = urlsplit(url.strip())
@@ -103,19 +103,16 @@ def item_id(source_id: str, canonical_url: str) -> str:
 
 
 def read_json(path: Path) -> dict[str, Any] | list[Any]:
-    """处理：读取 UTF-8 JSON 文件并返回根级对象或数组。
-    输入：本地文件路径。
+    """读取 UTF-8 JSON 文件并返回根级对象或数组。
     输出：JSON 根值；保持文件中的对象或数组结构，不擅自改写字段与顺序。
     """
     return json.loads(path.read_text(encoding="utf-8"))
 
 
 def read_json_object(path: Path, label: str = "JSON document") -> dict[str, Any]:
-    """处理：读取 JSON 文件并要求根值必须是对象。
+    """读取 JSON 文件并要求根值必须是对象。
     输入：本地文件路径。
     - ``label``：用于错误消息的字段或产物名称，使失败能定位到具体输入。
-    输出：“读取 JSON 文件并要求根值必须是对象”形成的结构化字典；
-      键值表达该处理定义的业务记录或查找关系。
     """
     payload = read_json(path)
     if not isinstance(payload, dict):
@@ -124,19 +121,12 @@ def read_json_object(path: Path, label: str = "JSON document") -> dict[str, Any]
 
 
 def _temporary_sibling(path: Path) -> Path:
-    """处理：在目标文件同目录生成唯一临时文件路径。
-    输入：本地文件路径。
-    输出：指向“在目标文件同目录生成唯一临时文件路径”所生成、定位或确认产物的本地路径。
-    """
+    """在目标文件同目录生成唯一临时文件路径。"""
     return path.with_name(f".{path.name}.{uuid4().hex}.tmp")
 
 
 def _atomic_write_lock(path: Path) -> Lock:
-    """处理：获取目标路径专属的进程内写锁。
-    输入：本地文件路径。
-    输出：封装“获取目标路径专属的进程内写锁”业务结果的 ``Lock`` 对象；
-      调用方据此继续相邻阶段或识别无结果状态。
-    """
+    """获取目标路径专属的进程内写锁。"""
     key = str(path.absolute())
     # 只在登记表操作期间持有全局锁；实际磁盘写入由目标路径自己的锁串行化。
     with _ATOMIC_WRITE_LOCKS_GUARD:
@@ -144,9 +134,8 @@ def _atomic_write_lock(path: Path) -> Lock:
 
 
 def _is_retryable_windows_replace_error(error: OSError) -> bool:
-    """处理：只识别 Windows 原子替换期间可能短暂消失的共享或访问冲突。
-    输入：
-    - ``error``：同目录临时文件替换目标时由操作系统返回的异常；不含文件内容。
+    """只识别 Windows 原子替换期间可能短暂消失的共享或访问冲突。
+    输入：``error``：同目录临时文件替换目标时由操作系统返回的异常；不含文件内容。
     输出：仅当 Windows 错误码表示访问拒绝、共享冲突或锁冲突时返回真，供有界重试判断。
     """
     return os.name == "nt" and getattr(error, "winerror", None) in {5, 32, 33}
@@ -176,11 +165,9 @@ def _replace_atomic_with_retry(temporary: Path, path: Path) -> None:
 
 
 def write_bytes_atomic(path: Path, content: bytes) -> Path:
-    """处理：使用独立临时文件原子替换目标，避免并发写者共享临时名称。
+    """使用独立临时文件原子替换目标，避免并发写者共享临时名称。
     输入：本地文件路径。
     - ``content``：待编码、解析或写入的原始内容；边界和可信级别由当前函数说明。
-    输出：指向“使用独立临时文件原子替换目标，
-      避免并发写者共享临时名称”所生成、定位或确认产物的本地路径。
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = _temporary_sibling(path)
@@ -196,30 +183,22 @@ def write_bytes_atomic(path: Path, content: bytes) -> Path:
 
 
 def write_text_atomic(path: Path, text: str) -> Path:
-    """处理：把 UTF-8 文本通过同目录临时文件原子写入目标路径。
+    """把 UTF-8 文本通过同目录临时文件原子写入目标路径。
     输入：本地文件路径。
     - ``text``：待解析、匹配或渲染的文本；作为不可信数据时会先转义或清理。
-    输出：指向“把 UTF-8 文本通过同目录临时文件原子写入目标路径”所生成、定位或确认产物的本地路径
-      。
     """
     return write_bytes_atomic(path, text.encode("utf-8"))
 
 
 def write_json(path: Path, data: object) -> Path:
-    """处理：把 Python 对象序列化为可读 UTF-8 JSON 并原子写入目标文件。
+    """把 Python 对象序列化为可读 UTF-8 JSON 并原子写入目标文件。
     输入：本地文件路径。
     - ``data``：待持久化的 Python 对象；会序列化为 UTF-8 JSON，不执行其中内容。
-    输出：指向“把 Python 对象序列化为可读 UTF-8 JSON 并原子写入目标文件”所生成、定位或确认产物的
-      本地路径。
     """
     serialized = json.dumps(data, ensure_ascii=False, indent=2).encode("utf-8")
     return write_bytes_atomic(path, serialized)
 
 
 def clean_title(value: str) -> str:
-    """处理：折叠标题中的空白字符并去除首尾空白，保留原始文字与标点。
-    输入：待解析的值。
-    输出：“折叠标题中的空白字符并去除首尾空白，保留原始文字与标点”得到的规范字符串，
-      供调用方存储、比较或展示。
-    """
+    """折叠标题中的空白字符并去除首尾空白，保留原始文字与标点。"""
     return " ".join((value or "").split()).strip()

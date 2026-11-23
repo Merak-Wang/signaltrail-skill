@@ -26,12 +26,7 @@ _USER_AGENT = (
 
 
 def html_index_rows(html: str) -> tuple[str, list[dict[str, Any]]]:
-    """处理：从公共 HTML 中惰性提取链接行，不执行任何脚本。
-    输入：
-    - ``html``：HTTP 或浏览器取得的不可信 HTML 文本；只执行静态解析。
-    输出：“从公共 HTML 中惰性提取链接行，不执行任何脚本”得到的固定结构结果；
-      返回位置依次对应 title、rows。
-    """
+    """提取索引页标题和文章候选，交给来源适配器按规则筛选。"""
     _soup, title, rows = _html_index_document(html)
     return title, rows
 
@@ -375,10 +370,8 @@ def prefetch_browser_pages(
 
 
 def page_needs_browser(result: SourceResult | None) -> bool:
-    """处理：判断 HTTP 预取之后 Edge 是否仍能增加有效信息。
-    输入：
-    - ``result``：上游 HTTP 预取或来源采集结果；读取状态、响应类型和页面证据决定后续路径。
-    输出：布尔判断；True 表示满足处理说明中的条件，False 表示不满足且不产生该结果。
+    """判断 HTTP 预取之后 Edge 是否仍能增加有效信息。
+    输入：``result``：上游 HTTP 预取或来源采集结果；读取状态、响应类型和页面证据决定后续路径。
     """
     if result is None:
         return True

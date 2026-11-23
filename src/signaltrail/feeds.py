@@ -67,23 +67,8 @@ def _remove_repeated_feed_templates(items: list[ArticleItem], records: dict[str,
 
 @dataclass(slots=True)
 class FeedFetchResult:
-    """处理：记录单个 Feed 的状态、缓存信息、错误和规范文章条目。
-    输入：
-    - ``source_id``：来源的稳定 ID；用于配置查找、索引关联和状态分区。
-    - ``source_name``：供读者展示的来源名称；与稳定 source_id 一起写入条目。
-    - ``feed_url``：正在解析或抓取的 RSS/Atom 地址；同时作为缓存和来源追踪键。
-    - ``status``：当前操作或来源状态；值必须属于对应的显式状态模型。
-    - ``checked_at``：本次来源或缓存检查时间；用于刷新计划和健康状态。
-    - ``items``：规范条目列表；每项带稳定身份并可进入聚类、报告或渲染步骤。
-    - ``http_status``：页面最近一次 HTTP 状态码；无网络响应时可为空。
-    - ``error``：上游异常或错误信息；用于保留失败语义。
-    - ``etag``：服务端 ETag；用于下一次条件请求避免重复下载。
-    - ``last_modified``：服务端 Last-Modified 值；用于下一次条件请求。
-    - ``cache_state``：本次 Feed 结果来自网络、命中缓存还是过期缓存。
-    - ``stale``：结果是否来自超出正常刷新窗口但仍可用于降级的缓存。
-    - ``latency_ms``：本次 Feed 请求或缓存读取耗时，单位为毫秒。
-    - ``next_refresh_at``：按检查时间和间隔计算的下一次允许刷新时间。
-    输出：构造后的 ``FeedFetchResult`` 实例或枚举定义；其字段和方法共同承担上述职责。
+    """一次 Feed 刷新的状态与规范文章，含下一次刷新时间和条件请求所需的缓存标识。
+    过期结果单独标记，供监控器在刷新失败时降级使用。
     """
 
     source_id: str
@@ -113,10 +98,8 @@ class FeedFetchResult:
 
 
 def _local_name(tag: str) -> str:
-    """处理：去除 XML 命名空间并返回元素的本地标签名。
-    输入：
-    - ``tag``：XML 元素的完整标签名；函数会移除命名空间前缀。
-    输出：“去除 XML 命名空间并返回元素的本地标签名”得到的规范字符串，供调用方存储、比较或展示。
+    """去除 XML 命名空间并返回元素的本地标签名。
+    输入：``tag``：XML 元素的完整标签名；函数会移除命名空间前缀。
     """
     return tag.rsplit("}", 1)[-1].split(":", 1)[-1].lower()
 
@@ -134,10 +117,8 @@ def _direct_elements(node: ET.Element, *names: str) -> list[ET.Element]:
 
 
 def _element_text(element: ET.Element | None) -> str:
-    """处理：合并 XML 元素及其后代的可见文本。
-    输入：
-    - ``element``：可能为空的 RSS/Atom XML 元素；读取其自身及后代可见文本。
-    输出：“合并 XML 元素及其后代的可见文本”得到的规范字符串，供调用方存储、比较或展示。
+    """合并 XML 元素及其后代的可见文本。
+    输入：``element``：可能为空的 RSS/Atom XML 元素；读取其自身及后代可见文本。
     """
     if element is None:
         return ""
@@ -145,11 +126,10 @@ def _element_text(element: ET.Element | None) -> str:
 
 
 def _direct_text(node: ET.Element, *names: str) -> str:
-    """处理：读取指定直接子元素中的首个非空文本。
+    """读取指定直接子元素中的首个非空文本。
     输入：
     - ``node``：Feed 解析器当前处理的 RSS/Atom XML 元素。
     - ``*names``：允许匹配的直接子元素本地名称；按传入顺序查找。
-    输出：“读取指定直接子元素中的首个非空文本”得到的规范字符串，供调用方存储、比较或展示。
     """
     for child in _direct_elements(node, *names):
         value = _element_text(child)
@@ -159,10 +139,8 @@ def _direct_text(node: ET.Element, *names: str) -> str:
 
 
 def _parse_datetime(value: str, timezone: str) -> datetime | None:
-    """处理：把 Feed 日期文本解析并统一到配置时区。
+    """把 Feed 日期文本解析并统一到配置时区。
     输入：待解析的值、用于解释本地日期的 IANA 时区。
-    输出：封装“把 Feed 日期文本解析并统一到配置时区”业务结果的 ``datetime | None`` 对象；
-      调用方据此继续相邻阶段或识别无结果状态。
     """
     normalized = normalize_time(clean_title(value), timezone)
     if normalized is None:
@@ -172,10 +150,9 @@ def _parse_datetime(value: str, timezone: str) -> datetime | None:
 
 
 def _entry_link(node: ET.Element, feed_url: str) -> str:
-    """处理：从 Atom/RSS 条目中选择规范文章链接。
+    """从 Atom/RSS 条目中选择规范文章链接。
     输入：用于抓取与缓存的 Feed URL。
     - ``node``：Feed 解析器当前处理的 RSS/Atom XML 元素。
-    输出：“从 Atom/RSS 条目中选择规范文章链接”得到的规范字符串，供调用方存储、比较或展示。
     """
     links = _direct_elements(node, "link")
     for link in links:
@@ -225,12 +202,7 @@ def _entry_image_candidates(
 
 
 def _provider(node: ET.Element) -> tuple[str | None, str | None]:
-    """处理：根据 Feed 根元素识别 RSS 或 Atom 提供格式。
-    输入：
-    - ``node``：Feed 解析器当前处理的 RSS/Atom XML 元素。
-    输出：“根据 Feed 根元素识别 RSS 或 Atom 提供格式”得到的固定结构结果；
-      返回位置依次对应 None、None。
-    """
+    """从 Feed 条目提取原始出版方名称和链接。缺少的字段保留为空。"""
     for child in _direct_elements(node, "source"):
         name = _direct_text(child, "title") or _element_text(child)
         url = str(child.attrib.get("url") or "").strip()
@@ -242,11 +214,10 @@ def _provider(node: ET.Element) -> tuple[str | None, str | None]:
 
 
 def looks_like_feed(content: bytes | str, content_type: str = "") -> bool:
-    """处理：识别 RSS、Atom 与声明新闻命名空间的出版方新闻目录。
+    """识别 RSS、Atom 与声明新闻命名空间的出版方新闻目录。
     输入：
     - ``content``：待编码、解析或写入的原始内容；边界和可信级别由当前函数说明。
     - ``content_type``：HTTP 内容类型或待上传文件 MIME 类型；用于解析、校验和响应头。
-    输出：布尔判断；True 表示满足处理说明中的条件，False 表示不满足且不产生该结果。
     """
     if isinstance(content, bytes):
         prefix = content[:4096].decode("utf-8", errors="replace")
@@ -404,12 +375,10 @@ def parse_feed_document(
 
 
 def discover_feed_urls(html: str, base_url: str) -> list[str]:
-    """处理：在不执行页面脚本的前提下发现声明的 RSS/Atom 地址。
+    """在不执行页面脚本的前提下发现声明的 RSS/Atom 地址。
     输入：
     - ``html``：HTTP 或浏览器取得的不可信 HTML 文本；只执行静态解析。
     - ``base_url``：解析相对链接时使用的最终页面或 Feed 基准 URL。
-    输出：“在不执行页面脚本的前提下发现声明的 RSS/Atom 地址”得到的字符串列表；
-      顺序保持确定并可供下一步骤逐项处理。
     """
     soup = BeautifulSoup(html, "html.parser")
     candidates: list[str] = []
@@ -444,9 +413,8 @@ def discover_feed_urls(html: str, base_url: str) -> list[str]:
 
 
 def article_from_dict(payload: dict[str, Any]) -> ArticleItem:
-    """处理：从缓存字典恢复包含来源身份、正文状态和元数据的文章对象。
-    输入：
-    - ``payload``：上游传入的结构化对象；函数只读取处理说明列出的受支持字段。
+    """从缓存字典恢复包含来源身份、正文状态和元数据的文章对象。
+    输入：``payload``：上游传入的结构化对象；函数只读取处理说明列出的受支持字段。
     输出：可进入规范来源索引的文章条目；包含稳定 ID、来源身份、规范 URL、时间和可用元数据。
     """
     article = ArticleItem(
@@ -466,9 +434,8 @@ def article_from_dict(payload: dict[str, Any]) -> ArticleItem:
 
 
 def _cache_path(data_dir: Path, feed_url: str) -> Path:
-    """处理：根据 Feed URL 哈希生成隔离且稳定的缓存文件路径。
+    """根据 Feed URL 哈希生成隔离且稳定的缓存文件路径。
     输入：本次运行的数据根、用于抓取与缓存的 Feed URL。
-    输出：指向“根据 Feed URL 哈希生成隔离且稳定的缓存文件路径”所生成、定位或确认产物的本地路径。
     """
     digest = hashlib.sha256(feed_url.encode("utf-8")).hexdigest()
     return data_dir / "monitor" / "feed-cache" / f"{digest}.json"
@@ -486,9 +453,8 @@ def _load_cache(path: Path) -> dict[str, Any]:
 
 
 def _cached_items(cache: dict[str, Any]) -> list[ArticleItem]:
-    """处理：从有效 Feed 缓存恢复文章条目列表。
-    输入：
-    - ``cache``：本地持久化缓存对象；包含状态、时间、响应元数据和可复用结果。
+    """从有效 Feed 缓存恢复文章条目列表。
+    输入：``cache``：本地持久化缓存对象；包含状态、时间、响应元数据和可复用结果。
     输出：可写入规范来源索引的文章条目列表；
       每项包含稳定 ID、来源身份、规范 URL、时间和可用元数据，
       并保持当前处理定义的筛选与排序语义。
@@ -498,11 +464,7 @@ def _cached_items(cache: dict[str, Any]) -> list[ArticleItem]:
 
 
 def _retry_after_seconds(value: str | None) -> int | None:
-    """处理：把 Retry-After 响应头解析为有界等待秒数。
-    输入：待解析的值。
-    输出：封装“把 Retry-After 响应头解析为有界等待秒数”业务结果的 ``int | None`` 对象；
-      调用方据此继续相邻阶段或识别无结果状态。
-    """
+    """把 Retry-After 响应头解析为有界等待秒数。"""
     if not value:
         return None
     try:
@@ -523,14 +485,12 @@ def _next_refresh(
     failures: int,
     retry_after: int | None = None,
 ) -> str:
-    """处理：根据最近检查时间和刷新间隔计算下次刷新时间。
+    """根据最近检查时间和刷新间隔计算下次刷新时间。
     输入：
     - ``checked_at``：本次来源或缓存检查时间；用于刷新计划和健康状态。
     - ``interval_minutes``：正常成功后到下一次允许刷新之间的分钟数。
     - ``failures``：该 Feed 连续失败次数；用于指数退避且设有 24 小时上限。
     - ``retry_after``：服务端 Retry-After 解析出的秒数；存在时优先于指数退避。
-    输出：“根据最近检查时间和刷新间隔计算下次刷新时间”得到的规范字符串，
-      供调用方存储、比较或展示。
     """
     if retry_after is not None:
         delay = max(60, retry_after)

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import ctypes
 import hashlib
 import importlib
 import json
@@ -15,6 +14,7 @@ import sys
 import time
 import traceback
 from datetime import UTC, datetime
+from functools import partial
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -29,26 +29,12 @@ def peak_rss_mb() -> float | None:
 
         peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
         return peak / (1024 * 1024 if sys.platform == "darwin" else 1024)
-    from ctypes import wintypes
+    import psutil
 
-    class MemoryCounters(ctypes.Structure):
-        """接收 Windows 进程内存计数中的峰值工作集。"""
-
-        _fields_ = [("cb", wintypes.DWORD), ("page_faults", wintypes.DWORD),
-                    *[(name, ctypes.c_size_t) for name in (
-                        "peak_working_set", "working_set", "peak_paged", "paged",
-                        "peak_nonpaged", "nonpaged", "pagefile", "peak_pagefile")]]
-
-    counters = MemoryCounters()
-    counters.cb = ctypes.sizeof(counters)
-    current = ctypes.windll.kernel32.GetCurrentProcess
-    current.restype = wintypes.HANDLE
-    query = ctypes.windll.psapi.GetProcessMemoryInfo
-    query.argtypes = [wintypes.HANDLE, ctypes.POINTER(MemoryCounters), wintypes.DWORD]
-    query.restype = wintypes.BOOL
-    if not query(current(), ctypes.byref(counters), counters.cb):
+    try:
+        return psutil.Process().memory_info().peak_wset / 1024**2
+    except (AttributeError, psutil.Error):
         return None
-    return counters.peak_working_set / 1024**2
 
 
 def compare_video_frames(
@@ -132,9 +118,11 @@ def video_evaluation(work_dir: Path, args: argparse.Namespace) -> dict:
     """用真实已接受稿测量首次与重复导出，并验证标题变化和文件损坏后的重建。"""
     from signaltrail.qwen_runtime import MMPROJ_NAME, MODEL_NAME
     from signaltrail.slide_video import render_video
+    from signaltrail.utils import sha256_file
     from signaltrail.video_runtime import ensure_video_runtime
 
-    deck = json.loads(args.video_deck.read_text(encoding="utf-8"))
+    deck_bytes = args.video_deck.read_bytes()
+    deck = json.loads(deck_bytes.decode("utf-8"))
     deck = deck.get("payload", deck)
     expected_ids = [slide["event_id"] for slide in deck["slides"]]
     if args.tts_worker:
@@ -147,50 +135,36 @@ def video_evaluation(work_dir: Path, args: argparse.Namespace) -> dict:
                                    model_dir=args.model_dir, tts_executable=args.tts_executable)
     selected_model = Path(runtime["model_dir"]).resolve()
     output = work_dir / "video.mp4"
-    started = time.perf_counter()
-    first = render_video(args.video_deck, output, args.model_dir, args.data_dir,
-                         device=args.device, tts_executable=args.tts_executable)
-    first_seconds = time.perf_counter() - started
-    first_timeline = json.loads(Path(first["timeline_path"]).read_text(encoding="utf-8"))
+    render = partial(render_video, args.video_deck, output, args.model_dir, args.data_dir,
+                     device=args.device, tts_executable=args.tts_executable)
+
+    def export(**options) -> tuple[dict, float, str]:
+        started = time.perf_counter()
+        video = render(**options)
+        elapsed = time.perf_counter() - started
+        return video, elapsed, sha256_file(output)
+
+    first, first_seconds, first_digest = export()
+    first_mtime = output.stat().st_mtime_ns
+    first_timeline = json.loads(Path(first["timeline_path"]).read_bytes())
     shared_frames = compare_video_frames(
         first, deck["slides"], first_timeline, work_dir, str(runtime["ffmpeg"])
     )
-    with output.open("rb") as handle:
-        first_digest = hashlib.file_digest(handle, "sha256").hexdigest()
-    first_mtime = output.stat().st_mtime_ns
-    started = time.perf_counter()
-    repeat = render_video(args.video_deck, output, args.model_dir, args.data_dir,
-                          device=args.device, tts_executable=args.tts_executable)
-    repeat_seconds = time.perf_counter() - started
-    repeat_timeline = json.loads(Path(repeat["timeline_path"]).read_text(encoding="utf-8"))
-    with output.open("rb") as handle:
-        repeat_digest = hashlib.file_digest(handle, "sha256").hexdigest()
+    repeat, repeat_seconds, repeat_digest = export()
     repeat_mtime = output.stat().st_mtime_ns
+    repeat_timeline = json.loads(Path(repeat["timeline_path"]).read_bytes())
     revised_title = first["title"] + " (evaluation)"
-    started = time.perf_counter()
-    revised = render_video(args.video_deck, output, args.model_dir, args.data_dir,
-                           device=args.device, tts_executable=args.tts_executable,
-                           title=revised_title)
-    revised_seconds = time.perf_counter() - started
-    with output.open("rb") as handle:
-        revised_digest = hashlib.file_digest(handle, "sha256").hexdigest()
+    revised, revised_seconds, revised_digest = export(title=revised_title)
     # 用同长度首字节损坏验证内容校验，避免仅靠长度检测通过。
     with output.open("r+b") as handle:
         first_byte = handle.read(1)
         handle.seek(0)
         handle.write(bytes([first_byte[0] ^ 0xFF]))
-    restored = render_video(args.video_deck, output, args.model_dir, args.data_dir,
-                            device=args.device, tts_executable=args.tts_executable,
-                            title=revised_title)
-    with output.open("rb") as handle:
-        restored_digest = hashlib.file_digest(handle, "sha256").hexdigest()
-    # 恢复到正常请求的标题，以便交付本工作负载的成片和时间轴。
-    final = render_video(args.video_deck, output, args.model_dir, args.data_dir,
-                         device=args.device, tts_executable=args.tts_executable)
-    with output.open("rb") as handle:
-        final_digest = hashlib.file_digest(handle, "sha256").hexdigest()
+    restored, _, restored_digest = export(title=revised_title)
+    # 恢复正常标题，以便评估回执指向初次导出的成片和时间轴。
+    final, _, final_digest = export()
     final_receipt = json.loads(Path(final["video_receipt_path"]).read_bytes())
-    deck_digest = hashlib.sha256(args.video_deck.read_bytes()).hexdigest()
+    deck_digest = hashlib.sha256(deck_bytes).hexdigest()
     decoded = subprocess.run([str(runtime["ffmpeg"]), "-v", "error", "-xerror", "-i", str(output),
                               "-map", "0:v:0", "-map", "0:a:0", "-f", "null", "-"],
                              capture_output=True, check=False, timeout=180)

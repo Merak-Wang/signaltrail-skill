@@ -6,6 +6,8 @@ import argparse
 import json
 from pathlib import Path
 
+from measure_codex_turn import write_receipt
+
 
 def read_json(path: Path) -> dict:
     """读取测量或场景文件，交给同一比较入口。"""
@@ -127,9 +129,7 @@ def main() -> None:
     args = parser.parse_args()
     result = compare(args.measurement, args.scenario)
     args.output.parent.mkdir(parents=True, exist_ok=True)
-    with args.output.open("x", encoding="utf-8") as stream:
-        json.dump(result, stream, ensure_ascii=False, indent=2)
-        stream.write("\n")
+    write_receipt(args.output, result)
     print(json.dumps({"output": str(args.output.resolve()),
                       "measured_runs": len(result["measured"]),
                       "projected": [{key: row[key] for key in (

@@ -30,7 +30,7 @@ from .image_policy import (
     normalize_image_candidates,
 )
 from .storage import write_bytes_atomic
-from .utils import read_json, write_json
+from .utils import read_json, sha256_file, write_json
 
 _ALLOWED_FORMATS = {
     "JPEG": ("image/jpeg", ".jpg"),
@@ -46,31 +46,14 @@ _IMAGE_CACHE_SCHEMA_VERSION = "1.1"
 
 
 class ImageDownloadError(ValueError):
-    """处理：表示图片 URL、网络响应、格式或安全校验失败。
-    输入：
-    - 无显式业务参数：不声明额外构造字段；该定义以 ``ValueError`` 为基础，
-      通过类成员承担“表示图片 URL、网络响应、格式或安全校验失败”职责。
-    输出：构造后的 ``ImageDownloadError`` 实例或枚举定义；其字段和方法共同承担上述职责。
-    """
+    """表示图片 URL、网络响应、格式或安全校验失败。"""
     pass
 
 
 @dataclass(frozen=True, slots=True)
 class DownloadedImage:
-    """处理：记录已验证本地图片的来源、哈希、尺寸和复用信息。
-    输入：
-    - ``source_url``：来源或图片的原始 URL；进入网络或索引前会执行相应规范化与安全检查。
-    - ``resolved_url``：经过全部重定向并通过公网校验的最终图片 URL。
-    - ``local_path``：图片在数据根下的内容寻址相对路径。
-    - ``content_type``：HTTP 内容类型或待上传文件 MIME 类型；用于解析、校验和响应头。
-    - ``sha256``：图片内容的 SHA-256；用于去重、校验和远程上传关联。
-    - ``byte_size``：已验证图片文件的字节数。
-    - ``width``：已验证栅格图片宽度，单位为像素。
-    - ``height``：已验证栅格图片高度，单位为像素。
-    - ``reused``：是否复用了已有且哈希一致的内容寻址文件。
-    - ``etag``：服务端 ETag；用于下一次条件请求避免重复下载。
-    - ``last_modified``：服务端 Last-Modified 值；用于下一次条件请求。
-    输出：构造后的 ``DownloadedImage`` 实例或枚举定义；其字段和方法共同承担上述职责。
+    """已通过格式和尺寸检查的图片，保留原始 URL、重定向后 URL 和基于内容哈希的数据根相对路径。
+    ETag 和 Last-Modified 供条件请求复用本地文件。
     """
     source_url: str
     resolved_url: str
@@ -86,30 +69,19 @@ class DownloadedImage:
 
 
 def _utc_now() -> datetime:
-    """处理：返回带 UTC 时区的当前时间。
-    输入：
-    - 无显式业务参数：不接收参数；读取系统 UTC 时钟并返回带时区时间。
-    输出：封装“返回带 UTC 时区的当前时间”业务结果的 ``datetime`` 对象；
-      调用方据此继续相邻阶段或识别无结果状态。
+    """返回带 UTC 时区的当前时间。
+    输入：无显式业务参数：不接收参数；读取系统 UTC 时钟并返回带时区时间。
     """
     return datetime.now(UTC)
 
 
 def _utc_iso(value: datetime | None = None) -> str:
-    """处理：把 UTC 时间格式化为秒级 ISO 字符串。
-    输入：待解析的值。
-    输出：“把 UTC 时间格式化为秒级 ISO 字符串”得到的规范字符串，供调用方存储、比较或展示。
-    """
+    """把 UTC 时间格式化为秒级 ISO 字符串。"""
     return (value or _utc_now()).isoformat(timespec="seconds")
 
 
 def _parse_cache_time(value: object) -> datetime | None:
-    """处理：把图片缓存中的 ISO 时间解析为 UTC 时间，非法值返回 None。
-    输入：待解析的值。
-    输出：封装“把图片缓存中的 ISO 时间解析为 UTC 时间，
-      非法值返回 None”业务结果的 ``datetime | None`` 对象；
-      调用方据此继续相邻阶段或识别无结果状态。
-    """
+    """把图片缓存中的 ISO 时间解析为 UTC 时间，非法值返回 None。"""
     try:
         parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
     except (TypeError, ValueError):
@@ -120,18 +92,13 @@ def _parse_cache_time(value: object) -> datetime | None:
 
 
 def _image_cache_path(data_dir: Path) -> Path:
-    """处理：返回运行数据根中的图片下载缓存文件。
-    输入：本次运行的数据根。
-    输出：指向“返回运行数据根中的图片下载缓存文件”所生成、定位或确认产物的本地路径。
-    """
+    """返回运行数据根中的图片下载缓存文件。"""
     return data_dir / "media" / "image-cache.json"
 
 
 def _load_image_cache(data_dir: Path) -> dict[str, Any]:
-    """处理：读取版本化图片缓存并校验 entries 根对象，损坏时回退为空缓存。
-    输入：本次运行的数据根。
-    输出：“读取版本化图片缓存并校验 entries 根对象，损坏时回退为空缓存”形成的结构化字典；
-      典型键包括 entries、schema_version、updated_at。
+    """读取版本化图片缓存并校验 entries 根对象，损坏时回退为空缓存。
+    输出：字段包括 entries、schema_version、updated_at。
     """
     path = _image_cache_path(data_dir)
     if not path.exists():
@@ -158,11 +125,9 @@ def _load_image_cache(data_dir: Path) -> dict[str, Any]:
 
 
 def _write_image_cache(data_dir: Path, cache: dict[str, Any]) -> None:
-    """处理：把内存中的图片成功与失败记录原子写入当前数据根的缓存文件。
+    """把内存中的图片成功与失败记录原子写入当前数据根的缓存文件。
     输入：本次运行的数据根。
     - ``cache``：本地持久化缓存对象；包含状态、时间、响应元数据和可复用结果。
-    输出：不返回新数据；完成“把内存中的图片成功与失败记录原子写入当前数据根的缓存文件”，
-      副作用限于该处理声明的受控对象或产物。
     """
     cache["schema_version"] = _IMAGE_CACHE_SCHEMA_VERSION
     cache["updated_at"] = _utc_iso()
@@ -170,10 +135,8 @@ def _write_image_cache(data_dir: Path, cache: dict[str, Any]) -> None:
 
 
 def _safe_cached_image_path(data_dir: Path, value: object) -> Path | None:
-    """处理：把缓存相对路径限制在媒体目录并返回规范绝对路径。
-    输入：本次运行的数据根、待解析的值。
-    输出：指向“把缓存相对路径限制在媒体目录并返回规范绝对路径”所生成、定位或确认产物的本地路径；
-      条件不满足时返回 None。
+    """把缓存相对路径限制在媒体目录并返回规范绝对路径。
+    输出：未找到匹配项时返回 None。
     """
     relative = Path(str(value or "").replace("\\", "/"))
     if (
@@ -230,7 +193,7 @@ def _cached_download(
         digest = str(entry["sha256"])
         if path.stat().st_size != byte_size:
             return None
-        if hashlib.sha256(path.read_bytes()).hexdigest() != digest:
+        if sha256_file(path) != digest:
             return None
         return DownloadedImage(
             source_url=_serialized_http_url(source_url),
@@ -250,12 +213,9 @@ def _cached_download(
 
 
 def _cache_success(downloaded: DownloadedImage) -> dict[str, Any]:
-    """处理：把成功下载结果转换为可持久化缓存记录。
-    输入：
-    - ``downloaded``：已通过安全和格式校验的图片结果；包含最终 URL、路径、哈希和尺寸。
-    输出：“把成功下载结果转换为可持久化缓存记录”形成的结构化字典；
-      典型键包括 byte_size、checked_at、content_type、etag、height、last_modified、local_path、r
-      esolved_url、sha256、status、width。
+    """把成功下载结果转换为可持久化缓存记录。
+    输入：``downloaded``：已通过安全和格式校验的图片结果；包含最终 URL、路径、哈希和尺寸。
+    输出：可复用的本地图片路径、文件摘要与条件请求所需的缓存标识。
     """
     return {
         "status": "success",
@@ -273,11 +233,10 @@ def _cache_success(downloaded: DownloadedImage) -> dict[str, Any]:
 
 
 def _cache_failure(exc: Exception, config: MediaConfig) -> dict[str, Any]:
-    """处理：把下载异常转换为带下次重试时间的负缓存记录。
+    """把下载异常转换为带下次重试时间的负缓存记录。
     输入：已校验的采集和输出配置。
     - ``exc``：图片下载失败异常；提取错误文本并生成带重试时间的负缓存。
-    输出：“把下载异常转换为带下次重试时间的负缓存记录”形成的结构化字典；
-      典型键包括 checked_at、error、retry_after、status。
+    输出：字段包括 checked_at、error、retry_after、status。
     """
     now = _utc_now()
     return {
@@ -291,10 +250,7 @@ def _cache_failure(exc: Exception, config: MediaConfig) -> dict[str, Any]:
 
 
 def _is_public_address(value: str) -> bool:
-    """处理：判断 IP 地址是否可由公网路由，排除本地和保留网段。
-    输入：待解析的值。
-    输出：布尔判断；True 表示满足处理说明中的条件，False 表示不满足且不产生该结果。
-    """
+    """判断 IP 地址是否可由公网路由，排除本地和保留网段。"""
     address = ipaddress.ip_address(value)
     return address.is_global
 
@@ -327,10 +283,7 @@ def _resolve_system_addresses(hostname: str, port: int) -> tuple[str, ...]:
 
 
 def _is_proxy_fake_address(value: str) -> bool:
-    """处理：判断 IPv4 地址是否属于代理软件使用的 fake-IP 网段。
-    输入：待解析的值。
-    输出：布尔判断；True 表示满足处理说明中的条件，False 表示不满足且不产生该结果。
-    """
+    """判断 IPv4 地址是否属于代理软件使用的 fake-IP 网段。"""
     address = ipaddress.ip_address(value)
     return isinstance(address, ipaddress.IPv4Address) and address in _PROXY_FAKE_IP_NETWORK
 
@@ -380,11 +333,7 @@ def _resolve_public_dns_addresses(hostname: str) -> tuple[str, ...]:
 
 
 def assert_public_image_url(url: str) -> None:
-    """处理：拒绝凭证、非 HTTP 协议、异常端口和非公网图片主机。
-    输入：待处理的 URL。
-    输出：不返回新数据；完成“拒绝凭证、非 HTTP 协议、异常端口和非公网图片主机”，
-      副作用限于该处理声明的受控对象或产物。
-    """
+    """拒绝凭证、非 HTTP 协议、异常端口和非公网图片主机。"""
     parsed = urlsplit(url)
     if parsed.scheme not in {"http", "https"} or not parsed.hostname:
         raise ImageDownloadError("image URL must use public HTTP or HTTPS")
@@ -431,13 +380,7 @@ def assert_public_image_url(url: str) -> None:
 
 
 def _inspect_raster(content: bytes, max_pixels: int) -> tuple[str, str, int, int]:
-    """处理：验证图片格式、像素上限和信息量，并返回规范元数据。
-    输入：
-    - ``content``：待编码、解析或写入的原始内容；边界和可信级别由当前函数说明。
-    - ``max_pixels``：允许解码的最大总像素数；用于阻止解压炸弹和超大图片。
-    输出：“验证图片格式、像素上限和信息量，并返回规范元数据”得到的固定结构结果；
-      返回位置依次对应 content_type、extension、width、height。
-    """
+    """读取图片的实际格式与像素尺寸，返回内容类型、扩展名、宽和高。"""
     try:
         with Image.open(BytesIO(content)) as image:
             image_format = str(image.format or "").upper()
@@ -485,11 +428,9 @@ def _inspect_raster(content: bytes, max_pixels: int) -> tuple[str, str, int, int
 
 
 def _request_headers(referer: str | None) -> dict[str, str]:
-    """处理：构建图片请求头，并拒绝可注入换行的 Referer。
-    输入：
-    - ``referer``：可选来源页面 URL；通过换行和协议检查后才写入请求头。
-    输出：“构建图片请求头，并拒绝可注入换行的 Referer”形成的结构化字典；
-      典型键包括 Accept、User-Agent。
+    """构建图片请求头，并拒绝可注入换行的 Referer。
+    输入：``referer``：可选来源页面 URL；通过换行和协议检查后才写入请求头。
+    输出：字段包括 Accept、User-Agent。
     """
     headers = {
         "User-Agent": _USER_AGENT,
@@ -506,8 +447,7 @@ def _request_headers(referer: str | None) -> dict[str, str]:
 
 
 def _serialized_http_url(url: str) -> str:
-    """处理：返回适合 JSON Schema 与远程发布器的 ASCII URI。
-    输入：待处理的 URL。
+    """返回适合 JSON Schema 与远程发布器的 ASCII URI。
     输出：经过选择、规范化或安全处理的 URL 字符串，供后续访问或渲染使用。
     """
     try:
@@ -634,7 +574,7 @@ def download_image(
     reused = (
         output_path.is_file()
         and output_path.stat().st_size == len(content)
-        and hashlib.sha256(output_path.read_bytes()).hexdigest() == digest
+        and sha256_file(output_path) == digest
     )
     if not reused:
         write_bytes_atomic(output_path, content)
@@ -654,11 +594,7 @@ def download_image(
 
 
 def _report_briefs(report: dict[str, Any]) -> list[dict[str, Any]]:
-    """处理：从全部报告栏目展开结构化简报列表。
-    输入：含栏目和来源引用的报告。
-    输出：“从全部报告栏目展开结构化简报列表”得到的有序结构化记录；
-      每项承载处理说明所定义的身份、证据或状态字段，可直接交给下一阶段。
-    """
+    """从全部报告栏目展开结构化简报列表。"""
     return [
         brief
         for section in report.get("sections", [])
@@ -774,9 +710,8 @@ def _download_image_batch(
 
 
 def _indexed_image_candidates(indexed: dict[str, Any]) -> list[dict]:
-    """处理：合并索引主图片与元数据候选并规范化 URL。
-    输入：
-    - ``indexed``：权威来源索引中与当前 item_id 对应的条目记录。
+    """合并索引主图片与元数据候选并规范化 URL。
+    输入：``indexed``：权威来源索引中与当前 item_id 对应的条目记录。
     输出：保留原站图注和尺寸的有序记录，供预取和报告附件共用。
     """
     values: list[object] = [indexed.get("image_url")]
@@ -983,13 +918,11 @@ def _materialize_report_images(
         rows: list[tuple[str, str | None]],
         max_bytes: int,
     ) -> None:
-        """处理：复用图片缓存并批量下载尚未解析的候选 URL，随后写入检查点。
+        """复用图片缓存并批量下载尚未解析的候选 URL，随后写入检查点。
         输入：
         - ``rows``：当前优先级的图片候选二元组；每项是 image_url 与可选 referer，
           URL 会先查缓存再下载。
         - ``max_bytes``：允许读取或下载的最大字节数；达到上限后停止或报错。
-        输出：不返回新数据；完成“复用图片缓存并批量下载尚未解析的候选 URL，随后写入检查点”，
-          副作用限于该处理声明的受控对象或产物。
         """
         nonlocal cache_warning_emitted
         batch: list[tuple[str, str | None]] = []

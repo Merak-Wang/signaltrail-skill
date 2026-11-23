@@ -6,12 +6,14 @@ import os
 import sys
 import threading
 import time
+from bisect import insort
 from collections import defaultdict
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import replace
 from datetime import UTC, datetime
 from decimal import Decimal
+from operator import itemgetter
 from pathlib import Path
 from typing import Any, BinaryIO, TextIO
 from uuid import uuid4
@@ -29,6 +31,7 @@ from .models import (
     ObservationQuality,
     TaskHandle,
     UsageObservation,
+    normalize_timestamp,
     safe_label,
     unobservable,
     validate_id,
@@ -179,8 +182,7 @@ class UsageLedger:
             parent_session_id=parent_session_id,
         )
         with self._task_guard(handle):
-            events = self._events_unlocked(handle)
-            _require_open_task(handle, events)
+            events = self._open_events(handle)
             existing = _call_event_data(events, "call.started", call_value)
             timestamp = (
                 _timestamp(started_at)
@@ -220,8 +222,7 @@ class UsageLedger:
         phase = _required_label(call.phase, "phase")
         status_label = _required_label(status, "status")
         with self._task_guard(handle):
-            events = self._events_unlocked(handle)
-            _require_open_task(handle, events)
+            events = self._open_events(handle)
             existing = _call_event_data(events, "call.finished", call_id)
             timestamp = (
                 _timestamp(completed_at)
@@ -303,13 +304,12 @@ class UsageLedger:
             observation = record.observation
             derived_call_id = _hook_call_id(observation)
             if derived_call_id is None:
-                output.extend(self._ingest_records(task, [record], call_id=call_id))
+                output.extend(self._ingest_records(task, [record]))
                 continue
-            phase = observation.phase or "host-request"
             if observation.source_kind == "pre_api_request":
                 self.start_call(
                     task,
-                    phase,
+                    observation.phase or "host-request",
                     call_id=derived_call_id,
                     started_at=observation.started_at,
                     adapter=observation.adapter,
@@ -323,34 +323,17 @@ class UsageLedger:
                     self._ingest_records(task, [record], call_id=derived_call_id)
                 )
                 continue
-            lifecycle = self._existing_call(task, derived_call_id)
-            linked_call_id = lifecycle.call_id if lifecycle is not None else None
+            start = _call_event_data(self._open_events(task), "call.started", derived_call_id)
+            linked_call_id = derived_call_id if start is not None else None
             output.extend(self._ingest_records(task, [record], call_id=linked_call_id))
-            if lifecycle is not None and observation.source_kind in {
-                "post_api_request",
-                "api_request_error",
-            }:
+            if start is not None:
                 self.finish_call(
-                    lifecycle,
-                    status=(
-                        "failed"
-                        if observation.source_kind == "api_request_error"
-                        else "completed"
-                    ),
+                    _call_handle_from_data(task, start),
+                    status="failed" if observation.source_kind == "api_request_error"
+                    else "completed",
                     completed_at=observation.completed_at,
                 )
         return output
-
-    def _existing_call(self, task: TaskHandle, call_id: str) -> CallHandle | None:
-        """处理：从不可变 start 事件恢复一个 hook call 句柄，不创建缺失生命周期。
-        输入：规范任务与哈希派生 call ID。
-        输出：已存在 start 的 CallHandle；pre 缺失时返回 None 以保留覆盖缺口。
-        """
-
-        handle = self._canonical_task_handle(task)
-        with self._task_guard(handle):
-            start = _call_event_data(self._events_unlocked(handle), "call.started", call_id)
-        return _call_handle_from_data(handle, start) if start is not None else None
 
     def import_usage_file(
         self,
@@ -512,19 +495,18 @@ class UsageLedger:
         输出：持锁上下文；进程异常退出时 OS 自动释放，常驻锁文件不产生 stale owner。
         """
 
-        handle = self._canonical_task_handle(task)
         snapshots = getattr(self._transaction_state, "snapshots", None)
         if snapshots is None:
             snapshots = self._transaction_state.snapshots = {}
-        if handle.task_id in snapshots:
+        if task.task_id in snapshots:
             yield
             return
-        with self._task_id_guard(handle.task_id):
-            snapshots[handle.task_id] = None
+        with self._task_id_guard(task.task_id):
+            snapshots[task.task_id] = None
             try:
                 yield
             finally:
-                snapshots.pop(handle.task_id)
+                snapshots.pop(task.task_id)
 
     @contextmanager
     def _task_id_guard(self, task_id: str) -> Iterator[None]:
@@ -571,19 +553,17 @@ class UsageLedger:
         输出：不可变事件路径列表；原始外部去重键只以哈希形式持久化。
         """
 
-        handle = self._canonical_task_handle(task)
         safe_call_id = validate_id(call_id, "call_id") if call_id else None
         output: list[Path] = []
-        with self._task_guard(handle):
-            events = self._events_unlocked(handle)
-            _require_open_task(handle, events)
+        with self._task_guard(task):
+            self._open_events(task)
             for record in records:
                 data: dict[str, Any] = {"observation": record.observation.to_dict()}
                 if safe_call_id is not None:
                     data["call_id"] = safe_call_id
                 output.append(
                     self._write_event_unlocked(
-                        handle,
+                        task,
                         "usage.observed",
                         dedupe_key=f"usage:{record.dedupe_key}",
                         data=data,
@@ -625,7 +605,7 @@ class UsageLedger:
             result = write_immutable_json(path, event)
             snapshot = getattr(self._transaction_state, "snapshots", {}).get(task.task_id)
             if snapshot is not None:
-                snapshot[0].append(event)
+                insort(snapshot[0], event, key=itemgetter("event_id"))
                 if observation is not None:
                     snapshot[1][event["event_id"]] = observation
             return result
@@ -660,6 +640,16 @@ class UsageLedger:
         """
         return self._load_events(task)[0]
 
+    def _open_events(self, task: TaskHandle) -> list[dict[str, Any]]:
+        """处理：读取未封存任务的持锁快照。
+        输入：已规范化并持锁的任务。
+        输出：校验后的有序事件，已封存时拒绝写入。
+        """
+        events, _, sealed = self._load_events(task)
+        if sealed is not None:
+            raise RuntimeError(f"Usage task is already finalized: {task.task_id}")
+        return events
+
     def _load_events(
         self, task: TaskHandle
     ) -> tuple[list[dict[str, Any]], dict[str, UsageObservation], dict[str, Any] | None]:
@@ -669,9 +659,8 @@ class UsageLedger:
         """
         event_dir = task.path / "events"
         snapshots = getattr(self._transaction_state, "snapshots", {})
-        if snapshots.get(task.task_id) is not None:
-            events, observations, summary = snapshots[task.task_id]
-            return sorted(events, key=lambda row: row["event_id"]), observations, summary
+        if (snapshot := snapshots.get(task.task_id)) is not None:
+            return snapshot
         if not event_dir.exists():
             raise FileNotFoundError(f"Usage task has no event directory: {task.task_id}")
         events: list[dict[str, Any]] = []
@@ -1012,16 +1001,6 @@ def _validate_finalized_summary(
     return expected
 
 
-def _require_open_task(task: TaskHandle, events: list[dict[str, Any]]) -> None:
-    """处理：在 task guard 内把唯一 finalized 事件作为不可逆 seal。
-    输入：规范任务和已经完成完整性验证的当前事件快照。
-    输出：没有业务返回值；task 已封存时拒绝任何新增 call/usage 写入。
-    """
-
-    if any(event["event_type"] == "task.finalized" for event in events):
-        raise RuntimeError(f"Usage task is already finalized: {task.task_id}")
-
-
 def _hook_call_id(observation: UsageObservation) -> str | None:
     """处理：把请求级 hook 的安全关联哈希转换成稳定本地 call ID。
     输入：已脱敏且通过模型校验的 usage observation。
@@ -1185,22 +1164,16 @@ def _summarize_events(
     observations = [observations_by_event[event["event_id"]] for event in usage_events]
     selected, conflicts = _reconcile_observations(observations)
     token_summary = {
-        name: _sum_measurements([getattr(item.tokens, name) for item in selected])
+        name: _sum_measurements(getattr(item.tokens, name) for item in selected)
         for name in TOKEN_FIELDS
     }
-    accounted = _sum_measurements([item.tokens.accounted_total() for item in selected])
-    call_count = _sum_measurements([item.covered_call_count for item in selected])
-    tool_call_count = _sum_measurements([item.tool_call_count for item in selected])
+    accounted = _sum_measurements(item.tokens.accounted_total() for item in selected)
+    call_count = _sum_measurements(item.covered_call_count for item in selected)
+    tool_call_count = _sum_measurements(item.tool_call_count for item in selected)
+    missing_latency = unobservable("latency_dimension_not_exposed")
     latency = {
-        name: _sum_measurements(
-            [
-                item.latency.get(name)
-                if name in item.latency
-                else unobservable("latency_dimension_not_exposed")
-                for item in selected
-            ],
-            legacy_float_sum=legacy_latency_sum,
-        )
+        name: _sum_measurements((item.latency.get(name, missing_latency) for item in selected),
+                                legacy_float_sum=legacy_latency_sum)
         for name in sorted({key for item in selected for key in item.latency})
     }
     lifecycle, started_call_ids = _call_lifecycle(events)
@@ -1438,51 +1411,47 @@ def _token_conflicts(group: list[UsageObservation]) -> list[str]:
 
 
 def _sum_measurements(
-    values: list[Measurement | None], *, legacy_float_sum: bool = False
+    values: Iterable[Measurement], *, legacy_float_sum: bool = False
 ) -> dict[str, Any]:
     """处理：汇总字段测量，同时让任一未知值使总量保持不可观测。
-    输入：同一字段的 measurement/None 列表；legacy_float_sum 仅复核旧延迟封存。
+    输入：同一字段的观测序列；复核历史耗时时保留旧版浮点累加顺序。
     输出：value/quality、已知上下界和未知观测数；unknown 永远不会变成零。
     """
 
-    present = [value for value in values if value is not None]
-    if not present:
-        return {
-            "value": None,
-            "quality": "unobservable",
-            "reason": "no_observations",
-            "known_value": None,
-            "unobservable_observations": 0,
-        }
-    known = [item for item in present if item.value is not None]
-    unknown_count = len(present) - len(known)
-    known_total: int | float | None = None
-    if known:
-        numbers = [item.value for item in known]
-        if legacy_float_sum:
-            known_total = 0
-            for number in numbers:
-                known_total += number
-        elif any(isinstance(number, float) for number in numbers):
-            known_total = float(sum((Decimal(str(number)) for number in numbers), Decimal(0)))
+    numbers = []
+    unknown_count = 0
+    estimated = False
+    for value in values:
+        if value.value is None:
+            unknown_count += 1
         else:
-            known_total = sum(numbers)
-    if unknown_count:
+            numbers.append(value.value)
+            estimated |= value.quality is ObservationQuality.ESTIMATED
+    if not numbers:
+        known_total = None
+    elif legacy_float_sum:
+        # 保持旧封存摘要的浮点累加顺序。
+        known_total = 0
+        for number in numbers:
+            known_total += number
+    elif any(isinstance(number, float) for number in numbers):
+        known_total = float(sum((Decimal(str(number)) for number in numbers), Decimal(0)))
+    else:
+        known_total = sum(numbers)
+
+    reason = None
+    if not numbers and not unknown_count:
+        reason = "no_observations"
+    elif unknown_count:
+        reason = "one_or_more_observations_unobservable"
+    if reason:
         return {
-            "value": None,
-            "quality": "unobservable",
-            "reason": "one_or_more_observations_unobservable",
-            "known_value": known_total,
-            "unobservable_observations": unknown_count,
+            "value": None, "quality": "unobservable", "reason": reason,
+            "known_value": known_total, "unobservable_observations": unknown_count,
         }
-    quality = (
-        "estimated"
-        if any(item.quality is ObservationQuality.ESTIMATED for item in known)
-        else "exact"
-    )
     return {
         "value": known_total,
-        "quality": quality,
+        "quality": "estimated" if estimated else "exact",
         "known_value": known_total,
         "unobservable_observations": 0,
     }
@@ -1498,41 +1467,21 @@ def _task_timing(
     输出：开始/完成 UTC 时间和 unknown-preserving wall_ms 汇总。
     """
 
-    started_values = [
-        event.get("data", {}).get("started_at")
-        for event in events
-        if event.get("event_type") == "task.started"
-    ]
-    finalized_events = [
-        event for event in events if event.get("event_type") == "task.finalized"
-    ]
-    completed_values = (
-        [completed_at_override]
-        if completed_at_override is not None
-        else [event.get("data", {}).get("completed_at") for event in finalized_events]
+    # 事件校验已保证唯一 task.started 及合法、带时区的生命周期时间。
+    start = next(event["data"]["started_at"] for event in events
+                 if event["event_type"] == "task.started")
+    end = completed_at_override or next(
+        (event["data"]["completed_at"] for event in events
+         if event["event_type"] == "task.finalized"), None,
     )
-    started_at, started_instant, started_reason = _resolve_lifecycle_time(
-        started_values,
-        missing_reason="task_start_time_unobservable",
-    )
-    completed_at, completed_instant, completed_reason = _resolve_lifecycle_time(
-        completed_values,
-        missing_reason=(
-            "task_not_finalized"
-            if completed_at_override is None and not finalized_events
-            else "task_completion_time_unobservable"
-        ),
-    )
-    if started_reason is not None:
-        wall_ms = _unobservable_aggregate(started_reason)
-    elif completed_reason is not None:
-        wall_ms = _unobservable_aggregate(completed_reason)
-    elif started_instant is None or completed_instant is None:
-        wall_ms = _unobservable_aggregate("task_timing_unobservable")
-    elif completed_instant < started_instant:
+    started_at, completed_at = normalize_timestamp(start), normalize_timestamp(end)
+    if completed_at is None:
+        wall_ms = _unobservable_aggregate("task_not_finalized")
+    elif completed_at < started_at:
         wall_ms = _unobservable_aggregate("task_completed_before_started")
     else:
-        value = round((completed_instant - started_instant).total_seconds() * 1000, 3)
+        elapsed = datetime.fromisoformat(completed_at) - datetime.fromisoformat(started_at)
+        value = round(elapsed.total_seconds() * 1000, 3)
         wall_ms = {
             "value": value,
             "quality": "exact",
@@ -1544,36 +1493,6 @@ def _task_timing(
         "completed_at": completed_at,
         "wall_ms": wall_ms,
     }
-
-
-def _resolve_lifecycle_time(
-    values: list[object],
-    *,
-    missing_reason: str,
-) -> tuple[str | None, datetime | None, str | None]:
-    """处理：规范化生命周期时间并拒绝缺失、无时区或互相冲突的记录。
-    输入：同一事件类型的候选值和字段缺失时使用的稳定原因标签。
-    输出：唯一 UTC 时间文本、datetime 和可选不可观测原因。
-    """
-
-    if not values:
-        return None, None, missing_reason
-    parsed_values: list[datetime] = []
-    for value in values:
-        if not isinstance(value, str):
-            return None, None, "task_timestamp_invalid"
-        try:
-            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
-        except ValueError:
-            return None, None, "task_timestamp_invalid"
-        if parsed.tzinfo is None:
-            return None, None, "task_timestamp_missing_timezone"
-        parsed_values.append(parsed.astimezone(UTC))
-    unique = {value.isoformat(timespec="seconds") for value in parsed_values}
-    if len(unique) != 1:
-        return None, None, "task_timestamp_conflict"
-    normalized = next(iter(unique))
-    return normalized, datetime.fromisoformat(normalized), None
 
 
 def _unobservable_aggregate(reason: str) -> dict[str, Any]:
@@ -1671,12 +1590,7 @@ def _optional_label(value: str | None, label: str) -> str | None:
     输出：缺失时为 None；存在时为 safe_label 认可的规范字符串。
     """
 
-    if value is None:
-        return None
-    normalized = safe_label(value)
-    if normalized is None:
-        raise ValueError(f"{label} must be a bounded safe label")
-    return normalized
+    return None if value is None else _required_label(value, label)
 
 
 def _optional_non_negative_int(value: int | str | None, label: str) -> int | None:

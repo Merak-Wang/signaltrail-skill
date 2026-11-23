@@ -104,9 +104,8 @@ def _hermes_child_environment(
 
 
 def _host(args: argparse.Namespace) -> int:
-    """处理：在专用 Hermes 解释器中装载计量桥后执行原生一次性会话。
-    输入：
-    - ``args``：外层启动器限定的提示文件、工具集、模型、时间及轮次预算。
+    """在专用 Hermes 解释器中装载计量桥后执行原生一次性会话。
+    输入：``args``：外层启动器限定的提示文件、工具集、模型、时间及轮次预算。
     输出：原生 Hermes 退出码和安全 observer 回执；提示与回答不进入 usage 账本。
     """
     from signaltrail.hosts.hermes import HermesObserver, install_bridge
@@ -136,9 +135,8 @@ def _host(args: argparse.Namespace) -> int:
 
 
 def run_metered(args: argparse.Namespace) -> dict[str, Any]:
-    """处理：先创建用量任务再启动 Hermes，进程退出后验证并封存完整调用链。
-    输入：
-    - ``args``：用户显式指定的 Hermes Python、数据根、提示文件和运行预算。
+    """先创建用量任务再启动 Hermes，进程退出后验证并封存完整调用链。
+    输入：``args``：用户显式指定的 Hermes Python、数据根、提示文件和运行预算。
     输出：host-run 回执；超时或缺失观测封存为 partial，绝不伪造缺失 token。
     """
     args.prompt_file = args.prompt_file.resolve(strict=True)
@@ -214,9 +212,8 @@ def run_metered(args: argparse.Namespace) -> dict[str, Any]:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    """处理：分离用户启动入口与只供子进程使用的宿主入口。
-    输入：
-    - 无显式业务参数：运行参数由 main 交给解析器。
+    """分离用户启动入口与只供子进程使用的宿主入口。
+    输入：无显式业务参数：运行参数由 main 交给解析器。
     输出：包含解释器、提示文件和有界运行选项的解析器。
     """
     parser = SafeArgumentParser(prog="signaltrail-hermes")
@@ -242,9 +239,8 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main() -> int:
-    """处理：执行完整计量启动并以安全 JSON 报告验收状态。
-    输入：
-    - 无显式业务参数：解析当前命令行，只从文件向 Hermes 传递提示。
+    """执行完整计量启动并以安全 JSON 报告验收状态。
+    输入：无显式业务参数：解析当前命令行，只从文件向 Hermes 传递提示。
     输出：成功返回零；计量不全返回一，参数或环境故障返回二。
     """
     try:

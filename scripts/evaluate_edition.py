@@ -14,7 +14,7 @@ from collections import Counter, defaultdict, deque
 from collections.abc import Callable
 from datetime import datetime
 from functools import cache
-from hashlib import file_digest, sha256
+from hashlib import sha256
 from pathlib import Path
 from statistics import mean
 
@@ -24,7 +24,7 @@ from PIL import Image
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from signaltrail.article_time import normalize_time, original_publication_time, published_on_date
+from signaltrail.article_time import normalize_time, original_publication_time, publication_on_date
 from signaltrail.config import load_config
 from signaltrail.localization import (
     source_matches_output_language,
@@ -36,14 +36,8 @@ from signaltrail.reporting import reference_time_label, report_content_hash
 from signaltrail.runtime import require_data_root_path, validate_run_data_root
 from signaltrail.semantics import tldr_quality_issue
 from signaltrail.storage import write_immutable_json
-from signaltrail.utils import read_json_object
+from signaltrail.utils import read_json_object, sha256_file
 from signaltrail.workflow import RunStatus, get_edition_status
-
-
-def digest(path: Path) -> str:
-    """计算本地交付证据的 SHA-256，按流读取大型视频。"""
-    with path.open("rb") as stream:
-        return file_digest(stream, "sha256").hexdigest()
 
 
 def json_with_digest(path: Path, label: str) -> tuple[dict, str]:
@@ -80,7 +74,9 @@ def covered_window(receipt: dict, run: dict) -> bool | None:
 def host_measurement(args: argparse.Namespace, run: dict, run_hash: str,
                      report_matches_run: bool, report_hash: str) -> dict:
     """按宿主输入加输出计量，完整成绩取独立生成指令的全生命周期。"""
-    receipt = read_json_object(args.host_receipt) if args.host_receipt else {}
+    receipt, receipt_hash = (
+        json_with_digest(args.host_receipt, "Host receipt") if args.host_receipt else ({}, None)
+    )
     wall = nonnegative(receipt.get("wall_seconds"))
     usage = receipt.get("total", {})
     inp = nonnegative(usage.get("input_tokens"), integer=True)
@@ -130,7 +126,7 @@ def host_measurement(args: argparse.Namespace, run: dict, run_hash: str,
         "matches_run_and_report": binding if receipt else None,
         "matches_expected_subtree": subtree_matches,
         "window_covers_run": window,
-        "receipt_sha256": digest(args.host_receipt) if receipt else None,
+        "receipt_sha256": receipt_hash if receipt else None,
         "known_token_subtotal": nonnegative(usage.get("total_tokens_known"), integer=True),
         "responses": nonnegative(usage.get("responses"), integer=True),
         "observed_models": sorted({model for row in receipt.get("agents", [])
@@ -273,15 +269,14 @@ def coverage_observation(config_path: Path | None, index: dict, planned: dict | 
     statuses = {row["source_id"]: row.get("status") for row in index.get("sources", [])}
     dates_by_source = defaultdict(Counter)
     window = index.get("collection_window") or run_window or {}
-    cutoff = window.get("end") or index.get("generated_at")
+    cutoff = normalize_time(window.get("end") or index.get("generated_at") or "", "Asia/Shanghai")
     for item in index.get("items", []):
-        dates = dates_by_source[item.get("source_id")]
-        if published_on_date(item, index["date"], cutoff):
-            dates["eligible_by_date"] += 1
-        elif original_publication_time(item):
-            dates["outside_edition"] += 1
+        publication = original_publication_time(item)
+        if publication_on_date(publication, index["date"], cutoff):
+            category = "eligible_by_date"
         else:
-            dates["original_date_unknown"] += 1
+            category = "outside_edition" if publication else "original_date_unknown"
+        dates_by_source[item.get("source_id")][category] += 1
     published_by_source = defaultdict(set)
     for row in rows:
         if row["source_id"] is not None:
@@ -567,7 +562,7 @@ def evaluate(args: argparse.Namespace) -> dict:
     slides = slide_observation(args.deck, run, report_path, reader, decode)
     video = {}
     if args.video:
-        video["video_sha256"] = digest(args.video)
+        video["video_sha256"] = sha256_file(args.video)
         receipt_path = (args.video.with_suffix("") / "page-cache"
                         / f"video-receipt{args.video.suffix}.json")
         receipt = read_json_object(receipt_path) if receipt_path.is_file() else {}

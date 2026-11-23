@@ -64,40 +64,22 @@ _SEVERITY_TERMS = {
 
 
 class _UnionFind:
-    """处理：维护确定性文章聚类使用的并查集。
-    输入：
-    - ``size``：并查集需要管理的候选数量；初始化时每个下标独立成组。
-    输出：构造后的 ``_UnionFind`` 实例或枚举定义；其字段和方法共同承担上述职责。
-    """
+    """维护文章所属的连通分量，供监控聚类合并同一事件。"""
 
     def __init__(self, size: int) -> None:
-        """处理：初始化当前实例及其内部状态。
-        输入：
-        - ``size``：并查集需要管理的候选数量；初始化时每个下标独立成组。
-        输出：不返回新数据；完成“初始化当前实例及其内部状态”，
-          副作用限于该处理声明的受控对象或产物。
-        """
+        """为每篇候选文章建立一个独立集合。"""
         self.parent = list(range(size))
         self.rank = [0] * size
 
     def find(self, value: int) -> int:
-        """处理：查找并返回当前并查集节点的根节点。
-        输入：待解析的值。
-        输出：上述规则计算出的计数、分数、排名或限制值，供确定性决策使用。
-        """
+        """查找文章所属的根节点，沿途缩短下次查找的路径。"""
         while self.parent[value] != value:
             self.parent[value] = self.parent[self.parent[value]]
             value = self.parent[value]
         return value
 
     def union(self, left: int, right: int) -> None:
-        """处理：合并两个并查集节点所属的集合。
-        输入：
-        - ``left``：待合并集合中第一个元素的整数下标。
-        - ``right``：待合并集合中第二个元素的整数下标。
-        输出：不返回新数据；完成“合并两个并查集节点所属的集合”，
-          副作用限于该处理声明的受控对象或产物。
-        """
+        """合并两篇候选文章所在的集合。"""
         left_root = self.find(left)
         right_root = self.find(right)
         if left_root == right_root:
@@ -110,20 +92,12 @@ class _UnionFind:
 
 
 def _normalized_title(value: str) -> str:
-    """处理：统一标题大小写、空白和标点，保留可比较字符。
-    输入：待解析的值。
-    输出：“统一标题大小写、空白和标点，保留可比较字符”得到的规范字符串，
-      供调用方存储、比较或展示。
-    """
+    """统一标题大小写、空白和标点，保留可比较字符。"""
     return " ".join(re.sub(r"[^\w\u3400-\u9fff]+", " ", (value or "").casefold()).split())
 
 
 def lexical_tokens(value: str) -> list[str]:
-    """处理：把中英文标题拆成去停用词的词项和中文二元组。
-    输入：待解析的值。
-    输出：“把中英文标题拆成去停用词的词项和中文二元组”得到的字符串列表；
-      顺序保持确定并可供下一步骤逐项处理。
-    """
+    """把中英文标题拆成去停用词的词项和中文二元组。"""
     normalized = _normalized_title(value)
     tokens = [
         token
@@ -139,25 +113,14 @@ def lexical_tokens(value: str) -> list[str]:
 
 
 def _hash_feature(feature: str, dimensions: int) -> tuple[int, float]:
-    """处理：把词法特征稳定映射到带符号的固定维度位置。
-    输入：
-    - ``feature``：从文章标题提取的词法特征；会被稳定哈希到固定向量维度。
-    - ``dimensions``：词法哈希向量的维度数；决定碰撞率与计算开销。
-    输出：“把词法特征稳定映射到带符号的固定维度位置”得到的固定结构结果；
-      返回位置依次对应 number % dimensions、-1.0 if number & 1 << 63 else 1.。
-    """
+    """对标题特征取稳定哈希，用余数确定向量位置，用最高位确定加一或减一。"""
     digest = hashlib.blake2b(feature.encode("utf-8"), digest_size=8).digest()
     number = int.from_bytes(digest, "big")
     return number % dimensions, -1.0 if number & (1 << 63) else 1.0
 
 
 def lexical_vector(value: str, dimensions: int = 512) -> dict[int, float]:
-    """处理：用词项、相邻词和字符特征构建归一化稀疏向量。
-    输入：待解析的值。
-    - ``dimensions``：词法哈希向量的维度数；决定碰撞率与计算开销。
-    输出：“用词项、相邻词和字符特征构建归一化稀疏向量”形成的结构化字典；
-      键值表达该处理定义的业务记录或查找关系。
-    """
+    """将标题中的词项、相邻词和连续三个字符映射成指定维数的归一化稀疏向量。"""
     tokens = lexical_tokens(value)
     features = [f"u:{token}" for token in tokens]
     features.extend(f"b:{left}|{right}" for left, right in zip(tokens, tokens[1:], strict=False))
@@ -174,24 +137,14 @@ def lexical_vector(value: str, dimensions: int = 512) -> dict[int, float]:
 
 
 def cosine_similarity(left: dict[int, float], right: dict[int, float]) -> float:
-    """处理：计算两个稀疏归一化向量的余弦相似度。
-    输入：
-    - ``left``：第一篇候选文章的稀疏词法向量；键是哈希维度，值是归一化词频。
-    - ``right``：第二篇候选文章的稀疏词法向量；与 left 在相同哈希空间比较。
-    输出：上述规则计算出的连续数值，例如相似度、耗时或比例。
-    """
+    """对两个已归一化的稀疏标题向量求点积，得到聚类使用的余弦相似度。"""
     if len(left) > len(right):
         left, right = right, left
     return sum(weight * right.get(position, 0.0) for position, weight in left.items())
 
 
 def _parse_time(item: dict[str, Any]) -> datetime | None:
-    """处理：把可选 ISO 时间文本解析为带时区时间，空值或非法值返回 None。
-    输入：带稳定 ID 的索引条目。
-    输出：封装“把可选 ISO 时间文本解析为带时区时间，
-      空值或非法值返回 None”业务结果的 ``datetime | None`` 对象；
-      调用方据此继续相邻阶段或识别无结果状态。
-    """
+    """把可选 ISO 时间文本解析为带时区时间，空值或非法值返回 None。"""
     value = item.get("published_at") or item.get("discovered_at")
     if not value:
         return None
@@ -203,20 +156,14 @@ def _parse_time(item: dict[str, Any]) -> datetime | None:
 
 
 def _role_score(item: dict[str, Any]) -> int:
-    """处理：把来源角色转换为聚类重要性分值。
-    输入：带稳定 ID 的索引条目。
-    输出：上述规则计算出的计数、分数、排名或限制值，供确定性决策使用。
-    """
+    """把来源角色转换为聚类重要性分值。"""
     metadata = item.get("metadata", {}) if isinstance(item.get("metadata"), dict) else {}
     role = str(metadata.get("role") or "discovery")
     return {"primary": 10, "evidence": 8, "corroboration": 7, "discovery": 4}.get(role, 4)
 
 
 def _tier(item: dict[str, Any]) -> int:
-    """处理：把来源层级规范到 1 至 3，异常值回退到第二层。
-    输入：带稳定 ID 的索引条目。
-    输出：上述规则计算出的计数、分数、排名或限制值，供确定性决策使用。
-    """
+    """把来源层级规范到 1 至 3，异常值回退到第二层。"""
     metadata = item.get("metadata", {}) if isinstance(item.get("metadata"), dict) else {}
     try:
         return min(3, max(1, int(metadata.get("tier", 2))))
@@ -225,10 +172,8 @@ def _tier(item: dict[str, Any]) -> int:
 
 
 def _representative(items: list[dict[str, Any]]) -> dict[str, Any]:
-    """处理：按层级、角色、标题信息量和 ID 稳定选择代表条目。
+    """按层级、角色、标题信息量和 ID 稳定选择代表条目。
     输入：有序索引条目。
-    输出：“按层级、角色、标题信息量和 ID 稳定选择代表条目”形成的结构化字典；
-      键值表达该处理定义的业务记录或查找关系。
     """
     return min(
         items,

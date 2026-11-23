@@ -78,6 +78,16 @@ def _author_input_file(packet: Path, kind: str) -> Path:
     return directory / (packet.stem + "-author-input.json")
 
 
+def extract_shared_fields(rows: list[dict], fields: set[str]) -> dict:
+    """移出所有稿件都具有同一值的背景字段，并保持原字段顺序。"""
+    shared = {key: value for key, value in rows[0].items()
+              if key in fields and all(key in row and row[key] == value for row in rows[1:])}
+    for row in rows:
+        for key in shared:
+            del row[key]
+    return shared
+
+
 def _share_candidate_fields(payload: dict) -> None:
     """同一来源在本批完全相同的背景信息只写一次，文章顺序、正文和差异仍逐条呈现。"""
     groups = {}
@@ -88,14 +98,8 @@ def _share_candidate_fields(payload: dict) -> None:
     for source, rows in groups.items():
         if len(rows) < 2:
             continue
-        shared = {key: value for key, value in rows[0].items()
-                  if key in _SHARED_CANDIDATE_FIELDS
-                  and all(key in row and row[key] == value for row in rows[1:])}
-        if shared:
+        if shared := extract_shared_fields(rows, _SHARED_CANDIDATE_FIELDS):
             defaults[source] = shared
-            for row in rows:
-                for key in shared:
-                    del row[key]
     if defaults:
         payload["authoring_scope"] += (
             " Each candidate inherits all fields in candidate_defaults_by_source for its "
@@ -125,7 +129,7 @@ def _materialize_task(task: dict, data_dir: Path, *, split_input: bool) -> None:
         if kind == "brief":
             from signaltrail.authoring import brief_authoring_input
 
-            payload = brief_authoring_input(packet, data_dir, include_evidence=True)
+            payload = brief_authoring_input(packet, data_dir, include_evidence=True, _packet=source)
             _share_candidate_fields(payload)
             # 校验和提交由协调程序完成，避免作者为同一批次重复携带材料调用模型。
             payload.pop("preflight_command", None)
@@ -413,9 +417,8 @@ def advance_dispatch(session: Path, data_dir: Path | None = None,
             if data_dir is None:
                 raise ValueError("Brief dispatch requires --run or --data-dir")
             run = root / "runs" / source["date"] / f"{source['edition']}.json"
-        result = submit_brief_batches(run.resolve(), root, skip_batch=in_flight)
+        result = submit_brief_batches(run.resolve(), root, skip_batch=in_flight, dispatch=True)
 
-    batches = {str(batch["batch_id"]): batch for batch in source.get("batches", [])}
     tasks, issues = [], []
     for row in result["batches"]:
         if row.get("accepted_path"):
@@ -427,7 +430,7 @@ def advance_dispatch(session: Path, data_dir: Path | None = None,
             issues.append({"batch_id": number, "errors": errors})
             continue
         kind = "slides" if slides else "brief"
-        packet = row["packet_path"] if slides else batches[str(number)]["packet_path"]
+        packet = row["packet_path"]
         draft_exists = draft.is_file()
         tasks.append({"kind": kind, "batch_id": number, "packet_path": packet,
                       "draft_result_path": str(draft),

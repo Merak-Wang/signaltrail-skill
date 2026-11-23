@@ -16,8 +16,9 @@ from zoneinfo import ZoneInfo
 
 from jsonschema import Draft202012Validator, FormatChecker
 
+from .access import pending_access_pages
 from .article_time import original_publication_time
-from .config import canonical_source_page_url, project_root
+from .config import project_root
 from .localization import (
     OUTPUT_LANGUAGES,
     brief_title_requires_translation,
@@ -27,7 +28,6 @@ from .localization import (
     translated_title,
     translated_title_field,
 )
-from .models import effective_page_results, effective_source_status
 from .semantics import (
     brief_requires_watch,
     reusable_semantic_brief,
@@ -190,11 +190,7 @@ def report_followups(
 
 
 def split_narrative_paragraphs(value: object) -> list[str]:
-    """处理：返回作者正文段落，不把自动换行误判为结构。
-    输入：待解析的值。
-    输出：“返回作者正文段落，不把自动换行误判为结构”得到的字符串列表；
-      顺序保持确定并可供下一步骤逐项处理。
-    """
+    """返回作者正文段落，不把自动换行误判为结构。"""
 
     text = str(value or "").replace("\r\n", "\n").replace("\r", "\n").strip()
     if not text:
@@ -229,11 +225,8 @@ REQUIRED_PERSPECTIVES = {
 
 
 def _report_series_id(report_id: object) -> str | None:
-    """处理：根据日期和版本生成跨修订稳定的报告系列 ID。
-    输入：
-    - ``report_id``：报告或报告系列的稳定 ID；用于推导跨修订关联键。
-    输出：封装“根据日期和版本生成跨修订稳定的报告系列 ID”业务结果的 ``str | None`` 对象；
-      调用方据此继续相邻阶段或识别无结果状态。
+    """根据日期和版本生成跨修订稳定的报告系列 ID。
+    输入：``report_id``：报告或报告系列的稳定 ID；用于推导跨修订关联键。
     """
     match = _REPORT_REVISION_PATTERN.fullmatch(str(report_id or ""))
     return match.group(1) if match else None
@@ -242,10 +235,9 @@ def _report_series_id(report_id: object) -> str | None:
 def evaluation_continuity_floor(
     evaluation: dict[str, Any],
 ) -> tuple[str, set[str], str | None]:
-    """处理：对评估器的复用决定应用确定性的污染防护门槛。
+    """对评估器的复用决定应用确定性的污染防护门槛。
     输入：独立质量评估。
-    输出：“对评估器的复用决定应用确定性的污染防护门槛”得到的固定结构结果；
-      返回位置依次对应 decision、excluded、None。
+    输出：质量门槛下的继承决策、排除项和原因。无需调整时原样保留决策。
     """
     decision = str(evaluation.get("continuity_decision", "selective"))
     raw_excluded = evaluation.get("exclude_from_continuity", [])
@@ -311,11 +303,8 @@ def evaluation_continuity_floor(
 
 
 def content_status_to_access(status: str | None) -> str | None:
-    """处理：把正文采集状态映射为报告来源访问级别。
-    输入：
-    - ``status``：当前操作或来源状态；值必须属于对应的显式状态模型。
-    输出：封装“把正文采集状态映射为报告来源访问级别”业务结果的 ``str | None`` 对象；
-      调用方据此继续相邻阶段或识别无结果状态。
+    """把正文采集状态映射为报告来源访问级别。
+    输入：``status``：当前操作或来源状态；值必须属于对应的显式状态模型。
     """
     if status is None:
         return None
@@ -327,12 +316,11 @@ def reference_time_fields(
     source: dict[str, Any] | None = None,
     fallback_collected_at: object | None = None,
 ) -> dict[str, str]:
-    """处理：返回唯一权威展示时间，且不改变新鲜度语义。
+    """返回唯一权威展示时间，且不改变新鲜度语义。
     输入：带入口与筛选规则的来源配置。
     - ``indexed``：权威来源索引中与当前 item_id 对应的条目记录。
     - ``fallback_collected_at``：索引级采集时间；仅在条目没有发布时间和发现时间时作为展示回退。
-    输出：“返回唯一权威展示时间，且不改变新鲜度语义”形成的结构化字典；
-      典型键包括 collected_at、published_at。
+    输出：字段包括 collected_at、published_at。
     """
     # 选材和展示均采用出版方原发时间；发现平台的时间只说明上榜或收录。
     published_at = original_publication_time(indexed)
@@ -352,12 +340,7 @@ def reference_time_label(
     ref: dict[str, Any],
     output_language: object = "zh-CN",
 ) -> tuple[str, str] | None:
-    """处理：选择读者可见的时间标签，并优先使用实际发布时间。
-    输入：报告目标语言。
-    - ``ref``：报告条目的 reference_time 对象；包含时间值、类型和是否为回退。
-    输出：“选择读者可见的时间标签，并优先使用实际发布时间”得到的固定结构结果；
-      返回位置依次对应 localized(output_language, '发布时间、published_at。
-    """
+    """给引用的展示时间配上本地化标签。优先使用发布时间，再用采集时间，两者均无时不显示。"""
     published_at = str(ref.get("published_at") or "").strip()
     if published_at:
         if re.fullmatch(r"\d{4}-\d{2}-\d{2}", published_at):
@@ -375,12 +358,10 @@ def _require_output_language(
     errors: list[str],
     language: object = "zh-CN",
 ) -> None:
-    """处理：从报告对象读取输出语言，并在不属于受支持语言集合时记录校验错误。
+    """从报告对象读取输出语言，并在不属于受支持语言集合时记录校验错误。
     输入：待解析的值、输出语言。
     - ``location``：当前校验字段的 JSON 路径；用于生成可定位的错误消息。
     - ``errors``：已收集的校验错误列表；调用方可一次性修复。
-    输出：不返回新数据；完成“从报告对象读取输出语言，并在不属于受支持语言集合时记录校验错误”，
-      副作用限于该处理声明的受控对象或产物。
     """
     if isinstance(value, str) and value.strip() and not text_matches_output_language(
         value, language
@@ -394,12 +375,10 @@ def _normalize_brief_title(
     indexed: dict[str, Any],
     output_language: object,
 ) -> None:
-    """处理：保留索引原题，并只保留一个目标语言译题。
+    """保留索引原题，并只保留一个目标语言译题。
     输入：报告目标语言。
     - ``brief``：模型生成或缓存复用的单条简报；包含标题、摘要、重要性、证据和条目 ID。
     - ``indexed``：权威来源索引中与当前 item_id 对应的条目记录。
-    输出：不返回新数据；完成“保留索引原题，并只保留一个目标语言译题”，
-      副作用限于该处理声明的受控对象或产物。
     """
     original_title = str(indexed.get("title") or "").strip()
     if not original_title:
@@ -441,8 +420,7 @@ def _report_schema_validator(contents: bytes) -> Draft202012Validator:
 
 
 def _schema_errors(report: object) -> list[str]:
-    """处理：使用 JSON Schema 收集并格式化结构错误。
-    输入：含栏目和来源引用的报告。
+    """使用 JSON Schema 收集并格式化结构错误。
     输出：可操作的校验错误消息列表；空列表表示通过当前规则。
     """
     schema_path = project_root() / "schemas" / "report.schema.json"
@@ -457,10 +435,8 @@ def _schema_errors(report: object) -> list[str]:
 
 
 def _publication_date(value: object, timezone: str) -> date | None:
-    """处理：从条目或来源引用中读取规范发布日期。
+    """从条目或来源引用中读取规范发布日期。
     输入：待解析的值、用于解释本地日期的 IANA 时区。
-    输出：封装“从条目或来源引用中读取规范发布日期”业务结果的 ``date | None`` 对象；
-      调用方据此继续相邻阶段或识别无结果状态。
     """
     if not isinstance(value, str) or not value.strip():
         return None
@@ -477,10 +453,8 @@ def _publication_date(value: object, timezone: str) -> date | None:
 
 
 def _freshness_cap(age_days: int) -> int:
-    """处理：按信息年龄和采集状态计算时效分上限。
-    输入：
-    - ``age_days``：条目参考时间距报告时间的完整天数；用于限制可分配的重要性。
-    输出：上述规则计算出的计数、分数、排名或限制值，供确定性决策使用。
+    """按信息年龄和采集状态计算时效分上限。
+    输入：``age_days``：条目参考时间距报告时间的完整天数；用于限制可分配的重要性。
     """
     if age_days <= 0:
         return 15
@@ -494,11 +468,7 @@ def _freshness_cap(age_days: int) -> int:
 
 
 def hydrate_report_evidence(report: dict, index: dict | None) -> None:
-    """处理：用权威索引回填报告简报的来源身份、引用时间和正文证据，拒绝未知条目。
-    输入：含栏目和来源引用的报告、规范来源索引。
-    输出：不返回新数据；完成“用权威索引回填报告简报的来源身份、引用时间和正文证据，
-      拒绝未知条目”，副作用限于该处理声明的受控对象或产物。
-    """
+    """从采集索引回填简报和事件引用的来源与展示时间。简报匹配不到索引条目时保留原稿。"""
     if not isinstance(index, dict):
         return
     sources = {
@@ -511,6 +481,14 @@ def hydrate_report_evidence(report: dict, index: dict | None) -> None:
         for row in index.get("items", [])
         if isinstance(row, dict) and row.get("item_id")
     }
+    fallback_time = index.get("generated_at") or report.get("generated_at")
+
+    def set_reference_time(ref: dict, indexed: dict, source: dict) -> None:
+        """依照索引重设引用时间，清除旧稿中已经失效的时间字段。"""
+        ref.pop("published_at", None)
+        ref.pop("collected_at", None)
+        ref.update(reference_time_fields(indexed, source, fallback_time))
+
     for section in report.get("sections", []):
         for brief in section.get("briefs", []):
             indexed = items.get(brief.get("item_id"), {})
@@ -530,15 +508,7 @@ def hydrate_report_evidence(report: dict, index: dict | None) -> None:
             ):
                 if value is not None:
                     ref.setdefault(key, value)
-            ref.pop("published_at", None)
-            ref.pop("collected_at", None)
-            ref.update(
-                reference_time_fields(
-                    indexed,
-                    source,
-                    index.get("generated_at") or report.get("generated_at"),
-                )
-            )
+            set_reference_time(ref, indexed, source)
             brief.setdefault(
                 "primary_source",
                 {
@@ -554,15 +524,7 @@ def hydrate_report_evidence(report: dict, index: dict | None) -> None:
                 for key in ("source_id", "source_name"):
                     if indexed.get(key):
                         ref[key] = indexed[key]
-                ref.pop("published_at", None)
-                ref.pop("collected_at", None)
-                ref.update(
-                    reference_time_fields(
-                        indexed,
-                        source,
-                        index.get("generated_at") or report.get("generated_at"),
-                    )
-                )
+                set_reference_time(ref, indexed, source)
                 if source.get("source_url"):
                     ref["source_url"] = source["source_url"]
             if not event.get("primary_source") and event.get("source_refs"):
@@ -575,13 +537,7 @@ def hydrate_report_evidence(report: dict, index: dict | None) -> None:
 
 
 def _allocate_importance(total: int, freshness_cap: int) -> tuple[int, dict[str, int]]:
-    """处理：把总重要性按约束拆分为影响、时效、可信度等分项。
-    输入：
-    - ``total``：待分配的重要性总分；算法确定性地分配到各简报。
-    - ``freshness_cap``：按内容年龄计算的单条重要性上限。
-    输出：“把总重要性按约束拆分为影响、时效、可信度等分项”得到的固定结构结果；
-      返回位置依次对应 total、result。
-    """
+    """按各分项上限的比例分配重要性，返回截断后的总分和加总恰好等于总分的整数分项。"""
     caps = {**IMPORTANCE_CAPS, "freshness": freshness_cap}
     total = max(0, min(int(total), sum(caps.values())))
     cap_total = sum(caps.values())
@@ -593,26 +549,16 @@ def _allocate_importance(total: int, freshness_cap: int) -> tuple[int, dict[str,
         key=lambda key: (raw[key] - int(raw[key]), caps[key]),
         reverse=True,
     )
-    while remainder:
-        progressed = False
-        for key in order:
-            if result[key] >= caps[key]:
-                continue
-            result[key] += 1
-            remainder -= 1
-            progressed = True
-            if not remainder:
-                break
-        if not progressed:
-            break
+    # 每一项向下取整时都少于一分，余分依次补给小数部分最大的分项。
+    for key in order[:remainder]:
+        result[key] += 1
     return total, result
 
 
 def _source_rank_label(source_id: str, rank: int, output_language: object) -> str:
-    """处理：把来源内排序转换为读者可理解的排名标签。
+    """把来源内排序转换为读者可理解的排名标签。
     输入：稳定来源 ID、报告目标语言。
     - ``rank``：简报或来源在当前栏目中的一基排序号。
-    输出：“把来源内排序转换为读者可理解的排名标签”得到的规范字符串，供调用方存储、比较或展示。
     """
     if not is_chinese_output(output_language):
         if source_id == "weibo_hot":
@@ -631,91 +577,32 @@ def _pending_from_index(
     index: dict,
     output_language: object = "zh-CN",
 ) -> list[dict[str, str]]:
-    """处理：从索引提取仍需验证或失败的来源记录。
-    输入：规范来源索引、报告目标语言。
-    输出：“从索引提取仍需验证或失败的来源记录”得到的有序结构化记录；
-      典型字段包括 error、note、source_id、source_name、status、url，可直接交给下一阶段。
+    """从索引提取仍需验证或失败的来源记录。
+    输出：字段包括 error、note、source_id、source_name、status、url。
     """
-    pending: list[dict[str, str]] = []
-    seen: set[tuple[str, str]] = set()
-    for source in index.get("sources", []):
-        if not isinstance(source, dict):
-            continue
-        source_id = str(source.get("source_id", ""))
-        source_name = str(source.get("source_name", source_id))
-        page_rows = []
-        effective_pages = effective_page_results(source.get("page_results", []))
-        for page in effective_pages:
-            status = str(page.get("status", ""))
-            if status == "no_items" and (
-                page.get("error")
-                or (
-                    isinstance(page.get("http_status"), int)
-                    and int(page["http_status"]) >= 400
-                )
-            ):
-                page = {**page, "status": "failed"}
-                status = "failed"
-            if status in {"verification_required", "rate_limited", "failed"}:
-                page_rows.append(page)
-        source_status = effective_source_status(source, effective_pages)
-        if not page_rows and source_status in {
-            "verification_required",
-            "rate_limited",
-            "failed",
-        }:
-            page_rows = [
-                {
-                    "status": source_status,
-                    "url": source.get("source_url"),
-                    "error": source.get("error"),
-                }
-            ]
-        for page in page_rows:
-            url = canonical_source_page_url(
-                source_id,
-                str(page.get("url") or source.get("source_url") or ""),
-            )
-            if not url.startswith(("http://", "https://")) or (source_id, url) in seen:
-                continue
-            seen.add((source_id, url))
-            status = str(page.get("status"))
-            if status == "rate_limited":
-                note = localized(
-                    output_language,
-                    "来源暂时限制访问；本版保留链接，停止自动重试并等待后续时段",
-                    "The source is rate-limiting access; the link is retained for a later run.",
-                )
-            elif status == "verification_required":
-                note = localized(
-                    output_language,
-                    "需要人工验证；可从验证链接队列打开",
-                    "Manual verification is required; open it from the verification queue.",
-                )
-            else:
-                note = localized(
-                    output_language,
-                    "采集失败；保留链接供人工打开",
-                    "Collection failed; the link is retained for manual review.",
-                )
-            pending.append(
-                {
-                    "source_id": source_id,
-                    "source_name": source_name,
-                    "status": status,
-                    "note": note,
-                    "url": url,
-                }
-            )
-    return pending
+    notes = {
+        "rate_limited": localized(
+            output_language, "来源暂时限制访问；本版保留链接，停止自动重试并等待后续时段",
+            "The source is rate-limiting access; the link is retained for a later run.",
+        ),
+        "verification_required": localized(
+            output_language, "需要人工验证；可从验证链接队列打开",
+            "Manual verification is required; open it from the verification queue.",
+        ),
+        "failed": localized(
+            output_language, "采集失败；保留链接供人工打开",
+            "Collection failed; the link is retained for manual review.",
+        ),
+    }
+    return [
+        {"source_id": page["source_id"], "source_name": page["source_name"],
+         "status": page["status"], "note": notes[page["status"]], "url": page["url"]}
+        for _, page in pending_access_pages(index)
+    ]
 
 
 def _normalize_draft_sections(value: object) -> tuple[dict[str, dict[str, Any]], list[str]]:
-    """处理：规范化列表或映射形式的草稿栏目及已知模型别名。
-    输入：待解析的值。
-    输出：“规范化列表或映射形式的草稿栏目及已知模型别名”得到的固定结构结果；
-      返回位置依次对应 normalized、warnings。
-    """
+    """把数组或以栏目 ID 为键的对象整理成规范栏目映射，同时返回别名及格式转换提示。"""
     warnings: list[str] = []
     if value is None:
         entries: list[tuple[str | None, object]] = []
@@ -771,11 +658,7 @@ def _normalize_draft_sections(value: object) -> tuple[dict[str, dict[str, Any]],
 
 
 def _normalize_draft_analyses(value: object) -> tuple[list[dict[str, Any]], list[str]]:
-    """处理：规范化列表或映射形式的分析草稿，不虚构语义内容。
-    输入：待解析的值。
-    输出：“规范化列表或映射形式的分析草稿，不虚构语义内容”得到的固定结构结果；
-      返回位置依次对应 [dict(analysis) for analysis in 、warnings。
-    """
+    """把列表或映射形式的研判草稿转换为研判数组，并返回格式转换提示。"""
     warnings: list[str] = []
     if value is None:
         return [], warnings
@@ -963,11 +846,9 @@ def compile_report_data(
         )
 
     def authoritative_ref(item_id: str) -> dict[str, Any] | None:
-        """处理：按引用 ID 返回与索引绑定的权威来源对象。
-        输入：
-        - ``item_id``：规范条目的稳定 ID；用于连接索引、正文、简报和图片。
-        输出：“按引用 ID 返回与索引绑定的权威来源对象”形成的结构化字典；
-          典型键包括 access、item_id、role、title、url。
+        """按引用 ID 返回与索引绑定的权威来源对象。
+        输入：``item_id``：规范条目的稳定 ID；用于连接索引、正文、简报和图片。
+        输出：字段包括 access、item_id、role、title、url。
         """
         indexed = indexed_items.get(item_id)
         if not indexed:
@@ -1369,11 +1250,7 @@ def compile_report_data(
 
 
 def normalize_report_data(report: dict, index: dict | None) -> None:
-    """处理：为当前契约补齐确定性计数和来源指标。
-    输入：含栏目和来源引用的报告、规范来源索引。
-    输出：不返回新数据；完成“为当前契约补齐确定性计数和来源指标”，
-      副作用限于该处理声明的受控对象或产物。
-    """
+    """为当前契约补齐确定性计数和来源指标。"""
     hydrate_report_evidence(report, index)
     if report.get("schema_version") not in BRIEF_REPORT_SCHEMAS:
         return
@@ -1430,10 +1307,7 @@ def normalize_report_data(report: dict, index: dict | None) -> None:
 
 
 def report_content_hash(report: dict) -> str:
-    """处理：移除可变投影字段后计算报告语义内容哈希。
-    输入：含栏目和来源引用的报告。
-    输出：“移除可变投影字段后计算报告语义内容哈希”得到的规范字符串，供调用方存储、比较或展示。
-    """
+    """移除可变投影字段后计算报告语义内容哈希。"""
     payload = {key: value for key, value in report.items() if key != "quality_evaluation"}
     canonical = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
@@ -1795,22 +1669,18 @@ def validate_report_data(
         )
 
     def require_output_language(value: object, location: str) -> None:
-        """处理：读取当前校验节点的输出语言，并把缺失或非法值加入报告错误列表。
+        """读取当前校验节点的输出语言，并把缺失或非法值加入报告错误列表。
         输入：待解析的值。
         - ``location``：当前校验字段的 JSON 路径；用于生成可定位的错误消息。
-        输出：不返回新数据；完成“读取当前校验节点的输出语言，并把缺失或非法值加入报告错误列表”，
-          副作用限于该处理声明的受控对象或产物。
         """
         if strict_contract:
             _require_output_language(value, location, errors, output_language)
 
     def require_reference_time(ref: dict[str, Any], location: str) -> None:
-        """处理：要求来源引用至少包含发布时间或采集时间。
+        """要求来源引用至少包含发布时间或采集时间。
         输入：
         - ``ref``：报告条目的 reference_time 对象；包含时间值、类型和是否为回退。
         - ``location``：当前校验字段的 JSON 路径；用于生成可定位的错误消息。
-        输出：不返回新数据；完成“要求来源引用至少包含发布时间或采集时间”，
-          副作用限于该处理声明的受控对象或产物。
         """
         if not brief_contract:
             return
@@ -1844,11 +1714,8 @@ def validate_report_data(
                 source_aliases.setdefault(source_id, set()).add(name.casefold())
 
     def mentioned_source_ids(values: list[object]) -> set[str]:
-        """处理：收集分析文本和结构化字段中实际提及的来源 ID。
-        输入：
-        - ``values``：待规范化、匹配或渲染的一组输入值。
-        输出：封装“收集分析文本和结构化字段中实际提及的来源 ID”业务结果的 ``set[str]`` 对象；
-          调用方据此继续相邻阶段或识别无结果状态。
+        """收集分析文本和结构化字段中实际提及的来源 ID。
+        输入：``values``：待规范化、匹配或渲染的一组输入值。
         """
         text = " ".join(str(value) for value in values).casefold()
         return {
@@ -2373,13 +2240,12 @@ def validate_report(
     coverage_targets: dict[str, int] | None = None,
     brief_plan_item_ids: dict[str, list[str]] | None = None,
 ) -> tuple[list[str], list[str]]:
-    """处理：校验报告并在不满足约束时报告错误。
+    """校验报告并在不满足约束时报告错误。
     输入：版本化报告路径、版本化来源索引路径。
     - ``events_path``：可选历史事件 JSON 路径；提供时参与报告语义校验。
     - ``coverage_targets``：按来源 ID 指定的最小报告覆盖数；由运行情境拥有。
     - ``brief_plan_item_ids``：当前 context 固定的每来源有序条目；用于按同一边界编译验证副本。
-    输出：“校验报告并在不满足约束时报告错误”得到的固定结构结果；
-      返回位置依次对应 errors、[*compile_warnings, *validation_。
+    输出：阻断错误和按编译、校验顺序合并的警告。
     """
     report = read_json(report_path)
     index = read_json(index_path) if index_path else None

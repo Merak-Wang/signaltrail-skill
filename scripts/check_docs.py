@@ -44,11 +44,7 @@ PROHIBITED_MARKDOWN_PATTERNS = {
 
 
 def markdown_files(root: Path = ROOT) -> list[Path]:
-    """处理：枚举当前文档，并在遍历前排除快照、运行数据和依赖目录。
-    输入：
-    - ``root``：仓库根或测试目录；扫描其中的 Markdown，不跟随目录符号链接。
-    输出：需要检查的文档路径；不含本地计划、宿主审计和生成副本。
-    """
+    """列出仓库中参与检查的 Markdown，跳过本地数据、生成目录及历史例外。"""
     files = []
     for directory, folders, names in os.walk(root):
         folders[:] = sorted(name for name in folders if name not in IGNORED_PARTS)
@@ -62,16 +58,12 @@ def markdown_files(root: Path = ROOT) -> list[Path]:
     return sorted(files)
 
 
-def canonical_records(root: Path = ROOT) -> list[Path]:
-    """处理：列出根入口与需要同步中文译文的英文工程记录。
-    输入：
-    - ``root``：仓库根或测试目录；采用同一文档发现规则排除生成和本地文件。
-    输出：英文记录路径，供元数据及翻译配对检查使用，包含历史记录。
-    """
+def canonical_records(root: Path = ROOT, documents: list[Path] | None = None) -> list[Path]:
+    """列出需要中文镜像的根入口和英文工程文档，供版本与翻译检查使用。"""
     records = [root / name for name in ENTRY_DOCUMENTS]
     records.extend(
         path
-        for path in markdown_files(root)
+        for path in (markdown_files(root) if documents is None else documents)
         if path.is_relative_to(root / "docs")
         and "zh-CN" not in path.relative_to(root / "docs").parts
     )
@@ -79,12 +71,7 @@ def canonical_records(root: Path = ROOT) -> list[Path]:
 
 
 def translation_path(record: Path, root: Path = ROOT) -> Path:
-    """处理：定位英文工程记录对应的中文镜像。
-    输入：
-    - ``record``：根入口或 docs 下的英文文件；消费相对目录和文件名。
-    - ``root``：仓库根；决定 docs/zh-CN 的位置。
-    输出：预期译文路径，供缺失译文检查和错误提示使用。
-    """
+    """按英文文件的相对目录定位中文镜像，根 AGENTS.md 对应 agent-instructions.md。"""
     relative = Path(record.name) if record.parent == root else record.relative_to(root / "docs")
     if relative == Path("AGENTS.md"):
         relative = Path("agent-instructions.md")
@@ -92,12 +79,7 @@ def translation_path(record: Path, root: Path = ROOT) -> Path:
 
 
 def _local_target(document: Path, raw_target: str) -> Path | None:
-    """处理：将相对链接转为本地路径，跳过网页和页内锚点。
-    输入：
-    - ``document``：包含链接的 Markdown 路径；其父目录是相对链接的基准。
-    - ``raw_target``：提取的 URL 或尖括号路径；解码百分号并去掉查询和锚点。
-    输出：需要确认存在的路径；外部 URL、内嵌数据和页内锚点返回 None。
-    """
+    """将 Markdown 中的本地链接解析为绝对路径，忽略网页地址与页内锚点。"""
     target = raw_target.strip()
     target = target[1:-1] if target.startswith("<") and target.endswith(">") else target
     if not target or target.startswith("#") or urlsplit(target).scheme or target.startswith("//"):
@@ -107,15 +89,11 @@ def _local_target(document: Path, raw_target: str) -> Path | None:
 
 
 def validate_docs(root: Path = ROOT, *, today: date | None = None) -> list[str]:
-    """处理：检查文档大小、元数据、翻译、隐私痕迹和本地链接。
-    输入：
-    - ``root``：仓库根或测试夹具目录；所有发现和配对使用同一根。
-    - ``today``：检查日期；默认系统日期，测试可固定它以验证过期行为。
-    输出：可定位文件的错误列表；空列表表示当前文档检查通过。
-    """
+    """检查文档元数据、时效、翻译和链接，返回能定位文件的错误。"""
     errors: list[str] = []
     today = today or date.today()
-    for record in canonical_records(root):
+    documents = markdown_files(root)
+    for record in canonical_records(root, documents):
         relative = record.relative_to(root)
         if not record.is_file():
             errors.append(f"Missing canonical record: {relative}")
@@ -153,7 +131,7 @@ def validate_docs(root: Path = ROOT, *, today: date | None = None) -> list[str]:
         if age < 0 or (not historical and age > MAX_VERIFICATION_AGE_DAYS):
             errors.append(f"Stale verification date: {relative}: {verified} ({age} days old)")
 
-    for document in markdown_files(root):
+    for document in documents:
         text = document.read_text(encoding="utf-8")
         relative = document.relative_to(root)
         for label, pattern in PROHIBITED_MARKDOWN_PATTERNS.items():
@@ -169,11 +147,7 @@ def validate_docs(root: Path = ROOT, *, today: date | None = None) -> list[str]:
 
 
 def main() -> int:
-    """处理：执行文档检查并打印可直接修复的错误。
-    输入：
-    - 无显式业务参数：从脚本位置定位仓库，检查当前文档和中文镜像。
-    输出：终端检查结果和退出码；有错误时返回 1，全部通过返回 0。
-    """
+    """输出文档检查结果，有错误时返回非零退出码。"""
     errors = validate_docs()
     for error in errors:
         print(f"ERROR: {error}")

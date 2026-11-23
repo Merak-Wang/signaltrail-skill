@@ -11,10 +11,7 @@ from .common import CommandContext, print_json
 
 
 def handle_refresh_monitor(args: argparse.Namespace, context: CommandContext) -> int:
-    """处理：刷新监控快照并输出采集摘要。
-    输入：已解析的命令选项、当前命令的运行上下文。
-    输出：终端结果及供宿主判断成败的退出码。
-    """
+    """刷新监控快照并输出采集摘要。"""
     config = context.config
     data_dir = context.data_dir
     output = refresh_monitor(
@@ -39,10 +36,7 @@ def handle_refresh_monitor(args: argparse.Namespace, context: CommandContext) ->
 
 
 def handle_monitor_status(args: argparse.Namespace, context: CommandContext) -> int:
-    """处理：读取已有监控快照的状态。
-    输入：已解析的命令选项、当前命令的运行上下文。
-    输出：终端结果及供宿主判断成败的退出码。
-    """
+    """读取已有监控快照的状态。"""
     data_dir = context.data_dir
     snapshot_path = data_dir / "monitor" / "snapshot.json"
     if not snapshot_path.exists():
@@ -67,10 +61,7 @@ def handle_monitor_status(args: argparse.Namespace, context: CommandContext) -> 
 
 
 def handle_serve(args: argparse.Namespace, context: CommandContext) -> int:
-    """处理：启动本地监控页面和可选刷新循环。
-    输入：已解析的命令选项、当前命令的运行上下文。
-    输出：终端结果及供宿主判断成败的退出码。
-    """
+    """启动本地监控页面和可选刷新循环。"""
     config = context.config
     data_dir = context.data_dir
     serve_monitor(

@@ -106,7 +106,8 @@ Avoid creating generic `manager`, `helper`, or `utils` modules for unrelated ope
 their remaining large functions are TD-002, not a reason to add another ambiguous report module.
 
 Maintained functions and classes use Chinese docstrings explaining the operation, the source
-and consumed content of inputs, and the result's downstream meaning. Keep these concrete:
+and consumed content of inputs, and the result's downstream meaning. A simple transformation
+can express these in one sentence. Document a shared contract at its implementation. Keep notes concrete:
 “returns the validated index path” is useful; “returns the result of processing” is not.
 Add inline comments for non-obvious safety, state, compatibility, or concurrency choices.
 

@@ -15,16 +15,14 @@ CommandHandler = Callable[[argparse.Namespace, Mapping[str, str]], dict[str, Any
 
 
 class SafeArgumentParser(argparse.ArgumentParser):
-    """处理：拒绝参数错误时回显可能误传入的回执或凭据。
-    输入：
-    - 无显式业务参数：构造参数沿用 argparse；本类只收紧非法参数的错误输出。
+    """拒绝参数错误时回显可能误传入的回执或凭据。
+    输入：无显式业务参数：构造参数沿用 argparse；本类只收紧非法参数的错误输出。
     输出：合法参数返回 Namespace；非法参数抛出固定 ValueError，由入口输出安全 JSON。
     """
 
     def error(self, _message: str) -> None:
-        """处理：把 argparse 自带的含原值错误文本替换为固定异常。
-        输入：
-        - ``_message``：argparse 生成且可能包含用户原始参数的文本；不会读取或回显。
+        """把 argparse 自带的含原值错误文本替换为固定异常。
+        输入：``_message``：argparse 生成且可能包含用户原始参数的文本；不会读取或回显。
         输出：无正常返回；始终抛出不含参数值的 ValueError。
         """
 
@@ -32,9 +30,8 @@ class SafeArgumentParser(argparse.ArgumentParser):
 
 
 def build_parser() -> argparse.ArgumentParser:
-    """处理：创建只公开本地安全计量操作的命令行解析规则。
-    输入：
-    - 无显式业务参数：命令行值由入口函数交给返回的解析器。
+    """创建只公开本地安全计量操作的命令行解析规则。
+    输入：无显式业务参数：命令行值由入口函数交给返回的解析器。
     输出：包含 start、hook、import、summary、finalize 子命令的解析器。
     """
 
@@ -45,9 +42,7 @@ def build_parser() -> argparse.ArgumentParser:
     subcommands = parser.add_subparsers(dest="command", required=True)
 
     start = subcommands.add_parser("start", help="Start an immutable usage task")
-    _add_ledger_argument(start)
     start.add_argument("--agent", required=True)
-    start.add_argument("--task-id")
     start.add_argument("--source-tag")
     start.add_argument("--parent-task-id")
     start.add_argument("--started-at")
@@ -63,58 +58,32 @@ def build_parser() -> argparse.ArgumentParser:
         "import",
         help="Import one local provider usage file",
     )
-    _add_ledger_argument(import_command)
-    _add_task_argument(import_command)
     import_command.add_argument("path", type=Path)
     import_command.add_argument("--adapter")
     import_command.add_argument("--phase")
-    import_command.add_argument("--batch-id")
-    import_command.add_argument("--agent-role")
-    import_command.add_argument("--run-attempt", type=int)
-    import_command.add_argument("--repair-attempt", type=int)
-    import_command.add_argument("--evaluation-attempt", type=int)
-    import_command.add_argument("--parent-session-id")
+    for field in USAGE_CORRELATION_ENV:
+        import_command.add_argument(
+            "--" + field.replace("_", "-"), type=int if field.endswith("_attempt") else str
+        )
     import_command.set_defaults(handler=_import_command)
 
     summary = subcommands.add_parser("summary", help="Summarize one usage task")
-    _add_ledger_argument(summary)
-    _add_task_argument(summary)
     summary.set_defaults(handler=_summary_command)
 
     finalize = subcommands.add_parser("finalize", help="Finalize one usage task")
-    _add_ledger_argument(finalize)
-    _add_task_argument(finalize)
     finalize.add_argument("--status", default="completed")
     finalize.add_argument("--completed-at")
     finalize.set_defaults(handler=_finalize_command)
+    for command in (start, import_command, summary, finalize):
+        command.add_argument(
+            "--ledger", type=Path,
+            help="SignalTrail data root or usage root; defaults to SIGNALTRAIL_USAGE_LEDGER",
+        )
+        command.add_argument(
+            "--task-id",
+            help=None if command is start else "Usage task ID; defaults to SIGNALTRAIL_USAGE_TASK",
+        )
     return parser
-
-
-def _add_ledger_argument(parser: argparse.ArgumentParser) -> None:
-    """处理：为本地账本子命令添加可由环境变量补足的根路径参数。
-    输入：
-    - ``parser``：正在构建的子命令解析器；环境值留到执行阶段读取。
-    输出：解析器新增 ``--ledger``，不读取或创建任何本地文件。
-    """
-
-    parser.add_argument(
-        "--ledger",
-        type=Path,
-        help="SignalTrail data root or usage root; defaults to SIGNALTRAIL_USAGE_LEDGER",
-    )
-
-
-def _add_task_argument(parser: argparse.ArgumentParser) -> None:
-    """处理：为已有任务的子命令添加可由环境变量补足的任务 ID。
-    输入：
-    - ``parser``：正在构建的 import、summary 或 finalize 解析器。
-    输出：解析器新增 ``--task-id``，不会接受 prompt 或原始回执参数。
-    """
-
-    parser.add_argument(
-        "--task-id",
-        help="Usage task ID; defaults to SIGNALTRAIL_USAGE_TASK",
-    )
 
 
 def _required_runtime_value(
@@ -151,10 +120,8 @@ def _optional_runtime_value(
     输出：去除首尾空白的字符串；未提供时返回 None。
     """
 
-    value = str(explicit).strip() if explicit is not None else ""
-    if not value:
-        value = str(environ.get(env_name) or "").strip()
-    return value or None
+    supplied = "" if explicit is None else str(explicit).strip()
+    return supplied or (environ.get(env_name) or "").strip() or None
 
 
 def _ledger(
@@ -247,19 +214,11 @@ def _import_command(
     ledger = _ledger(args, environ)
     task_id = _task_id(args, environ)
     handle = ledger.resolve_task(task_id)
-    adapter = _optional_runtime_value(
-        args.adapter,
-        environ,
-        "SIGNALTRAIL_USAGE_ADAPTER",
-    ) or "hermes"
-    phase = _optional_runtime_value(
-        args.phase,
-        environ,
-        "SIGNALTRAIL_USAGE_PHASE",
-    )
+    adapter = _optional_runtime_value(args.adapter, environ, "SIGNALTRAIL_USAGE_ADAPTER")
+    phase = _optional_runtime_value(args.phase, environ, "SIGNALTRAIL_USAGE_PHASE")
     paths = ledger.import_usage_file(
         handle,
-        adapter,
+        adapter or "hermes",
         args.path,
         phase=phase,
         **{
@@ -311,20 +270,9 @@ def _finalize_command(
     return {"task_id": handle.task_id, "path": str(path)}
 
 
-def _write_json(payload: Mapping[str, Any]) -> None:
-    """处理：以稳定 UTF-8 JSON 输出核心库已脱敏的结果。
-    输入：
-    - ``payload``：start/import/summary/finalize 返回的安全字段映射。
-    输出：stdout 中一个 JSON 对象和换行；不输出宿主原始回执。
-    """
-
-    print(json.dumps(dict(payload), ensure_ascii=False, sort_keys=True))
-
-
 def _write_safe_error(error: BaseException) -> None:
-    """处理：在失败时仅报告异常类型而不复制可能含外部内容的消息。
-    输入：
-    - ``error``：参数解析后由账本、适配器或文件系统抛出的异常。
+    """在失败时仅报告异常类型而不复制可能含外部内容的消息。
+    输入：``error``：参数解析后由账本、适配器或文件系统抛出的异常。
     输出：stderr 中一个固定结构 JSON；原始 receipt 和异常文本均不会回显。
     """
 
@@ -342,9 +290,8 @@ def _write_safe_error(error: BaseException) -> None:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    """处理：分派本地 usage 子命令并强制 stdout 的安全输出契约。
-    输入：
-    - ``argv``：可选命令行参数；None 表示读取当前进程参数，hook 另读 stdin 与环境。
+    """分派本地 usage 子命令并强制 stdout 的安全输出契约。
+    输入：``argv``：可选命令行参数；None 表示读取当前进程参数，hook 另读 stdin 与环境。
     输出：成功返回 0；可预期失败返回 2，hook 成功绝不向 stdout 写入内容。
     """
 
@@ -357,7 +304,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         _write_safe_error(exc)
         return 2
     if payload is not None:
-        _write_json(payload)
+        print(json.dumps(payload, ensure_ascii=False, sort_keys=True))
     return 0
 
 

@@ -10,7 +10,7 @@ from urllib.parse import urlsplit
 
 from .config import project_root
 from .image_policy import select_image_variants
-from .local_output import _embedded_image_sources
+from .local_output import _embedded_image_source
 
 _ASSET_DIR = project_root() / "assets" / "news-slides"
 
@@ -54,11 +54,7 @@ def _local_image_uri(local_path: str, data_dir: Path | None) -> str:
     if data_dir is None:
         return ""
     mime = mimetypes.guess_type(local_path)[0] or "image/jpeg"
-    record = {
-        "sections": [{"briefs": [{"image": {"local_path": local_path, "content_type": mime}}]}]
-    }
-    embedded = _embedded_image_sources(record, data_dir)
-    return embedded.get(local_path.replace("\\", "/"), "")
+    return _embedded_image_source({"local_path": local_path, "content_type": mime}, data_dir)
 
 
 def _source_markup(sources: list[dict], language: str) -> str:

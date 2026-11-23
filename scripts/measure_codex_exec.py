@@ -8,7 +8,9 @@ from collections import Counter
 from hashlib import sha256
 from pathlib import Path
 
-from measure_codex_turn import rows, timestamp
+from measure_codex_turn import model_effort_rows, rows, summarize_fields, timestamp, write_receipt
+
+FIELDS = ("input_tokens", "output_tokens", "cached_input_tokens")
 
 
 def invocation(log: Path, sessions: dict[str, Path]) -> dict:
@@ -36,12 +38,13 @@ def invocation(log: Path, sessions: dict[str, Path]) -> dict:
         )
         for record in requests.values()
     )
+    native = summarize_fields(
+        [record["usage"] for record in requests.values()], FIELDS,
+        countable=lambda value: isinstance(value, int),
+    )
     usage = {}
-    for field in ("input_tokens", "output_tokens", "cached_input_tokens"):
-        values = [record["usage"].get(field) for record in requests.values()]
-        native_total = (
-            sum(values) if values and all(isinstance(value, int) for value in values) else None
-        )
+    for field in FIELDS:
+        native_total = native[field]
         cli_total = aggregate.get(field)
         if native_total is not None and cli_total is not None and native_total != cli_total:
             raise ValueError(f"{log.name}: {field} differs between native and CLI receipts")
@@ -58,10 +61,7 @@ def invocation(log: Path, sessions: dict[str, Path]) -> dict:
             for model, _ in counts
         },
         "reasoning_efforts": sorted({effort for _, effort in counts}),
-        "model_effort_response_counts": [
-            {"model": model, "effort": effort, "responses": count}
-            for (model, effort), count in sorted(counts.items())
-        ],
+        "model_effort_response_counts": model_effort_rows(counts),
     }
 
 
@@ -80,12 +80,10 @@ def main() -> None:
     agents = [invocation(log, sessions) for log in sorted(args.jobs.glob("*.jsonl"))]
     if not agents:
         parser.error("No CLI invocations were recorded")
-    totals = {}
-    for field in ("input_tokens", "output_tokens", "cached_input_tokens"):
-        values = [a["usage"][field] for a in agents]
-        observed = [value for value in values if isinstance(value, int)]
-        totals[f"{field}_known"] = sum(observed)
-        totals[field] = sum(observed) if len(observed) == len(values) else None
+    totals = summarize_fields(
+        [agent["usage"] for agent in agents], FIELDS, known_default=0,
+        countable=lambda value: isinstance(value, int),
+    )
     known = totals["input_tokens_known"] + totals["output_tokens_known"]
     complete = totals["input_tokens"] is not None and totals["output_tokens"] is not None
     totals["total_tokens_known"] = known
@@ -106,15 +104,10 @@ def main() -> None:
         "run_sha256": sha256(args.run.read_bytes()).hexdigest(),
         "token_basis": "input_tokens_plus_output_tokens",
         "total": totals,
-        "model_effort_response_counts": [
-            {"model": model, "effort": effort, "responses": count}
-            for (model, effort), count in sorted(counts.items())
-        ],
+        "model_effort_response_counts": model_effort_rows(counts),
         "agents": agents,
     }
-    with args.output.open("x", encoding="utf-8") as output:
-        json.dump(receipt, output, ensure_ascii=False, indent=2)
-        output.write("\n")
+    write_receipt(args.output, receipt)
 
 
 if __name__ == "__main__":

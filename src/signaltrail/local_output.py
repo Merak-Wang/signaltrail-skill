@@ -203,25 +203,17 @@ UI_LABELS = {
 
 
 def _ui(language: object) -> dict[str, str]:
-    """处理：按输出语言选择本地报告界面文本。
-    输入：输出语言。
-    输出：“按输出语言选择本地报告界面文本”形成的结构化字典；
-      键值表达该处理定义的业务记录或查找关系。
-    """
+    """按输出语言选择本地报告界面文本。"""
     return UI_LABELS["zh-CN" if is_chinese_output(language) else "en"]
 
 
 def _escape(value: object) -> str:
-    """处理：对不可信值执行 HTML 属性和文本转义。
-    输入：待解析的值。
-    输出：“对不可信值执行 HTML 属性和文本转义”得到的规范字符串，供调用方存储、比较或展示。
-    """
+    """对不可信值执行 HTML 属性和文本转义。"""
     return html.escape(str(value or ""), quote=True)
 
 
 def _safe_url(value: object) -> str:
-    """处理：仅保留具有主机名的 HTTP(S) URL，并对 HTML 属性进行转义。
-    输入：待解析的值。
+    """仅保留具有主机名的 HTTP(S) URL，并对 HTML 属性进行转义。
     输出：经过选择、规范化或安全处理的 URL 字符串，供后续访问或渲染使用。
     """
     url = str(value or "")
@@ -247,11 +239,10 @@ def _validated_local_image_path(
     image: dict[str, Any],
     data_dir: Path,
 ) -> Path | None:
-    """处理：校验报告图片位于数据根媒体目录且类型、大小可嵌入。
+    """校验报告图片位于数据根媒体目录且类型、大小可嵌入。
     输入：本次运行的数据根。
     - ``image``：报告或索引中的图片元数据；包含 URL、本地路径、哈希、尺寸和说明。
-    输出：指向“校验报告图片位于数据根媒体目录且类型、大小可嵌入”所生成、定位或确认产物的本地路径
-      ；条件不满足时返回 None。
+    输出：未找到匹配项时返回 None。
     """
     local_path = str(image.get("local_path") or "").replace("\\", "/")
     parts = [part for part in local_path.split("/") if part]
@@ -281,12 +272,10 @@ def _image_src(
     media_path_prefix: str | None,
     embedded_image_sources: dict[str, str] | None = None,
 ) -> str:
-    """处理：优先选择内嵌或本地图片地址，最后回退到安全公网 URL。
+    """优先选择内嵌或本地图片地址，最后回退到安全公网 URL。
     输入：本地媒体相对路径前缀。
     - ``image``：报告或索引中的图片元数据；包含 URL、本地路径、哈希、尺寸和说明。
     - ``embedded_image_sources``：按图片哈希或路径索引的数据 URI；用于生成可独立打开的 HTML。
-    输出：“优先选择内嵌或本地图片地址，最后回退到安全公网 URL”得到的规范字符串，
-      供调用方存储、比较或展示。
     """
     local_path = str(image.get("local_path") or "").replace("\\", "/")
     if embedded_image_sources and local_path in embedded_image_sources:
@@ -302,17 +291,40 @@ def _image_src(
     return _safe_url(image.get("source_url") or image.get("url"))
 
 
+def _embedded_image_source(
+    image: dict[str, Any], data_dir: Path, *, optimize_for_pdf: bool = False,
+) -> str:
+    """处理：以内嵌 URI 提供一张符合交付要求的本地图。
+    输入：带媒体路径和 MIME 类型的单张图片、数据根及打印重采样开关。
+    输出：可离线读取的数据 URI，无法嵌入时为空串。
+    """
+    candidate = _validated_local_image_path(image, data_dir)
+    if candidate is None:
+        return ""
+    if optimize_for_pdf:
+        optimized = _optimized_pdf_image_bytes(candidate)
+        if optimized is None:
+            return ""
+        payload, content_type = optimized
+    else:
+        try:
+            payload = candidate.read_bytes()
+        except OSError:
+            return ""
+        content_type = str(image.get("content_type") or "").lower()
+    encoded = base64.b64encode(payload).decode("ascii")
+    return f"data:{content_type};base64,{encoded}"
+
+
 def _embedded_image_sources(
     report: dict[str, Any],
     data_dir: Path,
     *,
     optimize_for_pdf: bool = False,
 ) -> dict[str, str]:
-    """处理：校验本地报告图片并构造可离线使用的数据 URI。
+    """校验本地报告图片并构造可离线使用的数据 URI。
     输入：含栏目和来源引用的报告、本次运行的数据根。
     - ``optimize_for_pdf``：是否按打印分辨率重采样并压缩图片，避免把原图字节重复嵌入 PDF。
-    输出：“校验本地报告图片并构造可离线使用的数据 URI”形成的结构化字典；
-      键值表达该处理定义的业务记录或查找关系。
     """
     embedded: dict[str, str] = {}
     for section in report.get("sections", []):
@@ -324,31 +336,16 @@ def _embedded_image_sources(
             if not isinstance(image, dict):
                 continue
             local_path = str(image.get("local_path") or "").replace("\\", "/")
-            content_type = str(image.get("content_type") or "").lower()
-            if local_path in embedded:
-                continue
-            candidate = _validated_local_image_path(image, data_dir)
-            if candidate is None:
-                continue
-            if optimize_for_pdf:
-                optimized = _optimized_pdf_image_bytes(candidate)
-                if optimized is None:
-                    continue
-                payload, content_type = optimized
-            else:
-                try:
-                    payload = candidate.read_bytes()
-                except OSError:
-                    continue
-            encoded = base64.b64encode(payload).decode("ascii")
-            embedded[local_path] = f"data:{content_type};base64,{encoded}"
+            if local_path not in embedded and (
+                uri := _embedded_image_source(image, data_dir, optimize_for_pdf=optimize_for_pdf)
+            ):
+                embedded[local_path] = uri
     return embedded
 
 
 def _optimized_pdf_image_bytes(path: Path) -> tuple[bytes, str] | None:
-    """处理：把已校验本地图片缩放为适合 A4 打印的有界 JPEG 字节。
-    输入：
-    - ``path``：已经过媒体根、类型和文件大小校验的本地图片路径。
+    """把已校验本地图片缩放为适合 A4 打印的有界 JPEG 字节。
+    输入：``path``：已经过媒体根、类型和文件大小校验的本地图片路径。
     输出：JPEG 字节和内容类型；解码失败时返回 None，调用方跳过该可选投影图片。
     """
     try:
@@ -379,11 +376,10 @@ def _optimized_pdf_image_bytes(path: Path) -> tuple[bytes, str] | None:
 
 
 def _external_link(label: object, url: object, *, css_class: str = "") -> str:
-    """处理：渲染经过协议校验和转义的外部链接。
+    """渲染经过协议校验和转义的外部链接。
     输入：待处理的 URL。
     - ``label``：用于错误消息的字段或产物名称，使失败能定位到具体输入。
     - ``css_class``：渲染到 HTML 元素的受控 CSS 类名；不接受外部任意标记。
-    输出：“渲染经过协议校验和转义的外部链接”得到的规范字符串，供调用方存储、比较或展示。
     """
     class_attr = f' class="{_escape(css_class)}"' if css_class else ""
     return (
@@ -398,11 +394,10 @@ def _list_html(
     css_class: str = "",
     language: object = "zh-CN",
 ) -> str:
-    """处理：把文本列表渲染为经过转义的 HTML 列表。
+    """把文本列表渲染为经过转义的 HTML 列表。
     输入：输出语言。
     - ``values``：待规范化、匹配或渲染的一组输入值。
     - ``css_class``：渲染到 HTML 元素的受控 CSS 类名；不接受外部任意标记。
-    输出：“把文本列表渲染为经过转义的 HTML 列表”得到的规范字符串，供调用方存储、比较或展示。
     """
     if not values:
         return f'<p class="muted">{_escape(_ui(language)["none"])}</p>'
@@ -411,10 +406,9 @@ def _list_html(
 
 
 def _prose_html(value: object, *, css_class: str = "") -> str:
-    """处理：把多段正文渲染为经过转义的 HTML 段落。
+    """把多段正文渲染为经过转义的 HTML 段落。
     输入：待解析的值。
     - ``css_class``：渲染到 HTML 元素的受控 CSS 类名；不接受外部任意标记。
-    输出：“把多段正文渲染为经过转义的 HTML 段落”得到的规范字符串，供调用方存储、比较或展示。
     """
     class_attr = f' class="{_escape(css_class)}"' if css_class else ""
     paragraphs = split_narrative_paragraphs(value)
@@ -424,10 +418,7 @@ def _prose_html(value: object, *, css_class: str = "") -> str:
 
 
 def _item_ref(item: dict[str, Any]) -> dict[str, Any]:
-    """处理：从报告条目提取首选来源引用。
-    输入：带稳定 ID 的索引条目。
-    输出：“从报告条目提取首选来源引用”形成的结构化字典；键值表达该处理定义的业务记录或查找关系。
-    """
+    """从报告条目提取首选来源引用。"""
     ref = item.get("source_ref")
     if isinstance(ref, dict):
         return ref
@@ -442,11 +433,10 @@ def _brief_html(
     embedded_image_sources: dict[str, str] | None = None,
     language: object = "zh-CN",
 ) -> str:
-    """处理：把单条简报渲染为本地报告卡片。
+    """把单条简报渲染为本地报告卡片。
     输入：带稳定 ID 的索引条目、本地媒体相对路径前缀、输出语言。
     - ``rank``：简报或来源在当前栏目中的一基排序号。
     - ``embedded_image_sources``：按图片哈希或路径索引的数据 URI；用于生成可独立打开的 HTML。
-    输出：“把单条简报渲染为本地报告卡片”得到的规范字符串，供调用方存储、比较或展示。
     """
     ref = _item_ref(item)
     status_labels = STATUS_LABELS if is_chinese_output(language) else STATUS_LABELS_EN
@@ -512,12 +502,11 @@ def _source_section_html(
     section_title: str = "",
     anchor: str = "",
 ) -> str:
-    """处理：把同一来源的简报集合渲染为报告分区。
+    """把同一来源的简报集合渲染为报告分区。
     输入：带入口与筛选规则的来源配置、有序索引条目、本地媒体相对路径前缀、输出语言。
     - ``embedded_image_sources``：按图片哈希或路径索引的数据 URI；用于生成可独立打开的 HTML。
     - ``section_title``：报告原栏目名称；显示在来源标题右侧，保持来源内顺序。
     - ``anchor``：正文中的小节锚点，由目录共用。
-    输出：“把同一来源的简报集合渲染为报告分区”得到的规范字符串，供调用方存储、比较或展示。
     """
     source_name = source.get("name") or _ui(language)["unknown_source"]
     stories = "".join(
@@ -566,10 +555,9 @@ def _analysis_html(
     analysis: dict[str, Any],
     language: object = "zh-CN",
 ) -> str:
-    """处理：把单个分析视角渲染为结构化 HTML。
+    """把单个分析视角渲染为结构化 HTML。
     输入：输出语言。
     - ``analysis``：已校验的跨栏目分析对象；包含模式、风险、机会和展望。
-    输出：“把单个分析视角渲染为结构化 HTML”得到的规范字符串，供调用方存储、比较或展示。
     """
     labels = _ui(language)
     event_links = []
@@ -622,10 +610,9 @@ def _synthesis_html(
     synthesis: dict[str, Any] | None,
     language: object = "zh-CN",
 ) -> str:
-    """处理：渲染跨视角综合结论及其分歧和共识。
+    """渲染跨视角综合结论及其分歧和共识。
     输入：输出语言。
     - ``synthesis``：可选执行摘要对象；包含核心判断、优先事项和观察信号。
-    输出：“渲染跨视角综合结论及其分歧和共识”得到的规范字符串，供调用方存储、比较或展示。
     """
     if not isinstance(synthesis, dict):
         return ""
@@ -750,9 +737,8 @@ def _evaluation_html(
     evaluation: dict[str, Any] | None,
     language: object = "zh-CN",
 ) -> str:
-    """处理：把质量评估和改进建议渲染为 HTML。
+    """把质量评估和改进建议渲染为 HTML。
     输入：独立质量评估、输出语言。
-    输出：“把质量评估和改进建议渲染为 HTML”得到的规范字符串，供调用方存储、比较或展示。
     """
     labels = _ui(language)
     evaluation_labels = (
@@ -857,7 +843,7 @@ def render_report_html(
     video_href: str | None = None,
     video_title: str | None = None,
 ) -> str:
-    """处理：把已验证报告、来源证据和本地图片投影为可离线阅读的完整 HTML。
+    """把已验证报告、来源证据和本地图片投影为可离线阅读的完整 HTML。
     输入：含栏目和来源引用的报告、独立质量评估、本地媒体相对路径前缀。
     - ``include_pdf_link``：HTML 页面是否展示指向同版本 PDF 的下载链接。
     - ``embedded_image_sources``：按图片哈希或路径索引的数据 URI；用于生成可独立打开的 HTML。
@@ -866,8 +852,6 @@ def render_report_html(
     - ``slides_href``：同版本图文放映 HTML 的相对路径或本地文件 URI；存在时嵌入演示并保留新标签入口。
     - ``video_href``：同版本视频播放器页面的相对路径或本地 URI。
     - ``video_title``：本期视频主题标题；旧播放器使用日报标题。
-    输出：“把已验证报告、来源证据和本地图片投影为可离线阅读的完整 HTML”得到的规范字符串，
-      供调用方存储、比较或展示。
     """
     language = report.get("language") or "zh-CN"
     labels = _ui(language)
@@ -1158,11 +1142,9 @@ def _reportlab_pdf(
     output_path: Path,
     data_dir: Path | None = None,
 ) -> None:
-    """处理：使用 ReportLab 从报告数据生成离线 PDF 备用投影。
+    """使用 ReportLab 从报告数据生成离线 PDF 备用投影。
     输入：含栏目和来源引用的报告、独立质量评估、本次运行的数据根。
     - ``output_path``：当前阶段允许写入的目标路径；父目录和覆盖语义由函数负责。
-    输出：不返回新数据；完成“使用 ReportLab 从报告数据生成离线 PDF 备用投影”，
-      副作用限于该处理声明的受控对象或产物。
     """
     try:
         from reportlab.lib import colors
@@ -1258,9 +1240,8 @@ def _reportlab_pdf(
     )
 
     def pdf_markup(value: object) -> str:
-        """处理：分别用内置 Latin 字体和 CJK 字体标记 PDF 可见文本。
-        输入：
-        - ``value``：报告中的读者可见纯文本；外部内容仍逐段执行 HTML 转义。
+        """分别用内置 Latin 字体和 CJK 字体标记 PDF 可见文本。
+        输入：``value``：报告中的读者可见纯文本；外部内容仍逐段执行 HTML 转义。
         输出：只含转义文本与受控 font 标签的 ReportLab Paragraph 标记。
         """
         chunks = re.split(r"([\x00-\x7f]+)", str(value or ""))
@@ -1275,29 +1256,21 @@ def _reportlab_pdf(
         )
 
     def paragraph(value: object, style: ParagraphStyle = base) -> Paragraph:
-        """处理：清理输入文本并按指定样式创建可加入 PDF 排版流的正文段落。
+        """清理输入文本并按指定样式创建可加入 PDF 排版流的正文段落。
         输入：待解析的值。
         - ``style``：ReportLab 段落样式；控制字体、字号、行距和段后间距。
-        输出：封装“清理输入文本并按指定样式创建可加入 PDF 排版流的正文段落”业务结果的 ``Paragrap
-          h`` 对象；调用方据此继续相邻阶段或识别无结果状态。
         """
         return Paragraph(pdf_markup(value).replace("\n", "<br/>"), style)
 
     def bullet(value: object) -> Paragraph:
-        """处理：为清理后的文本添加项目符号并创建可加入 PDF 排版流的列表段落。
-        输入：待解析的值。
-        输出：封装“为清理后的文本添加项目符号并创建可加入 PDF 排版流的列表段落”业务结果的 ``Para
-          graph`` 对象；调用方据此继续相邻阶段或识别无结果状态。
-        """
+        """为清理后的文本添加项目符号并创建可加入 PDF 排版流的列表段落。"""
         return Paragraph(f"• {pdf_markup(value)}", base)
 
     def footer(canvas: Any, document: Any) -> None:
-        """处理：在 ReportLab 当前页面底部绘制稳定页码，不改变正文排版流。
+        """在 ReportLab 当前页面底部绘制稳定页码，不改变正文排版流。
         输入：
         - ``canvas``：ReportLab 当前页面画布；页脚函数只在其上绘制页码。
         - ``document``：当前 ReportLab 文档模板；提供页尺寸以定位页脚。
-        输出：不返回新数据；完成“在 ReportLab 当前页面底部绘制稳定页码，不改变正文排版流”，
-          副作用限于该处理声明的受控对象或产物。
         """
         canvas.saveState()
         canvas.setFont(font_name, 8)
@@ -1524,13 +1497,11 @@ def _edge_pdf(
     *,
     html_document: str | None = None,
 ) -> None:
-    """处理：使用无头 Edge 从安全 HTML 生成打印版 PDF。
+    """使用无头 Edge 从安全 HTML 生成打印版 PDF。
     输入：
     - ``html_path``：已生成并通过本地路径校验的报告 HTML 文件。
     - ``output_path``：当前阶段允许写入的目标路径；父目录和覆盖语义由函数负责。
     - ``html_document``：可选完整 HTML 文本；提供时直接交给浏览器打印，不再读取文件。
-    输出：不返回新数据；完成“使用无头 Edge 从安全 HTML 生成打印版 PDF”，
-      副作用限于该处理声明的受控对象或产物。
     """
     from playwright.sync_api import sync_playwright
 
@@ -1541,11 +1512,8 @@ def _edge_pdf(
             page.emulate_media(media="print")
 
             def route_request(route: Any) -> None:
-                """处理：拦截 PDF 渲染请求并执行网络访问策略。
-                输入：
-                - ``route``：Playwright 的待处理网络路由；按离线 PDF 策略继续或中止请求。
-                输出：不返回新数据；完成“拦截 PDF 渲染请求并执行网络访问策略”，
-                  副作用限于该处理声明的受控对象或产物。
+                """拦截 PDF 渲染请求并执行网络访问策略。
+                输入：``route``：Playwright 的待处理网络路由；按离线 PDF 策略继续或中止请求。
                 """
                 if route.request.url.startswith(("http://", "https://")):
                     # PDF 渲染必须离线，避免 HTML 投影在打印时发起隐式网络请求。
@@ -1594,14 +1562,13 @@ def render_pdf_from_html(
     data_dir: Path | None = None,
     embedded_html: str | None = None,
 ) -> tuple[str, str | None]:
-    """处理：按配置选择 Edge 或 ReportLab，把报告 HTML 投影为 PDF。
+    """按配置选择 Edge 或 ReportLab，把报告 HTML 投影为 PDF。
     输入：含栏目和来源引用的报告、独立质量评估、本次运行的数据根。
     - ``html_path``：已生成并通过本地路径校验的报告 HTML 文件。
     - ``pdf_path``：目标版本化 PDF 文件；写入前执行不可覆盖和父目录检查。
     - ``engine``：PDF 引擎选择；edge、reportlab 或 auto 决定渲染与回退路径。
     - ``embedded_html``：已内嵌样式和图片的独立 HTML；供浏览器离线打印 PDF。
-    输出：“按配置选择 Edge 或 ReportLab，把报告 HTML 投影为 PDF”得到的固定结构结果；
-      返回位置依次对应 'reportlab'、warning。
+    输出：实际生成 PDF 的引擎名，以及回退时的警告。
     """
     pdf_path.parent.mkdir(parents=True, exist_ok=True)
     temporary = pdf_path.with_suffix(".pdf.tmp")
@@ -1631,11 +1598,7 @@ def render_pdf_from_html(
 
 
 def _evaluation_map(data_dir: Path) -> dict[str, dict[str, Any]]:
-    """处理：按报告 ID 和内容哈希索引可用质量评估。
-    输入：本次运行的数据根。
-    输出：“按报告 ID 和内容哈希索引可用质量评估”形成的结构化字典；
-      键值表达该处理定义的业务记录或查找关系。
-    """
+    """按报告 ID 和内容哈希索引可用质量评估。"""
     result: dict[str, dict[str, Any]] = {}
     root = data_dir / "evaluations"
     if not root.exists():
@@ -1654,11 +1617,7 @@ def _evaluation_map(data_dir: Path) -> dict[str, dict[str, Any]]:
 
 
 def render_archive_index(data_dir: Path) -> Path:
-    """处理：扫描版本化报告并生成按日期排列的本地 HTML 归档索引。
-    输入：本次运行的数据根。
-    输出：指向“扫描版本化报告并生成按日期排列的本地 HTML 归档索引”所生成、定位或确认产物的本地路
-      径。
-    """
+    """扫描版本化报告并生成按日期排列的本地 HTML 归档索引。"""
     reports_root = data_dir / "reports"
     reports_root.mkdir(parents=True, exist_ok=True)
     evaluations = _evaluation_map(data_dir)
@@ -1741,10 +1700,7 @@ def render_archive_index(data_dir: Path) -> Path:
 
 
 def resolve_desktop_directory(config: OutputConfig) -> Path:
-    """处理：按输出配置和平台默认值确定桌面交付目录。
-    输入：已校验的采集和输出配置。
-    输出：指向“按输出配置和平台默认值确定桌面交付目录”所生成、定位或确认产物的本地路径。
-    """
+    """按输出配置和平台默认值确定桌面交付目录。"""
     if config.desktop_dir:
         return Path(config.desktop_dir).expanduser().resolve()
     if os.name == "nt":
@@ -1779,6 +1735,35 @@ def _video_entry(player: Path) -> tuple[str | None, bool]:
     return title, path.is_file()
 
 
+def _desktop_report_path(report: dict, config: OutputConfig) -> Path:
+    """处理：定位与报告修订匹配的桌面文件。
+    输入：报告日期、版次、修订和输出配置。
+    输出：桌面 HTML 的绝对路径。
+    """
+    name = f"daily-intelligence-{report['date']}-{report['edition']}-r{report['revision']}.html"
+    return resolve_desktop_directory(config) / name
+
+
+def _write_archive_report(
+    html_path: Path, report: dict, evaluation: dict | None, *, include_pdf_link: bool,
+    slides_href: str | None = None, video_entry: tuple[str | None, bool] | None = None,
+) -> None:
+    """处理：发布使用相对路径的归档 HTML。
+    输入：HTML 交付路径、报告、评估和本次可用的媒体入口。
+    输出：用该版视频和图文链接更新日报副本。
+    """
+    slides = html_path.with_name(html_path.stem + "-slides.html")
+    player = html_path.with_name(html_path.stem + "-video.html")
+    title, available = video_entry or _video_entry(player)
+    write_text_atomic(html_path, render_report_html(
+        report, evaluation, include_pdf_link=include_pdf_link, media_path_prefix="../..",
+        slides_href=slides_href if slides_href is not None else (
+            slides.name if slides.is_file() else None
+        ),
+        video_href=player.name if available else None, video_title=title,
+    ))
+
+
 def write_desktop_html(
     report: dict[str, Any],
     data_dir: Path,
@@ -1787,21 +1772,16 @@ def write_desktop_html(
     evaluation: dict[str, Any] | None = None,
     embedded_image_sources: dict[str, str] | None = None,
 ) -> Path:
-    """处理：生成内嵌图片、绝对链接和可嵌入演示的独立桌面 HTML 副本。
+    """生成内嵌图片、绝对链接和可嵌入演示的独立桌面 HTML 副本。
     输入：含栏目和来源引用的报告、本次运行的数据根、已校验的采集和输出配置、独立质量评估。
     - ``embedded_image_sources``：按图片哈希或路径索引的数据 URI；用于生成可独立打开的 HTML。
-    输出：指向“生成内嵌图片、绝对链接和可嵌入演示的独立桌面 HTML 副本”所生成、定位或确认产物的本地路径。
     """
-    desktop_dir = resolve_desktop_directory(config)
-    stem = (
-        f"daily-intelligence-{report['date']}-{report['edition']}"
-        f"-r{report['revision']}"
-    )
-    destination = desktop_dir / f"{stem}.html"
+    destination = _desktop_report_path(report, config)
     report_dir = data_dir / "reports" / str(report["date"])
-    pdf_path = report_dir / f"{report['edition']}-r{report['revision']}.pdf"
-    slides_path = report_dir / f"{report['edition']}-r{report['revision']}-slides.html"
-    video_path = report_dir / f"{report['edition']}-r{report['revision']}-video.html"
+    stem = f"{report['edition']}-r{report['revision']}"
+    pdf_path = report_dir / f"{stem}.pdf"
+    slides_path = report_dir / f"{stem}-slides.html"
+    video_path = report_dir / f"{stem}-video.html"
     video_title, video_available = _video_entry(video_path)
     return write_text_atomic(
         destination,
@@ -1863,9 +1843,9 @@ def refresh_report_video_entry(
 </head><body><main><h1>{_escape(title)}</h1><video controls preload="metadata" src="{_escape(source)}"></video>
 <p><a href="{_escape(source)}">{"打开视频文件" if is_chinese_output(language) else "Open video file"}</a></p></main></body></html>'''
     write_text_atomic(player, document)
-    slides = report_path.with_name(report_path.stem + "-slides.html")
-    _refresh_report_entry(report_path, report, data_dir, config or load_config().output,
-                          slides.name if slides.is_file() else None, player.name, title)
+    _refresh_report_entry(
+        report_path, report, data_dir, config or load_config().output, video_entry=(title, True),
+    )
     return player
 
 
@@ -1877,30 +1857,25 @@ def refresh_report_slides_entry(report_path: Path, slides_path: Path, data_dir: 
     report = read_json(report_path)
     if not isinstance(report, dict):
         raise ValueError(f"Report must be an object: {report_path}")
-    player = report_path.with_name(report_path.stem + "-video.html")
-    title, available = _video_entry(player)
     slides_href = os.path.relpath(slides_path, report_path.parent).replace(os.sep, "/")
-    _refresh_report_entry(report_path, report, data_dir, load_config().output, slides_href,
-                          player.name if available else None, title)
+    _refresh_report_entry(report_path, report, data_dir, load_config().output, slides_href)
 
 
 def _refresh_report_entry(
     report_path: Path, report: dict, data_dir: Path, config: OutputConfig,
-    slides_href: str | None, video_href: str | None, video_title: str | None,
+    slides_href: str | None = None, video_entry: tuple[str | None, bool] | None = None,
 ) -> None:
     """处理：图文或视频交付后，刷新日报页面和已存在的桌面副本。
     输入：本期日报、媒体入口、数据目录和桌面配置。
     输出：使用同一份评分和对应版本媒体的 HTML 投影。
     """
     evaluation = _evaluation_map(data_dir).get(str(report.get("report_id", "")))
-    write_text_atomic(report_path.with_suffix(".html"), render_report_html(
-        report, evaluation, include_pdf_link=report_path.with_suffix(".pdf").is_file(),
-        media_path_prefix="../..", slides_href=slides_href, video_href=video_href, video_title=video_title,
-    ))
-    desktop_path = resolve_desktop_directory(config) / (
-        f"daily-intelligence-{report['date']}-{report['edition']}-r{report['revision']}.html"
+    _write_archive_report(
+        report_path.with_suffix(".html"), report, evaluation,
+        include_pdf_link=report_path.with_suffix(".pdf").is_file(),
+        slides_href=slides_href, video_entry=video_entry,
     )
-    if config.copy_html_to_desktop and desktop_path.is_file():
+    if config.copy_html_to_desktop and _desktop_report_path(report, config).is_file():
         write_desktop_html(report, data_dir, config, evaluation=evaluation)
 
 
@@ -1913,12 +1888,11 @@ def write_local_outputs(
     open_after_finalize: bool | None = None,
     regenerate_pdf: bool = True,
 ) -> dict[str, Any]:
-    """处理：从已验证报告生成 HTML、PDF、桌面副本和归档索引。
+    """从已验证报告生成 HTML、PDF、桌面副本和归档索引。
     输入：含栏目和来源引用的报告、本次运行的数据根、已校验的采集和输出配置、独立质量评估。
     - ``open_after_finalize``：完成本地输出后是否用默认浏览器打开 HTML。
     - ``regenerate_pdf``：是否重绘已存在 PDF；评估刷新可复用同一报告内容的 PDF。
-    输出：“从已验证报告生成 HTML、PDF、桌面副本和归档索引”形成的结构化字典；
-      典型键包括 pdf_engine、pdf_path。
+    输出：字段包括 pdf_engine、pdf_path。
     """
     config = validate_output_config(config)
     report_dir = data_dir / "reports" / str(report["date"])
@@ -1941,25 +1915,7 @@ def write_local_outputs(
         else None
     )
     if "html" in config.formats:
-        player = report_dir / f"{stem}-video.html"
-        video_title, video_available = _video_entry(player)
-        # HTML/PDF 都从已验证报告对象生成，不回读或修改权威 JSON。
-        write_text_atomic(
-            html_path,
-            render_report_html(
-                report,
-                evaluation,
-                include_pdf_link="pdf" in config.formats,
-                media_path_prefix="../..",
-                video_title=video_title,
-                video_href=player.name if video_available else None,
-                slides_href=(
-                    f"{stem}-slides.html"
-                    if (report_dir / f"{stem}-slides.html").is_file()
-                    else None
-                ),
-            ),
-        )
+        _write_archive_report(html_path, report, evaluation, include_pdf_link="pdf" in config.formats)
         result["html_path"] = str(html_path)
         if config.copy_html_to_desktop:
             try:
@@ -1998,41 +1954,28 @@ def write_local_outputs(
                 ) if config.pdf_engine in {"edge", "auto"} else None,
             )
             pdf_bytes = pdf_path.stat().st_size
-            budget_status = (
-                "within_budget" if pdf_bytes <= config.pdf_max_bytes else "exceeded"
-            )
             result.update(
-                {
-                    "pdf_path": str(pdf_path),
-                    "pdf_engine": engine,
-                    "pdf_projection_seconds": round(
-                        perf_counter() - projection_started,
-                        3,
-                    ),
-                    "pdf_bytes": pdf_bytes,
-                    "pdf_size_budget_bytes": config.pdf_max_bytes,
-                    "pdf_size_budget_status": budget_status,
-                }
+                pdf_path=str(pdf_path), pdf_engine=engine,
+                pdf_projection_seconds=round(perf_counter() - projection_started, 3),
             )
-            if budget_status == "exceeded":
+            if pdf_bytes > config.pdf_max_bytes:
                 warnings.append(
-                    "PDF size budget exceeded: "
-                    f"{pdf_bytes} bytes > {config.pdf_max_bytes} bytes"
+                    f"PDF size budget exceeded: {pdf_bytes} bytes > {config.pdf_max_bytes} bytes"
                 )
             if warning:
                 warnings.append(warning)
-        except Exception as exc:  # 本地权威记录已持久化，PDF 失败只产生可重试警告。
+        except Exception as exc:  # PDF 失败保留已经持久化的版本记录。
             warnings.append(f"PDF output failed: {type(exc).__name__}: {exc}")
             result["pdf_error"] = warnings[-1]
     elif "pdf" in config.formats and pdf_path.is_file():
         pdf_bytes = pdf_path.stat().st_size
-        result["pdf_path"] = str(pdf_path)
-        result["pdf_reused"] = True
-        result["pdf_projection_seconds"] = 0.0
-        result["pdf_bytes"] = pdf_bytes
-        result["pdf_size_budget_bytes"] = config.pdf_max_bytes
-        result["pdf_size_budget_status"] = (
-            "within_budget" if pdf_bytes <= config.pdf_max_bytes else "exceeded"
+        result.update(pdf_path=str(pdf_path), pdf_reused=True, pdf_projection_seconds=0.0)
+    if "pdf_path" in result:
+        result.update(
+            pdf_bytes=pdf_bytes, pdf_size_budget_bytes=config.pdf_max_bytes,
+            pdf_size_budget_status=(
+                "within_budget" if pdf_bytes <= config.pdf_max_bytes else "exceeded"
+            ),
         )
     index_path = render_archive_index(data_dir)
     result["local_index_path"] = str(index_path)

@@ -1,10 +1,12 @@
 from __future__ import annotations
 
-import hashlib
 import re
 import time
 from collections import defaultdict, deque
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import closing
+from functools import partial
+from hashlib import file_digest
 from pathlib import Path
 from typing import Any
 
@@ -14,7 +16,7 @@ import yaml
 from .config import project_root
 from .local_output import render_report_html
 from .localization import localized
-from .reporting import validate_evaluation_data, validate_report
+from .reporting import validate_evaluation_data, validate_report_data
 from .storage import write_text_atomic
 from .utils import canonicalize_url, environment_value, read_json, write_json
 
@@ -34,11 +36,9 @@ _HTML_ATTACHMENT_MODE = "html_attachment_v1"
 
 
 def validate_notion_schema(config: dict[str, Any], schema: dict[str, Any]) -> None:
-    """处理：校验NotionSchema并在不满足约束时报告错误。
+    """校验NotionSchema并在不满足约束时报告错误。
     输入：已校验的采集和输出配置。
     - ``schema``：远端或本地 schema 描述；用于字段类型和映射校验。
-    输出：不返回新数据；完成“校验NotionSchema并在不满足约束时报告错误”，
-      副作用限于该处理声明的受控对象或产物。
     """
     configured = config.get("properties", {})
     actual_properties = schema.get("properties", {})
@@ -86,11 +86,9 @@ def validate_notion_schema(config: dict[str, Any], schema: dict[str, Any]) -> No
 
 
 def resolve_notion_mapping(config: dict[str, Any], schema: dict[str, Any]) -> dict[str, Any]:
-    """处理：在显式属性映射或多个 schema profile 中选择匹配配置。
+    """在显式属性映射或多个 schema profile 中选择匹配配置。
     输入：已校验的采集和输出配置。
     - ``schema``：远端或本地 schema 描述；用于字段类型和映射校验。
-    输出：“在显式属性映射或多个 schema profile 中选择匹配配置”形成的结构化字典；
-      键值表达该处理定义的业务记录或查找关系。
     """
     if config.get("properties"):
         validate_notion_schema(config, schema)
@@ -121,12 +119,11 @@ def resolve_notion_mapping(config: dict[str, Any], schema: dict[str, Any]) -> di
 
 
 class NotionPublisher:
-    """处理：封装 Notion Schema 校验、上传和断点续传发布操作。
+    """封装 Notion Schema 校验、上传和断点续传发布操作。
     输入：
     - ``token``：调用方从环境或秘密存储读取的 Notion API Token；不会写入本地产物。
     - ``data_source_id``：Notion 报告数据库的数据源 ID；用于查询 schema 和创建页面。
     - ``config_path``：可选配置文件路径；为空时使用仓库或安装包默认配置。
-    输出：构造后的 ``NotionPublisher`` 实例或枚举定义；其字段和方法共同承担上述职责。
     """
     def __init__(
         self,
@@ -134,12 +131,10 @@ class NotionPublisher:
         data_source_id: str,
         config_path: Path | None = None,
     ) -> None:
-        """处理：初始化当前实例及其内部状态。
+        """初始化当前实例及其内部状态。
         输入：可选配置文件路径。
         - ``token``：调用方从环境或秘密存储读取的 Notion API Token；不会写入本地产物。
         - ``data_source_id``：Notion 报告数据库的数据源 ID；用于查询 schema 和创建页面。
-        输出：不返回新数据；完成“初始化当前实例及其内部状态”，
-          副作用限于该处理声明的受控对象或产物。
         """
         config_file = config_path or project_root() / "configs" / "notion.yaml"
         self.config = yaml.safe_load(config_file.read_text(encoding="utf-8"))
@@ -161,24 +156,20 @@ class NotionPublisher:
             raise
 
     def close(self) -> None:
-        """处理：关闭客户端并释放底层连接。
+        """关闭客户端并释放底层连接。
         输入：
         - 无显式业务参数：不接收额外业务参数；从当前实例读取“关闭客户端并释放底层连接”所需状态；
           实现会明确读取属性 client。
-        输出：不返回新数据；完成“关闭客户端并释放底层连接”，
-          副作用限于该处理声明的受控对象或产物。
         """
         self.client.close()
 
     def _request(self, method: str, path: str, **kwargs: Any) -> dict[str, Any]:
-        """处理：发送 Notion API 请求，并对限流响应执行有界重试。
+        """发送 Notion API 请求，并对限流响应执行有界重试。
         输入：
         - ``method``：要发送的 HTTP 方法。
         - ``path``：当前函数要读取、校验或写入的本地文件路径。
         - ``**kwargs``：传给 Notion HTTP 客户端的受控请求参数，
           例如 headers、json、files 或 data。
-        输出：“发送 Notion API 请求，并对限流响应执行有界重试”形成的结构化字典；
-          键值表达该处理定义的业务记录或查找关系。
         """
         delay = 1.0
         for attempt in range(5):
@@ -203,20 +194,15 @@ class NotionPublisher:
         raise RuntimeError("Unreachable")
 
     def retrieve_file_upload(self, file_upload_id: str) -> dict[str, Any]:
-        """处理：查询 Notion 文件上传任务的当前状态。
-        输入：
-        - ``file_upload_id``：Notion 已创建的文件上传 ID；用于查询状态或挂接页面。
-        输出：“查询 Notion 文件上传任务的当前状态”形成的结构化字典；
-          键值表达该处理定义的业务记录或查找关系。
+        """查询 Notion 文件上传任务的当前状态。
+        输入：``file_upload_id``：Notion 已创建的文件上传 ID；用于查询状态或挂接页面。
         """
         return self._request("GET", f"/file_uploads/{file_upload_id}")
 
     def upload_file(self, path: Path, content_type: str) -> str:
-        """处理：创建 Notion 单段上传、发送本地文件并确认上传状态。
+        """创建 Notion 单段上传、发送本地文件并确认上传状态。
         输入：本地文件路径。
         - ``content_type``：HTTP 内容类型或待上传文件 MIME 类型；用于解析、校验和响应头。
-        输出：“创建 Notion 单段上传、发送本地文件并确认上传状态”得到的规范字符串，
-          供调用方存储、比较或展示。
         """
         if not path.is_file():
             raise FileNotFoundError(f"Notion upload file does not exist: {path}")
@@ -246,11 +232,8 @@ class NotionPublisher:
         return file_upload_id
 
     def find_page(self, report_date: str) -> str | None:
-        """处理：按报告日期查询已有 Notion 日报页面，避免重复创建。
-        输入：
-        - ``report_date``：写入 Notion 日期属性的日报日期字符串。
-        输出：封装“按报告日期查询已有 Notion 日报页面，
-          避免重复创建”业务结果的 ``str | None`` 对象；调用方据此继续相邻阶段或识别无结果状态。
+        """按报告日期查询已有 Notion 日报页面，避免重复创建。
+        输入：``report_date``：写入 Notion 日期属性的日报日期字符串。
         """
         date_property = self.mapping["properties"]["date"]
         if date_property not in self.schema.get("properties", {}):
@@ -267,10 +250,8 @@ class NotionPublisher:
         return pages[0]["id"] if pages else None
 
     def build_properties(self, report: dict[str, Any]) -> dict[str, Any]:
-        """处理：把报告日期、版本、状态、标签和计数映射为 Notion 属性。
-        输入：含栏目和来源引用的报告。
-        输出：“把报告日期、版本、状态、标签和计数映射为 Notion 属性”形成的结构化字典；
-          典型键包括 date、multi_select、name、number、select、start、status、title。
+        """把报告日期、版本、状态、标签和计数映射为 Notion 属性。
+        输出：字段包括 date、multi_select、name、number、select、start、status、title。
         """
         configured = self.mapping["properties"]
         schema = self.schema.get("properties", {})
@@ -279,11 +260,9 @@ class NotionPublisher:
         desired: list[tuple[str, dict[str, Any]]] = []
 
         def add(key: str, value: dict[str, Any] | None) -> None:
-            """处理：向当前集合追加一个规范化条目。
+            """向当前集合追加一个规范化条目。
             输入：待解析的值。
             - ``key``：当前集合、登记表或界面记录使用的稳定键。
-            输出：不返回新数据；完成“向当前集合追加一个规范化条目”，
-              副作用限于该处理声明的受控对象或产物。
             """
             name = configured.get(key)
             if name and value is not None:
@@ -319,11 +298,7 @@ class NotionPublisher:
         return properties
 
     def create_page(self, report: dict[str, Any]) -> str:
-        """处理：按已解析数据库属性创建 Notion 报告页，并分批追加正文块。
-        输入：含栏目和来源引用的报告。
-        输出：“按已解析数据库属性创建 Notion 报告页，并分批追加正文块”得到的规范字符串，
-          供调用方存储、比较或展示。
-        """
+        """按已解析数据库属性创建 Notion 报告页，并分批追加正文块。"""
         payload = {
             "parent": {"type": "data_source_id", "data_source_id": self.data_source_id},
             "properties": self.build_properties(report),
@@ -332,11 +307,9 @@ class NotionPublisher:
         return result["id"]
 
     def update_properties(self, page_id: str, report: dict[str, Any]) -> None:
-        """处理：把报告属性映射后更新到指定 Notion 页面。
+        """把报告属性映射后更新到指定 Notion 页面。
         输入：含栏目和来源引用的报告。
         - ``page_id``：Notion 页面或块 ID；用于读取、更新或追加远端内容。
-        输出：不返回新数据；完成“把报告属性映射后更新到指定 Notion 页面”，
-          副作用限于该处理声明的受控对象或产物。
         """
         self._request(
             "PATCH",
@@ -351,13 +324,12 @@ class NotionPublisher:
         start_block: int = 0,
         on_progress: Callable[[int], None] | None = None,
     ) -> int:
-        """处理：分批追加 Notion 块，并在每批后报告持久化进度。
+        """分批追加 Notion 块，并在每批后报告持久化进度。
         输入：
         - ``page_id``：Notion 页面或块 ID；用于读取、更新或追加远端内容。
         - ``blocks``：按报告顺序生成的 Notion 块列表；每项包含 type 及对应内容对象。
         - ``start_block``：断点续传时首个尚未追加的 Notion 块下标。
         - ``on_progress``：每完成一个远端步骤调用的检查点回调。
-        输出：上述规则计算出的计数、分数、排名或限制值，供确定性决策使用。
         """
         for start in range(start_block, len(blocks), 100):
             completed = min(start + 100, len(blocks))
@@ -371,11 +343,9 @@ class NotionPublisher:
         return len(blocks)
 
     def retrieve_blocks(self, page_id: str) -> list[dict[str, Any]]:
-        """处理：分页读取指定 Notion 块的全部子块。
-        输入：
-        - ``page_id``：Notion 页面或块 ID；用于读取、更新或追加远端内容。
-        输出：“分页读取指定 Notion 块的全部子块”得到的有序结构化记录；典型字段包括 page_size，
-          可直接交给下一阶段。
+        """分页读取指定 Notion 块的全部子块。
+        输入：``page_id``：Notion 页面或块 ID；用于读取、更新或追加远端内容。
+        输出：字段包括 page_size，可直接交给下一阶段。
         """
         blocks: list[dict[str, Any]] = []
         cursor = None
@@ -403,12 +373,11 @@ def _image_block(
     image_uploads: dict[str, str] | None = None,
     language: object = "zh-CN",
 ) -> dict[str, Any] | None:
-    """处理：优先使用已上传文件构造图片块，否则使用安全外链。
+    """优先使用已上传文件构造图片块，否则使用安全外链。
     输入：输出语言。
     - ``image``：报告或索引中的图片元数据；包含 URL、本地路径、哈希、尺寸和说明。
     - ``image_uploads``：按本地图片哈希或路径索引的 Notion 文件上传 ID。
-    输出：“优先使用已上传文件构造图片块，否则使用安全外链”形成的结构化字典；
-      典型键包括 caption、external、file_upload、id、image、object、type、url。
+    输出：字段包括 caption、external、file_upload、id、image、object、type、url。
     """
     upload_id = None
     if image_uploads and image.get("sha256"):
@@ -444,11 +413,9 @@ def _image_block(
 
 
 def parse_user_feedback(text: str) -> dict[str, Any] | None:
-    """处理：把 Notion 富文本反馈块解析为本地结构化反馈记录。
-    输入：
-    - ``text``：待解析、匹配或渲染的文本；作为不可信数据时会先转义或清理。
-    输出：“把 Notion 富文本反馈块解析为本地结构化反馈记录”形成的结构化字典；
-      典型键包括 accuracy、analysis_value、comment、overall_satisfaction、relevance、scores。
+    """把 Notion 富文本反馈块解析为本地结构化反馈记录。
+    输入：``text``：待解析、匹配或渲染的文本；作为不可信数据时会先转义或清理。
+    输出：字段包括 accuracy、analysis_value、comment、overall_satisfaction、relevance、scores。
     """
     if not text.startswith(_FEEDBACK_PREFIXES):
         return None
@@ -476,10 +443,9 @@ def parse_user_feedback(text: str) -> dict[str, Any] | None:
 
 
 def sync_user_feedback(data_dir: Path, config_path: Path | None = None) -> Path | None:
-    """处理：从 Notion 页面读取反馈并同步到本地状态文件。
+    """从 Notion 页面读取反馈并同步到本地状态文件。
     输入：本次运行的数据根、可选配置文件路径。
-    输出：指向“从 Notion 页面读取反馈并同步到本地状态文件”所生成、定位或确认产物的本地路径；
-      条件不满足时返回 None。
+    输出：未找到匹配项时返回 None。
     """
     token = environment_value("NOTION_TOKEN")
     data_source_id = environment_value("NOTION_DATA_SOURCE_ID")
@@ -496,11 +462,8 @@ def sync_user_feedback(data_dir: Path, config_path: Path | None = None) -> Path 
     )
     if not entries:
         return None
-    publisher = NotionPublisher(token, data_source_id, config_path)
-    try:
+    with closing(NotionPublisher(token, data_source_id, config_path)) as publisher:
         blocks = publisher.retrieve_blocks(entries[0]["page_id"])
-    finally:
-        publisher.close()
     feedback_items = []
     for block in blocks:
         kind = block.get("type")
@@ -529,11 +492,10 @@ def append_evaluation(
     data_dir: Path,
     config_path: Path | None = None,
 ) -> tuple[str, str]:
-    """处理：把独立质量评估追加到匹配的 Notion 报告页，并返回页面与发布状态。
+    """把独立质量评估追加到匹配的 Notion 报告页，并返回页面与发布状态。
     输入：版本化报告路径、本次运行的数据根、可选配置文件路径。
     - ``evaluation_path``：独立评估 JSON 路径；读取后追加到对应报告页面。
-    输出：“把独立质量评估追加到匹配的 Notion 报告页，并返回页面与发布状态”得到的固定结构结果；
-      返回位置依次对应 str(entry['page_id'])、'html_attached'。
+    输出：远程页面 ID，以及已附加 HTML 或跳过重复提交的状态。
     """
     report = read_json(report_path)
     evaluation = read_json(evaluation_path)
@@ -553,8 +515,7 @@ def append_evaluation(
     evaluation_id = evaluation["evaluation_id"]
     if evaluation_id in entry.get("evaluation_ids", []):
         return str(entry["page_id"]), "skipped_duplicate"
-    publisher = NotionPublisher(token, data_source_id, config_path)
-    try:
+    with closing(NotionPublisher(token, data_source_id, config_path)) as publisher:
         portable_html = _portable_report_html(
             report,
             data_dir,
@@ -569,20 +530,11 @@ def append_evaluation(
             state = {}
             uploads[evaluation_id] = state
 
-        def save_upload_progress() -> None:
-            """处理：把当前附件上传 ID 和状态写入本地发布登记表。
-            输入：
-            - 无显式业务参数：不接收参数；从外层发布流程捕获当前上传状态、报告条目和持久化回调。
-            输出：不返回新数据；完成“把当前附件上传 ID 和状态写入本地发布登记表”，
-              副作用限于该处理声明的受控对象或产物。
-            """
-            write_json(registry_path, registry)
-
         file_upload_id = _prepare_html_upload(
             publisher,
             portable_html,
             state,
-            save_upload_progress,
+            partial(write_json, registry_path, registry),
         )
         publisher.append_blocks(
             str(entry["page_id"]),
@@ -595,70 +547,68 @@ def append_evaluation(
                 )
             ],
         )
-    finally:
-        publisher.close()
     entry.setdefault("evaluation_ids", []).append(evaluation_id)
     entry["evaluation_status"] = "completed"
     write_json(registry_path, registry)
     return str(entry["page_id"]), "html_attached"
 
 
+def _image_items(report: dict[str, Any]) -> Iterator[dict[str, Any]]:
+    """处理：按栏目遍历带配图的简报和旧版事件。
+    输入：报告及其中可选的 briefs、items 序列。
+    输出：保留栏目、简报和事件顺序的图片条目。
+    """
+    for section in report.get("sections", []):
+        if isinstance(section, dict):
+            for collection in ("briefs", "items"):
+                for item in section.get(collection, []):
+                    if isinstance(item, dict) and isinstance(item.get("image"), dict):
+                        yield item
+
+
 def _local_report_images(
-    report: dict[str, Any],
-    data_dir: Path,
+    items: list[dict[str, Any]], data_dir: Path,
 ) -> dict[str, tuple[Path, str]]:
-    """处理：校验报告引用的本地图片并按内容哈希建立索引。
-    输入：含栏目和来源引用的报告、本次运行的数据根。
-    输出：“校验报告引用的本地图片并按内容哈希建立索引”形成的结构化字典；
-      键值表达该处理定义的业务记录或查找关系。
+    """处理：按图片哈希归并本地附件。
+    输入：报告中带图片的条目及运行数据根。
+    输出：每份图片内容的实际路径和 MIME 类型。
     """
     root = data_dir.resolve()
     images: dict[str, tuple[Path, str]] = {}
-    for section in report.get("sections", []):
-        if not isinstance(section, dict):
+    for item in items:
+        image = item["image"]
+        digest = str(image.get("sha256") or "")
+        relative_path = image.get("local_path")
+        content_type = str(image.get("content_type") or "")
+        if not digest or not isinstance(relative_path, str) or not content_type:
             continue
-        for collection in ("briefs", "items"):
-            for item in section.get(collection, []):
-                if not isinstance(item, dict) or not isinstance(item.get("image"), dict):
-                    continue
-                image = item["image"]
-                digest = str(image.get("sha256") or "")
-                relative_path = image.get("local_path")
-                content_type = str(image.get("content_type") or "")
-                if not digest or not isinstance(relative_path, str) or not content_type:
-                    continue
-                path = (root / relative_path).resolve()
-                if not path.is_relative_to(root):
-                    raise ValueError(
-                        f"Report image path escapes the configured data root: {relative_path}"
-                    )
-                images.setdefault(digest, (path, content_type))
+        path = (root / relative_path).resolve()
+        if not path.is_relative_to(root):
+            raise ValueError(f"Report image path escapes the configured data root: {relative_path}")
+        images.setdefault(digest, (path, content_type))
     return images
 
 
-def _file_sha256(path: Path) -> str:
-    """处理：流式计算文件 SHA-256，避免一次读取整个附件。
-    输入：本地文件路径。
-    输出：“流式计算文件 SHA-256，避免一次读取整个附件”得到的规范字符串，
-      供调用方存储、比较或展示。
-    """
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
 def _saved_upload_id(value: object) -> str | None:
-    """处理：从发布检查点提取可复用的 Notion 上传 ID。
-    输入：待解析的值。
-    输出：封装“从发布检查点提取可复用的 Notion 上传 ID”业务结果的 ``str | None`` 对象；
-      调用方据此继续相邻阶段或识别无结果状态。
-    """
+    """从发布检查点提取可复用的 Notion 上传 ID。"""
     if isinstance(value, str):
         return value
     if isinstance(value, dict) and value.get("id"):
         return str(value["id"])
+    return None
+
+
+def _uploaded_file_id(publisher: NotionPublisher, value: object) -> str | None:
+    """处理：检查先前记录的 Notion 上传是否已完成。
+    输入：发布客户端和可能含有上传 ID 的检查点。
+    输出：可复用的上传 ID，查询失败或未完成时为空。
+    """
+    if upload_id := _saved_upload_id(value):
+        try:
+            if publisher.retrieve_file_upload(upload_id).get("status") == "uploaded":
+                return upload_id
+        except Exception:
+            pass
     return None
 
 
@@ -699,12 +649,11 @@ def _html_attachment_block(
     *,
     evaluated: bool = False,
 ) -> dict[str, Any]:
-    """处理：构造指向已上传 HTML 报告的 Notion 文件块。
+    """构造指向已上传 HTML 报告的 Notion 文件块。
     输入：本地文件路径、输出语言。
     - ``file_upload_id``：Notion 已创建的文件上传 ID；用于查询状态或挂接页面。
     - ``evaluated``：报告是否已有独立评估；决定附件块的说明文本。
-    输出：“构造指向已上传 HTML 报告的 Notion 文件块”形成的结构化字典；
-      典型键包括 caption、file、file_upload、id、name、object、type。
+    输出：字段包括 caption、file、file_upload、id、name、object、type。
     """
     caption = localized(
         language,
@@ -731,23 +680,16 @@ def _prepare_html_upload(
     state: dict[str, Any],
     on_progress: Callable[[], None],
 ) -> str:
-    """处理：校验已有上传检查点或创建新的 HTML 文件上传。
+    """校验已有上传检查点或创建新的 HTML 文件上传。
     输入：本地文件路径。
     - ``publisher``：已校验 schema 且具备断点续传能力的 Notion 发布客户端。
     - ``state``：可恢复发布状态对象；记录已创建页面、文件上传和完成检查点。
     - ``on_progress``：每完成一个远端步骤调用的检查点回调。
-    输出：“校验已有上传检查点或创建新的 HTML 文件上传”得到的规范字符串，
-      供调用方存储、比较或展示。
     """
-    digest = _file_sha256(path)
-    saved_id = _saved_upload_id(state)
-    if saved_id and state.get("sha256") == digest:
-        try:
-            saved = publisher.retrieve_file_upload(saved_id)
-        except Exception:
-            saved = {}
-        if saved.get("status") == "uploaded":
-            return saved_id
+    with path.open("rb") as stream:
+        digest = file_digest(stream, "sha256").hexdigest()
+    if state.get("sha256") == digest and (saved_id := _uploaded_file_id(publisher, state)):
+        return saved_id
     file_upload_id = publisher.upload_file(path, "text/html")
     state.clear()
     state.update(
@@ -764,23 +706,16 @@ def _prepare_html_upload(
 
 def _prepare_image_uploads(
     publisher: NotionPublisher,
-    report: dict[str, Any],
+    items: list[dict[str, Any]],
     data_dir: Path,
     entry: dict[str, Any],
     on_progress: Callable[[], None],
 ) -> tuple[dict[str, str], dict[str, str]]:
-    """处理：逐张校验并上传本地图片，同时持久化断点状态。
-    输入：
-    - ``publisher``：已校验 schema 且具备断点续传能力的 Notion 发布客户端。
-    - ``report``：当前报告结构；包含栏目、简报或事件、来源引用及质量元数据。
-    - ``data_dir``：当前运行的唯一数据根；所有状态和版本化产物都必须位于其中。
-    - ``entry``：报告中带本地图片元数据的简报或事件记录；
-      读取 item_id、标题、图片路径和内容哈希。
-    - ``on_progress``：每完成一个远端步骤调用的检查点回调。
-    输出：“逐张校验并上传本地图片，同时持久化断点状态”得到的固定结构结果；
-      返回位置依次对应 resolved、errors。
+    """处理：按图片内容去重并续传尚未上传的附件。
+    输入：Notion 客户端、带图条目、数据根和本期发布检查点。
+    输出：按图片哈希索引的上传 ID 和失败原因。
     """
-    local_images = _local_report_images(report, data_dir)
+    local_images = _local_report_images(items, data_dir)
     state = entry.setdefault("image_uploads", {})
     if not isinstance(state, dict):
         state = {}
@@ -788,20 +723,15 @@ def _prepare_image_uploads(
     errors: dict[str, str] = {}
     resolved: dict[str, str] = {}
     for digest, (path, content_type) in local_images.items():
-        saved_id = _saved_upload_id(state.get(digest))
-        if saved_id:
-            try:
-                saved = publisher.retrieve_file_upload(saved_id)
-            except Exception:
-                saved = {}
-            if saved.get("status") == "uploaded":
-                resolved[digest] = saved_id
-                continue
+        if saved_id := _uploaded_file_id(publisher, state.get(digest)):
+            resolved[digest] = saved_id
+            continue
         try:
             if not path.is_file():
                 raise FileNotFoundError(f"local image file is missing: {path}")
-            if _file_sha256(path) != digest:
-                raise ValueError(f"local image hash does not match report metadata: {path}")
+            with path.open("rb") as stream:
+                if file_digest(stream, "sha256").hexdigest() != digest:
+                    raise ValueError(f"local image hash does not match report metadata: {path}")
             file_upload_id = publisher.upload_file(path, content_type)
         except Exception as exc:
             state.pop(digest, None)
@@ -820,10 +750,8 @@ def _prepare_image_uploads(
 
 
 def _block_plain_text(block: dict[str, Any]) -> str:
-    """处理：从 Notion 块中拼接可比较的纯文本。
-    输入：
-    - ``block``：Notion API 返回或待发布的单个块对象；读取类型、富文本和链接字段。
-    输出：“从 Notion 块中拼接可比较的纯文本”得到的规范字符串，供调用方存储、比较或展示。
+    """从 Notion 块中拼接可比较的纯文本。
+    输入：``block``：Notion API 返回或待发布的单个块对象；读取类型、富文本和链接字段。
     """
     kind = block.get("type")
     if not isinstance(kind, str):
@@ -837,11 +765,8 @@ def _block_plain_text(block: dict[str, Any]) -> str:
 
 
 def _block_link_url(block: dict[str, Any]) -> str | None:
-    """处理：遍历 Notion 块的 rich_text 片段并返回首个合法 HTTP(S) 链接。
-    输入：
-    - ``block``：Notion API 返回或待发布的单个块对象；读取类型、富文本和链接字段。
-    输出：封装“遍历 Notion 块的 rich_text 片段并返回首个合法 HTTP(S) 链接”业务结果的 ``str | Non
-      e`` 对象；调用方据此继续相邻阶段或识别无结果状态。
+    """遍历 Notion 块的 rich_text 片段并返回首个合法 HTTP(S) 链接。
+    输入：``block``：Notion API 返回或待发布的单个块对象；读取类型、富文本和链接字段。
     """
     kind = block.get("type")
     if not isinstance(kind, str):
@@ -860,12 +785,10 @@ def _edition_story_blocks(
     edition: str,
     language: object = "zh-CN",
 ) -> list[dict[str, Any]]:
-    """处理：定位指定日报版本分区并提取其中的故事列表块。
+    """定位指定日报版本分区并提取其中的故事列表块。
     输入：输出语言。
     - ``blocks``：按报告顺序生成的 Notion 块列表；每项包含 type 及对应内容对象。
     - ``edition``：日报版本标识，通常为 morning 或 evening；参与窗口和产物命名。
-    输出：“定位指定日报版本分区并提取其中的故事列表块”得到的有序结构化记录；
-      每项承载处理说明所定义的身份、证据或状态字段，可直接交给下一阶段。
     """
     label = (
         localized(language, "日报", "Daily Brief")
@@ -895,29 +818,36 @@ def _edition_story_blocks(
 
 
 def _report_items_with_images(
-    report: dict[str, Any],
+    image_items: list[dict[str, Any]],
 ) -> list[tuple[str, str, dict[str, Any]]]:
-    """处理：列出报告中同时具有来源 URL 和图片的条目。
-    输入：含栏目和来源引用的报告。
-    输出：按“列出报告中同时具有来源 URL 和图片的条目”规则得到的 ``tuple[str, str, dict[str, Any`
-      ` 列表；列表顺序表达配置优先级、业务排名或稳定扫描顺序。
+    """处理：将配图条目与已有 Notion 故事的原文链接关联。
+    输入：报告中带图的简报和事件。
+    输出：按原顺序排列的条目 ID、原文 URL 和图片。
     """
-    items: list[tuple[str, str, dict[str, Any]]] = []
-    for section in report.get("sections", []):
-        if not isinstance(section, dict):
-            continue
-        for collection in ("briefs", "items"):
-            for item in section.get(collection, []):
-                if not isinstance(item, dict) or not isinstance(item.get("image"), dict):
-                    continue
-                ref = item.get("source_ref")
-                if not isinstance(ref, dict):
-                    refs = item.get("source_refs", [])
-                    ref = refs[0] if isinstance(refs, list) and refs else {}
-                url = ref.get("url") if isinstance(ref, dict) else None
-                if isinstance(url, str) and url.startswith(("http://", "https://")):
-                    items.append((str(item.get("item_id") or ""), url, item["image"]))
+    items = []
+    for item in image_items:
+        ref = item.get("source_ref")
+        if not isinstance(ref, dict):
+            refs = item.get("source_refs", [])
+            ref = refs[0] if isinstance(refs, list) and refs else {}
+        url = ref.get("url") if isinstance(ref, dict) else None
+        if isinstance(url, str) and url.startswith(("http://", "https://")):
+            items.append((str(item.get("item_id") or ""), url, item["image"]))
     return items
+
+
+def _publication_report(path: Path) -> dict[str, Any]:
+    """处理：读取并校验准备发布的日报。
+    输入：版本化报告 JSON。
+    输出：供远端投影使用的已校验报告。
+    """
+    report = read_json(path)
+    errors, _ = validate_report_data(report)
+    if errors:
+        raise ValueError("Report validation failed: " + "; ".join(errors))
+    if not isinstance(report, dict):
+        raise ValueError("Report must be a JSON object")
+    return report
 
 
 def backfill_report_images(
@@ -925,18 +855,13 @@ def backfill_report_images(
     data_dir: Path,
     config_path: Path | None = None,
 ) -> tuple[str, str]:
-    """处理：向已有故事块补充缺失图片，同时避免重复创建日报。
+    """向已有故事块补充缺失图片，同时避免重复创建日报。
     输入：版本化报告路径、本次运行的数据根、可选配置文件路径。
-    输出：“向已有故事块补充缺失图片，同时避免重复创建日报”得到的固定结构结果；
-      返回位置依次对应 page_id、status。
+    输出：远程页面 ID 和本次配图回填状态。
     """
-    errors, _warnings = validate_report(report_path)
-    if errors:
-        raise ValueError("Report validation failed: " + "; ".join(errors))
-    report = read_json(report_path)
-    if not isinstance(report, dict):
-        raise ValueError("Report must be a JSON object")
-    image_items = _report_items_with_images(report)
+    report = _publication_report(report_path)
+    items = list(_image_items(report))
+    image_items = _report_items_with_images(items)
     if not image_items:
         raise ValueError("Report contains no materialized images to backfill")
 
@@ -969,20 +894,11 @@ def backfill_report_images(
     entry["image_backfill"] = progress
     write_json(registry_path, registry)
 
-    publisher = NotionPublisher(token, data_source_id, config_path)
-    try:
-        def save_progress() -> None:
-            """处理：把当前远程写入进度写入本地发布登记表。
-            输入：
-            - 无显式业务参数：不接收参数；从外层发布流程捕获当前页面、块进度和可恢复状态。
-            输出：不返回新数据；完成“把当前远程写入进度写入本地发布登记表”，
-              副作用限于该处理声明的受控对象或产物。
-            """
-            write_json(registry_path, registry)
-
+    with closing(NotionPublisher(token, data_source_id, config_path)) as publisher:
+        save_progress = partial(write_json, registry_path, registry)
         image_uploads, image_upload_errors = _prepare_image_uploads(
             publisher,
-            report,
+            items,
             data_dir,
             entry,
             save_progress,
@@ -1031,8 +947,6 @@ def backfill_report_images(
             publisher.append_blocks(story_id, [image_block])
             progress["appended"] += 1
             save_progress()
-    finally:
-        publisher.close()
 
     progress["status"] = "partial" if progress["missing_item_ids"] else "complete"
     entry["media_report_id"] = report["report_id"]
@@ -1067,13 +981,7 @@ def publish_report(
     - ``config_path``：可选配置文件路径；为空时使用仓库或安装包默认配置。
     输出：Notion 页面 ID 与发布结果状态；状态可区分新发布、重复跳过或恢复完成。
     """
-    errors, _warnings = validate_report(report_path)
-    if errors:
-        raise ValueError("Report validation failed: " + "; ".join(errors))
-
-    report = read_json(report_path)
-    if not isinstance(report, dict):
-        raise ValueError("Report must be a JSON object")
+    report = _publication_report(report_path)
 
     token = environment_value("NOTION_TOKEN")
     data_source_id = environment_value("NOTION_DATA_SOURCE_ID")
@@ -1103,8 +1011,7 @@ def publish_report(
                 "--force."
             )
 
-    publisher = NotionPublisher(token, data_source_id, config_path)
-    try:
+    with closing(NotionPublisher(token, data_source_id, config_path)) as publisher:
         if isinstance(existing, dict) and not force:
             page_id = existing["page_id"]
             start_block = int(existing.get("blocks_appended", 0))
@@ -1146,21 +1053,12 @@ def publish_report(
         # 先记录远端页面身份和发布模式，再上传附件，进程中断后才能安全续传。
         write_json(registry_path, registry)
 
-        def save_upload_progress() -> None:
-            """处理：把当前附件上传 ID 和状态写入本地发布登记表。
-            输入：
-            - 无显式业务参数：不接收参数；从外层发布流程捕获当前上传状态、报告条目和持久化回调。
-            输出：不返回新数据；完成“把当前附件上传 ID 和状态写入本地发布登记表”，
-              副作用限于该处理声明的受控对象或产物。
-            """
-            write_json(registry_path, registry)
-
         portable_html = _portable_report_html(report, data_dir)
         html_upload_id = _prepare_html_upload(
             publisher,
             portable_html,
             entry["html_upload"],
-            save_upload_progress,
+            partial(write_json, registry_path, registry),
         )
         blocks = [
             _html_attachment_block(
@@ -1173,11 +1071,8 @@ def publish_report(
         write_json(registry_path, registry)
 
         def save_progress(completed: int) -> None:
-            """处理：把当前远程写入进度写入本地发布登记表。
-            输入：
-            - ``completed``：已经成功持久化的项目数；用于发布进度检查点。
-            输出：不返回新数据；完成“把当前远程写入进度写入本地发布登记表”，
-              副作用限于该处理声明的受控对象或产物。
+            """把当前远程写入进度写入本地发布登记表。
+            输入：``completed``：已经成功持久化的项目数；用于发布进度检查点。
             """
             entry["blocks_appended"] = completed
             write_json(registry_path, registry)
@@ -1193,5 +1088,3 @@ def publish_report(
         entry["blocks_appended"] = len(blocks)
         write_json(registry_path, registry)
         return page_id, "published"
-    finally:
-        publisher.close()

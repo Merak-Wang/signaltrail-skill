@@ -31,10 +31,9 @@ def next_revision(directory: Path, stem: str) -> int:
 
 
 def write_immutable_json(path: Path, data: object) -> Path:
-    """处理：无覆盖竞态地创建完整且不可变的 JSON artifact。
+    """无覆盖竞态地创建完整且不可变的 JSON artifact。
     输入：本地文件路径。
     - ``data``：待持久化的 Python 对象；会序列化为 UTF-8 JSON，不执行其中内容。
-    输出：指向“无覆盖竞态地创建完整且不可变的 JSON artifact”所生成、定位或确认产物的本地路径。
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f".{path.name}.{uuid4().hex}.tmp")

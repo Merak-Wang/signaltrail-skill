@@ -18,7 +18,6 @@ from uuid import uuid4
 from zoneinfo import ZoneInfo
 
 from .authoring import (
-    CheckedAuthoringDraft,
     assemble_report_draft,
     begin_authoring_session,
     prepare_analysis_packet,
@@ -51,12 +50,7 @@ from .utils import now_iso, read_json, read_json_object, today_str, write_json
 
 
 class RunStatus(StrEnum):
-    """处理：定义运行状态的可用枚举值。
-    输入：
-    - 无显式业务参数：不声明额外构造字段；该定义以 ``StrEnum`` 为基础，
-      通过类成员承担“定义运行状态的可用枚举值”职责。
-    输出：构造后的 ``RunStatus`` 实例或枚举定义；其字段和方法共同承担上述职责。
-    """
+    """记录日报从采集到交付的运行状态，供调度、重试与恢复使用。"""
     CREATED = "created"
     COLLECTING = "collecting"
     BUILDING_CONTEXT = "building_context"
@@ -147,11 +141,7 @@ def _attach_usage_binding(
 
 
 def _completion_status(run: dict[str, Any]) -> RunStatus:
-    """处理：根据待处理来源和预算状态确定运行的最终状态。
-    输入：记录阶段与产物的运行清单。
-    输出：封装“根据待处理来源和预算状态确定运行的最终状态”业务结果的 ``RunStatus`` 对象；
-      调用方据此继续相邻阶段或识别无结果状态。
-    """
+    """根据待处理来源和预算状态确定运行的最终状态。"""
     if run.get("pending_sources") or run.get("budget_exhausted"):
         return RunStatus.COMPLETED_PARTIAL
     return RunStatus.COMPLETED
@@ -324,14 +314,13 @@ def _pending_evaluation(
     scheduler_status: str | None = None,
     requested: bool = True,
 ) -> dict[str, Any]:
-    """处理：创建与当前报告身份绑定的待评估状态。
+    """创建与当前报告身份绑定的待评估状态。
     输入：
     - ``artifacts``：当前运行已生成的产物路径和状态映射。
     - ``next_action``：运行清单记录的下一条可恢复操作。
     - ``scheduler_status``：独立评估调度器最近一次返回的显式状态。
     - ``requested``：用户是否要求质量评分；未要求时不登记待调度任务。
-    输出：“创建与当前报告身份绑定的待评估状态”形成的结构化字典；
-      典型键包括 content_hash、next_action、report_id、status。
+    输出：字段包括 content_hash、next_action、report_id、status。
     """
     evaluation = {
         "status": "pending" if requested else "not_requested",
@@ -490,7 +479,7 @@ def schedule_independent_evaluation(
     brief_plan_item_ids: dict[str, list[str]] | None = None,
     coverage_targets: dict[str, int] | None = None,
 ) -> dict[str, Any]:
-    """处理：在本地交付后创建有界独立评估任务，远程发布保持可选。
+    """在本地交付后创建有界独立评估任务，远程发布保持可选。
     输入：版本化报告路径、版本化来源索引路径、本次运行的数据根。
     - ``report_id``：报告或报告系列的稳定 ID；用于推导跨修订关联键。
     - ``content_hash``：权威报告 JSON 的内容哈希；用于评估调度幂等键。
@@ -498,8 +487,7 @@ def schedule_independent_evaluation(
     - ``attempt``：当前报告的有界评估尝试序号；初次为 1，最多允许一次恢复重试。
     - ``usage_task_id``：调度前创建的 evaluator usage task；用于后续 hook 关联。
     - ``brief_plan_item_ids``、``coverage_targets``：已保存报告使用的冻结计划和覆盖目标。
-    输出：“在本地交付后创建有界独立评估任务，远程发布保持可选”形成的结构化字典；
-      典型键包括 attempts、detail、error、interval、job_id、status。
+    输出：字段包括 attempts、detail、error、interval、job_id、status。
     """
     preflight = evaluation_preflight(
         report_path,
@@ -948,12 +936,10 @@ def edition_window(date_value: str, edition: str, timezone: str) -> dict[str, st
 
 
 def _update_run(path: Path, run: dict[str, Any], status: RunStatus, **fields: Any) -> None:
-    """处理：原子更新运行清单、状态时间戳和迁移历史。
+    """原子更新运行清单、状态时间戳和迁移历史。
     输入：本地文件路径、记录阶段与产物的运行清单。
     - ``status``：当前操作或来源状态；值必须属于对应的显式状态模型。
     - ``**fields``：需要原子写入运行清单的字段更新；键受调用阶段控制。
-    输出：不返回新数据；完成“原子更新运行清单、状态时间戳和迁移历史”，
-      副作用限于该处理声明的受控对象或产物。
     """
     timestamp = fields.get("updated_at") or datetime.now().astimezone().isoformat(
         timespec="seconds"
@@ -996,12 +982,11 @@ def _reload_locked_run(path: Path, expected: dict[str, Any], data_dir: Path) -> 
 
 
 def _lock_payload(edition: str, timestamp: str) -> dict[str, Any]:
-    """处理：构建日报互斥锁中记录的进程与版本信息。
+    """构建日报互斥锁中记录的进程与版本信息。
     输入：
     - ``edition``：日报版本标识，默认为 daily；morning/evening 用于历史兼容；参与窗口和产物命名。
     - ``timestamp``：用于锁、截止时间或状态迁移的 ISO 时间字符串。
-    输出：“构建日报互斥锁中记录的进程与版本信息”形成的结构化字典；
-      典型键包括 created_at、edition、pid。
+    输出：字段包括 created_at、edition、pid。
     """
     return {
         "pid": os.getpid(),
@@ -1011,10 +996,9 @@ def _lock_payload(edition: str, timestamp: str) -> dict[str, Any]:
 
 
 def _deadline_exceeded(run: dict[str, Any], timestamp: str | None = None) -> bool:
-    """处理：判断当前运行是否已经超过确定性截止时间。
+    """判断当前运行是否已经超过确定性截止时间。
     输入：记录阶段与产物的运行清单。
     - ``timestamp``：用于锁、截止时间或状态迁移的 ISO 时间字符串。
-    输出：布尔判断；True 表示满足处理说明中的条件，False 表示不满足且不产生该结果。
     """
     deadline = run.get("deadline_at")
     if not deadline:
@@ -1024,13 +1008,10 @@ def _deadline_exceeded(run: dict[str, Any], timestamp: str | None = None) -> boo
 
 
 def _runtime_metrics(run: dict[str, Any], completed_at: str) -> dict[str, Any]:
-    """处理：根据状态历史计算运行阶段耗时和汇总指标。
+    """根据状态历史计算运行阶段耗时和汇总指标。
     输入：记录阶段与产物的运行清单。
     - ``completed_at``：运行完成时间；用于计算总耗时和截止状态。
-    输出：“根据状态历史计算运行阶段耗时和汇总指标”形成的结构化字典；
-      典型键包括 agent_authoring_wait、attempt、authoring、collection、content_enrichment、conte
-      xt_building、deadline_exceeded、elapsed_seconds、phase_durations_seconds、publication、sel
-      ected_fulltext_items、stage_durations_seconds。
+    输出：整期耗时、是否超过期限和各阶段的耗时明细。
     """
     completed = datetime.fromisoformat(completed_at)
     started = datetime.fromisoformat(str(run.get("created_at", completed_at)))
@@ -1100,48 +1081,31 @@ def _runtime_metrics(run: dict[str, Any], completed_at: str) -> dict[str, Any]:
 
 
 def _enrichment_evidence(index: dict, selected_ids: list[str]) -> dict[str, Any]:
-    """处理：从富化索引提取成功条目及其正文证据统计。
-    输入：
-    - ``index``：已加载的版本化来源索引；包含根级规范 items 和来源采集状态。
-    - ``selected_ids``：调用方按重要性排序选中的条目 ID；正文阶段只处理这些授权条目。
-    输出：“从富化索引提取成功条目及其正文证据统计”形成的结构化字典；
-      典型键包括 full_text_item_ids、partial_item_ids、successful_item_ids、unsuccessful_item_id
-      s。
+    """处理：按选题顺序统计本轮正文获取情况。
+    输入：富化后的索引和本轮授权条目。
+    输出：成功、完整、部分和失败的条目清单。
     """
-    items = {
-        str(item.get("item_id")): item
+    status_by_id = {
+        str(item["item_id"]): item.get("content_status")
         for item in index.get("items", [])
-        if isinstance(item, dict) and item.get("item_id")
+        if isinstance(item, dict) and item.get("item_id") and item.get("content_path")
     }
-    successful = [
-        item_id
-        for item_id in selected_ids
-        if items.get(item_id, {}).get("content_status") in {"full_text", "partial"}
-        and items.get(item_id, {}).get("content_path")
-    ]
-    full_text = [
-        item_id
-        for item_id in successful
-        if items[item_id].get("content_status") == "full_text"
-    ]
-    full_text_set = set(full_text)
-    successful_set = set(successful)
-    partial = [item_id for item_id in successful if item_id not in full_text_set]
-    return {
-        "successful_item_ids": successful,
-        "full_text_item_ids": full_text,
-        "partial_item_ids": partial,
-        "unsuccessful_item_ids": [
-            item_id for item_id in selected_ids if item_id not in successful_set
-        ],
-    }
+    evidence = {f"{name}_item_ids": [] for name in (
+        "successful", "full_text", "partial", "unsuccessful",
+    )}
+    for item_id in selected_ids:
+        status = status_by_id.get(item_id)
+        if status in {"full_text", "partial"}:
+            evidence["successful_item_ids"].append(item_id)
+            evidence[f"{status}_item_ids"].append(item_id)
+        else:
+            evidence["unsuccessful_item_ids"].append(item_id)
+    return evidence
 
 
 def _validate_enrichment_lineage(run: dict[str, Any], index_path: Path) -> None:
-    """处理：确认富化索引直接派生自当前运行登记的原索引。
+    """确认富化索引直接派生自当前运行登记的原索引。
     输入：记录阶段与产物的运行清单、版本化来源索引路径。
-    输出：不返回新数据；完成“确认富化索引直接派生自当前运行登记的原索引”，
-      副作用限于该处理声明的受控对象或产物。
     """
     enrichment = run.get("artifacts", {}).get("enrichment", {})
     if not isinstance(enrichment, dict):
@@ -1161,10 +1125,9 @@ def _validate_enrichment_lineage(run: dict[str, Any], index_path: Path) -> None:
 
 
 def adopt_index_for_run(config: AppConfig, data_dir: Path, index_path: Path) -> Path | None:
-    """处理：校验新索引的血缘后把它登记为当前运行产物。
+    """校验新索引的血缘后把它登记为当前运行产物。
     输入：已校验的采集和输出配置、本次运行的数据根、版本化来源索引路径。
-    输出：指向“校验新索引的血缘后把它登记为当前运行产物”所生成、定位或确认产物的本地路径；
-      条件不满足时返回 None。
+    输出：未找到匹配项时返回 None。
     """
     index_path = require_data_root_path(index_path, data_dir, "Verified index")
     index = read_json_object(index_path, "Index")
@@ -1278,6 +1241,21 @@ def _load_run_manifest(run_path: Path, data_dir: Path) -> tuple[Path, dict[str, 
 
 
 @contextmanager
+def _locked_run(
+    run_path: Path, run: dict[str, Any], data_dir: Path, timezone: str | None = None,
+) -> Iterator[dict[str, Any]]:
+    """处理：取得版次锁后重新读取同一次运行。
+    输入：运行清单快照、数据根和可选锁时间时区。
+    输出：仅在版次锁持有期间使用的最新清单。
+    """
+    edition = str(run["edition"])
+    lock_path = data_dir / "locks" / f"{run['date']}-{edition}.lock"
+    timezone = timezone or str(run.get("timezone", "Asia/Shanghai"))
+    with exclusive_lock(lock_path, _lock_payload(edition, now_iso(timezone))):
+        yield _reload_locked_run(run_path, run, data_dir)
+
+
+@contextmanager
 def _locked_authoring_run(
     run_path: Path, data_dir: Path, *, timezone: str | None = None,
 ) -> Iterator[tuple[Path, dict[str, Any]]]:
@@ -1288,19 +1266,13 @@ def _locked_authoring_run(
     run_path, run = _load_run_manifest(run_path, data_dir)
     if run.get("status") != RunStatus.AWAITING_AUTHORING:
         raise RuntimeError(f"Run must be awaiting authoring, got {run.get('status')!r}")
-    edition = str(run["edition"])
-    lock_path = data_dir / "locks" / f"{run['date']}-{edition}.lock"
-    timezone = str(run.get("timezone", "Asia/Shanghai")) if timezone is None else timezone
-    with exclusive_lock(lock_path, _lock_payload(edition, now_iso(timezone))):
-        yield run_path, _reload_locked_run(run_path, run, data_dir)
+    with _locked_run(run_path, run, data_dir, timezone) as current:
+        yield run_path, current
 
 
 def begin_authoring(run_path: Path, data_dir: Path, *, config: AppConfig | None = None,
                     refresh_context: bool = False) -> Path:
-    """处理：为当前运行创建写作会话并登记全部批次产物路径。
-    输入：运行清单路径、本次运行的数据根。
-    输出：指向“为当前运行创建写作会话并登记全部批次产物路径”所生成、定位或确认产物的本地路径。
-    """
+    """为当前运行创建写作会话并登记全部批次产物路径。"""
     with _locked_authoring_run(run_path, data_dir) as (run_path, run):
         _require_llm_budget(run, run_path, data_dir, "brief_wave")
         if refresh_context:
@@ -1343,21 +1315,15 @@ def accept_authoring_batch(
     batch_id: str,
     result_path: Path,
     data_dir: Path,
-    *,
-    _validated_session: dict[str, Any] | None = None,
-    checked_draft: CheckedAuthoringDraft | None = None,
 ) -> Path:
-    """处理：校验并持久化一个模型写作批次的不可变回执。
+    """校验并持久化一个模型写作批次的不可变回执。
     输入：运行清单路径、本次运行的数据根。
     - ``batch_id``：情境计划分配的写作批次 ID；连接授权包、模型结果和接收回执。
     - ``result_path``：模型批次结果 JSON 路径；必须对应当前情境哈希和批次 ID。
-    - ``checked_draft``：同次命令内通过预检的草稿，锁内按实际内容核对后复用。
-    输出：指向“校验并持久化一个模型写作批次的不可变回执”所生成、定位或确认产物的本地路径。
     """
     with _locked_authoring_run(run_path, data_dir, timezone="Asia/Shanghai") as (_, run):
         return submit_authoring_batch(
-            run, batch_id, result_path, data_dir, _validated_session=_validated_session,
-            checked_draft=checked_draft,
+            run, batch_id, result_path, data_dir,
         )
 
 
@@ -1366,21 +1332,16 @@ def accept_authoring_metrics(
     metrics_path: Path,
     data_dir: Path,
 ) -> Path:
-    """处理：校验并持久化 Hermes 委派任务的批次遥测。
+    """校验并持久化 Hermes 委派任务的批次遥测。
     输入：运行清单路径、本次运行的数据根。
     - ``metrics_path``：模型委派遥测 JSON 路径；记录 Token、耗时和批次状态。
-    输出：指向“校验并持久化 Hermes 委派任务的批次遥测”所生成、定位或确认产物的本地路径。
     """
     with _locked_authoring_run(run_path, data_dir, timezone="Asia/Shanghai") as (_, run):
         return record_authoring_metrics(run, metrics_path, data_dir)
 
 
 def get_authoring_status(run_path: Path, data_dir: Path) -> dict[str, Any]:
-    """处理：读取会话回执和截止时间，返回当前写作进度。
-    输入：运行清单路径、本次运行的数据根。
-    输出：“读取会话回执和截止时间，返回当前写作进度”形成的结构化字典；
-      键值表达该处理定义的业务记录或查找关系。
-    """
+    """读取会话回执和截止时间，返回当前写作进度。"""
     _, run = _load_run_manifest(run_path, data_dir)
     return inspect_authoring_status(run, data_dir)
 
@@ -1390,11 +1351,10 @@ def prefetch_authoring_media(
     data_dir: Path,
     media_config: MediaConfig | None = None,
 ) -> dict[str, Any]:
-    """处理：根据当前情境候选预热安全图片缓存，并把警告和统计写回运行清单。
+    """根据当前情境候选预热安全图片缓存，并把警告和统计写回运行清单。
     输入：运行清单路径、本次运行的数据根。
     - ``media_config``：图片下载、格式、安全、缓存和报告预算配置。
-    输出：“根据当前情境候选预热安全图片缓存，并把警告和统计写回运行清单”形成的结构化字典；
-      典型键包括 completed_at、receipt_path、schema_version。
+    输出：字段包括 completed_at、receipt_path、schema_version。
     """
     _, run = _load_run_manifest(run_path, data_dir)
     authoring = run.get("artifacts", {}).get("authoring", {})
@@ -1450,11 +1410,9 @@ def prepare_authoring_analysis(
     *,
     allow_degraded: bool = False,
 ) -> Path:
-    """处理：汇总已接收写作批次并创建受情境哈希约束的跨栏目分析任务包。
+    """汇总已接收写作批次并创建受情境哈希约束的跨栏目分析任务包。
     输入：运行清单路径、本次运行的数据根。
     - ``allow_degraded``：达到截止条件后是否允许使用明确标记的降级内容继续组装。
-    输出：指向“汇总已接收写作批次并创建受情境哈希约束的跨栏目分析任务包”所生成、定位或确认产物的
-      本地路径。
     """
     with _locked_authoring_run(run_path, data_dir) as (run_path, run):
         _require_llm_budget(run, run_path, data_dir, "analysis")
@@ -1499,11 +1457,9 @@ def assemble_authoring(
     analysis_path: Path,
     data_dir: Path,
 ) -> Path:
-    """处理：合并已验证简报与分析结果，生成可交给确定性报告编译器的草稿。
+    """合并已验证简报与分析结果，生成可交给确定性报告编译器的草稿。
     输入：运行清单路径、本次运行的数据根。
     - ``analysis_path``：上游模型生成并已通过契约校验的跨栏目分析 JSON 路径。
-    输出：指向“合并已验证简报与分析结果，
-      生成可交给确定性报告编译器的草稿”所生成、定位或确认产物的本地路径。
     """
     with _locked_authoring_run(run_path, data_dir) as (run_path, run):
         assembled = assemble_report_draft(run, analysis_path, data_dir)
@@ -1538,12 +1494,10 @@ def prepare_edition(
     browser_channel: str | None = None,
     restart: bool = False,
 ) -> Path:
-    """处理：创建或恢复日报运行，确定采集窗口并生成权威来源索引与写作情境。
+    """创建或恢复日报运行，确定采集窗口并生成权威来源索引与写作情境。
     输入：已校验的采集和输出配置、本次运行的数据根、浏览器窗口显示选项、持久化浏览器配置目录、浏览器通道。
     - ``edition``：日报版本标识，默认为 daily；morning/evening 用于历史兼容；参与窗口和产物命名。
     - ``restart``：是否放弃可恢复的未完成运行并显式创建新运行。
-    输出：指向“创建或恢复日报运行，
-      确定采集窗口并生成权威来源索引与写作情境”所生成、定位或确认产物的本地路径。
     """
     date = today_str(config.timezone)
     run_path = data_dir / "runs" / date / f"{edition}.json"
@@ -1814,14 +1768,11 @@ def enrich_edition(
     browser_channel: str | None = None,
     slides_candidates: bool = False,
 ) -> Path:
-    """处理：按预算提取正文，并生成新的不可变富化索引修订。
+    """按预算提取正文，并生成新的不可变富化索引修订。
     输入：运行清单路径、已校验的采集和输出配置、本次运行的数据根、本阶段条目上限、浏览器窗口显示选项、持久化浏览器配置目录、浏览器通道。
     - ``selected_ids``：调用方按重要性排序选中的条目 ID；正文阶段只处理这些授权条目。
-    输出：指向“按预算提取正文，并生成新的不可变富化索引修订”所生成、定位或确认产物的本地路径。
     """
-    run_path = require_data_root_path(run_path, data_dir, "Run manifest")
-    run = read_json_object(run_path, "Run manifest")
-    validate_run_data_root(run, run_path, data_dir)
+    run_path, run = _load_run_manifest(run_path, data_dir)
     if run.get("status") not in {
         RunStatus.AWAITING_SELECTION,
         RunStatus.AWAITING_AUTHORING,
@@ -1831,14 +1782,7 @@ def enrich_edition(
             f"Run must be awaiting selection or authoring, got {run.get('status')!r}"
         )
 
-    date = str(run["date"])
-    edition = str(run["edition"])
-    lock_path = data_dir / "locks" / f"{date}-{edition}.lock"
-    with exclusive_lock(
-        lock_path,
-        _lock_payload(edition, now_iso(config.timezone)),
-    ):
-        run = _reload_locked_run(run_path, run, data_dir)
+    with _locked_run(run_path, run, data_dir, config.timezone) as run:
         if run.get("artifacts", {}).get("authoring", {}).get("session_path"):
             raise RuntimeError("Enrichment must finish before authoring dispatch; restart the run")
         index_path = require_data_root_path(
@@ -1944,7 +1888,7 @@ def enrich_edition(
             index_path,
             context_config,
             data_dir,
-            edition,
+            str(run["edition"]),
             collection_window=run["collection_window"],
             index=enriched_index,
         )
@@ -1999,11 +1943,7 @@ def _coverage_targets_for_run(
     run: dict[str, Any],
     data_dir: Path,
 ) -> dict[str, int] | None:
-    """处理：从当前情境或降级状态读取来源覆盖目标。
-    输入：记录阶段与产物的运行清单、本次运行的数据根。
-    输出：“从当前情境或降级状态读取来源覆盖目标”形成的结构化字典；
-      键值表达该处理定义的业务记录或查找关系。
-    """
+    """从当前情境或降级状态读取来源覆盖目标。"""
     authoring = run.get("artifacts", {}).get("authoring", {})
     values = authoring.get("coverage_targets")
     if values is None and authoring.get("session_path"):
@@ -2060,11 +2000,9 @@ def _require_current_context_schema(
     run: dict[str, Any],
     data_dir: Path,
 ) -> None:
-    """处理：确认草稿声明当前情境 schema 版本，防止旧任务包进入报告编译。
+    """确认草稿声明当前情境 schema 版本，防止旧任务包进入报告编译。
     输入：记录阶段与产物的运行清单、本次运行的数据根。
     - ``draft``：待完成的报告草稿对象；必须带当前情境 schema 和血缘字段。
-    输出：不返回新数据；完成“确认草稿声明当前情境 schema 版本，防止旧任务包进入报告编译”，
-      副作用限于该处理声明的受控对象或产物。
     """
     context_value = run.get("artifacts", {}).get("context_path")
     if not context_value:
@@ -2522,7 +2460,7 @@ def finalize_edition(
     evaluation_backend: str | None = None,
     app_config: AppConfig | None = None,
 ) -> Path:
-    """处理：编译并校验写作草稿，创建不可变报告及本地投影，再登记可恢复发布状态。
+    """编译并校验写作草稿，创建不可变报告及本地投影，再登记可恢复发布状态。
     输入：运行清单路径、版本化报告路径、本次运行的数据根。
     - ``publish``：本地定稿后是否执行已配置的远程发布。
     - ``force_publish``：是否绕过相同内容哈希的远程发布幂等跳过。
@@ -2535,11 +2473,8 @@ def finalize_edition(
     - ``slides_exclude_event_ids``：显式排除事件后补位；省略时沿用本期选择。
     - ``evaluation_backend``：选择评分后端；单独指定不会开启评分。
     - ``app_config``：正式命令的来源配置，供图文写作前补齐原文。
-    输出：指向“编译并校验写作草稿，创建不可变报告及本地投影，
-      再登记可恢复发布状态”所生成、定位或确认产物的本地路径。
     """
-    run_path = require_data_root_path(run_path, data_dir, "Run manifest")
-    run = read_json_object(run_path, "Run manifest")
+    run_path, run = _load_run_manifest(run_path, data_dir)
     current_slide_options = run.get("artifacts", {}).get("slides", {})
     slides_max_news = int(
         slides_max_news if slides_max_news is not None
@@ -2551,14 +2486,8 @@ def finalize_edition(
     ))
     if slides_max_news < 1:
         raise ValueError("slides_max_news must be positive")
-    validate_run_data_root(run, run_path, data_dir)
-    date = str(run["date"])
-    edition = str(run["edition"])
-    lock_path = data_dir / "locks" / f"{date}-{edition}.lock"
     timezone = str(run.get("timezone", "Asia/Shanghai"))
-    lock_timestamp = now_iso(timezone)
-    with exclusive_lock(lock_path, _lock_payload(edition, lock_timestamp)):
-        run = _reload_locked_run(run_path, run, data_dir)
+    with _locked_run(run_path, run, data_dir, timezone) as run:
         if slides_review is not None:
             run.setdefault("artifacts", {}).setdefault("slides", {})["review_path"] = str(
                 slides_review.resolve())
@@ -2715,27 +2644,21 @@ def complete_edition_tail(
     evaluate: bool = False,
     evaluation_backend: str | None = None,
 ) -> Path:
-    """处理：在本地报告完成后补做 PDF、Notion 和独立评估调度。
+    """在本地报告完成后补做 PDF、Notion 和独立评估调度。
     输入：运行清单路径、本次运行的数据根。
     - ``publish``：本地定稿后是否执行已配置的远程发布。
     - ``notion_config``：可选 Notion 映射配置路径；提供时覆盖默认 configs/notion.yaml。
     - ``output_config``：本地 HTML、PDF、桌面交付和打开行为配置。
     - ``evaluate``：显式开启本轮质量评分；默认只完成交付，沿用已保存的评分请求。
     - ``evaluation_backend``：选择评分后端；单独指定不会开启评分。
-    输出：指向“在本地报告完成后补做 PDF、Notion 和独立评估调度”所生成、定位或确认产物的本地路径
-      。
     """
     run_path, run = _load_run_manifest(run_path, data_dir)
     if run.get("status") not in COMPLETED_STATUSES:
         raise RuntimeError(
             f"Tail work requires a locally completed run, got {run.get('status')!r}"
         )
-    date = str(run["date"])
-    edition = str(run["edition"])
     timezone = str(run.get("timezone", "Asia/Shanghai"))
-    lock_path = data_dir / "locks" / f"{date}-{edition}.lock"
-    with exclusive_lock(lock_path, _lock_payload(edition, now_iso(timezone))):
-        run = _reload_locked_run(run_path, run, data_dir)
+    with _locked_run(run_path, run, data_dir, timezone) as run:
         evaluation_requested = _apply_evaluation_request(
             run, run_path, evaluate, evaluation_backend,
         )

@@ -18,29 +18,6 @@ from signaltrail.runtime import require_data_root_path  # noqa: E402
 from signaltrail.utils import read_json, write_json  # noqa: E402
 
 
-def _copy_benchmark_index(index: Path, data_dir: Path, root: Path) -> Path:
-    """处理：将冻结索引引用的正文和 Feed 文件复制到临时测量目录。
-    输入：已保存索引、原数据根和基准专用数据根。
-    输出：指向临时证据的基准索引，旧计划的父文件仍保留原始字节。
-    """
-    payload = read_json(index)
-    for item in payload["items"]:
-        metadata = item.get("metadata") or {}
-        for record, key in ((item, "content_path"), (metadata, "feed_content_path")):
-            if not record.get(key):
-                continue
-            relative = require_data_root_path(
-                data_dir / record[key], data_dir, "Benchmark evidence",
-            ).relative_to(data_dir)
-            source, target = data_dir / relative, root / relative
-            if source.is_file() and not target.exists():
-                target.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(source, target)
-            record[key] = str(target)
-    synchronize_nested_items(payload)
-    return write_json(root / "benchmark-index.json", payload)
-
-
 def benchmark(data_dir: Path, reuse_plan: Path, report: Path, index: Path) -> dict:
     """处理：复制明确旧计划与新证据，在临时数据根比较三种分包策略。
     输入：已有接受稿的计划、新日报和索引；原运行目录始终只读。
@@ -50,15 +27,29 @@ def benchmark(data_dir: Path, reuse_plan: Path, report: Path, index: Path) -> di
     root = Path(tempfile.mkdtemp(prefix="signaltrail-slide-benchmark-"))
     source_reader = ArtifactReader(data_dir)
     old = source_reader.load(reuse_plan, kind="slides-plan")
-    paths = {report.resolve(), *(source_reader.parent_path(old, name) for name in old["parents"])}
-    for path in paths:
+    def copy_local(path: Path) -> Path:
+        """在隔离数据根内保留证据相对路径与文件内容。"""
         target = root / path.relative_to(data_dir)
-        target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(path, target)
+        if path.is_file() and not target.exists():
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(path, target)
+        return target
+
+    copied_report = copy_local(report.resolve())
+    for name in old["parents"]:
+        copy_local(source_reader.parent_path(old, name))
     copied_plan = root / reuse_plan.resolve().relative_to(data_dir)
     shutil.copytree(reuse_plan.parent, copied_plan.parent)
-    benchmark_index = _copy_benchmark_index(index, data_dir, root)
-    copied_report = root / report.resolve().relative_to(data_dir)
+
+    payload = read_json(index)
+    for item in payload["items"]:
+        for record, key in ((item, "content_path"),
+                            (item.get("metadata") or {}, "feed_content_path")):
+            if local := record.get(key):
+                original = require_data_root_path(data_dir / local, data_dir, "Benchmark evidence")
+                record[key] = str(copy_local(original))
+    synchronize_nested_items(payload)
+    benchmark_index = write_json(root / "benchmark-index.json", payload)
     reader = ArtifactReader(root)
     cases = []
     for name, size, previous in (("baseline_batch4", 4, None),
@@ -66,16 +57,16 @@ def benchmark(data_dir: Path, reuse_plan: Path, report: Path, index: Path) -> di
                                  ("reuse_batch5", 5, copied_plan)):
         result = prepare_slides(copied_report, benchmark_index, root,
                                 batch_size=size, reuse_plan=previous)
-        packets = [reader.load(Path(path))["payload"] for path in result["packet_paths"]]
-        reused = result["reused_count"]
+        packets = result["packet_paths"]
         cases.append({
             "case": name, "news_count": result["news_count"], "new_news_count":
-            result["pending_news_count"], "reused_news_count": reused,
+            result["pending_news_count"], "reused_news_count": result["reused_count"],
             "pending_packets": len(packets), "estimated_input_tokens":
             result["estimated_input_tokens"],
             "compact_model_input_bytes": sum(len(json.dumps(
-                packet["model_input"], ensure_ascii=False, separators=(",", ":")
-            ).encode("utf-8")) for packet in packets),
+                reader.load(Path(path))["payload"]["model_input"],
+                ensure_ascii=False, separators=(",", ":")
+            ).encode("utf-8")) for path in packets),
             "actual_usage": {"input_tokens": None, "output_tokens": None, "cost_usd": None},
         })
     return {"temporary_data_dir": str(root), "model_calls_made": 0,

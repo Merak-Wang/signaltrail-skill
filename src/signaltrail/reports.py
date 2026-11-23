@@ -139,11 +139,9 @@ def _brief_markdown(
     media_path_prefix: str | None = None,
     language: object = "zh-CN",
 ) -> list[str]:
-    """处理：把单条简报渲染为含来源和图片的 Markdown。
+    """把单条简报渲染为含来源和图片的 Markdown。
     输入：带稳定 ID 的索引条目、本地媒体相对路径前缀、输出语言。
     - ``rank``：简报或来源在当前栏目中的一基排序号。
-    输出：“把单条简报渲染为含来源和图片的 Markdown”得到的字符串列表；
-      顺序保持确定并可供下一步骤逐项处理。
     """
     colon = "：" if is_chinese_output(language) else ":"
     ref = item["source_ref"]
@@ -183,11 +181,9 @@ def _event_markdown(
     title: str,
     language: object = "zh-CN",
 ) -> list[str]:
-    """处理：把单个事件渲染为兼容旧 schema 的 Markdown。
+    """把单个事件渲染为兼容旧 schema 的 Markdown。
     输入：带稳定 ID 的索引条目、输出语言。
     - ``title``：来源提供的标题文本；会清理空白，并用于过滤、身份或展示。
-    输出：“把单个事件渲染为兼容旧 schema 的 Markdown”得到的字符串列表；
-      顺序保持确定并可供下一步骤逐项处理。
     """
     colon = "：" if is_chinese_output(language) else ":"
     separator = "，" if is_chinese_output(language) else ", "
@@ -268,10 +264,8 @@ def render_report_markdown(
     report: dict[str, Any],
     media_path_prefix: str | None = None,
 ) -> str:
-    """处理：把已验证报告栏目、来源引用和本地图片投影为可追踪的 Markdown。
+    """把已验证报告栏目、来源引用和本地图片投影为可追踪的 Markdown。
     输入：含栏目和来源引用的报告、本地媒体相对路径前缀。
-    输出：“把已验证报告栏目、来源引用和本地图片投影为可追踪的 Markdown”得到的规范字符串，
-      供调用方存储、比较或展示。
     """
     language = report.get("language") or "zh-CN"
     chinese = is_chinese_output(language)
@@ -608,7 +602,7 @@ def save_report(
     brief_plan_item_ids: dict[str, list[str]] | None = None,
     refresh_images: bool = False,
 ) -> dict[str, Any]:
-    """处理：编译模型报告草稿、绑定权威索引、执行校验并创建不可变报告修订。
+    """编译模型报告草稿、绑定权威索引、执行校验并创建不可变报告修订。
     输入：本次运行的数据根。
     - ``input_path``：待编译的模型报告草稿 JSON 路径；其日期、版本和条目必须与索引一致。
     - ``index_path``：草稿所引用的不可变来源索引路径；用于恢复权威身份并验证证据。
@@ -617,10 +611,7 @@ def save_report(
     - ``coverage_targets``：按来源 ID 指定的最小报告覆盖数；由运行情境拥有。
     - ``brief_plan_item_ids``：当前 context 按来源固定的有序 default_item_ids；限制缓存与草稿边界。
     - ``refresh_images``：显式重新选择图片；默认文字修订保留其已发布父版本的有效本地附件。
-    输出：“编译模型报告草稿、绑定权威索引、执行校验并创建不可变报告修订”形成的结构化字典；
-      典型键包括 compile_and_validation_seconds、content_hash、evaluation_status、json_path、loc
-      al_output_error、local_output_seconds、markdown_path、media_seconds、persistence_seconds、
-      report_id、save_metrics、semantic_cache_path。
+    输出：已保存的报告版本、交付文件路径和各阶段处理时间。
     """
     save_started = time.perf_counter()
     raw = read_json(input_path)
@@ -795,9 +786,8 @@ def save_report(
 
 
 def _evaluation_semantic_payload(payload: dict[str, Any]) -> dict[str, Any]:
-    """处理：移除独立评估的分配身份和落盘时间以识别语义重放。
-    输入：
-    - ``payload``：评估草稿或不可变评估修订；内容已由本地 JSON 解析器读取。
+    """移除独立评估的分配身份和落盘时间以识别语义重放。
+    输入：``payload``：评估草稿或不可变评估修订；内容已由本地 JSON 解析器读取。
     输出：不含 evaluation_id/evaluated_at 的新字典；不同评分或结论仍保持可区分。
     """
 
@@ -807,117 +797,51 @@ def _evaluation_semantic_payload(payload: dict[str, Any]) -> dict[str, Any]:
     return comparable
 
 
-def _matching_evaluation_revision(
-    evaluation_dir: Path,
-    edition: str,
-    candidate: dict[str, Any],
-) -> tuple[Path, dict[str, Any]] | None:
-    """处理：在既有不可变修订中定位与草稿语义完全相同的评估。
-    输入：
-    - ``evaluation_dir``：当前日期的本地评估目录；只读取匹配 edition 的 JSON 修订。
-    - ``edition``：morning/evening 版本名；限制扫描文件名前缀。
-    - ``candidate``：待提交评估草稿；分配身份和时间不参与比较。
-    输出：修订号最大的相同修订及内容；无精确语义匹配时返回 None。
+def _evaluation_history(
+    directory: Path, edition: str, candidate: dict, report_id: str, content_hash: str,
+) -> tuple[tuple[Path, dict] | None, Path | None]:
+    """处理：一次扫描该版评估历史，定位语义匹配和同报告的最新修订。
+    输入：评估目录、版次、候选草稿和被评报告的身份。
+    输出：最近匹配的草稿修订及同报告的最近评估路径。
     """
-
     expected = _evaluation_semantic_payload(candidate)
-    matches: list[tuple[Path, dict[str, Any]]] = []
-    for path in evaluation_dir.glob(f"{edition}-r*.json"):
+    matching = None
+    latest = None
+    matched_revision = latest_revision = -1
+    for path in directory.glob(f"{edition}-r*.json"):
         existing = read_json(path)
-        if (
-            isinstance(existing, dict)
-            and _evaluation_semantic_payload(existing) == expected
-        ):
-            matches.append((path, existing))
-    return max(
-        matches,
-        default=None,
-        key=lambda row: int(row[0].stem.rsplit("-r", 1)[1]),
-    )
-
-
-def _latest_evaluation_revision_for_report(
-    evaluation_dir: Path,
-    edition: str,
-    report: dict[str, Any],
-) -> Path | None:
-    """处理：按数字修订号定位同一报告身份的最新不可变评估。
-    输入：
-    - ``evaluation_dir``：当前日期评估目录；只读取 edition 修订 JSON。
-    - ``edition``：morning/evening 版本名；用于限制扫描范围。
-    - ``report``：被评报告；提供 report_id 和确定性内容哈希。
-    输出：同一报告身份的最大数字修订路径；无既有修订时返回 None。
-    """
-
-    report_id = report.get("report_id")
-    content_hash = report_content_hash(report)
-    paths: list[Path] = []
-    for path in evaluation_dir.glob(f"{edition}-r*.json"):
-        existing = read_json(path)
-        if (
-            isinstance(existing, dict)
-            and existing.get("evaluated_report_id") == report_id
+        if not isinstance(existing, dict):
+            continue
+        same_evaluation = _evaluation_semantic_payload(existing) == expected
+        same_report = (
+            existing.get("evaluated_report_id") == report_id
             and existing.get("evaluated_content_hash") == content_hash
-        ):
-            paths.append(path)
-    return max(
-        paths,
-        default=None,
-        key=lambda path: int(path.stem.rsplit("-r", 1)[1]),
-    )
-
-
-def _run_is_current_report(run_path: Path, report: dict[str, Any]) -> bool:
-    """处理：确认 edition 运行清单仍绑定正在评估的报告身份。
-    输入：
-    - ``run_path``：日期/版本运行清单；在共享 edition 锁内读取。
-    - ``report``：被评报告；其 ID 与内容哈希必须同时匹配当前 artifacts。
-    输出：仅当当前 run 的 report_id/content_hash 均匹配时为 True。
-    """
-
-    if not run_path.is_file():
-        return False
-    run = read_json(run_path)
-    if not isinstance(run, dict):
-        return False
-    artifacts = run.get("artifacts")
-    return bool(
-        isinstance(artifacts, dict)
-        and artifacts.get("report_id") == report.get("report_id")
-        and artifacts.get("content_hash") == report_content_hash(report)
-    )
+        )
+        if same_evaluation or same_report:
+            revision = int(path.stem.rsplit("-r", 1)[1])
+            if same_evaluation and revision > matched_revision:
+                matching, matched_revision = (path, existing), revision
+            if same_report and revision > latest_revision:
+                latest, latest_revision = path, revision
+    return matching, latest
 
 
 def _completed_evaluation_replay(
-    run_path: Path,
-    report: dict[str, Any],
-    evaluation_path: Path,
-    evaluation: dict[str, Any],
-) -> dict[str, Any] | None:
+    run: dict, report_id: str, content_hash: str, evaluation_path: Path, evaluation: dict,
+) -> dict | None:
     """处理：识别已完成运行对相同评估草稿的无副作用重放。
-    输入：
-    - ``run_path``：当前报告运行清单路径；用于确认派生状态已经提交。
-    - ``report``：不可变报告；提供 report ID 与内容哈希。
-    - ``evaluation_path``：已存在的相同不可变评估路径。
-    - ``evaluation``：上述路径中的已验证评估内容。
-    输出：已完成时返回原评估及现有本地投影位置，否则返回 None 继续恢复派生状态。
+    输入：本版运行清单、报告身份及匹配的评估修订。
+    输出：已交付时返回原评估与现有投影位置，否则为空。
     """
-
-    if not run_path.is_file():
-        return None
-    run = read_json(run_path)
-    if not isinstance(run, dict):
-        return None
     state = run.get("evaluation")
     artifacts = run.get("artifacts", {})
-    content_hash = report_content_hash(report)
     if (
         not isinstance(state, dict)
         or state.get("status") != "completed"
         or state.get("evaluation_id") != evaluation.get("evaluation_id")
         or state.get("content_hash") != content_hash
         or not isinstance(artifacts, dict)
-        or artifacts.get("report_id") != report.get("report_id")
+        or artifacts.get("report_id") != report_id
     ):
         return None
     local_keys = {
@@ -927,11 +851,7 @@ def _completed_evaluation_replay(
         "desktop_pdf_path",
         "local_index_path",
     }
-    local_outputs = (
-        {key: value for key, value in artifacts.items() if key in local_keys}
-        if isinstance(artifacts, dict)
-        else {}
-    )
+    local_outputs = {key: value for key, value in artifacts.items() if key in local_keys}
     return {
         "status": "already_completed",
         "evaluation_id": evaluation["evaluation_id"],
@@ -948,13 +868,11 @@ def save_evaluation(
     data_dir: Path,
     output_config: OutputConfig | None = None,
 ) -> dict[str, Any]:
-    """处理：校验独立评估与报告身份和内容哈希一致后，创建不可变评估修订。
+    """校验独立评估与报告身份和内容哈希一致后，创建不可变评估修订。
     输入：版本化报告路径、本次运行的数据根。
     - ``input_path``：上游阶段生成的输入文件路径；读取前会执行存在性或数据根校验。
     - ``output_config``：本地 HTML、PDF、桌面交付和打开行为配置。
-    输出：“校验独立评估与报告身份和内容哈希一致后，创建不可变评估修订”形成的结构化字典；
-      典型键包括 content_hash、evaluation_id、evaluation_path、local_outputs、semantic_cache_pat
-      h、state_paths、status。
+    输出：评估版本与绑定的报告，以及本次更新的连续性和本地产物。
     """
     raw = read_json(input_path)
     report = read_json(report_path)
@@ -1000,31 +918,27 @@ def _save_evaluation_locked(
     edition = str(report["edition"])
     evaluation_dir = data_dir / "evaluations" / date
     run_path = data_dir / "runs" / date / f"{edition}.json"
-    current_report = _run_is_current_report(run_path, report)
-    matching = _matching_evaluation_revision(evaluation_dir, edition, candidate)
+    run = read_json(run_path) if run_path.is_file() else None
+    artifacts = run.get("artifacts") if isinstance(run, dict) else None
+    report_id = report["report_id"]
+    content_hash = report_content_hash(report)
+    current_report = (
+        isinstance(artifacts, dict) and artifacts.get("report_id") == report_id
+        and artifacts.get("content_hash") == content_hash
+    )
+    matching, latest = _evaluation_history(
+        evaluation_dir, edition, candidate, report_id, content_hash,
+    )
     if matching is not None:
         output, evaluation = matching
         errors = validate_evaluation_data(evaluation, report)
         if errors:
             raise ValueError("Evaluation validation failed: " + "; ".join(errors))
-        if replay := _completed_evaluation_replay(
-            run_path,
-            report,
-            output,
-            evaluation,
-        ):
+        if isinstance(run, dict) and (replay := _completed_evaluation_replay(
+            run, report_id, content_hash, output, evaluation,
+        )):
             return replay
-    latest_for_report = _latest_evaluation_revision_for_report(
-        evaluation_dir,
-        edition,
-        report,
-    )
-    recover_existing = bool(
-        matching is not None
-        and current_report
-        and latest_for_report is not None
-        and matching[0] == latest_for_report
-    )
+    recover_existing = matching is not None and current_report and matching[0] == latest
     if recover_existing:
         output, evaluation = matching
     else:
@@ -1047,7 +961,7 @@ def _save_evaluation_locked(
             "status": "stale_report",
             "evaluation_id": evaluation["evaluation_id"],
             "evaluation_path": str(output),
-            "content_hash": report_content_hash(report),
+            "content_hash": content_hash,
             "state_paths": {},
             "local_outputs": {},
         }
@@ -1065,26 +979,19 @@ def _save_evaluation_locked(
         open_after_finalize=False,
         regenerate_pdf=False,
     )
-    if run_path.exists():
-        run = read_json(run_path)
-        if isinstance(run, dict) and run.get("artifacts", {}).get("report_id") == report.get(
-            "report_id"
-        ):
-            run["evaluation"] = {
-                "status": "completed",
-                "report_id": report["report_id"],
-                "evaluation_id": evaluation["evaluation_id"],
-                "evaluation_path": str(output),
-                "content_hash": report_content_hash(report),
-            }
-            run.setdefault("artifacts", {}).update(
-                {key: value for key, value in local_outputs.items() if key.endswith("_path")}
-            )
-            write_json(run_path, run)
+    run["evaluation"] = {
+        "status": "completed",
+        "report_id": report_id,
+        "evaluation_id": evaluation["evaluation_id"],
+        "evaluation_path": str(output),
+        "content_hash": content_hash,
+    }
+    artifacts.update({key: value for key, value in local_outputs.items() if key.endswith("_path")})
+    write_json(run_path, run)
     return {
         "evaluation_id": evaluation["evaluation_id"],
         "evaluation_path": str(output),
-        "content_hash": report_content_hash(report),
+        "content_hash": content_hash,
         "state_paths": state_paths,
         "local_outputs": local_outputs,
         **({"semantic_cache_path": str(semantic_cache_path)} if semantic_cache_path else {}),

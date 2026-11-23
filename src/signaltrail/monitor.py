@@ -42,11 +42,7 @@ _MONITOR_SOURCE_STATUSES = {
 
 
 def _safe_read_object(path: Path) -> dict[str, Any]:
-    """处理：读取 JSON 对象；文件缺失或损坏时返回空对象。
-    输入：本地文件路径。
-    输出：“读取 JSON 对象；文件缺失或损坏时返回空对象”形成的结构化字典；
-      键值表达该处理定义的业务记录或查找关系。
-    """
+    """读取 JSON 对象；文件缺失或损坏时返回空对象。"""
     if not path.exists():
         return {}
     with contextlib.suppress(OSError, ValueError, TypeError):
@@ -55,11 +51,8 @@ def _safe_read_object(path: Path) -> dict[str, Any]:
 
 
 def _parse_time(value: object, timezone: str) -> datetime | None:
-    """处理：把可选 ISO 时间文本解析为带时区时间，空值或非法值返回 None。
+    """把可选 ISO 时间文本解析为带时区时间，空值或非法值返回 None。
     输入：待解析的值、用于解释本地日期的 IANA 时区。
-    输出：封装“把可选 ISO 时间文本解析为带时区时间，
-      空值或非法值返回 None”业务结果的 ``datetime | None`` 对象；
-      调用方据此继续相邻阶段或识别无结果状态。
     """
     if not value:
         return None
@@ -73,11 +66,9 @@ def _parse_time(value: object, timezone: str) -> datetime | None:
 
 
 def _current_time(timezone: str, now: datetime | None = None) -> datetime:
-    """处理：把注入或当前时间规范到配置时区。
+    """把注入或当前时间规范到配置时区。
     输入：用于解释本地日期的 IANA 时区。
     - ``now``：可注入的当前时间；测试可固定它，生产为空时读取配置时区时钟。
-    输出：封装“把注入或当前时间规范到配置时区”业务结果的 ``datetime`` 对象；
-      调用方据此继续相邻阶段或识别无结果状态。
     """
     current = now or datetime.now(ZoneInfo(timezone))
     if current.tzinfo is None:
@@ -433,14 +424,12 @@ def _source_record(
     items: list[dict[str, Any]],
     generated_at: str,
 ) -> dict[str, Any]:
-    """处理：汇总来源状态、方法、错误和 Feed 结果形成健康记录。
+    """汇总来源状态、方法、错误和 Feed 结果形成健康记录。
     输入：带入口与筛选规则的来源配置、有序索引条目、快照生成时间。
     - ``feed_results``：同一来源各 Feed 的抓取结果；包含缓存、失败和规范条目。
     - ``html_results``：同一来源静态 HTML 或浏览器回退的采集结果。
     - ``discovery``：Feed 自动发现过程的状态、候选 URL 和错误记录。
-    输出：“汇总来源状态、方法、错误和 Feed 结果形成健康记录”形成的结构化字典；
-      典型键包括 bundle、category、checked_at、error、feed_results、feed_urls、items_count、meth
-      ods、module、region、role、source_id。
+    输出：监控器使用的逐来源结果，含访问状态、条目数和本轮采集方法。
     """
     errors = [
         str(result.error)
@@ -496,14 +485,11 @@ def _merge_history_items(
     generated_at: str,
     config: AppConfig,
 ) -> list[dict[str, Any]]:
-    """处理：以本轮条目优先合并仍在保留期内的历史条目，并清除已刷新来源的过期项。
+    """以本轮条目优先合并仍在保留期内的历史条目，并清除已刷新来源的过期项。
     输入：快照生成时间、已校验的采集和输出配置。
     - ``previous``：上一份监控快照对象；提供仍在保留期内的历史条目。
     - ``new_items``：本轮刷新产生的规范条目；优先于同 ID 的历史版本。
     - ``selected_source_ids``：本轮实际刷新的来源 ID；仅这些来源允许移除过期旧条目。
-    输出：“以本轮条目优先合并仍在保留期内的历史条目，
-      并清除已刷新来源的过期项”得到的有序结构化记录；
-      每项承载处理说明所定义的身份、证据或状态字段，可直接交给下一阶段。
     """
     generated = _parse_time(generated_at, config.timezone)
     assert generated is not None
@@ -547,13 +533,11 @@ def _update_health(
     generated_at: str,
     enabled_source_ids: set[str],
 ) -> dict[str, Any]:
-    """处理：结合上一快照和本轮来源状态更新连续成功、失败及最近错误健康记录。
+    """结合上一快照和本轮来源状态更新连续成功、失败及最近错误健康记录。
     输入：本次运行的数据根、快照生成时间。
     - ``source_records``：监控快照中的逐来源状态记录；用于更新连续成功/失败健康指标。
     - ``enabled_source_ids``：当前配置启用的来源；仅保留这些来源的健康记录。
-    输出：“结合上一快照和本轮来源状态更新连续成功、失败及最近错误健康记录”形成的结构化字典；
-      典型键包括 checks、consecutive_failures、error、last_checked_at、last_item_count、last_suc
-      cess_at、methods、schema_version、source_id、source_name、sources、status。
+    输出：本轮更新后的来源健康记录，含连续失败次数与上次成功时间。
     """
     path = data_dir / "monitor" / "health.json"
     previous = _safe_read_object(path)
@@ -607,7 +591,7 @@ def refresh_monitor(
     now: datetime | None = None,
     shared_listing_pages: dict[tuple[str, str], SourceResult] | None = None,
 ) -> Path:
-    """处理：刷新零模型本地新闻流、来源健康和事件聚类快照。
+    """刷新零模型本地新闻流、来源健康和事件聚类快照。
     输入：已校验的采集和输出配置、本次运行的数据根。
     - ``only_source_ids``：调用方限定的来源 ID 集合；为空时处理配置选中的全部来源。
     - ``bundles``：要刷新的来源配置集合名称，例如 core 或 discovery。
@@ -617,7 +601,6 @@ def refresh_monitor(
     - ``transport``：测试可注入的 HTTP 传输层；生产通常为空并使用真实网络。
     - ``now``：可注入的当前时间；测试可固定它，生产为空时读取配置时区时钟。
     - ``shared_listing_pages``：向同一轮日报阶段交接按完整日报配置解析的成功页面。
-    输出：指向“刷新零模型本地新闻流、来源健康和事件聚类快照”所生成、定位或确认产物的本地路径。
     """
     if not config.monitor.enabled:
         raise RuntimeError("The local monitor is disabled in sources.yaml")
@@ -816,12 +799,11 @@ def fresh_monitor_snapshot_path(
     *,
     now: datetime | None = None,
 ) -> Path | None:
-    """处理：返回近期有效的零 Token 快照，避免不必要的网络刷新。
+    """返回近期有效的零 Token 快照，避免不必要的网络刷新。
     输入：本次运行的数据根、用于解释本地日期的 IANA 时区。
     - ``max_age_minutes``：监控快照允许复用的最大分钟年龄；超龄时返回无可用快照。
     - ``now``：可注入的当前时间；测试可固定它，生产为空时读取配置时区时钟。
-    输出：指向“返回近期有效的零 Token 快照，
-      避免不必要的网络刷新”所生成、定位或确认产物的本地路径；条件不满足时返回 None。
+    输出：未找到匹配项时返回 None。
     """
     path = data_dir / "monitor" / "snapshot.json"
     snapshot = _safe_read_object(path)

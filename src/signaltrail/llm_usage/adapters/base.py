@@ -524,62 +524,33 @@ def latency_from_payload(payload: Mapping[str, Any], source: str) -> dict[str, M
     return output
 
 
-def safe_observation_labels(payload: Mapping[str, Any]) -> dict[str, str | None]:
-    """处理：从固定路径提取 provider/model/status 等短标签。
-    输入：宿主 hook 或 session row 映射。
-    输出：只含安全字符的标签；自由文本和可能含秘密的值被丢弃。
-    """
+_OBSERVATION_LABEL_ALIASES = {
+    "provider": (
+        "provider", "api_provider", "extra.provider", "payload.provider", "message.provider",
+    ),
+    "requested_model": (
+        "requested_model", "model", "extra.model", "payload.model", "message.model",
+    ),
+    "served_model": ("served_model", "response_model", "extra.response_model", "usage.model"),
+    "status": ("status", "extra.status", "payload.status"),
+    "finish_reason": (
+        "finish_reason", "stop_reason", "extra.finish_reason", "payload.finish_reason",
+    ),
+}
+_OBSERVATION_LABEL_PATHS = {
+    name: tuple(tuple(path.split(".")) for path in paths)
+    for name, paths in _OBSERVATION_LABEL_ALIASES.items()
+}
 
-    provider = safe_label(
-        nested_value(
-            payload,
-            ("provider",),
-            ("api_provider",),
-            ("extra", "provider"),
-            ("payload", "provider"),
-            ("message", "provider"),
-        )
-    )
-    requested_model = safe_label(
-        nested_value(
-            payload,
-            ("requested_model",),
-            ("model",),
-            ("extra", "model"),
-            ("payload", "model"),
-            ("message", "model"),
-        )
-    )
-    served_model = safe_label(
-        nested_value(
-            payload,
-            ("served_model",),
-            ("response_model",),
-            ("extra", "response_model"),
-            ("usage", "model"),
-        )
-    )
+
+def safe_observation_labels(payload: Mapping[str, Any]) -> dict[str, str | None]:
+    """处理：按宿主字段优先级解析计量标签。
+    输入：hook 回执或会话日志行。
+    输出：经安全标签过滤的提供商、模型、状态及停止原因。
+    """
     return {
-        "provider": provider,
-        "requested_model": requested_model,
-        "served_model": served_model,
-        "status": safe_label(
-            nested_value(
-                payload,
-                ("status",),
-                ("extra", "status"),
-                ("payload", "status"),
-            )
-        ),
-        "finish_reason": safe_label(
-            nested_value(
-                payload,
-                ("finish_reason",),
-                ("stop_reason",),
-                ("extra", "finish_reason"),
-                ("payload", "finish_reason"),
-            )
-        ),
+        name: safe_label(nested_value(payload, *paths))
+        for name, paths in _OBSERVATION_LABEL_PATHS.items()
     }
 
 

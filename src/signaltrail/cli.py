@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from .commands import HANDLERS
+from .commands import HANDLERS, PARSER
 from .commands.common import CommandContext, print_json
 from .commands.parser import build_parser as build_parser
 from .config import (
@@ -38,13 +38,15 @@ def __getattr__(name: str):
 
 
 def main(argv: list[str] | None = None) -> int:
-    """处理：解析命令行参数并执行对应入口。
-    输入：
-    - ``argv``：命令行传入的参数序列；None 表示读取当前进程的 sys.argv。
+    """解析命令行参数并执行对应入口。
+    输入：``argv``：命令行传入的参数序列；None 表示读取当前进程的 sys.argv。
     输出：进程退出码；0 表示检查通过，非 0 表示存在已输出的错误。
     """
-    parser = build_parser()
-    args = parser.parse_args(argv)
+    args = PARSER.parse_args(argv)
+    # argparse 直接复用未传入的 append 默认列表，命令应拥有自己的副本。
+    for name, value in vars(args).items():
+        if isinstance(value, list):
+            setattr(args, name, value.copy())
     config = load_config(args.config, timezone=args.timezone)
     if language := getattr(args, "language", None):
         config.output.language = language
@@ -76,7 +78,7 @@ def main(argv: list[str] | None = None) -> int:
 
     data_dir.mkdir(parents=True, exist_ok=True)
 
-    context = CommandContext(config=config, data_dir=data_dir, parser=parser, compact=args.compact)
+    context = CommandContext(config=config, data_dir=data_dir, parser=PARSER, compact=args.compact)
     return HANDLERS[args.command](args, context)
 
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Callable
 from copy import deepcopy
 from pathlib import Path
 from urllib.parse import quote
@@ -12,6 +13,10 @@ from .events import get_event, report_event_cards
 from .image_policy import is_editorial_template, normalize_image_candidates
 
 _REPORTS: dict[str, tuple[list, list]] = {}
+_ARTIFACT_SUFFIXES = {
+    "json": ".json", "html": ".html", "pdf": ".pdf", "markdown": ".md",
+    "slides": "-slides.html", "video": "-video.html", "mp4": "-video.mp4",
+}
 
 
 def _saved_editions(data_dir: Path) -> list[tuple[Path, dict]]:
@@ -19,18 +24,18 @@ def _saved_editions(data_dir: Path) -> list[tuple[Path, dict]]:
     输入：资料根目录；扫描与本地归档页面一致的日期目录和版本文件。
     输出：按日期、生成时间和修订号倒序排列的权威日报。
     """
-    paths = [
-        path
-        for path in (data_dir / "reports").glob("*/*-r*.json")
-        if re.fullmatch(r"\d{4}-\d{2}-\d{2}", path.parent.name)
-        and re.fullmatch(r"[\w-]+-r\d+\.json", path.name)
-    ]
-    signature = [(str(path), path.stat().st_mtime_ns, path.stat().st_size) for path in paths]
+    signature = []
+    for path in (data_dir / "reports").glob("*/*-r*.json"):
+        if re.fullmatch(r"\d{4}-\d{2}-\d{2}", path.parent.name) and re.fullmatch(
+            r"[\w-]+-r\d+\.json", path.name,
+        ):
+            info = path.stat()
+            signature.append((path, info.st_mtime_ns, info.st_size))
     cached = _REPORTS.get(str(data_dir))
     if cached and cached[0] == signature:
         return cached[1]
     saved = []
-    for path in paths:
+    for path, _, _ in signature:
         report = json.loads(path.read_text(encoding="utf-8"))
         if not isinstance(report, dict) or not all(
             key in report
@@ -101,13 +106,12 @@ def edition_artifact_path(data_dir: Path, relative: str) -> Path | None:
         return None
     if path.is_relative_to(data_dir / "media"):
         return path
-    suffixes = (".json", ".html", ".pdf", ".md", "-slides.html", "-video.html", "-video.mp4")
     return next(
         (
             path
             for saved, _ in _saved_editions(data_dir)
             if path.parent == saved.parent
-            and path.name in {saved.stem + suffix for suffix in suffixes}
+            and path.name in {saved.stem + suffix for suffix in _ARTIFACT_SUFFIXES.values()}
         ),
         None,
     )
@@ -132,37 +136,47 @@ def _report_image(data_dir: Path, image: dict | None) -> str | None:
     return next(iter(normalize_image_candidates(urls)), None)
 
 
+def _briefs_by_id(report: dict) -> dict:
+    """处理：按条目 ID 建立跨栏目简报索引。
+    输入：报告正文。
+    输出：相同 ID 取最后出现的简报，与旧版阅读顺序一致。
+    """
+    return {
+        brief["item_id"]: brief for section in report["sections"]
+        for brief in section.get("briefs", [])
+    }
+
+
+def _event_image(
+    data_dir: Path, item: dict, brief_image: Callable[[str], str | None],
+) -> str | None:
+    """处理：按直接配图及引用简报的顺序读取本期选图。
+    输入：事件条目、按条目 ID 查询简报图片的映射及数据目录。
+    输出：首张可用的已选新闻图地址，缺图时为空。
+    """
+    ids = item.get("source_item_ids") or [ref["item_id"] for ref in item.get("source_refs", [])]
+    return _report_image(data_dir, item.get("image")) or next(
+        (image for key in ids if (image := brief_image(key))), None,
+    )
+
+
 def _reading_projection(data_dir: Path, report: dict, cards: list[dict]) -> dict:
     """处理：为日报阅读添加绑定同篇来源的图片地址，保留原报告文件。
     输入：权威日报和已关联档案的事件卡片。
     输出：深拷贝的只读展示投影，仅采用本期保存的配图，缺图显式为空。
     """
     projection = deepcopy(report)
-    briefs = {
-        brief["item_id"]: brief
-        for section in projection["sections"]
-        for brief in section.get("briefs", [])
-    }
+    briefs = _briefs_by_id(projection)
     by_event = {card["report_event_id"]: card for card in cards}
-    for brief in briefs.values():
-        brief["image_url"] = _report_image(data_dir, brief.get("image"))
+    images = {key: _report_image(data_dir, brief.get("image")) for key, brief in briefs.items()}
+    for key, brief in briefs.items():
+        brief["image_url"] = images[key]
     for section in projection["sections"]:
         for item in section.get("items", []):
-            ids = item.get("source_item_ids") or [
-                ref["item_id"] for ref in item.get("source_refs", [])
-            ]
-            candidate = _report_image(data_dir, item.get("image")) or next(
-                (
-                    briefs[key]["image_url"]
-                    for key in ids
-                    if key in briefs and briefs[key].get("image_url")
-                ),
-                None,
-            )
-            card = by_event.get(item["event_id"], {})
-            # 档案采集图尚未经过本期日报选图，不用于填补正式日报的空图。
+            candidate = _event_image(data_dir, item, images.get)
             item["image_url"] = candidate
-            card["image_url"] = candidate
+            if card := by_event.get(item["event_id"]):
+                card["image_url"] = candidate
     return projection
 
 
@@ -219,15 +233,7 @@ def read_edition(
         }
     path, report = matches[0]
     artifacts = {}
-    for kind, suffix in (
-        ("json", ".json"),
-        ("html", ".html"),
-        ("pdf", ".pdf"),
-        ("markdown", ".md"),
-        ("slides", "-slides.html"),
-        ("video", "-video.html"),
-        ("mp4", "-video.mp4"),
-    ):
+    for kind, suffix in _ARTIFACT_SUFFIXES.items():
         artifact = path.with_name(path.stem + suffix)
         artifacts[kind] = (
             "/files/" + quote(artifact.relative_to(data_dir).as_posix())
@@ -307,12 +313,10 @@ def read_edition_event(
     card = next(
         card for card in report_event_cards(data_dir, report) if card["report_event_id"] == event_id
     )
-    projected = _reading_projection(data_dir, report, [card])
-    item = next(
-        item
-        for section in projected["sections"]
-        for item in section.get("items", [])
-        if item["event_id"] == event_id
+    item = deepcopy(item)
+    briefs = _briefs_by_id(report)
+    item["image_url"] = card["image_url"] = _event_image(
+        data_dir, item, lambda key: _report_image(data_dir, briefs.get(key, {}).get("image")),
     )
     detail = get_event(data_dir, card["platform_event_id"]) if card["platform_event_id"] else None
     if detail is None:

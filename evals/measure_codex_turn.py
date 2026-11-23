@@ -39,6 +39,10 @@ def main() -> None:
         row(8, "token_usage_record", thread_id="root", turn_id="turn", root_turn_id="turn",
             response_id="root-final", usage=usage),
         row(9, "event_msg", type="task_complete", turn_id="turn", root_turn_id="turn"),
+        {"type": "event_msg", "payload": {
+            "type": "item_completed", "thread_id": "root", "turn_id": "old-turn",
+            "item": {"type": "UserMessage", "id": "old-request"},
+        }},
     ]
     write_log(logs / "root.jsonl", root)
     for name, parent in (("child", "root"), ("grandchild", "child"), ("unrelated", "other")):
@@ -107,6 +111,8 @@ def main() -> None:
         row(20, "event_msg", type="task_complete", turn_id="work", root_turn_id="turn"),
         row(21, "event_msg", type="task_started", turn_id="later", root_turn_id="turn",
             turn_attribution={"parent_turn_id": "turn"}),
+        row(22, "event_msg", type="item_completed", thread_id="harness", turn_id="later",
+            item=["malformed later item"]),
         row(23, "token_usage_record", thread_id="harness", turn_id="later", root_turn_id="turn",
             response_id="harness-later", usage=usage),
     ]

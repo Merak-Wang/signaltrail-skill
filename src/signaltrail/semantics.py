@@ -78,9 +78,8 @@ _TLDR_ACCESS_STATUS_PATTERN = re.compile(
 
 
 def _sanitize_cached_tldr(value: object) -> str:
-    """处理：从历史已审核摘要尾部删除纯访问状态说明而不改写事实句。
-    输入：
-    - ``value``：语义缓存中的 TL;DR；可能含“内容未抓取”等旧版读者层泄漏。
+    """从历史已审核摘要尾部删除纯访问状态说明而不改写事实句。
+    输入：``value``：语义缓存中的 TL;DR；可能含“内容未抓取”等旧版读者层泄漏。
     输出：保留状态标记之前原文的字符串；若整条都是状态说明则返回空字符串。
     """
 
@@ -237,19 +236,12 @@ def run_relative_brief_fields(
 
 
 def semantic_cache_path(data_dir: Path) -> Path:
-    """处理：返回按语言隔离的语义简报缓存文件路径。
-    输入：本次运行的数据根。
-    输出：指向“返回按语言隔离的语义简报缓存文件路径”所生成、定位或确认产物的本地路径。
-    """
+    """返回按语言隔离的语义简报缓存文件路径。"""
     return data_dir / "state" / "semantic-cache.json"
 
 
 def load_semantic_cache(data_dir: Path) -> dict[str, dict[str, Any]]:
-    """处理：读取指定语言的语义简报缓存，文件缺失或损坏时返回空缓存。
-    输入：本次运行的数据根。
-    输出：“读取指定语言的语义简报缓存，文件缺失或损坏时返回空缓存”形成的结构化字典；
-      键值表达该处理定义的业务记录或查找关系。
-    """
+    """读取指定语言的语义简报缓存，文件缺失或损坏时返回空缓存。"""
     path = semantic_cache_path(data_dir)
     if not path.exists():
         return {}
@@ -269,12 +261,10 @@ def reusable_semantic_brief(
     output_language: str = "zh-CN",
     reference_date: object = None,
 ) -> dict[str, Any] | None:
-    """处理：校验指纹、语言和审核状态后返回可复用简报。
+    """校验指纹、语言和审核状态后返回可复用简报。
     输入：带稳定 ID 的索引条目、报告目标语言。
     - ``cache``：本地持久化缓存对象；包含状态、时间、响应元数据和可复用结果。
     - ``reference_date``：当前报告或索引日期；用于重算本轮 status 与 importance。
-    输出：“校验指纹、语言和审核状态后返回可复用简报”形成的结构化字典；
-      键值表达该处理定义的业务记录或查找关系。
     """
     item_id = str(item.get("item_id") or "")
     return semantic_brief_with_issue(item, cache.get(item_id), output_language, reference_date)[0]
@@ -329,9 +319,8 @@ def semantic_brief_with_issue(
 
 
 def _coerce_date(value: object) -> date | None:
-    """处理：从报告日期或带时区时间中提取日历日期用于动态新鲜度。
-    输入：
-    - ``value``：索引发布时间或报告参考日期的 date、datetime、ISO 字符串候选值。
+    """从报告日期或带时区时间中提取日历日期用于动态新鲜度。
+    输入：``value``：索引发布时间或报告参考日期的 date、datetime、ISO 字符串候选值。
     输出：可解析日期；缺失或非法输入返回 None，调用方采用受控回退。
     """
 
@@ -350,10 +339,7 @@ def _coerce_date(value: object) -> date | None:
 def update_semantic_cache_from_report(
     report: dict[str, Any], index: dict[str, Any], data_dir: Path
 ) -> Path:
-    """处理：从已验证报告更新按条目指纹索引的语义缓存。
-    输入：含栏目和来源引用的报告、规范来源索引、本次运行的数据根。
-    输出：指向“从已验证报告更新按条目指纹索引的语义缓存”所生成、定位或确认产物的本地路径。
-    """
+    """从已验证报告更新按条目指纹索引的语义缓存。"""
     path = semantic_cache_path(data_dir)
     cache = load_semantic_cache(data_dir)
     indexed_items = {
@@ -408,9 +394,9 @@ def update_semantic_cache_from_report(
 def finalize_semantic_cache_evaluation(
     evaluation: dict[str, Any], data_dir: Path
 ) -> Path | None:
-    """处理：完成并固化语义缓存评估。
+    """完成并固化语义缓存评估。
     输入：独立质量评估、本次运行的数据根。
-    输出：指向“完成并固化语义缓存评估”所生成、定位或确认产物的本地路径；条件不满足时返回 None。
+    输出：未找到匹配项时返回 None。
     """
     path = semantic_cache_path(data_dir)
     if not path.exists():

@@ -12,6 +12,8 @@ from hashlib import sha256
 from pathlib import Path
 from statistics import mean
 
+from measure_codex_turn import write_receipt
+
 
 def gpu_busy(executable: str | None) -> float | None:
     """记录本机 NVIDIA 设备中最忙一张卡的忙碌率，驱动不可用时保留缺测。"""
@@ -91,8 +93,7 @@ def main() -> None:
             "cpu_percent_normalized", "gpu_busy_percent", "memory_pressure_percent",
         )},
     }
-    with args.output.open("x", encoding="utf-8") as stream:
-        json.dump(result, stream, ensure_ascii=False, indent=2)
+    write_receipt(args.output, result, newline=False)
 
 
 if __name__ == "__main__":

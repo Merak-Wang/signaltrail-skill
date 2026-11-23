@@ -30,7 +30,13 @@ from .article_time import (
 )
 from .boj_content import extract_boj_table
 from .collection_diagnostics import content_gaps, has_local_content
-from .config import AppConfig, SourceConfig, resolve_browser_channel, resolve_profile_dir
+from .config import (
+    AppConfig,
+    SourceConfig,
+    persistent_browser_options,
+    resolve_browser_channel,
+    resolve_profile_dir,
+)
 from .content_extraction import (
     ExtractedDocument,
     extract_with_fallback,
@@ -49,7 +55,7 @@ from .models import ContentStatus
 from .pdf_content import extract_pdf
 from .runtime import require_data_root_path
 from .storage import next_revision, write_bytes_atomic, write_immutable_json, write_text_atomic
-from .utils import now_iso, read_json, timestamp_slug, write_json
+from .utils import now_iso, read_json, sha256_file, timestamp_slug, write_json
 
 _MAX_CONTENT_BYTES = 4 * 1024 * 1024
 _HTTP_USER_AGENT = (
@@ -74,11 +80,8 @@ class PublicationPage:
 
 
 def synchronize_nested_items(payload: dict[str, Any]) -> None:
-    """处理：让旧版嵌套条目视图与规范根级条目数组保持一致。
-    输入：
-    - ``payload``：上游传入的结构化对象；函数只读取处理说明列出的受支持字段。
-    输出：不返回新数据；完成“让旧版嵌套条目视图与规范根级条目数组保持一致”，
-      副作用限于该处理声明的受控对象或产物。
+    """让旧版嵌套条目视图与规范根级条目数组保持一致。
+    输入：``payload``：上游传入的结构化对象；函数只读取处理说明列出的受支持字段。
     """
     # 根级 items 是规范记录；sources[].items[] 只是必须继续支持的旧版索引视图。
     root_items = {
@@ -99,10 +102,9 @@ def synchronize_nested_items(payload: dict[str, Any]) -> None:
 
 
 async def meta_content(page: Page, selectors: list[str]) -> str:
-    """处理：按选择器读取首个非空页面元数据值。
+    """按选择器读取首个非空页面元数据值。
     输入：已加载的 Playwright 页面。
     - ``selectors``：按优先级排列的 CSS 选择器；用于寻找元数据或正文区域。
-    输出：“按选择器读取首个非空页面元数据值”得到的规范字符串，供调用方存储、比较或展示。
     """
     for selector in selectors:
         locator = page.locator(selector)
@@ -293,11 +295,9 @@ async def probe_google_news_dates(
 
 
 async def meta_contents(page: Page, selectors: list[str]) -> list[str]:
-    """处理：按选择器收集并去重全部非空页面元数据值。
+    """按选择器收集并去重全部非空页面元数据值。
     输入：已加载的 Playwright 页面。
     - ``selectors``：按优先级排列的 CSS 选择器；用于寻找元数据或正文区域。
-    输出：“按选择器收集并去重全部非空页面元数据值”得到的字符串列表；
-      顺序保持确定并可供下一步骤逐项处理。
     """
     values: list[str] = []
     for selector in selectors:
@@ -340,12 +340,10 @@ async def _browser_document(
 
 
 def save_markdown(path: Path, item: dict[str, Any], body: str, retrieved_at: str) -> None:
-    """处理：把规范条目元数据和提取正文写成带 YAML frontmatter 的 Markdown。
+    """把规范条目元数据和提取正文写成带 YAML frontmatter 的 Markdown。
     输入：本地文件路径、带稳定 ID 的索引条目。
     - ``body``：正文或 HTML 文本；保存前只作为数据处理。
     - ``retrieved_at``：正文成功提取或确认的 ISO 时间；写入 Markdown frontmatter。
-    输出：不返回新数据；完成“把规范条目元数据和提取正文写成带 YAML frontmatter 的 Markdown”，
-      副作用限于该处理声明的受控对象或产物。
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     frontmatter = {
@@ -363,11 +361,10 @@ def save_markdown(path: Path, item: dict[str, Any], body: str, retrieved_at: str
 
 
 def _html_meta(soup: BeautifulSoup, selectors: list[str]) -> str:
-    """处理：从静态 HTML 中读取首个非空元数据值。
+    """从静态 HTML 中读取首个非空元数据值。
     输入：
     - ``soup``：由不可信 HTML 构建的 BeautifulSoup 文档；不会执行任何脚本。
     - ``selectors``：按优先级排列的 CSS 选择器；用于寻找元数据或正文区域。
-    输出：“从静态 HTML 中读取首个非空元数据值”得到的规范字符串，供调用方存储、比较或展示。
     """
     for selector in selectors:
         node = soup.select_one(selector)
@@ -387,12 +384,10 @@ def _apply_image_candidates(
     details: list[dict[str, Any]] | None = None,
     replace_page_candidates: bool = False,
 ) -> None:
-    """处理：规范化图片候选，并同步主图片与候选元数据。
+    """规范化图片候选，并同步主图片与候选元数据。
     输入：带稳定 ID 的索引条目。
     - ``values``：待规范化、匹配或渲染的一组输入值。
     - ``base_url``：解析相对链接时使用的最终页面或 Feed 基准 URL。
-    输出：不返回新数据；完成“规范化图片候选，并同步主图片与候选元数据”，
-      副作用限于该处理声明的受控对象或产物。
     """
     metadata = item.setdefault("metadata", {})
     if not isinstance(metadata, dict):
@@ -449,10 +444,9 @@ def _content_output_path(
     item_id: object,
     timezone: str,
 ) -> Path:
-    """处理：按来源、条目和采集时间生成正文 Markdown 路径。
+    """按来源、条目和采集时间生成正文 Markdown 路径。
     输入：本次运行的数据根、稳定来源 ID、用于解释本地日期的 IANA 时区。
     - ``item_id``：规范条目的稳定 ID；用于连接索引、正文、简报和图片。
-    输出：指向“按来源、条目和采集时间生成正文 Markdown 路径”所生成、定位或确认产物的本地路径。
     """
     return (
         data_dir
@@ -509,15 +503,15 @@ def _save_document(
         "selector": document.selector, "quality": document.quality,
         "input": document.provenance,
         "source_metadata": document.source_metadata,
-        "text_sha256": hashlib.sha256(document.text.encode("utf-8")).hexdigest(),
+        "text_sha256": metadata["content_text_sha256"],
         "blocks": document.blocks,
     })
     save_markdown(output, item, document.text, retrieved_at)
     item["content_path"] = str(output)
     metadata["content_blocks_path"] = str(blocks_path)
     manifest = {
-        "markdown_sha256": hashlib.sha256(output.read_bytes()).hexdigest(),
-        "blocks_sha256": hashlib.sha256(blocks_path.read_bytes()).hexdigest(),
+        "markdown_sha256": sha256_file(output),
+        "blocks_sha256": sha256_file(blocks_path),
         "raw_retained": False,
     }
     # 原响应只对显式启用的无登录 HTTP 抓取留存；浏览器会话永远不写原始 HTML。
@@ -545,14 +539,13 @@ def _apply_http_document(
     acquisition: str = "http",
     require_complete: bool = False,
 ) -> bool:
-    """处理：应用惰性 HTTP 正文，并判断浏览器回退是否仍有价值。
+    """应用惰性 HTTP 正文，并判断浏览器回退是否仍有价值。
     输入：带稳定 ID 的索引条目、带入口与筛选规则的来源配置、
       页面最近一次 HTTP 状态码、已校验的采集和输出配置、本次运行的数据根。
     - ``body_html``：HTTP 响应中提取的静态 HTML；作为不可信数据解析元信息和正文。
     - ``final_url``：导航或重定向完成后的页面 URL。
     - ``acquisition``：HTTP 或动态浏览器渠道；动态页面只保存抽取正文及指纹。
     - ``require_complete``：日期探测只保存可直接复用的全文，正文阶段负责处理其他证据。
-    输出：布尔判断；True 表示满足处理说明中的条件，False 表示不满足且不产生该结果。
     """
     metadata = item.setdefault("metadata", {})
     if not isinstance(metadata, dict):
@@ -694,10 +687,9 @@ async def _extract_http_one(
     config: AppConfig,
     data_dir: Path,
 ) -> bool:
-    """处理：执行有界无脚本抓取，仅在 Edge 仍可能补充内容时返回真。
+    """执行有界无脚本抓取，仅在 Edge 仍可能补充内容时返回真。
     输入：带稳定 ID 的索引条目、已校验的采集和输出配置、本次运行的数据根。
     - ``client``：已配置超时、重定向和连接池策略的 HTTP 客户端。
-    输出：布尔判断；True 表示满足处理说明中的条件，False 表示不满足且不产生该结果。
     """
     source = config.source_by_id(str(item["source_id"]))
     metadata = item.setdefault("metadata", {})
@@ -764,12 +756,11 @@ async def _run_http_extraction(
     *,
     transport: httpx.AsyncBaseTransport | None = None,
 ) -> list[dict[str, Any]]:
-    """处理：按全局和同域并发限制批量执行无脚本正文提取。
+    """按全局和同域并发限制批量执行无脚本正文提取。
     输入：已校验的采集和输出配置、本次运行的数据根。
     - ``targets``：已按预算选中的规范条目记录；每项读取 item_id、URL、来源和正文状态。
     - ``transport``：测试可注入的 HTTP 传输层；生产通常为空并使用真实网络。
-    输出：“按全局和同域并发限制批量执行无脚本正文提取”得到的有序结构化记录；
-      典型字段包括 Accept、User-Agent，可直接交给下一阶段。
+    输出：字段包括 Accept、User-Agent。
     """
     global_limit = asyncio.Semaphore(
         max(1, config.browser.collection_global_concurrency)
@@ -788,11 +779,7 @@ async def _run_http_extraction(
     ) as client:
 
         async def guarded(item: dict[str, Any]) -> tuple[dict[str, Any], bool]:
-            """处理：在并发限制内执行单项任务。
-            输入：带稳定 ID 的索引条目。
-            输出：“在并发限制内执行单项任务”得到的固定结构结果；
-              返回位置依次对应 item、await _extract_http_one(client, 。
-            """
+            """在全局和同域并发限制下提取正文，并保留与原索引条目的对应关系。"""
             domain = _domain_key(_content_url(item))
             domain_limit = domain_semaphores.setdefault(
                 domain,
@@ -806,10 +793,9 @@ async def _run_http_extraction(
 
 
 async def detect_challenge(page: Page, http_status: int | None) -> dict[str, Any]:
-    """处理：从页面标题、正文和 iframe 迹象识别登录、验证码或限流挑战。
+    """从页面标题、正文和 iframe 迹象识别登录、验证码或限流挑战。
     输入：已加载的 Playwright 页面、页面最近一次 HTTP 状态码。
-    输出：“从页面标题、正文和 iframe 迹象识别登录、验证码或限流挑战”形成的结构化字典；
-      典型键包括 iframe_detected、matched_text、required。
+    输出：字段包括 iframe_detected、matched_text、required。
     """
     title = ""
     body = ""
@@ -830,11 +816,9 @@ def _ordered_targets(
     selected_ids: list[str],
     max_items: int,
 ) -> list[dict[str, Any]]:
-    """处理：保留调用方的重要性顺序，并忽略重复或未知条目 ID。
+    """保留调用方的重要性顺序，并忽略重复或未知条目 ID。
     输入：有序索引条目、本阶段条目上限。
     - ``selected_ids``：调用方按重要性排序选中的条目 ID；正文阶段只处理这些授权条目。
-    输出：“保留调用方的重要性顺序，并忽略重复或未知条目 ID”得到的有序结构化记录；
-      每项承载处理说明所定义的身份、证据或状态字段，可直接交给下一阶段。
     """
     by_id = {
         str(item.get("item_id")): item
@@ -846,8 +830,7 @@ def _ordered_targets(
 
 
 def _domain_key(url: str) -> str:
-    """处理：从 URL 提取用于同域并发限制的规范主机键。
-    输入：待处理的 URL。
+    """从 URL 提取用于同域并发限制的规范主机键。
     输出：可跨修订关联的稳定字符串标识，供索引、状态或发布记录使用。
     """
     return urlsplit(url).netloc.lower().removeprefix("www.") or "unknown"
@@ -859,11 +842,9 @@ async def _extract_one(
     config: AppConfig,
     data_dir: Path,
 ) -> None:
-    """处理：在浏览器中提取单篇文章的元数据、正文和访问状态。
+    """在浏览器中提取单篇文章的元数据、正文和访问状态。
     输入：带稳定 ID 的索引条目、已校验的采集和输出配置、本次运行的数据根。
     - ``context``：浏览器、写作或报告上下文对象；包含当前阶段已经绑定的受控状态。
-    输出：不返回新数据；完成“在浏览器中提取单篇文章的元数据、正文和访问状态”，
-      副作用限于该处理声明的受控对象或产物。
     """
     source = config.source_by_id(str(item["source_id"]))
     metadata = item.setdefault("metadata", {})
@@ -960,12 +941,10 @@ async def _run_parallel_extraction(
     config: AppConfig,
     data_dir: Path,
 ) -> None:
-    """处理：执行有界正文提取，跨域并行且同域保持礼貌限流。
+    """执行有界正文提取，跨域并行且同域保持礼貌限流。
     输入：已校验的采集和输出配置、本次运行的数据根。
     - ``context``：浏览器、写作或报告上下文对象；包含当前阶段已经绑定的受控状态。
     - ``targets``：已按预算选中的规范条目记录；每项读取 item_id、URL、来源和正文状态。
-    输出：不返回新数据；完成“执行有界正文提取，跨域并行且同域保持礼貌限流”，
-      副作用限于该处理声明的受控对象或产物。
     """
     global_limit = max(1, config.browser.global_concurrency)
     domain_limit = max(1, config.browser.per_domain_concurrency)
@@ -973,11 +952,7 @@ async def _run_parallel_extraction(
     domain_semaphores: dict[str, asyncio.Semaphore] = {}
 
     async def guarded(item: dict[str, Any]) -> None:
-        """处理：在并发限制内执行单项任务。
-        输入：带稳定 ID 的索引条目。
-        输出：不返回新数据；完成“在并发限制内执行单项任务”，
-          副作用限于该处理声明的受控对象或产物。
-        """
+        """在并发限制内执行单项任务。"""
         domain = _domain_key(_content_url(item))
         domain_semaphore = domain_semaphores.setdefault(
             domain, asyncio.Semaphore(domain_limit)
@@ -997,25 +972,16 @@ async def _extract_with_browser(
     profile: Path,
     channel: str | None,
 ) -> None:
-    """处理：启动持久化浏览器上下文并批量处理 HTTP 回退条目。
+    """启动持久化浏览器上下文并批量处理 HTTP 回退条目。
     输入：已校验的采集和输出配置、本次运行的数据根、浏览器窗口显示选项。
     - ``targets``：已按预算选中的规范条目记录；每项读取 item_id、URL、来源和正文状态。
     - ``profile``：已经解析并创建的浏览器 Profile 绝对路径。
     - ``channel``：Playwright 浏览器通道；为空时使用配置解析出的默认浏览器。
-    输出：不返回新数据；完成“启动持久化浏览器上下文并批量处理 HTTP 回退条目”，
-      副作用限于该处理声明的受控对象或产物。
     """
     async with async_playwright() as playwright:
-        kwargs: dict[str, Any] = {
-            "user_data_dir": str(profile),
-            "headless": not headed,
-            "locale": "en-US",
-            "timezone_id": config.timezone,
-            "viewport": {"width": 1440, "height": 1000},
-        }
-        if channel:
-            kwargs["channel"] = channel
-        context = await playwright.chromium.launch_persistent_context(**kwargs)
+        context = await playwright.chromium.launch_persistent_context(
+            **persistent_browser_options(config, profile, channel, headed=headed)
+        )
         try:
             await _run_parallel_extraction(context, targets, config, data_dir)
         finally:
@@ -1073,10 +1039,7 @@ async def _extract_with_crawl4ai(
 
 
 def _has_reusable_content(item: dict[str, Any], data_dir: Path) -> bool:
-    """处理：验证条目正文状态和数据根内文件，判断能否安全复用。
-    输入：带稳定 ID 的索引条目、本次运行的数据根。
-    输出：布尔判断；True 表示满足处理说明中的条件，False 表示不满足且不产生该结果。
-    """
+    """验证条目正文状态和数据根内文件，判断能否安全复用。"""
     return (
         item.get("content_status") == ContentStatus.FULL_TEXT
         and not content_gaps(item, data_dir)
@@ -1107,14 +1070,12 @@ async def _extract_pipeline(
     profile: Path,
     channel: str | None,
 ) -> dict[str, Any]:
-    """处理：复用有效正文，先执行 HTTP 提取，再对必要条目进行浏览器回退。
+    """复用有效正文，先执行 HTTP 提取，再对必要条目进行浏览器回退。
     输入：已校验的采集和输出配置、本次运行的数据根、浏览器窗口显示选项。
     - ``targets``：已按预算选中的规范条目记录；每项读取 item_id、URL、来源和正文状态。
     - ``profile``：已经解析并创建的浏览器 Profile 绝对路径。
     - ``channel``：Playwright 浏览器通道；为空时使用配置解析出的默认浏览器。
-    输出：“复用有效正文，先执行 HTTP 提取，再对必要条目进行浏览器回退”形成的结构化字典；
-      典型键包括 browser_fallback、browser_seconds、cache_hits、http_attempted、http_seconds、ht
-      tp_successful、selected、successful、total_seconds。
+    输出：记录缓存复用、HTTP 提取和浏览器回退的数量及耗时。
     """
     started = time.perf_counter()
     probe_hits = set()
@@ -1318,12 +1279,10 @@ def extract_content(
     browser_channel: str | None = None,
     checkpoint_path: Path | None = None,
 ) -> Path:
-    """处理：按选中条目和全文预算复用已有正文，再执行 HTTP 与浏览器分层提取。
+    """按选中条目和全文预算复用已有正文，再执行 HTTP 与浏览器分层提取。
     输入：版本化来源索引路径、已校验的采集和输出配置、本次运行的数据根、本阶段条目上限、浏览器窗口显示选项、持久化浏览器配置目录、浏览器通道。
     - ``selected_ids``：调用方按重要性排序选中的条目 ID；正文阶段只处理这些授权条目。
     - ``checkpoint_path``：运行专属恢复记录；绑定输入索引与选中条目，复用已经完成的提取。
-    输出：指向“按选中条目和全文预算复用已有正文，
-      再执行 HTTP 与浏览器分层提取”所生成、定位或确认产物的本地路径。
     """
     payload = read_json(index_path)
     if not isinstance(payload, dict):
@@ -1339,7 +1298,7 @@ def extract_content(
     if not targets:
         raise ValueError("No selected item IDs were found in the index")
     binding = {
-        "index_sha256": hashlib.sha256(index_path.read_bytes()).hexdigest(),
+        "index_sha256": sha256_file(index_path),
         "selected_ids": [item["item_id"] for item in targets],
     }
     if checkpoint_path is not None:

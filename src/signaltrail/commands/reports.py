@@ -18,10 +18,7 @@ from .common import CommandContext, print_json
 
 
 def handle_validate_report(args: argparse.Namespace, context: CommandContext) -> int:
-    """处理：检查报告草稿与本轮证据及覆盖计划。
-    输入：已解析的命令选项、当前命令的运行上下文。
-    输出：终端结果及供宿主判断成败的退出码。
-    """
+    """检查报告草稿与本轮证据及覆盖计划。"""
     data_dir = context.data_dir
     parser = context.parser
     coverage_targets = None
@@ -67,10 +64,7 @@ def handle_validate_report(args: argparse.Namespace, context: CommandContext) ->
 
 
 def handle_save_report(args: argparse.Namespace, context: CommandContext) -> int:
-    """处理：保存经验证的报告及本地投影。
-    输入：已解析的命令选项、当前命令的运行上下文。
-    输出：终端结果及供宿主判断成败的退出码。
-    """
+    """保存经验证的报告及本地投影。"""
     config = context.config
     data_dir = context.data_dir
     index_path = require_data_root_path(args.index, data_dir, "Report index")
@@ -87,10 +81,7 @@ def handle_save_report(args: argparse.Namespace, context: CommandContext) -> int
 
 
 def handle_finalize_evaluation(args: argparse.Namespace, context: CommandContext) -> int:
-    """处理：保存独立评分并按选项更新远程副本。
-    输入：已解析的命令选项、当前命令的运行上下文。
-    输出：终端结果及供宿主判断成败的退出码。
-    """
+    """保存独立评分并按选项更新远程副本。"""
     config = context.config
     data_dir = context.data_dir
     report_path = require_data_root_path(args.report, data_dir, "Evaluated report")
@@ -114,10 +105,7 @@ def handle_finalize_evaluation(args: argparse.Namespace, context: CommandContext
 
 
 def handle_publish_notion(args: argparse.Namespace, context: CommandContext) -> int:
-    """处理：发布指定报告到已配置的 Notion。
-    输入：已解析的命令选项、当前命令的运行上下文。
-    输出：终端结果及供宿主判断成败的退出码。
-    """
+    """发布指定报告到已配置的 Notion。"""
     data_dir = context.data_dir
     report_path = require_data_root_path(args.report, data_dir, "Published report")
     page_id, status = publish_report(
@@ -131,10 +119,7 @@ def handle_publish_notion(args: argparse.Namespace, context: CommandContext) -> 
 
 
 def handle_backfill_notion_images(args: argparse.Namespace, context: CommandContext) -> int:
-    """处理：补充已发布 Notion 报告的缺失图片。
-    输入：已解析的命令选项、当前命令的运行上下文。
-    输出：终端结果及供宿主判断成败的退出码。
-    """
+    """补充已发布 Notion 报告的缺失图片。"""
     data_dir = context.data_dir
     report_path = require_data_root_path(args.report, data_dir, "Published report")
     page_id, status = backfill_report_images(

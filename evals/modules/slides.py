@@ -165,6 +165,14 @@ def _make_fixture(data_dir: Path) -> tuple[dict, dict, dict]:
     return index, drafts, evidence
 
 
+def fixed_slide_draft(packet: dict, drafts: dict) -> dict:
+    """用写作包的页序和字段约束拼装冻结作者结果。"""
+    result = {"slides": [drafts[news["event_id"]] for news in packet["news"]]}
+    if "video_title" in packet["output_schema"]["properties"]:
+        result["video_title"] = "社区公共服务试点公报"
+    return result
+
+
 def _rendered_pages(
     deck: dict, html_path: Path, selected: list[str], drafts: dict, evidence: dict,
 ) -> dict:
@@ -238,7 +246,6 @@ def evaluate(work_dir: Path) -> dict:
     exact_evidence = set()
     for path in map(Path, prepared["packet_paths"]):
         packet = reader.load(path)["payload"]["model_input"]
-        batch = []
         for news in packet["news"]:
             event_id = news["event_id"]
             source = evidence[event_id]
@@ -254,11 +261,7 @@ def evaluate(work_dir: Path) -> dict:
             if (any(row["body"].strip() == source["body"] for row in news["evidence"])
                     and any(row["url"] == source["url"] for row in news["sources"])):
                 exact_evidence.add(event_id)
-            batch.append(drafts[event_id])
-        result = {"slides": batch}
-        if "video_title" in packet["output_schema"]["properties"]:
-            result["video_title"] = "社区公共服务试点公报"
-        submit_slides(path, result, data_dir)
+        submit_slides(path, fixed_slide_draft(packet, drafts), data_dir)
     submitted = perf_counter()
     rendered = render_slides(plan_path, data_dir, refresh_images=False)
     rendered_at = perf_counter()

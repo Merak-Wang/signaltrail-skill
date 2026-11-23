@@ -13,7 +13,7 @@ from .reporting import (
     validate_report_data,
 )
 from .storage import write_immutable_json
-from .utils import read_json
+from .utils import read_json, sha256_file
 
 _ANALYSIS_EVALUATION_FIELDS = (
     "analysis_id",
@@ -172,7 +172,7 @@ def build_evaluation_dossier(
         "report_file_sha256": f"sha256:{sha256(report_bytes).hexdigest()}",
         "index_file_sha256": f"sha256:{sha256(index_bytes).hexdigest()}",
         "contract_file_sha256": (
-            f"sha256:{sha256(contract_path.read_bytes()).hexdigest()}"
+            f"sha256:{sha256_file(contract_path)}"
         ),
         "date": report.get("date"),
         "edition": report.get("edition"),

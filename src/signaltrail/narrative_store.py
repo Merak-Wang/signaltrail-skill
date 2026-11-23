@@ -13,6 +13,7 @@ from uuid import uuid4
 
 from .runtime import require_data_root_path
 from .storage import exclusive_lock, next_revision
+from .utils import sha256_file
 
 
 def digest(value: object) -> str:
@@ -35,7 +36,7 @@ def file_ref(path: Path, data_dir: Path) -> dict:
     path = require_data_root_path(path, data_dir, "Explainer parent")
     return {
         "path": path.relative_to(data_dir.resolve()).as_posix(),
-        "sha256": sha256(path.read_bytes()).hexdigest(),
+        "sha256": sha256_file(path),
     }
 
 
@@ -45,7 +46,7 @@ def read_ref(ref: dict, data_dir: Path) -> Path:
     输出：已核对的父文件位置；变化或缺失立即中止子产物使用。
     """
     path = require_data_root_path(data_dir / ref["path"], data_dir, "Explainer parent")
-    if sha256(path.read_bytes()).hexdigest() != ref["sha256"]:
+    if sha256_file(path) != ref["sha256"]:
         raise ValueError(f"Explainer parent changed: {ref['path']}")
     return path
 
@@ -71,7 +72,7 @@ class ArtifactReader:
         输出：字节摘要，供同一操作中的多个父引用比较。
         """
         if path not in self._hashes:
-            self._hashes[path] = sha256(path.read_bytes()).hexdigest()
+            self._hashes[path] = sha256_file(path)
         return self._hashes[path]
 
     def parent_path(self, doc: dict, name: str) -> Path:

@@ -149,10 +149,9 @@ TWZ_ROWS_JS = """headings => headings.map(heading => {
 
 
 def is_eligible(source: SourceConfig, title: str, url: str) -> bool:
-    """处理：按来源的域名、文章路径和排除规则判断候选是否可采集。
+    """按来源的域名、文章路径和排除规则判断候选是否可采集。
     输入：带入口与筛选规则的来源配置、待处理的 URL。
     - ``title``：来源提供的标题文本；会清理空白，并用于过滤、身份或展示。
-    输出：布尔判断；True 表示满足处理说明中的条件，False 表示不满足且不产生该结果。
     """
     title = clean_title(title)
     if not is_article_link(title, url):
@@ -210,11 +209,7 @@ def _article(source: SourceConfig, title: str, url: str, discovered_at: str) -> 
 
 
 def _published_at(value: str, url: str, discovered_at: str | None = None) -> str | None:
-    """处理：从文本、URL 或相对时间中解析文章发布日期。
-    输入：待解析的值、待处理的 URL、本轮发现时间。
-    输出：封装“从文本、URL 或相对时间中解析文章发布日期”业务结果的 ``str | None`` 对象；
-      调用方据此继续相邻阶段或识别无结果状态。
-    """
+    """从文本、URL 或相对时间中解析文章发布日期。"""
     text = clean_title(value)
     normalized = normalize_time(text)
     if normalized:
@@ -452,8 +447,7 @@ def collect_latest_year_index(
     source: SourceConfig,
     discovered_at: str,
 ) -> list[ArticleItem]:
-    """处理：从当前索引页选择最新年份并采集该年份的文章记录。
-    输入：已加载的 Playwright 页面、带入口与筛选规则的来源配置、本轮发现时间。
+    """从当前索引页选择最新年份并采集该年份的文章记录。
     输出：经筛选和排序的来源索引条目，含稳定 ID、规范 URL、时间及元数据。
     """
     rows = page.locator("a[href]").evaluate_all(YEAR_ROWS_JS)
@@ -687,8 +681,7 @@ def collect_candidates(
     source: SourceConfig,
     discovered_at: str,
 ) -> list[ArticleItem]:
-    """处理：调用来源专用适配器采集候选，并清理跨链接误归属的重复长摘要。
-    输入：已加载的 Playwright 页面、带入口与筛选规则的来源配置、本轮发现时间。
+    """调用来源专用适配器采集候选，并清理跨链接误归属的重复长摘要。
     输出：经筛选和排序的来源索引条目，含稳定 ID、规范 URL、时间及元数据。
     """
     try:

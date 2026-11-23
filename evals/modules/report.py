@@ -219,6 +219,17 @@ def _frozen_report_inputs() -> tuple[dict, dict, dict[str, list[str]]]:
     return draft, index, plan
 
 
+def _record_cli(handler, context: CommandContext, arguments: list[str]) -> tuple[int, dict, float]:
+    """像 CLI 一样解析测试参数，保留处理耗时、退出码和 JSON 回执。"""
+    args = context.parser.parse_args(arguments)
+    output = StringIO()
+    with redirect_stdout(output):
+        started = perf_counter()
+        exit_code = handler(args, context)
+        elapsed = perf_counter() - started
+    return exit_code, json.loads(output.getvalue()), elapsed
+
+
 def _evaluate_bulk_submission(
     context: CommandContext, run_path: Path, session: dict, report_draft: dict,
 ) -> tuple[dict, dict]:
@@ -235,20 +246,12 @@ def _evaluate_bulk_submission(
     in_flight_draft = Path(in_flight["draft_result_path"])
     partial = b'{"briefs": ['
     in_flight_draft.write_bytes(partial)
-    args = context.parser.parse_args([
-        "submit-authoring-batch", "--run", str(run_path), "--all",
-        "--skip-batch", in_flight["batch_id"],
-    ])
-    output = StringIO()
-    with (
-        patch.object(authoring, "validate_authoring_batch",
-                     wraps=authoring.validate_authoring_batch) as validator,
-        redirect_stdout(output),
-    ):
-        started = perf_counter()
-        exit_code = handle_submit_authoring_batch(args, context)
-        elapsed = perf_counter() - started
-    receipt = json.loads(output.getvalue())
+    with patch.object(authoring, "validate_authoring_batch",
+                      wraps=authoring.validate_authoring_batch) as validator:
+        exit_code, receipt, elapsed = _record_cli(handle_submit_authoring_batch, context, [
+            "submit-authoring-batch", "--run", str(run_path), "--all",
+            "--skip-batch", in_flight["batch_id"],
+        ])
     accepted_path = Path(ready["result_path"])
     invalid_packet = Path(invalid["packet_path"])
     rejection_dir = invalid_packet.with_name(f"{invalid_packet.stem}-rejections")
@@ -276,15 +279,13 @@ def _evaluate_context_freeze(
     data_dir: Path, index: dict, plan: dict, draft: dict,
 ) -> tuple[dict, dict]:
     """用冻结采集与提取结果评估选材、补证和写作会话之间的产物转换。"""
-    index = deepcopy(index)
-    article = index["items"][0]
     radio_url = "https://www.cbc.ca/radio/example/segment-9.1234567"
-    article.update(url=radio_url, canonical_url=radio_url)
+    original, *other_items = index["items"]
+    article = dict(original, url=radio_url, canonical_url=radio_url)
     tracked_url = f"{radio_url}?cmp=rss"
-    index["items"].append({
-        **article, "item_id": "cbc-radio-feed-alias",
-        "url": tracked_url, "canonical_url": tracked_url,
-    })
+    alias = dict(article, item_id="cbc-radio-feed-alias",
+                 url=tracked_url, canonical_url=tracked_url)
+    index = dict(index, items=[article, *other_items, alias])
     config = AppConfig(
         index["timezone"], BrowserConfig(), [
             SourceConfig(
@@ -320,23 +321,21 @@ def _evaluate_context_freeze(
     content_path = data_dir / "content" / "article.md"
     content_path.parent.mkdir()
     content_path.write_text(expected_text, encoding="utf-8")
-    enriched_index = deepcopy(index)
-    enriched_index["items"][0].update(content_status="full_text", content_path=str(content_path))
-    frozen_index = write_json(data_dir / "indexes" / "enriched.json", enriched_index)
+    enriched = dict(article, content_status="full_text", content_path=str(content_path))
+    frozen_index = write_json(data_dir / "indexes" / "enriched.json",
+                              dict(index, items=[enriched, *other_items, alias]))
     with patch("signaltrail.workflow.extract_content", return_value=frozen_index) as extract:
         started = perf_counter()
         enrich_edition(run_path, config, data_dir, [item["item_id"]], max_items=1)
         enrich_seconds = perf_counter() - started
     cli = CommandContext(config, data_dir, build_parser(), compact=True)
-    args = cli.parser.parse_args(["enrich-edition", "--run", str(run_path),
-                                  "--all-slide-candidates", "--max-items", "12"])
-    output = StringIO()
-    with (redirect_stdout(output),
-          patch("signaltrail.workflow.extract_content", return_value=frozen_index) as batches):
-        handle_enrich_edition(args, cli)
+    with patch("signaltrail.workflow.extract_content", return_value=frozen_index) as batches:
+        _, enrichment, _ = _record_cli(handle_enrich_edition, cli, [
+            "enrich-edition", "--run", str(run_path), "--all-slide-candidates", "--max-items", "12",
+        ])
     selected_batches = [call.kwargs["selected_ids"] for call in batches.call_args_list]
     processed_ids = [item_id for batch in selected_batches for item_id in batch]
-    last_batch = json.loads(output.getvalue())["artifacts"]["enrichment"]["slides_candidates"]
+    last_batch = enrichment["artifacts"]["enrichment"]["slides_candidates"]
     started = perf_counter()
     begin_authoring(run_path, data_dir)
     dispatch_seconds = perf_counter() - started
@@ -393,6 +392,12 @@ def _evaluate_context_freeze(
     })
 
 
+def _report_paths(receipt: dict) -> dict[str, Path]:
+    """定位报告保存回执中实际写出的各格式。"""
+    return {kind: Path(receipt[f"{kind}_path"]) for kind in ("json", "markdown", "html", "pdf")
+            if receipt.get(f"{kind}_path")}
+
+
 def evaluate(work_dir: Path) -> dict:
     """处理：运行报告保存入口并检查完整发布和修订。
     输入：本次评估独占的工作目录，用于写入冻结输入与交付文件。
@@ -440,10 +445,7 @@ def evaluate(work_dir: Path) -> dict:
     started = perf_counter()
     first = save_report(draft_path, index_path, data_dir, **options)
     save_seconds = perf_counter() - started
-    outputs = {
-        kind: Path(first[f"{kind}_path"])
-        for kind in ("json", "markdown", "html", "pdf") if first.get(f"{kind}_path")
-    }
+    outputs = _report_paths(first)
     saved = read_json(outputs["json"])
     errors, warnings = validate_report_data(saved, index, brief_plan_item_ids=plan)
     briefs = [brief for section in saved["sections"] for brief in section["briefs"]]
@@ -487,10 +489,7 @@ def evaluate(work_dir: Path) -> dict:
     second = save_report(revised_path, index_path, data_dir, **options)
     revision_seconds = perf_counter() - started
     latest = read_json(data_dir / "reports" / "latest-daily.json")
-    revised_outputs = {
-        kind: Path(second[f"{kind}_path"])
-        for kind in ("json", "markdown", "html", "pdf") if second.get(f"{kind}_path")
-    }
+    revised_outputs = _report_paths(second)
 
     return {
         "workload": {

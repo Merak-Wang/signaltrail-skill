@@ -51,9 +51,8 @@ def print_json(payload: object, *, indent: int | None = 2) -> None:
 
 
 def print_json_file(path: Path) -> None:
-    """处理：读取命令生成的 JSON 文件并输出内容。
-    输入：
-    - ``path``：域函数返回的运行或会话文件路径；读取已保存的结果。
+    """读取命令生成的 JSON 文件并输出内容。
+    输入：``path``：域函数返回的运行或会话文件路径；读取已保存的结果。
     输出：标准输出中的 JSON，便于宿主取得下一步命令与产物路径。
     """
     print_json(read_json(path))

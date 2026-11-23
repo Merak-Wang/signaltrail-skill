@@ -34,10 +34,7 @@ def handle_cleanup(args: argparse.Namespace, context: CommandContext) -> int:
 
 
 def handle_source_page(args: argparse.Namespace, context: CommandContext) -> int:
-    """处理：读取或修改已批准的来源索引页。
-    输入：已解析的命令选项、当前命令的运行上下文。
-    输出：终端结果及供宿主判断成败的退出码。
-    """
+    """读取或修改已批准的来源索引页。"""
     config = context.config
     data_dir = context.data_dir
     parser = context.parser
@@ -56,10 +53,7 @@ def handle_source_page(args: argparse.Namespace, context: CommandContext) -> int
 
 
 def handle_collect(args: argparse.Namespace, context: CommandContext) -> int:
-    """处理：按配置采集一次来源索引。
-    输入：已解析的命令选项、当前命令的运行上下文。
-    输出：终端结果及供宿主判断成败的退出码。
-    """
+    """按配置采集一次来源索引。"""
     config = context.config
     data_dir = context.data_dir
     output = collect_sources(
@@ -76,10 +70,7 @@ def handle_collect(args: argparse.Namespace, context: CommandContext) -> int:
 
 
 def handle_import_legacy(args: argparse.Namespace, context: CommandContext) -> int:
-    """处理：把旧链接文件导入当前索引格式。
-    输入：已解析的命令选项、当前命令的运行上下文。
-    输出：终端结果及供宿主判断成败的退出码。
-    """
+    """把旧链接文件导入当前索引格式。"""
     config = context.config
     data_dir = context.data_dir
     output = import_legacy(args.input, config, data_dir, args.edition)
@@ -88,10 +79,7 @@ def handle_import_legacy(args: argparse.Namespace, context: CommandContext) -> i
 
 
 def handle_build_context(args: argparse.Namespace, context: CommandContext) -> int:
-    """处理：从索引构建本轮写作上下文。
-    输入：已解析的命令选项、当前命令的运行上下文。
-    输出：终端结果及供宿主判断成败的退出码。
-    """
+    """从索引构建本轮写作上下文。"""
     config = context.config
     data_dir = context.data_dir
     index_path = require_data_root_path(args.index, data_dir, "Context index")
@@ -101,10 +89,7 @@ def handle_build_context(args: argparse.Namespace, context: CommandContext) -> i
 
 
 def handle_extract_content(args: argparse.Namespace, context: CommandContext) -> int:
-    """处理：为指定候选补充正文证据。
-    输入：已解析的命令选项、当前命令的运行上下文。
-    输出：终端结果及供宿主判断成败的退出码。
-    """
+    """为指定候选补充正文证据。"""
     config = context.config
     data_dir = context.data_dir
     index_path = require_data_root_path(args.index, data_dir, "Content index")
@@ -123,10 +108,7 @@ def handle_extract_content(args: argparse.Namespace, context: CommandContext) ->
 
 
 def handle_resume(args: argparse.Namespace, context: CommandContext) -> int:
-    """处理：重试失败来源并将新索引关联到运行。
-    输入：已解析的命令选项、当前命令的运行上下文。
-    输出：终端结果及供宿主判断成败的退出码。
-    """
+    """重试失败来源并将新索引关联到运行。"""
     config = context.config
     data_dir = context.data_dir
     index_path = require_data_root_path(args.index, data_dir, "Resume index")

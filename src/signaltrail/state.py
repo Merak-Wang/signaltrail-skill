@@ -13,9 +13,8 @@ _STABLE_ANALYSIS_DOMAINS = {"geopolitics", "ai_technology", "markets"}
 
 
 def stable_analysis_id(domain: object) -> str:
-    """处理：为三个固定分析栏目生成跨日期、版本和评估修订稳定的栏目身份。
-    输入：
-    - ``domain``：报告编译器已验证的 geopolitics、ai_technology 或 markets 域名。
+    """为三个固定分析栏目生成跨日期、版本和评估修订稳定的栏目身份。
+    输入：``domain``：报告编译器已验证的 geopolitics、ai_technology 或 markets 域名。
     输出：ANALYSIS-{DOMAIN} 形式的稳定 ID；未知域明确失败而不回退到日期 ID。
     """
 
@@ -25,20 +24,16 @@ def stable_analysis_id(domain: object) -> str:
     return f"ANALYSIS-{normalized.upper()}"
 
 
-def _items(path: Path) -> list[dict[str, Any]]:
-    """处理：展开报告全部栏目中的事件或简报条目。
-    输入：本地文件路径。
-    输出：“展开报告全部栏目中的事件或简报条目”得到的有序结构化记录；
-      每项承载处理说明所定义的身份、证据或状态字段，可直接交给下一阶段。
-    """
+def state_items(path: Path) -> list[dict[str, Any]]:
+    """从连续性状态文件读取记录，同时识别旧版数组和带 items 的版本化对象。"""
     if not path.exists():
         return []
     raw = read_json(path)
-    if isinstance(raw, list):
-        return [item for item in raw if isinstance(item, dict)]
-    if isinstance(raw, dict) and isinstance(raw.get("items"), list):
-        return [item for item in raw["items"] if isinstance(item, dict)]
-    raise ValueError(f"State file must contain a list or an object with items: {path}")
+    rows = raw.get("items") if isinstance(raw, dict) else raw
+    if not isinstance(rows, list):
+        raise ValueError(f"State file must contain a list or an object with items: {path}")
+    return [item for item in rows if isinstance(item, dict)]
+
 
 
 def _identity_text(value: str) -> str:
@@ -89,11 +84,8 @@ def update_continuity_state(
 def _update_continuity_state(
     report: dict[str, Any], data_dir: Path,
 ) -> dict[str, str]:
-    """处理：从已评估报告更新论点、观察列表和预测状态。
-    输入：含栏目和来源引用的报告、本次运行的数据根。
-    输出：“从已评估报告更新论点、观察列表和预测状态”形成的结构化字典；
-      典型键包括 analysis_id、category、claim、confidence、counter_evidence、domain、event_id、e
-      vents、evidence_event_ids、first_seen_at、generated_at、history。
+    """从已评估报告更新论点、观察列表和预测状态。
+    输出：本次写入的连续性状态文件路径。
     """
     state_dir = data_dir / "state"
     generated_at = report["generated_at"]
@@ -106,11 +98,11 @@ def _update_continuity_state(
     theses_path = state_dir / "theses.json"
     theses = {
         item.get("thesis_id") or item["analysis_id"]: item
-        for item in _items(theses_path) if item.get("thesis_id") or item.get("analysis_id")
+        for item in state_items(theses_path) if item.get("thesis_id") or item.get("analysis_id")
     }
     domains = {
         item["analysis_id"]: item
-        for item in _items(state_dir / "analysis-domains.json") if item.get("analysis_id")
+        for item in state_items(state_dir / "analysis-domains.json") if item.get("analysis_id")
     }
     for legacy in theses.values():
         if not legacy.get("thesis_id"):
@@ -159,7 +151,9 @@ def _update_continuity_state(
             domains[analysis_id] = {**record, "identity_scope": "analysis_domain"}
 
     watchlist_path = state_dir / "watchlist.json"
-    watchlist = {item["watch_id"]: item for item in _items(watchlist_path) if item.get("watch_id")}
+    watchlist = {
+        item["watch_id"]: item for item in state_items(watchlist_path) if item.get("watch_id")
+    }
     for legacy in watchlist.values():
         if not legacy.get("thesis_id"):
             legacy.setdefault("identity_scope", "legacy_unresolved")
@@ -195,7 +189,7 @@ def _update_continuity_state(
             item["closure_reason"] = "thesis_closed"
 
     events_path = state_dir / "events.json"
-    events = {item["event_id"]: item for item in _items(events_path) if item.get("event_id")}
+    events = {item["event_id"]: item for item in state_items(events_path) if item.get("event_id")}
     for section in [] if skip_events else report["sections"]:
         for event in section["items"]:
             event_id = event["event_id"]

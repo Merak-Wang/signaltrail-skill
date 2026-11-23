@@ -4,8 +4,6 @@ import json
 import re
 import time
 from collections import Counter
-from copy import deepcopy
-from dataclasses import dataclass
 from datetime import datetime, timedelta
 from enum import StrEnum
 from hashlib import sha256
@@ -122,9 +120,8 @@ _ANALYSIS_COMPILER_FIELDS = {
 
 
 def _brief_output_schema(output_language: str) -> dict[str, Any]:
-    """处理：生成 brief worker 可见且与 Python 接收器一致的最小 JSON Schema。
-    输入：
-    - ``output_language``：本次报告目标语言；决定唯一允许的条件译题字段。
+    """生成 brief worker 可见且与 Python 接收器一致的最小 JSON Schema。
+    输入：``output_language``：本次报告目标语言；决定唯一允许的条件译题字段。
     输出：只允许 briefs 根数组及 item_id、译题、tldr、importance、status 的自包含 Schema。
     """
 
@@ -203,120 +200,88 @@ def _analysis_output_schema(
             "0 <= minimum <= maximum <= 10"
         )
 
-    def text(min_length: int = 1) -> dict:
-        """处理：声明分析文本的最小长度。
-        输入：对应字段要求的字符下限。
-        输出：字符串字段的 Schema。
-        """
-        return {"type": "string", "minLength": min_length}
+    report = read_json(project_root() / "schemas" / "report.schema.json")
+    properties, definitions = report["properties"], report["$defs"]
 
-    def array(items: dict, minimum: int | None = None, maximum: int | None = None) -> dict:
-        """处理：声明分析列表的元素类型与可选条数限制。
-        输入：元素 Schema 和条数上下限。
-        输出：数组字段的 Schema。
+    def inline(node: dict) -> dict:
+        """处理：展开发布契约的本地引用，供独立写作包直接使用。
+        输入：日报 Schema 中要移植的字段。
+        输出：无外部引用的字段声明，保留写作包现有键顺序。
         """
-        schema: dict[str, Any] = {"type": "array"}
-        if minimum is not None:
-            schema["minItems"] = minimum
-        if maximum is not None:
-            schema["maxItems"] = maximum
-        schema["items"] = items
-        return schema
+        if reference := node.get("$ref"):
+            node = inline(definitions[reference.rsplit("/", 1)[-1]]) | {
+                key: value for key, value in node.items() if key != "$ref"
+            }
+        if node.get("type") == "object":
+            fields = {key: inline(value) for key, value in node["properties"].items()}
+            return {key: node[key] for key in ("type", "required", "additionalProperties")
+                    if key in node} | {"properties": fields}
+        if node.get("type") == "array":
+            return {key: node[key] for key in ("type", "minItems", "maxItems", "uniqueItems")
+                    if key in node} | {"items": inline(node["items"])}
+        return node
 
-    def closed_object(properties: dict, *, optional: tuple[str, ...] = ()) -> dict:
-        """处理：按字段声明生成封闭对象，显式列出可缺省的字段。
-        输入：有序字段 Schema 与可选字段名。
-        输出：其余字段均必填、禁止额外属性的对象 Schema。
+    def closed_object(fields: dict, optional: tuple[str, ...] = ()) -> dict:
+        """处理：声明可由模型编辑的封闭对象。
+        输入：有序字段声明和允许缺省的字段名。
+        输出：其余字段必填的对象 Schema。
         """
-        return {
-            "type": "object",
-            "required": [name for name in properties if name not in optional],
-            "additionalProperties": False,
-            "properties": properties,
-        }
+        return {"type": "object", "required": [name for name in fields if name not in optional],
+                "additionalProperties": False, "properties": fields}
 
-    string = text()
-    string_array = array(string, 1)
-    confidence = {"type": "number", "minimum": 0, "maximum": 1}
-    featured_event = closed_object({
-        "section_id": {"enum": list(SECTION_ORDER_V13)},
-        "title": string,
-        "tldr": text(4),
-        "why_it_matters": text(4),
-        "importance": {"type": "integer", "minimum": 0, "maximum": 100},
-        "importance_reason": text(4),
-        "confidence": confidence.copy(),
-        "status": {"enum": sorted(_ALLOWED_BRIEF_STATUSES)},
+    string = {"type": "string", "minLength": 1}
+    strings = {"type": "array", "items": string}
+    nonempty = inline(definitions["nonemptyTextList"])
+    featured = closed_object({
+        "section_id": {"enum": list(SECTION_ORDER_V13)}, "title": string,
+        "tldr": {"type": "string", "minLength": 4},
+        "why_it_matters": {"type": "string", "minLength": 4},
+        "importance": definitions["importanceScore"],
+        "importance_reason": {"type": "string", "minLength": 4},
+        "confidence": definitions["confidence"],
+        "status": {"enum": sorted(definitions["eventStatus"]["enum"])},
         "source_item_ids": {
-            "type": "array",
-            "minItems": 1,
-            "maxItems": 1,
-            "uniqueItems": True,
-            "items": string,
+            "type": "array", "minItems": 1, "maxItems": 1, "uniqueItems": True, "items": string,
         },
-        "evidence_notes": array(string),
-        "tags": array(string),
+        "evidence_notes": strings, "tags": strings,
     })
-    stakeholder = closed_object({
-        "stakeholder": string,
-        "position": string,
-        "interests": string,
-    })
-    analysis = closed_object({
+    release_analysis = properties["analyses"]["items"]["properties"]
+    draft_fields = {
         "domain": {"enum": list(_ANALYSIS_DOMAIN_ORDER)},
-        "claim": text(10),
-        "narrative": text(100),
-        "historical_context": text(20),
-        "dialectical_analysis": text(20),
-        "facts": string_array,
-        "reasoning": text(10),
-        "causal_chain": array(string, 2),
-        "stakeholder_positions": array(stakeholder, 1),
-        "counter_evidence": string_array,
-        "scenarios": string_array,
-        "scenario_basis": text(10),
-        "assumptions": string_array,
-        "implications": string_array,
-        "actions": string_array,
-        "watch_signals": string_array,
-        "invalidation_signals": string_array,
-        "time_horizon": string,
-        "confidence": confidence.copy(),
-        "confidence_rationale": text(10),
-        "evidence_gaps": string_array,
-        "change_from_prior": text(10),
-        "decision_relevance": text(10),
-        "evidence_item_ids": string_array,
-        "state_change": {
-            "enum": [
-                "new", "strengthening", "unchanged", "weakening",
-                "revised", "invalidated", "closed",
-            ]
-        },
-    }, optional=("scenario_basis",))
-    tension = closed_object({
-        "issue": string,
-        "perspectives": array(string, 2),
-        "source_of_difference": string,
-    })
-    synthesis = closed_object({
-        "overall_judgment": text(20),
-        "consensus": string_array,
-        "tensions": array(tension, 1),
-        "transmission_chain": array(string, 2),
-        "shared_watch_signals": array(string, 3, 5),
-        "revision_triggers": string_array,
-        "evidence_item_ids": string_array,
-    })
+        "claim": {"type": "string", "minLength": 10},
+        "stakeholder_positions": inline(
+            release_analysis["stakeholder_positions"] | {"minItems": 1}
+        ),
+        **dict.fromkeys(
+            ("facts", "counter_evidence", "scenarios", "implications", "actions", "watch_signals",
+             "invalidation_signals", "evidence_item_ids"),
+            nonempty,
+        ),
+    }
+    analysis = closed_object({
+        key: draft_fields[key] if key in draft_fields else inline(release_analysis[key])
+        for key in (
+            "domain", "claim", "narrative", "historical_context", "dialectical_analysis", "facts",
+            "reasoning", "causal_chain", "stakeholder_positions", "counter_evidence", "scenarios",
+            "scenario_basis", "assumptions", "implications", "actions", "watch_signals",
+            "invalidation_signals", "time_horizon", "confidence", "confidence_rationale",
+            "evidence_gaps", "change_from_prior", "decision_relevance", "evidence_item_ids",
+            "state_change",
+        )
+    }, ("scenario_basis",))
+    synthesis = inline(properties["cross_perspective_synthesis"])["properties"]
+    synthesis["evidence_item_ids"] = synthesis.pop("evidence_event_ids")
     return closed_object({
-        "title": text(5),
-        "executive_summary": array(string, 1, 10),
-        "featured_events": array(featured_event, featured_event_minimum, featured_event_maximum),
-        "analyses": array(analysis, 3, 3),
-        "cross_perspective_synthesis": synthesis,
-        "changes": array(string),
-        "tomorrow_watch_items": array(string),
-    }, optional=("changes", "tomorrow_watch_items"))
+        "title": properties["title"],
+        "executive_summary": inline(properties["executive_summary"] | {"minItems": 1}),
+        "featured_events": {
+            "type": "array", "minItems": featured_event_minimum,
+            "maxItems": featured_event_maximum, "items": featured,
+        },
+        "analyses": {"type": "array", "minItems": 3, "maxItems": 3, "items": analysis},
+        "cross_perspective_synthesis": closed_object(synthesis),
+        "changes": strings, "tomorrow_watch_items": strings,
+    }, ("changes", "tomorrow_watch_items"))
 
 
 def _contract_schema_errors(
@@ -365,12 +330,7 @@ def _contract_schema_errors(
 
 
 class AuthoringStatus(StrEnum):
-    """处理：定义写作状态的可用枚举值。
-    输入：
-    - 无显式业务参数：不声明额外构造字段；该定义以 ``StrEnum`` 为基础，
-      通过类成员承担“定义写作状态的可用枚举值”职责。
-    输出：构造后的 ``AuthoringStatus`` 实例或枚举定义；其字段和方法共同承担上述职责。
-    """
+    """写作会话在分派、等待研判、就绪或降级之间切换，供协调器安排后续工作。"""
     DISPATCHED = "dispatched"
     ANALYSIS_PENDING = "analysis_pending"
     READY = "ready"
@@ -378,12 +338,7 @@ class AuthoringStatus(StrEnum):
 
 
 def _parse_timestamp(value: object) -> datetime | None:
-    """处理：把可选 ISO 时间文本解析为带时区时间，空值或非法值返回 None。
-    输入：待解析的值。
-    输出：封装“把可选 ISO 时间文本解析为带时区时间，
-      空值或非法值返回 None”业务结果的 ``datetime | None`` 对象；
-      调用方据此继续相邻阶段或识别无结果状态。
-    """
+    """把可选 ISO 时间文本解析为带时区时间，空值或非法值返回 None。"""
     try:
         parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
     except (TypeError, ValueError):
@@ -394,12 +349,10 @@ def _parse_timestamp(value: object) -> datetime | None:
 
 
 def _seconds_between(start: object, end: object) -> float | None:
-    """处理：计算两个 ISO 时间戳之间的非负秒数。
+    """计算两个 ISO 时间戳之间的非负秒数。
     输入：
     - ``start``：上游记录的流程开始时间；与 end 一起计算非负耗时。
     - ``end``：上游记录的流程结束时间；早于 start 时耗时按零处理。
-    输出：封装“计算两个 ISO 时间戳之间的非负秒数”业务结果的 ``float | None`` 对象；
-      调用方据此继续相邻阶段或识别无结果状态。
     """
     start_time = _parse_timestamp(start)
     end_time = _parse_timestamp(end)
@@ -409,12 +362,9 @@ def _seconds_between(start: object, end: object) -> float | None:
 
 
 def _authoring_paths(context_path: Path) -> dict[str, Path]:
-    """处理：根据情境包位置派生写作会话、骨架、分析和草稿文件路径。
-    输入：
-    - ``context_path``：版本化写作情境包路径；包含候选、预算、批次和历史连续性信息。
-    输出：“根据情境包位置派生写作会话、骨架、分析和草稿文件路径”形成的结构化字典；
-      典型键包括 analysis_draft、analysis_packet、delegation_metrics、delegation_metrics_draft、
-      directory、media_prefetch、report_draft、session、skeleton。
+    """根据情境包位置派生写作会话、骨架、分析和草稿文件路径。
+    输入：``context_path``：版本化写作情境包路径；包含候选、预算、批次和历史连续性信息。
+    输出：各阶段的会话、任务包、草稿和回执路径。
     """
     stem = context_path.stem
     directory = context_path.parent / f"{stem}-authoring"
@@ -432,12 +382,7 @@ def _authoring_paths(context_path: Path) -> dict[str, Path]:
 
 
 def batch_result_paths(packet_path: Path) -> tuple[Path, Path]:
-    """处理：根据批次数据包路径派生草稿提交路径和不可变回执路径。
-    输入：
-    - ``packet_path``：写作任务包 JSON 路径；同目录下保存模型结果和校验回执。
-    输出：“根据批次数据包路径派生草稿提交路径和不可变回执路径”得到的固定结构结果；
-      返回位置依次对应 packet_path.with_name(f'{stem}-r、packet_path.with_name(f'{stem}-r。
-    """
+    """从批次包名推导两个同目录路径，依次为可修改的提交草稿和接收后的不可变结果。"""
     stem = packet_path.stem
     return (
         packet_path.with_name(f"{stem}-result.draft.json"),
@@ -446,9 +391,8 @@ def batch_result_paths(packet_path: Path) -> tuple[Path, Path]:
 
 
 def _validation_rejection_paths(directory: Path) -> list[Path]:
-    """处理：按数字尝试顺序列出一个模型工作单元的不可变拒绝回执。
-    输入：
-    - ``directory``：由批次或分析身份派生的专用 rejection 目录。
+    """按数字尝试顺序列出一个模型工作单元的不可变拒绝回执。
+    输入：``directory``：由批次或分析身份派生的专用 rejection 目录。
     输出：只包含 attempt-N.json 的有序路径；其他文件不会参与次数判断。
     """
 
@@ -463,9 +407,8 @@ def _validation_rejection_paths(directory: Path) -> list[Path]:
 
 
 def _structured_validation_errors(errors: list[str]) -> list[dict[str, str]]:
-    """处理：把验证器文本错误压缩成 path/rule/message 的稳定修复契约。
-    输入：
-    - ``errors``：Python 验证器返回的有序错误字符串；不包含模型完整草稿。
+    """把验证器文本错误压缩成 path/rule/message 的稳定修复契约。
+    输入：``errors``：Python 验证器返回的有序错误字符串；不包含模型完整草稿。
     输出：不包含原草稿正文的结构化错误；rule_id 由消息确定性哈希生成。
     """
 
@@ -601,29 +544,20 @@ def begin_authoring_session(
     *,
     analysis_reserve_seconds: int = 120,
 ) -> Path:
-    """处理：校验情境身份并创建带截止时间和批次清单的写作会话。
+    """校验情境身份并创建带截止时间和批次清单的写作会话。
     输入：记录阶段与产物的运行清单、本次运行的数据根。
     - ``context_path``：版本化写作情境包路径；包含候选、预算、批次和历史连续性信息。
     - ``analysis_reserve_seconds``：总截止时间中专门留给跨栏目分析和最终组装的秒数。
-    输出：指向“校验情境身份并创建带截止时间和批次清单的写作会话”所生成、定位或确认产物的本地路径
-      。
     """
     context_path = require_data_root_path(context_path, data_dir, "Authoring context")
-    context = read_json(context_path)
+    context_bytes = context_path.read_bytes()
+    context = json.loads(context_bytes)
     if not isinstance(context, dict):
         raise ValueError("Authoring context must be a JSON object")
     if context.get("selection_only"):
         raise ValueError("Run enrich-edition before dispatching from a selection-only context")
     paths = _authoring_paths(context_path)
-    context_sha256 = sha256(context_path.read_bytes()).hexdigest()
-    bound_batches = {}
-    for batch in context.get("brief_authoring_batches", []):
-        if isinstance(batch, dict) and batch.get("packet_path"):
-            packet = _read_bound_packet(batch, data_dir)
-            bound_batches[str(batch["batch_id"])] = {
-                "packet_sha256": sha256(Path(batch["packet_path"]).read_bytes()).hexdigest(),
-                "author_item_ids": packet["author_item_ids"],
-            }
+    context_sha256 = sha256(context_bytes).hexdigest()
     if paths["session"].exists():
         existing = read_json(paths["session"])
         if not isinstance(existing, dict):
@@ -669,21 +603,18 @@ def begin_authoring_session(
         if not isinstance(batch, dict) or not batch.get("packet_path"):
             continue
         packet_path = require_data_root_path(
-            Path(str(batch["packet_path"])),
-            data_dir,
-            "Authoring packet",
+            Path(batch["packet_path"]), data_dir, "Authoring packet",
         )
+        content = packet_path.read_bytes()
+        authors = _read_bound_packet(batch, data_dir, content=content)["author_item_ids"]
         draft_path, result_path = batch_result_paths(packet_path)
-        batches.append(
-            {
-                "batch_id": str(batch["batch_id"]),
-                "packet_path": str(packet_path),
-                "draft_result_path": str(draft_path),
-                "result_path": str(result_path),
-                "author_item_count": int(batch.get("author_item_count", 0)),
-                **bound_batches[str(batch["batch_id"])],
-            }
-        )
+        batches.append({
+            "batch_id": str(batch["batch_id"]), "packet_path": str(packet_path),
+            "draft_result_path": str(draft_path), "result_path": str(result_path),
+            "author_item_count": int(batch.get("author_item_count", 0)),
+            "packet_sha256": sha256(content).hexdigest(),
+            "author_item_ids": authors,
+        })
     session = {
         "schema_version": "1.0",
         "run_id": run.get("run_id"),
@@ -759,12 +690,10 @@ def _validate_session_binding(run: dict[str, Any], session: dict[str, Any], data
 
 
 def _batch_entry(session: dict[str, Any], batch_id: str) -> dict[str, Any]:
-    """处理：按批次 ID 从写作会话中查找唯一批次记录。
+    """按批次 ID 从写作会话中查找唯一批次记录。
     输入：
     - ``session``：写作会话对象；记录情境哈希、批次回执、截止时间和委派遥测。
     - ``batch_id``：情境计划分配的写作批次 ID；连接授权包、模型结果和接收回执。
-    输出：“按批次 ID 从写作会话中查找唯一批次记录”形成的结构化字典；
-      键值表达该处理定义的业务记录或查找关系。
     """
     for batch in session.get("batches", []):
         if isinstance(batch, dict) and str(batch.get("batch_id")) == batch_id:
@@ -999,9 +928,8 @@ def validate_analysis_evidence(
 
 
 def _normalize_narrative(value: object) -> str:
-    """处理：只用原有句子把单段或过密分析主文规范为 4—7 个自然段。
-    输入：
-    - ``value``：模型输出的 narrative；句界来自中英文句号、问号和感叹号。
+    """只用原有句子把单段或过密分析主文规范为 4—7 个自然段。
+    输入：``value``：模型输出的 narrative；句界来自中英文句号、问号和感叹号。
     输出：能够安全切分时返回目标五段文本；句子不足时保留原段供验证器拒绝。
     """
 
@@ -1029,9 +957,8 @@ def _normalize_narrative(value: object) -> str:
 
 
 def _normalize_analysis_narratives(payload: dict[str, Any]) -> dict[str, Any]:
-    """处理：复制分析草稿并规范每个 lens 的读者主文段落。
-    输入：
-    - ``payload``：从授权 ``analysis_result_path`` 读取并完成 JSON 解析的模型对象。
+    """复制分析草稿并规范每个 lens 的读者主文段落。
+    输入：``payload``：从授权 ``analysis_result_path`` 读取并完成 JSON 解析的模型对象。
     输出：仅 narrative 空行可能变化的新对象；证据 ID 和其他语义字段保持原值。
     """
 
@@ -1118,13 +1045,14 @@ def _brief_local_evidence(candidate: dict[str, Any], data_dir: Path) -> dict[str
 
 def brief_authoring_input(
     packet_path: Path, data_dir: Path, *, include_evidence: bool = False,
+    _packet: dict | None = None,
 ) -> dict[str, Any]:
     """处理：从单个受限写作包投影作者所需输入，省去接收与调度字段。
     输入：当前包路径和数据根；候选证据仅保留包内已列出的内容与路径。
     输出：候选、风格、Schema 与草稿命令；内嵌证据时省去重复的内部路径和原文片段。
     """
     packet_path = require_data_root_path(packet_path, data_dir, "Authoring packet")
-    packet = read_json(packet_path)
+    packet = read_json(packet_path) if _packet is None else _packet
     result = {key: packet[key] for key in (
         "batch_id", "edition", "date", "collection_window", "output_language",
         "untrusted_data_notice", "task", "writing_style", "tool_policy", "repair_policy",
@@ -1182,15 +1110,14 @@ def brief_authoring_input(
 
 def _canonicalize_brief_statuses(packet: dict, payload: object) -> object:
     """处理：将来源日期和列表信号确定的状态统一为 WATCH。
-    输入：受限包候选与作者草稿，不修改作者的文字、重要性或可编辑状态。
-    输出：用于预检和接收的副本，避免为确定性状态再次调用模型。
+    输入：受限包候选与刚从磁盘读取的作者草稿。
+    输出：原草稿中需要标为 WATCH 的状态已更新，其他作者内容保持。
     """
     if not isinstance(payload, dict) or not isinstance(payload.get("briefs"), list):
         return payload
-    result = deepcopy(payload)
     candidates = {str(item["item_id"]): item for item in packet.get("candidates", [])}
     reference = (packet.get("collection_window") or {}).get("end") or packet.get("date")
-    for brief in result["briefs"]:
+    for brief in payload["briefs"]:
         if not isinstance(brief, dict):
             continue
         candidate = candidates.get(brief.get("item_id"), {})
@@ -1198,19 +1125,22 @@ def _canonicalize_brief_statuses(packet: dict, payload: object) -> object:
                 or (reference and
                 run_relative_brief_fields(candidate, reference)["status"] == "WATCH")):
             brief["status"] = "WATCH"
-    return result
+    return payload
 
 
-@dataclass(frozen=True, slots=True)
-class CheckedAuthoringDraft:
-    """处理：保存在同一次批量命令内通过预检的草稿。
-    输入：预检读到的作者包字节、草稿文本及校验后的规范稿件。
-    输出：可在提交锁内对照当前文件的临时结果。
+class BriefDraftError(ValueError):
+    """处理：报告批量提交中未通过校验的完整错误。
+    输入：逐字段错误列表。
+    输出：携带错误的异常，批量调用保留该草稿供修订。
     """
 
-    packet_bytes: bytes
-    draft_text: str
-    payload: dict[str, Any]
+    def __init__(self, errors: list[str]) -> None:
+        """处理：接收校验器发现的错误。
+        输入：批次草稿的诊断列表。
+        输出：保留逐条错误，首条用作异常消息。
+        """
+        super().__init__(errors[0])
+        self.errors = errors
 
 
 def _load_authoring_session(
@@ -1253,7 +1183,7 @@ def _bound_batch_submission(
     )
     input_path = require_data_root_path(input_path, data_dir, "Authoring batch draft")
     expected_input_path = Path(str(batch["draft_result_path"])).resolve()
-    if input_path.resolve() != expected_input_path:
+    if input_path != expected_input_path:
         raise ValueError(
             "Authoring batch draft must use the packet-assigned path: "
             f"{expected_input_path}"
@@ -1266,26 +1196,32 @@ def _bound_batch_submission(
     return session, batch, packet_path, input_path, result_path
 
 
+def _validated_brief_payload(
+    batch: dict, input_path: Path, data_dir: Path,
+) -> tuple[dict[str, Any], list[str]]:
+    """处理：读取一次已绑定的作者包与草稿，统一补全状态并校验。
+    输入：会话中的批次、授权草稿路径与数据根。
+    输出：规范稿件及字段错误。
+    """
+    packet = _read_bound_packet(batch, data_dir)
+    draft = json.loads(input_path.read_text(encoding="utf-8"))
+    payload = _canonicalize_brief_statuses(packet, draft)
+    return payload, validate_authoring_batch(packet, payload)
+
+
 def check_authoring_batch(
     run: dict[str, Any], batch_id: str, input_path: Path, data_dir: Path,
     *,
     _validated_session: dict[str, Any] | None = None,
-    checked_drafts: dict[str, CheckedAuthoringDraft] | None = None,
 ) -> dict[str, Any]:
     """处理：只读检查草稿与写作会话绑定及内容契约。
     输入：运行记录、批次 ID、草稿路径、数据根及可选的本轮批量接收暂存区。
     输出：批次标识、草稿与预期结果路径、全部字段错误。
     """
-    _, batch, packet_path, input_path, result_path = _bound_batch_submission(
+    _, batch, _, input_path, result_path = _bound_batch_submission(
         run, batch_id, input_path, data_dir, _validated_session,
     )
-    packet_bytes = packet_path.read_bytes()
-    packet = _read_bound_packet(batch, data_dir, content=packet_bytes)
-    draft_text = input_path.read_text(encoding="utf-8")
-    payload = _canonicalize_brief_statuses(packet, json.loads(draft_text))
-    errors = validate_authoring_batch(packet, payload)
-    if checked_drafts is not None and not errors and isinstance(payload, dict):
-        checked_drafts[batch_id] = CheckedAuthoringDraft(packet_bytes, draft_text, payload)
+    _, errors = _validated_brief_payload(batch, input_path, data_dir)
     return {"batch_id": batch_id, "draft_path": str(input_path),
             "expected_path": str(result_path), "errors": errors}
 
@@ -1297,33 +1233,23 @@ def submit_authoring_batch(
     data_dir: Path,
     *,
     _validated_session: dict[str, Any] | None = None,
-    checked_draft: CheckedAuthoringDraft | None = None,
+    record_rejection: bool = True,
 ) -> Path:
-    """处理：校验模型批次结果与当前授权包匹配后，创建不可变接收回执。
+    """校验模型批次结果与当前授权包匹配后，创建不可变接收回执。
     输入：记录阶段与产物的运行清单、本次运行的数据根。
     - ``batch_id``：情境计划分配的写作批次 ID；连接授权包、模型结果和接收回执。
     - ``input_path``：上游阶段生成的输入文件路径；读取前会执行存在性或数据根校验。
-    - ``checked_draft``：同次批量命令预检通过的暂存结果，提交时核对输入后可复用。
-    输出：指向“校验模型批次结果与当前授权包匹配后，
-      创建不可变接收回执”所生成、定位或确认产物的本地路径。
+    - ``record_rejection``：单批接收记录失败尝试，批量接收直接返回字段错误。
     """
     session, batch, packet_path, input_path, result_path = _bound_batch_submission(
         run, batch_id, input_path, data_dir, _validated_session,
     )
     rejection_dir = packet_path.with_name(f"{packet_path.stem}-rejections")
     rejection_paths = _validation_rejection_paths(rejection_dir)
-    packet_bytes = packet_path.read_bytes()
-    packet = _read_bound_packet(batch, data_dir, content=packet_bytes)
-    draft_text = input_path.read_text(encoding="utf-8")
-    # 重新核对锁内实际读到的作者包与草稿。内容变化时使用完整的提交校验及拒绝流程。
-    if (checked_draft is not None and packet_bytes == checked_draft.packet_bytes
-            and draft_text == checked_draft.draft_text):
-        payload = checked_draft.payload
-        errors = []
-    else:
-        payload = _canonicalize_brief_statuses(packet, json.loads(draft_text))
-        errors = validate_authoring_batch(packet, payload)
+    payload, errors = _validated_brief_payload(batch, input_path, data_dir)
     if errors:
+        if not record_rejection:
+            raise BriefDraftError(errors)
         if len(rejection_paths) >= _MAX_BRIEF_SUBMISSIONS:
             raise RuntimeError(
                 f"Brief repair limit exhausted for {batch_id}; start a new run attempt"
@@ -1438,12 +1364,10 @@ def _non_negative_number(
     *,
     integer: bool = False,
 ) -> int | float | None:
-    """处理：解析非负数值，并按要求限制为整数。
+    """解析非负数值，并按要求限制为整数。
     输入：待解析的值。
     - ``label``：用于错误消息的字段或产物名称，使失败能定位到具体输入。
     - ``integer``：是否要求输入数值必须为整数；否则允许非负浮点数。
-    输出：封装“解析非负数值，并按要求限制为整数”业务结果的 ``int | float | None`` 对象；
-      调用方据此继续相邻阶段或识别无结果状态。
     """
     if value is None:
         return None
@@ -1589,10 +1513,9 @@ def record_authoring_metrics(
     input_path: Path,
     data_dir: Path,
 ) -> Path:
-    """处理：持久化智能体宿主委派结果中受限且可审计的观测指标。
+    """持久化智能体宿主委派结果中受限且可审计的观测指标。
     输入：记录阶段与产物的运行清单、本次运行的数据根。
     - ``input_path``：上游阶段生成的输入文件路径；读取前会执行存在性或数据根校验。
-    输出：指向“持久化 Hermes 委派结果中受限且可审计的观测指标”所生成、定位或确认产物的本地路径。
     """
 
     session_path, session = _load_authoring_session(run, data_dir)
@@ -1666,11 +1589,8 @@ def record_authoring_metrics(
 
 
 def _delegation_metrics_by_batch(session: dict[str, Any]) -> dict[str, dict[str, Any]]:
-    """处理：把已接收的委派遥测按批次 ID 建立索引。
-    输入：
-    - ``session``：写作会话对象；记录情境哈希、批次回执、截止时间和委派遥测。
-    输出：“把已接收的委派遥测按批次 ID 建立索引”形成的结构化字典；
-      键值表达该处理定义的业务记录或查找关系。
+    """把已接收的委派遥测按批次 ID 建立索引。
+    输入：``session``：写作会话对象；记录情境哈希、批次回执、截止时间和委派遥测。
     """
     path_value = session.get("delegation_metrics_path")
     if not path_value:
@@ -1700,12 +1620,8 @@ def _batch_duration(measured: dict, receipt: object) -> dict:
 
 
 def authoring_status(run: dict[str, Any], data_dir: Path) -> dict[str, Any]:
-    """处理：汇总各批次回执、委派遥测和分析截止时间形成写作进度。
-    输入：记录阶段与产物的运行清单、本次运行的数据根。
-    输出：“汇总各批次回执、委派遥测和分析截止时间形成写作进度”形成的结构化字典；
-      典型键包括 analysis_deadline_at、api_calls、batch_id、batches、brief_count、completed_batc
-      hes、deadline_exceeded、duration_seconds、duration_source、expected_batches、input_tokens
-      、output_tokens。
+    """汇总各批次回执、委派遥测和分析截止时间形成写作进度。
+    输出：批次完成情况、写作期限和已记录的用量。
     """
     _, session = _load_authoring_session(run, data_dir)
     now = datetime.now(ZoneInfo(str(run.get("timezone") or "Asia/Shanghai")))
@@ -1786,14 +1702,7 @@ def _merge_briefs(
     *,
     allow_degraded: bool,
 ) -> tuple[list[dict[str, Any]], list[str], dict[str, int]]:
-    """处理：合并可复用简报与批次回执，并按栏目和覆盖目标整理。
-    输入：
-    - ``context``：浏览器、写作或报告上下文对象；包含当前阶段已经绑定的受控状态。
-    - ``session``：写作会话对象；记录情境哈希、批次回执、截止时间和委派遥测。
-    - ``allow_degraded``：达到截止条件后是否允许使用明确标记的降级内容继续组装。
-    输出：“合并可复用简报与批次回执，并按栏目和覆盖目标整理”得到的固定结构结果；
-      返回位置依次对应 sections、missing_batches、coverage_targets。
-    """
+    """按栏目合并已接收简报与可复用材料，返回栏目、未到齐的批次和各来源覆盖目标。"""
     available = {
         str(brief.get("item_id")): brief
         for brief in context.get("reusable_briefs", [])
@@ -1891,14 +1800,12 @@ def _analysis_candidates(
     context: dict[str, Any],
     maximum: int,
 ) -> list[dict[str, Any]]:
-    """处理：从已接收简报中选出有界的分析候选集合。
+    """从已接收简报中选出有界的分析候选集合。
     输入：
     - ``sections``：报告各栏目的候选记录；读取候选身份、证据、摘要和重要性字段。
     - ``context``：浏览器、写作或报告上下文对象；包含当前阶段已经绑定的受控状态。
     - ``maximum``：本步骤最多返回的候选或记录数；选择顺序仍由业务排序决定。
-    输出：“从已接收简报中选出有界的分析候选集合”得到的有序结构化记录；
-      典型字段包括 content_path、content_status、discovered_at、importance、item_id、published_a
-      t、section_id、source_id、source_name、status、title、title_en，可直接交给下一阶段。
+    输出：按研判需求选出的条目及对应的证据字段。
     """
     if maximum <= 0:
         return []
@@ -2035,9 +1942,8 @@ def _analysis_candidates(
 
 
 def _compact_json_bytes(value: object) -> int:
-    """处理：计算一个 JSON 值的确定性紧凑 UTF-8 字节数。
-    输入：
-    - ``value``：来自已校验本地状态或分析投影的 JSON 可序列化值。
+    """计算一个 JSON 值的确定性紧凑 UTF-8 字节数。
+    输入：``value``：来自已校验本地状态或分析投影的 JSON 可序列化值。
     输出：不调用模型或 tokenizer 的精确字节数，供上下文预算和回归审计使用。
     """
 
@@ -2095,9 +2001,8 @@ def _recent_state_rows(
 
 
 def _select_analysis_theses(rows: object) -> list[dict[str, Any]]:
-    """处理：按领域配额和新鲜度选择分析所需的活跃论点。
-    输入：
-    - ``rows``：情境包中的完整 active_theses；每行可含领域、更新时间和历史轨迹。
+    """按领域配额和新鲜度选择分析所需的活跃论点。
+    输入：``rows``：情境包中的完整 active_theses；每行可含领域、更新时间和历史轨迹。
     输出：最多 12 条且每个核心领域优先不超过 4 条的字段白名单投影。
     """
 
@@ -2234,9 +2139,8 @@ def _project_analysis_state(
 
 
 def _project_continuity_reports(rows: object) -> list[dict[str, Any]]:
-    """处理：移除连续性报告中的本地路径和完整评估附件。
-    输入：
-    - ``rows``：情境包中按新鲜度排列的 continuity_reports；源记录保持不变。
+    """移除连续性报告中的本地路径和完整评估附件。
+    输入：``rows``：情境包中按新鲜度排列的 continuity_reports；源记录保持不变。
     输出：最多两份、仅保留分析可消费字段的历史连续性摘要。
     """
 
@@ -2268,14 +2172,11 @@ def prepare_analysis_packet(
     allow_degraded: bool = False,
     max_candidates: int = 18,
 ) -> dict[str, Any]:
-    """处理：合并写作回执并生成供主分析阶段读取的紧凑数据包。
+    """合并写作回执并生成供主分析阶段读取的紧凑数据包。
     输入：记录阶段与产物的运行清单、本次运行的数据根。
     - ``allow_degraded``：达到截止条件后是否允许使用明确标记的降级内容继续组装。
     - ``max_candidates``：分析任务包允许携带的最大候选数，防止挤占写作情境。
-    输出：“合并写作回执并生成供主分析阶段读取的紧凑数据包”形成的结构化字典；
-      典型键包括 active_theses、active_watchlist、analyses、analysis_packet_path、analysis_proto
-      col、analysis_result_path、analysis_started_at、batch_id、batch_metrics、brief_assembly_se
-      conds、brief_count、briefs_completed_at。
+    输出：会话和研判材料的位置，供调度器交给作者。
     """
     session_path, session = _load_authoring_session(run, data_dir)
     _validate_session_binding(run, session, data_dir)
@@ -2489,13 +2390,10 @@ def assemble_report_draft(
     analysis_path: Path,
     data_dir: Path,
 ) -> dict[str, Any]:
-    """处理：把分析结果和写作骨架组装成可交给确定性编译器的报告草稿。
+    """把分析结果和写作骨架组装成可交给确定性编译器的报告草稿。
     输入：记录阶段与产物的运行清单、本次运行的数据根。
     - ``analysis_path``：上游模型生成并已通过契约校验的跨栏目分析 JSON 路径。
-    输出：“把分析结果和写作骨架组装成可交给确定性编译器的报告草稿”形成的结构化字典；
-      典型键包括 analysis_completed_at、analysis_seconds、batch_metrics、brief_assembly_seconds
-      、brief_count、coverage_targets、delegation_metrics、media_prefetch、metrics、missing_batc
-      hes、report_draft_path、session_path。
+    输出：汇编后的日报草稿路径、会话路径和各阶段耗时。
     """
     session_path, session = _load_authoring_session(run, data_dir)
     _validate_session_binding(run, session, data_dir)

@@ -20,7 +20,7 @@ from .adapters import (
     seed_items_from_payload,
     weibo_items_from_payload,
 )
-from .config import AppConfig, SourceConfig
+from .config import AppConfig, SourceConfig, persistent_browser_options
 from .models import ArticleItem, SourceResult, SourceStatus
 from .utils import now_iso
 
@@ -222,16 +222,9 @@ async def collect_browser_pages(
         lambda: asyncio.Semaphore(max(1, config.browser.per_domain_concurrency))
     )
     async with async_playwright() as playwright:
-        kwargs: dict[str, Any] = {
-            "user_data_dir": str(profile),
-            "headless": not headed,
-            "locale": "en-US",
-            "timezone_id": config.timezone,
-            "viewport": {"width": 1440, "height": 1000},
-        }
-        if channel:
-            kwargs["channel"] = channel
-        context = await playwright.chromium.launch_persistent_context(**kwargs)
+        context = await playwright.chromium.launch_persistent_context(
+            **persistent_browser_options(config, profile, channel, headed=headed)
+        )
 
         async def bounded(source: SourceConfig) -> SourceResult:
             """处理：先等待同域空位，再开页占用全局浏览器名额。

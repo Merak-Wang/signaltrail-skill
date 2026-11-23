@@ -12,7 +12,7 @@ from itertools import count
 from pathlib import Path
 from uuid import uuid4
 
-from run_signaltrail import advance_author_queue, cli_prefix, run_command
+from run_signaltrail import advance_author_queue, cli_prefix, extract_shared_fields, run_command
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -50,16 +50,11 @@ def author_prompt(files: list[str], *, allow_local_repair: bool = True
         outputs.append(output)
     shared = {}
     if len(assignments) > 1:
-        first = assignments[0]["evidence"]
-        shared = {key: value for key, value in first.items()
-                  if key in {"style", "output_schema", "instructions", "task", "writing_style",
-                             "collection_window", "untrusted_data_notice", "tool_policy",
-                             "repair_policy"}
-                  and all(key in row["evidence"] and row["evidence"][key] == value
-                          for row in assignments[1:])}
-        for row in assignments:
-            for key in shared:
-                del row["evidence"][key]
+        shared = extract_shared_fields(
+            [row["evidence"] for row in assignments],
+            {"style", "output_schema", "instructions", "task", "writing_style",
+             "collection_window", "untrusted_data_notice", "tool_policy", "repair_policy"},
+        )
     shared_input = (
         "\nThe following shared evidence fields apply to every assignment:\n"
         + json.dumps(shared, ensure_ascii=False, separators=(",", ":")) if shared else ""

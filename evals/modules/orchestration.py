@@ -27,7 +27,7 @@ from signaltrail.utils import read_json, write_json
 from signaltrail.voice_synthesis import VoiceSynthesizer
 
 from .report import _frozen_report_inputs
-from .slides import PAGE_COUNT, _make_fixture, _rendered_pages
+from .slides import PAGE_COUNT, _make_fixture, _rendered_pages, fixed_slide_draft
 
 AUTHOR_LIMIT = 3
 BATCH_SIZE = 4
@@ -89,11 +89,7 @@ def _author_payload(ticket: dict, drafts: dict, data_dir: Path) -> tuple[dict, b
     packet_path = Path(ticket["packet_path"])
     packet = load_artifact(packet_path, data_dir)["payload"]["model_input"]
     encoded_packet = json.dumps(packet, ensure_ascii=False, separators=(",", ":")).encode()
-    recovered = json.loads(complete)
-    result = {"slides": [drafts[news["event_id"]] for news in recovered["news"]]}
-    if "video_title" in recovered["output_schema"]["properties"]:
-        result["video_title"] = "社区公共服务试点公报"
-    return result, complete == encoded_packet
+    return fixed_slide_draft(json.loads(complete), drafts), complete == encoded_packet
 
 
 def _check_speech_prefetch(plan_path: Path, data_dir: Path, *, follow: bool = False) -> dict:

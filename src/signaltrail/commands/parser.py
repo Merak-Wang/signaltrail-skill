@@ -4,13 +4,18 @@ import argparse
 from pathlib import Path
 
 
-def add_slides_parser(sub: argparse._SubParsersAction) -> None:
+def add_slides_parser(
+    sub: argparse._SubParsersAction, *, commands: dict[str, tuple[str, str]] | None = None,
+) -> None:
     """处理：注册图文流的准备、批次提交、进度和 HTML 生成命令。
     输入：主命令树；筛选与预算选项仅作用于独立图文产物。
     输出：slides 子命令，不改变既有日报命令的参数与默认输出。
     """
+    name = "slides"
+    if commands is not None:
+        commands[name] = (name, name)
     parser = sub.add_parser(
-        "slides", help="Build animated HTML news slides from an index or report"
+        name, help="Build animated HTML news slides from an index or report"
     )
     stages = parser.add_subparsers(dest="action", required=True)
     prepare = stages.add_parser(
@@ -62,19 +67,17 @@ def add_slides_parser(sub: argparse._SubParsersAction) -> None:
     speech.add_argument("--plan", type=Path, required=True)
     speech.add_argument("--follow-seconds", type=int, default=0,
                         help="Watch for additional accepted batches for up to this many seconds")
-    for command in (video, speech):
-        command.add_argument("--voice")
-        command.add_argument("--reference-id")
-        command.add_argument("--output", type=Path, required=True)
-        command.add_argument("--model-dir", type=Path)
-        command.add_argument("--tts-executable", type=Path)
-        command.add_argument("--ffmpeg")
-        command.add_argument("--threads", type=int, default=2)
-        command.add_argument("--device", choices=("auto", "cuda", "vulkan", "metal", "cpu"))
     setup = stages.add_parser("video-setup", help="Prepare native TTS and video tools")
-    setup.add_argument("--voice")
-    setup.add_argument("--reference-id")
-    setup.add_argument("--device", choices=("auto", "cuda", "vulkan", "metal", "cpu"))
+    for action in (video, speech, setup):
+        action.add_argument("--voice")
+        action.add_argument("--reference-id")
+        if action is not setup:
+            action.add_argument("--output", type=Path, required=True)
+            action.add_argument("--model-dir", type=Path)
+            action.add_argument("--tts-executable", type=Path)
+            action.add_argument("--ffmpeg")
+            action.add_argument("--threads", type=int, default=2)
+        action.add_argument("--device", choices=("auto", "cuda", "vulkan", "metal", "cpu"))
     setup.add_argument("--proxy", help="Proxy URL for this initial download only")
     voice_setup = stages.add_parser("voice-setup", help="Import a portable local voice profile")
     voice_setup.add_argument("--profile", type=Path, required=True)
@@ -98,11 +101,10 @@ def _add_browser_options(command: argparse.ArgumentParser, *, allow_headed: bool
     command.add_argument("--browser-channel")
 
 
-def build_parser() -> argparse.ArgumentParser:
+def build_parser(commands: dict[str, tuple[str, str]] | None = None) -> argparse.ArgumentParser:
     """处理：构建命令行参数解析器。
-    输入：
-    - 无显式业务参数：不读取业务数据；按本模块注册的子命令、参数和默认入口构建解析器。
-    输出：完整命令树；入口用它校验参数并选择命令处理函数。
+    输入：可选的调度表，用于同步登记解析器中的命令和别名。
+    输出：按公开命令顺序创建的完整解析树。
     """
     parser = argparse.ArgumentParser(prog="signaltrail")
     parser.add_argument("--config", type=Path, help="Path to sources.yaml")
@@ -115,16 +117,26 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
+    def command(group: str, name: str, **options) -> argparse.ArgumentParser:
+        """处理：在解析和调度入口登记同一组命令标识。
+        输入：模块、主命令与 argparse 选项。
+        输出：保留原命令别名和帮助的子解析器。
+        """
+        if commands is not None:
+            for alias in (name, *options.get("aliases", ())):
+                commands[alias] = (group, name)
+        return sub.add_parser(name, **options)
+
     def edition_command(name: str, *, help: str) -> argparse.ArgumentParser:
         """处理：在版次子命令中统一登记必填运行清单。
         输入：子命令名称和终端帮助。
         输出：已绑定运行路径参数的子解析器。
         """
-        command = sub.add_parser(name, help=help)
-        command.add_argument("--run", type=Path, required=True)
-        return command
+        registered = command("editions", name, help=help)
+        registered.add_argument("--run", type=Path, required=True)
+        return registered
 
-    add_slides_parser(sub)
+    add_slides_parser(sub, commands=commands)
 
     data_root = sub.add_parser(
         "data-root",
@@ -132,18 +144,18 @@ def build_parser() -> argparse.ArgumentParser:
     )
     data_root.add_argument("action", choices=["status", "adopt"])
 
-    cleanup = sub.add_parser("cleanup", help="Recycle collection files older than seven days")
+    cleanup = command("sources", "cleanup", help="Recycle collection files older than seven days")
     cleanup.add_argument("--days", type=int, default=7)
     cleanup.add_argument("--apply", action="store_true",
                          help="Move expired files to OS recycle bin")
 
-    collect = sub.add_parser("collect", help="Collect source indexes")
+    collect = command("sources", "collect", help="Collect source indexes")
     collect.add_argument("--edition", choices=["daily", "morning", "evening"], default="daily")
     _add_browser_options(collect)
     collect.add_argument("--source", action="append", default=[])
 
-    refresh = sub.add_parser(
-        "refresh-monitor",
+    refresh = command(
+        "monitor", "refresh-monitor",
         help="Refresh the zero-model-token local news stream and story clusters",
     )
     refresh.add_argument("--source", action="append", default=[])
@@ -164,13 +176,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="Use RSS/Atom only for this refresh",
     )
 
-    sub.add_parser(
-        "monitor-status",
+    command(
+        "monitor", "monitor-status",
         help="Show the latest local monitor summary without refreshing",
     )
 
-    serve = sub.add_parser(
-        "serve",
+    serve = command(
+        "monitor", "serve",
         aliases=["serve-monitor"],
         help="Serve the personal news platform with reports, events and source status",
     )
@@ -189,16 +201,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="Refresh news every N minutes; default: 0 (read-only, no automatic collection)",
     )
 
-    imported = sub.add_parser("import-legacy", help="Import the existing browser-link JSON")
+    imported = command("sources", "import-legacy", help="Import the existing browser-link JSON")
     imported.add_argument("input", type=Path)
     imported.add_argument("--edition", default="imported")
 
-    context = sub.add_parser("build-context", help="Build compact continuity context")
+    context = command("sources", "build-context", help="Build compact continuity context")
     context.add_argument("--index", type=Path, required=True)
     context.add_argument("--edition", choices=["daily", "morning", "evening"], default="daily")
     context.add_argument("--language", choices=["zh-CN", "en"])
 
-    content = sub.add_parser("extract-content", help="Fetch selected article bodies")
+    content = command("sources", "extract-content", help="Fetch selected article bodies")
     content.add_argument("--index", type=Path, required=True)
     content.add_argument("--item-id", action="append", required=True)
     content.add_argument(
@@ -208,7 +220,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_browser_options(content)
 
-    validate = sub.add_parser("validate-report", help="Validate a structured report")
+    validate = command("reports", "validate-report", help="Validate a structured report")
     validate.add_argument("report", type=Path)
     validate.add_argument("--index", type=Path)
     validate.add_argument(
@@ -217,7 +229,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Use run-owned deadline coverage targets for a degraded authoring result",
     )
 
-    publish = sub.add_parser("publish-notion", help="Publish or append report to Notion")
+    publish = command("reports", "publish-notion", help="Publish or append report to Notion")
     publish.add_argument("report", type=Path)
     publish.add_argument(
         "--republish",
@@ -228,32 +240,31 @@ def build_parser() -> argparse.ArgumentParser:
     )
     publish.add_argument("--notion-config", type=Path)
 
-    backfill_images = sub.add_parser(
-        "backfill-notion-images",
+    backfill_images = command(
+        "reports", "backfill-notion-images",
         help="Add missing report images to existing Notion story blocks",
     )
     backfill_images.add_argument("report", type=Path)
     backfill_images.add_argument("--notion-config", type=Path)
 
-    verify = sub.add_parser("verify-source", help="Open a source for manual verification")
+    verify = command("verification", "verify-source", help="Open a source for manual verification")
     verify.add_argument("source_id")
-    _add_browser_options(verify, allow_headed=False)
-    verify.add_argument("--timeout-seconds", type=int, default=300)
 
-    verify_pending = sub.add_parser(
-        "verify-pending",
+    verify_pending = command(
+        "verification", "verify-pending",
         help="Open one Edge queue for failed/challenged links and capture clicked pages",
     )
     verify_pending.add_argument("--index", type=Path, required=True)
-    _add_browser_options(verify_pending, allow_headed=False)
-    verify_pending.add_argument("--timeout-seconds", type=int, default=300)
+    for verification in (verify, verify_pending):
+        _add_browser_options(verification, allow_headed=False)
+        verification.add_argument("--timeout-seconds", type=int, default=300)
 
-    resume = sub.add_parser("resume", help="Retry challenged or failed sources")
+    resume = command("sources", "resume", help="Retry challenged or failed sources")
     resume.add_argument("--index", type=Path, required=True)
     _add_browser_options(resume)
 
-    source_page = sub.add_parser(
-        "source-page",
+    source_page = command(
+        "sources", "source-page",
         help="List, approve, or remove Agent-discovered index pages",
     )
     source_page.add_argument("action", choices=["list", "add", "remove"])
@@ -261,7 +272,7 @@ def build_parser() -> argparse.ArgumentParser:
     source_page.add_argument("--url")
     source_page.add_argument("--reason", default="Agent judged this page relevant")
 
-    run = sub.add_parser("run-edition", help="Prepare an edition through authoring context")
+    run = command("editions", "run-edition", help="Prepare an edition through authoring context")
     run.add_argument("--edition", choices=["daily", "morning", "evening"], default="daily")
     run.add_argument("--language", choices=["zh-CN", "en"])
     _add_browser_options(run)
@@ -326,8 +337,8 @@ def build_parser() -> argparse.ArgumentParser:
         "--check-only", action="store_true", help="Validate without writing receipts"
     )
 
-    brief_input = sub.add_parser(
-        "brief-input", help="Read one compact, complete brief writing input",
+    brief_input = command(
+        "editions", "brief-input", help="Read one compact, complete brief writing input",
     )
     brief_input.add_argument("--packet", type=Path, required=True)
     brief_input.add_argument("--include-evidence", action="store_true",
@@ -442,16 +453,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="Exit nonzero while any declared delivery step is pending",
     )
 
-    save = sub.add_parser(
-        "save-report", help="Persist JSON/Markdown and configured local reading formats"
+    save = command(
+        "reports", "save-report", help="Persist JSON/Markdown and configured local reading formats"
     )
     save.add_argument("report", type=Path)
     save.add_argument("--index", type=Path, required=True)
     save.add_argument("--refresh-images", action="store_true",
                       help="Explicitly reselect images instead of preserving published attachments")
 
-    evaluation = sub.add_parser(
-        "finalize-evaluation",
+    evaluation = command(
+        "reports", "finalize-evaluation",
         help="Persist a post-publication independent evaluation and optionally append it to Notion",
     )
     evaluation.add_argument("--report", type=Path, required=True)

@@ -47,8 +47,7 @@ def main() -> None:
     }
     args = Namespace(host_receipt=Path("receipt"), expected_host_subtree_id=None,
                      full_host_measurement=True, max_wall_seconds=1800, max_tokens=20_000_000)
-    with (patch("evaluate_edition.read_json_object", return_value=receipt),
-          patch("evaluate_edition.digest")):
+    with patch("evaluate_edition.json_with_digest", return_value=(receipt, "receipt-sha256")):
         observed = host_measurement(args, run, "run", True, "report")
         assert observed["scope"] == "partial" and observed["total_tokens"]["observed"] == 130
         receipt.update(scope="completed_turn", selection="completed_invocation")
