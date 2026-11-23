@@ -17,23 +17,10 @@ from threading import Lock
 
 from bs4 import BeautifulSoup
 
-from .config import project_root
 from .voice_synthesis import VoiceSynthesizer
 from .voice_synthesis import run_native as _run
 
-_VIDEO_ZOOM = 1.4
-# 整数 CSS 视口在该像素比下精确生成 1920×1080，避免裁边或二次缩放。
-_VIDEO_DEVICE_SCALE = 1.4005
-_VIDEO_VIEWPORT = {"width": 1371, "height": 771}
-_VIDEO_CAPTURE_SCRIPT = """([label, scripts]) => {
-    document.documentElement.classList.add('embedded', 'video-capture');
-    document.querySelectorAll('.slide').forEach((slide, index) => {
-        slide.querySelector('.narration-section h3').textContent = `↳  ${label}`;
-        const paragraph = document.createElement('p');
-        paragraph.textContent = scripts[index];
-        slide.querySelector('.narration').replaceChildren(paragraph);
-    });
-}"""
+_VIDEO_VIEWPORT = {"width": 1920, "height": 1080}
 _VIDEO_SEEK_SCRIPT = """async ([s, i]) => {
     let timer;
     let timedOut;
@@ -61,19 +48,10 @@ _VIDEO_SEEK_SCRIPT = """async ([s, i]) => {
 }"""
 
 
-def _configure_video_capture(page, css: str, label: str, scripts: list[str]) -> None:
-    """处理：只在截图浏览器内应用视频样式并替换讲解。
-    输入：截图页面、视频样式、讲解标题和按页序排列的口播短稿。
-    输出：截图页面显示与配音一致的短稿，交互式图文文件保持原样。
-    """
-    page.add_style_tag(content=css)
-    page.evaluate(_VIDEO_CAPTURE_SCRIPT, [label, scripts])
-
-
-def _source_slides_html(deck_path: Path, data_dir: Path) -> tuple[Path, bool]:
+def _source_slides_html(deck_path: Path, data_dir: Path) -> Path:
     """处理：从稿件父级定位正在交付的图文页面。
     输入：图文稿路径和数据根，独立稿件使用其同名 HTML。
-    输出：已发布的 HTML 路径及是否采用日报嵌入视图，视频直接截取该页面。
+    输出：读者打开的独立图文 HTML 路径，供视频按原始尺寸取景。
     """
     from .narrative_store import load_artifact, parent_path
 
@@ -85,12 +63,12 @@ def _source_slides_html(deck_path: Path, data_dir: Path) -> tuple[Path, bool]:
             report = parent_path(plan, "report", data_dir)
             report_html = report.with_name(report.stem + "-slides.html")
             if report_html.is_file():
-                return report_html, True
+                return report_html
             raise FileNotFoundError(f"Rendered report slides HTML is required: {report_html}")
     source = deck_path.with_suffix(".html")
     if not source.is_file():
         raise FileNotFoundError(f"Rendered slides HTML is required: {source}")
-    return source, False
+    return source
 
 
 def _progress(stage: str, **details: object) -> None:
@@ -130,7 +108,7 @@ def render_video(
     record = json.loads(deck_path.read_text(encoding="utf-8"))
     deck = record.get("payload", record)
     title = title or deck.get("video_title") or deck.get("title") or "News video"
-    source_html, embedded = _source_slides_html(deck_path, data_dir)
+    source_html = _source_slides_html(deck_path, data_dir)
     playback = source_html.read_text(encoding="utf-8")
     document = BeautifulSoup(playback, "html.parser")
     source_slides = document.select(".slide")
@@ -164,18 +142,11 @@ def render_video(
     ffmpeg = str(runtime["ffmpeg"])
     setup_seconds = time.perf_counter() - started
     started = time.perf_counter()
-    video_style = project_root() / "assets" / "news-slides" / "video.css"
-    video_css = video_style.read_text(encoding="utf-8")
     language = deck.get("language", "zh-CN")
-    label = "视频讲解" if language.lower().startswith("zh") else "Video narration"
     scripts = [slide["video_tldr"].strip() for slide in deck["slides"]]
     for slide_node in source_slides:
         slide_node.extract()
-        # 视频画面使用短稿；原图文长讲解的文字变化不影响片段缓存。
-        slide_node.select_one(".narration-section h3").clear()
-        slide_node.select_one(".narration").clear()
-    shell = [str(document), video_css, _VIDEO_CAPTURE_SCRIPT, _VIDEO_SEEK_SCRIPT, label]
-    shell_digest = hashlib.sha256("\0".join(shell).encode("utf-8")).hexdigest()
+    shell_digest = hashlib.sha256((str(document) + _VIDEO_SEEK_SCRIPT).encode()).hexdigest()
     synthesizer = VoiceSynthesizer(
         runtime, data_dir / "video-runtime" / "voice-cache", threads=threads
     )
@@ -276,14 +247,10 @@ def render_video(
             )
             settings = json.dumps(
                         [
-                            "short-script-v1",
-                            _VIDEO_ZOOM,
+                            "slides-html-v1",
                             str(source_html.resolve()),
-                            embedded,
                             index,
-                            _VIDEO_VIEWPORT["width"],
-                            _VIDEO_VIEWPORT["height"],
-                            _VIDEO_DEVICE_SCALE,
+                            _VIDEO_VIEWPORT,
                             entry["duration"],
                             25,
                             "libx264",
@@ -293,7 +260,11 @@ def render_video(
                         ],
                         ensure_ascii=False,
                     )
-            page_data = json.dumps([str(node), len(source_slides), brief], ensure_ascii=False)
+            following = source_slides[(index + 1) % len(source_slides)]
+            following_title = following.h2.get_text(strip=True)
+            page_data = json.dumps(
+                [str(node), len(source_slides), following_title], ensure_ascii=False,
+            )
             key = hashlib.sha256((shell_digest + page_data + settings).encode()).hexdigest()
             clip = work / f"{key}.mp4"
             pages.append((index, count, dynamic_images, clip, entry))
@@ -318,16 +289,13 @@ def render_video(
                     _ensure_browser(None, executable_path=executable_path)
                     browser = browser_api.chromium.launch(executable_path=executable_path)
                     browser_stack.callback(browser.close)
-                    page = browser.new_page(
-                        viewport=_VIDEO_VIEWPORT, device_scale_factor=_VIDEO_DEVICE_SCALE
-                    )
+                    page = browser.new_page(viewport=_VIDEO_VIEWPORT, device_scale_factor=1)
                     # 页面初始化后由 seek 等待当前图片，避免整份图文的远程资源阻塞启动。
                     page.goto(
-                        source_html.resolve().as_uri() + ("?embed=1" if embedded else ""),
+                        source_html.resolve().as_uri(),
                         wait_until="domcontentloaded",
                         timeout=120_000,
                     )
-                    _configure_video_capture(page, video_css, label, scripts)
                 page_started = time.perf_counter()
                 frames = work / f"frames-{clip.stem}"
                 frames.mkdir(exist_ok=True)
@@ -458,7 +426,7 @@ def render_video(
         "video_path": str(output),
         "title": title,
         "source_slides_html": str(source_html),
-        "video_zoom": _VIDEO_ZOOM,
+        "video_zoom": 1.0,
         "timeline_path": str(timeline_path),
         "diagnostics_path": str(diagnostics_path),
         "duration": offset,

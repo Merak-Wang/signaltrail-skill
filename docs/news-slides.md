@@ -2,7 +2,7 @@
 
 **Status:** Verified · **Owner:** Repository maintainers · **Last verified:** 2026-11-11
 
-Create an illustrated HTML presentation from a saved report or an independently collected index, then export a narrated MP4 when requested. Each story has its own page, sources, summary, available images, and model-written narration. [中文](zh-CN/news-slides.md)
+Create an illustrated HTML presentation from a saved report or an independently collected index, then export a narrated MP4 when requested. Each story displays its headline and full narration, alongside its sources and available images. The saved deck also retains the editorial summary. [中文](zh-CN/news-slides.md)
 
 ## Choose the input
 
@@ -80,7 +80,7 @@ signaltrail --data-dir DATA_DIR slides video --deck DECK.json --output VIDEO.mp4
 
 The default engine is native Qwen3-TTS 1.7B Q8 with the bundled reference voice. Setup downloads the platform's programs, model, FFmpeg, and browser; subsequent exports reuse the cache. GPU synthesis is preferred after a synthesis probe, with CPU fallback. Select `--device auto|cpu|cuda|vulkan|metal` when needed. Windows ARM64 requires an explicit `--ffmpeg`; Linux needs browser system libraries and Chinese fonts.
 
-Video captures the presentation at 140% whole-page zoom, with the same short script on screen and in the audio. The video retains the title, summary, source names, images, captions, and page order. The interactive HTML retains the full narration and source links. Measured speech duration controls page changes and image rotation. Speech plays at 1.08× speed. Matching speech segments, page audio, and rendered page clips are cached separately. Keep the output path stable to reuse the adjacent work directory. Export returns the video, timeline, diagnostics, actual device, and cache counters.
+Video captures the delivered slide HTML in a 1920 × 1080 viewport at 100% scale. Each frame uses the interactive presentation’s layout, including its full narration, source links, captions, and controls. Speech reads the title and short script at 1.08× speed. Measured speech duration controls page changes and image rotation. Matching speech segments, page audio, and rendered page clips are cached separately. Keep the output path stable to reuse the adjacent work directory. Export returns the video, timeline, diagnostics, actual device, and cache counters.
 
 Frame capture advances CSS animations to their final state. Each selected image has a 30-second loading budget. A timed-out image uses the existing unavailable-image layout and adds a `render_image` / `timed_out` diagnostic with its event and image number, allowing the remaining frames to finish.
 

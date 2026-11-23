@@ -107,7 +107,7 @@ signaltrail --data-dir DATA_DIR slides video --deck DECK.json --output VIDEO.mp4
 
 Qwen 按有界意群合成标题和短稿；完整旧句段缓存仍可复用。整页音频缓存匹配稿件、语言、音色和处理参数后直接复用。数字范围、负数、日期与 CVE 等编号按对应规则展开。日志确认达到帧数上限时，仅将失败原段按原标点或词界拆分一次；连续中文可在接近中点的字间拆分，模型、设备、音色和完整文字沿用。已完成句段复用缓存；子段仍超帧或 WAV 无效时报告失败。逐页音色清单保留实际朗读文本、原生调用及设备，`frame_limit_recoveries` 保存失败原段、拆分结果及原始日志；阶段诊断记录本轮执行结果和耗时。
 
-视频按 140% 整页缩放截取图文 HTML。在截图浏览器中应用视频版式，让屏幕讲解与配音共用 `video_tldr`，保留标题、摘要、来源名、图片、图注和分栏。交互式图文保留完整讲解和来源链接。视频按原页序和每页原有图片顺序自动切换，音频时长决定页面停留时间。相同输出路径旁的 `page-cache/` 分别保存整页音频和画面片段。画面内容、页序、音频时长或渲染编码参数变化时重新生成画面片段，包含外部图片的页面也重新渲染。Qwen 成品音频仅压缩连续超过 1 秒、20 毫秒窗 RMS 低于 -45 dBFS 的低能量段，页内保留 0.7 秒、页首末保留 0.2 秒，并在切口淡入淡出；原生句段和拼接原始 WAV 保持不变，音色清单的 `silence_removed_seconds` 记录缩短时长。返回的 `tts_page_cache_hits`、`tts_cache_hits`、`tts_segments_generated` 分别统计整页命中、句段命中和新合成调用，`page_clips_generated` 与 `page_clips_reused` 统计画面编码和复用。清理旧导出目录时使用系统回收站，保留当前成品与所需诊断。
+视频以 1920 × 1080、100% 比例截取交付的图文 HTML。正文展示标题和完整讲解，保留来源链接、图片、图注和控件。稿件中的摘要用于编辑和旧稿讲解回退。配音朗读标题和 `video_tldr`。视频按原页序和每页原有图片顺序自动切换，音频时长决定页面停留时间。相同输出路径旁的 `page-cache/` 分别保存整页音频和画面片段。画面内容、页序、音频时长或渲染编码参数变化时重新生成画面片段，包含外部图片的页面也重新渲染。Qwen 成品音频仅压缩连续超过 1 秒、20 毫秒窗 RMS 低于 -45 dBFS 的低能量段，页内保留 0.7 秒、页首末保留 0.2 秒，并在切口淡入淡出；原生句段和拼接原始 WAV 保持不变，音色清单的 `silence_removed_seconds` 记录缩短时长。返回的 `tts_page_cache_hits`、`tts_cache_hits`、`tts_segments_generated` 分别统计整页命中、句段命中和新合成调用，`page_clips_generated` 与 `page_clips_reused` 统计画面编码和复用。清理旧导出目录时使用系统回收站，保留当前成品与所需诊断。
 
 运行组件来源：[llama.cpp b11981 正式发行](https://github.com/ggml-org/llama.cpp/releases/tag/b11981)、[Qwen3-TTS 1.7B Base GGUF](https://huggingface.co/ggml-org/Qwen3-TTS-12Hz-1.7B-Base-GGUF)、[FFmpeg 程序](https://github.com/imageio/imageio-binaries/tree/master/ffmpeg)、[Playwright 浏览器](https://playwright.dev/python/docs/browsers)。
 

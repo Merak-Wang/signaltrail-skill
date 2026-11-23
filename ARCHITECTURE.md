@@ -69,8 +69,9 @@ Accepted writing can be reused when its inputs are unchanged. The independent `s
 Rendering attaches public-page images and original captions; offline rendering reuses local images.
 See [news slides](docs/news-slides.md).
 
-Video export reads the saved deck and captures its HTML at 140% whole-page zoom. Local Qwen3-TTS
-1.7B Q8 speaks each title and `video_tldr`; measured audio controls page duration and image rotation.
+Video export reads the saved deck and captures the delivered slide HTML at its native 1920 × 1080 viewport.
+The frames use the presentation's own layout and displayed narration. Local Qwen3-TTS
+1.7B Q8 speaks each title and `video_tldr`. Measured audio controls page duration and image rotation.
 The runtime prepares native programs and models, uses the bundled reference voice by default,
 and prefers a synthesis-verified GPU with CPU fallback. A built `llama-tts-worker` keeps
 model weights and reference audio loaded across utterances; the Python synthesizer sends each

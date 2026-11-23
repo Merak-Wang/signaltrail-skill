@@ -51,6 +51,83 @@ def peak_rss_mb() -> float | None:
     return counters.peak_working_set / 1024**2
 
 
+def compare_video_frames(
+    export: dict, slides: list[dict], timeline: list[dict], work_dir: Path, ffmpeg: str,
+) -> list[dict]:
+    """从成片抽查首条及文字最长的新闻，核对文字范围和对应图文画面。"""
+    from PIL import Image, ImageChops
+    from playwright.sync_api import sync_playwright
+
+    indices = range(len(slides))
+    longest_title = max(indices, key=lambda index: len(slides[index]["title"]))
+    longest_narration = max(indices, key=lambda index: len(slides[index].get("narration") or ""))
+    samples = {0, longest_title, longest_narration}
+    results = []
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(
+            executable_path=os.environ.get("SIGNALTRAIL_BROWSER_EXECUTABLE")
+        )
+        page = browser.new_page(viewport={"width": 1920, "height": 1080})
+        page.goto(Path(export["source_slides_html"]).resolve().as_uri(),
+                  wait_until="domcontentloaded")
+        for index in sorted(samples):
+            if index:
+                page.locator("[data-go]").nth(index).evaluate("(button) => button.click()")
+                page.locator(".slide.leaving").wait_for(state="detached")
+            slide = page.locator(".slide.active")
+            images = max(1, slide.locator("[data-gallery] figure").count())
+            start, duration = timeline[index]["start"], timeline[index]["duration"]
+            for image_index in sorted({0, images - 1}):
+                if image_index:
+                    slide.locator(".gallery-thumbnail").nth(image_index).evaluate(
+                        "(button) => button.click()"
+                    )
+                page.wait_for_function(
+                    """() => [...document.querySelectorAll('.slide.active figure.active img')]
+                        .every(image => image.complete)"""
+                )
+                page.evaluate("() => document.fonts.ready")
+                screenshot = work_dir / f"original-slide-{index + 1}-image-{image_index + 1}.png"
+                page.screenshot(path=str(screenshot), animations="disabled")
+                story_fits = slide.evaluate("""article => {
+                    const controls = document.querySelector('.controls').getBoundingClientRect();
+                    const textBottom = Math.min(window.innerHeight, controls.top);
+                    return !article.querySelector('.summary') &&
+                        ['.headline', '.narration'].every(selector => {
+                            const element = article.querySelector(selector);
+                            if (!element?.textContent.trim()) return false;
+                            const text = document.createRange();
+                            text.selectNodeContents(element);
+                            const bounds = text.getBoundingClientRect();
+                            return bounds.width > 0 && bounds.height > 0 &&
+                                bounds.left >= 0 && bounds.right <= window.innerWidth &&
+                                bounds.top >= 0 && bounds.bottom <= textBottom;
+                        });
+                }""")
+                event_id = slides[index]["event_id"]
+                frame = work_dir / f"video-slide-{index + 1}-image-{image_index + 1}.png"
+                timestamp = start + duration * (image_index + 0.5) / images
+                subprocess.run([ffmpeg, "-v", "error", "-nostdin", "-y",
+                                "-ss", f"{timestamp:.6f}", "-i", export["video_path"],
+                                "-map", "0:v:0", "-frames:v", "1", "-update", "1", str(frame)],
+                               check=True, timeout=30)
+                with Image.open(frame) as rendered, Image.open(screenshot) as original:
+                    fraction = 1.0
+                    if rendered.size == original.size == (1920, 1080):
+                        diff = ImageChops.difference(rendered.convert("RGB"),
+                                                     original.convert("RGB")).convert("L")
+                        counts = diff.histogram()
+                        fraction = sum(counts[21:]) / sum(counts)
+                # 编码损耗、字形边缘和图像插值会在两份画面间产生小面积差异。
+                results.append({"event_id": event_id, "image_index": image_index,
+                                "timestamp_seconds": round(timestamp, 6),
+                                "visually_matches": fraction < 0.01, "story_fits": story_fits,
+                                "different_pixel_fraction": fraction, "video_frame": str(frame),
+                                "original_page": str(screenshot)})
+        browser.close()
+    return results
+
+
 def video_evaluation(work_dir: Path, args: argparse.Namespace) -> dict:
     """用真实已接受稿和本机语音环境导出两遍视频，检查成片并记录缓存收益。"""
     from signaltrail.slide_video import render_video
@@ -69,6 +146,9 @@ def video_evaluation(work_dir: Path, args: argparse.Namespace) -> dict:
                          device=args.device, tts_executable=args.tts_executable)
     first_seconds = time.perf_counter() - started
     first_timeline = json.loads(Path(first["timeline_path"]).read_text(encoding="utf-8"))
+    shared_frames = compare_video_frames(
+        first, deck["slides"], first_timeline, work_dir, str(runtime["ffmpeg"])
+    )
     started = time.perf_counter()
     repeat = render_video(args.video_deck, output, args.model_dir, args.data_dir,
                           device=args.device, tts_executable=args.tts_executable)
@@ -85,6 +165,10 @@ def video_evaluation(work_dir: Path, args: argparse.Namespace) -> dict:
                    and [page["event_id"] for page in first_timeline] == expected_ids
                    and [page["event_id"] for page in repeat_timeline] == expected_ids,
                    "full_decode": decoded.returncode == 0,
+                   "frames_match_original_slides": bool(shared_frames)
+                   and all(row["visually_matches"] for row in shared_frames),
+                   "story_fits_above_controls": bool(shared_frames)
+                   and all(row["story_fits"] for row in shared_frames),
                    "repeat_audio_reused": repeat["tts_page_cache_hits"] == first["pages"],
                    "repeat_frames_reused": repeat["page_clips_reused"] == first["pages"]},
         "metrics": {"first_export_seconds": first_seconds,
@@ -96,7 +180,8 @@ def video_evaluation(work_dir: Path, args: argparse.Namespace) -> dict:
                     "first_tts_segments_generated": first["tts_segments_generated"],
                     "repeat_frame_cache_hits": repeat["page_clips_reused"],
                     "first_stages": first, "repeat_stages": repeat},
-        "artifacts": {"video": str(output), "timeline": first["timeline_path"]},
+        "artifacts": {"video": str(output), "timeline": first["timeline_path"],
+                      "frame_comparisons": shared_frames},
         "limitations": ["The first export may reuse the supplied data root's audio cache; "
                         "cache hits and generated segments are reported explicitly."]}
 

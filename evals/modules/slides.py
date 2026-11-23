@@ -101,11 +101,10 @@ def _rendered_pages(
     for slide, page in zip(slides, pages, strict=False):
         expected, source = drafts[slide["event_id"]], evidence[slide["event_id"]]
         heading = page.select_one("h2")
-        summary = page.select_one(".summary")
         narration = page.select_one(".narration")
         matching_text += (
             heading is not None and heading.get_text(strip=True) == expected["title"]
-            and summary is not None and summary.get_text(strip=True) == expected["summary"]
+            and page.select_one(".summary") is None and slide["summary"] == expected["summary"]
             and narration is not None and narration.get_text(strip=True) == expected["narration"]
             and slide["video_tldr"] == expected["video_tldr"]
         )
