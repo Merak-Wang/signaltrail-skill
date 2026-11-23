@@ -40,7 +40,9 @@ def synchronize(source: Path, target: Path) -> None:
 
 def main() -> None:
     """安装同步后的技能或可编辑源码，非 Windows 主机同时准备 Chromium。"""
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(
+        description="Sync SignalTrail to Hermes and install it for this Python interpreter."
+    )
     parser.add_argument("--editable", action="store_true")
     parser.add_argument("--dev", action="store_true")
     args = parser.parse_args()

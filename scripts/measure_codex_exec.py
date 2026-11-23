@@ -67,7 +67,9 @@ def invocation(log: Path, sessions: dict[str, Path]) -> dict:
 
 def main() -> None:
     """按一次独立生成的开始、成片完成与写作记录产出宿主回执。"""
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(
+        description="Measure all Codex CLI author sessions and retries for one edition."
+    )
     for key in ("jobs", "start", "done", "run", "output"):
         parser.add_argument(f"--{key}", type=Path, required=True)
     parser.add_argument("--session-root", type=Path, default=Path.home() / ".codex/sessions")

@@ -636,7 +636,9 @@ def evaluate(args: argparse.Namespace) -> dict:
 
 def main() -> None:
     """解析输入证据和目标，独占写入本次 JSON 回执。"""
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(
+        description="Evaluate a delivered report, illustrated slides, video and host usage."
+    )
     for name in ("run", "report", "deck", "video", "host-receipt", "editorial", "resources",
                  "config", "output"):
         parser.add_argument(f"--{name}", type=Path, required=name in {"run", "output"})

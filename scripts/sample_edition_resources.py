@@ -39,7 +39,9 @@ def main() -> None:
     """从启动时开始采样，交付方创建本次专用完成标记后保存回执。"""
     import psutil
 
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(
+        description="Sample host resource usage until the edition is ready."
+    )
     for name in ("run", "stop-file", "output"):
         parser.add_argument("--" + name, type=Path, required=True)
     parser.add_argument("--interval", type=float, default=5)

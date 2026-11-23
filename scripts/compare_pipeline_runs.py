@@ -118,7 +118,9 @@ def compare(measurements: list[Path], scenarios: list[Path]) -> dict:
 
 def main() -> None:
     """解析重复测量和场景路径，将完整比较写到新的输出文件。"""
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(
+        description="Compare host usage and estimate the workflow critical path."
+    )
     parser.add_argument("--measurement", type=Path, action="append", default=[])
     parser.add_argument("--scenario", type=Path, action="append", default=[])
     parser.add_argument("--output", type=Path, required=True)

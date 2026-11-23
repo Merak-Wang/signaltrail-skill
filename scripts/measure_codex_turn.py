@@ -413,7 +413,9 @@ def measure(
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(
+        description="Measure request usage for one Codex turn and its child threads."
+    )
     parser.add_argument("--log-root", type=Path, required=True)
     parser.add_argument("--root-thread-id", required=True)
     parser.add_argument("--root-turn-id", required=True)

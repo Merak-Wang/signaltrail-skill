@@ -299,7 +299,9 @@ def compare_baseline(result: dict, path: Path | None, limit: float) -> dict:
 
 def main() -> int:
     """解析模块和样本数，在隔离进程采样并保存可检查的整体评估结果。"""
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(
+        description="Measure module output quality, latency, throughput and resource use."
+    )
     parser.add_argument("--modules", nargs="+", choices=MODULES,
                         default=["collection", "report", "slides", "orchestration"])
     parser.add_argument("--repeat", type=int, default=3)

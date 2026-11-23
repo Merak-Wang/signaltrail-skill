@@ -241,7 +241,7 @@ def drive(args: argparse.Namespace) -> Path:
     delivery = run_command(data, ["edition-status", "--run", str(args.run), "--require-complete"])
     run_command(data, ["slides", "video", "--deck", str(deck), "--output", str(args.video)])
     print(json.dumps({"run": str(args.run), "report": delivery["report_path"],
-                      "deck": str(deck), "video": str(args.video)}, ensure_ascii=False))
+                      "deck": str(deck), "video": str(args.video)}))
     return deck
 
 
@@ -265,7 +265,9 @@ def prepare_cold(args: argparse.Namespace) -> None:
 
 def main() -> None:
     """接入已完成采集、富集和作者材料初始化的运行。"""
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(
+        description="Generate a narrated daily edition with local Codex author sessions."
+    )
     paths = parser.add_mutually_exclusive_group(required=True)
     def resolve(path: str) -> Path:
         """解析调用方传入的文件及目录路径。"""
