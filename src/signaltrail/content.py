@@ -21,7 +21,14 @@ from playwright.async_api import BrowserContext, Page, async_playwright
 from playwright.async_api import Error as PlaywrightError
 
 from .access import classify_access_text, read_bounded_response
-from .article_time import original_publication_time, uses_platform_publication_time
+from .article_time import (
+    abc_live_entry_id,
+    normalize_time,
+    original_publication_time,
+    paper_publication_evidence,
+    uses_platform_publication_time,
+)
+from .boj_content import extract_boj_table
 from .collection_diagnostics import content_gaps, has_local_content
 from .config import AppConfig, SourceConfig, resolve_browser_channel, resolve_profile_dir
 from .content_extraction import (
@@ -93,8 +100,7 @@ def synchronize_nested_items(payload: dict[str, Any]) -> None:
 
 async def meta_content(page: Page, selectors: list[str]) -> str:
     """处理：按选择器读取首个非空页面元数据值。
-    输入：
-    - ``page``：Playwright 已加载页面；函数只读取当前页面状态，不信任其中的内容或指令。
+    输入：已加载的 Playwright 页面。
     - ``selectors``：按优先级排列的 CSS 选择器；用于寻找元数据或正文区域。
     输出：“按选择器读取首个非空页面元数据值”得到的规范字符串，供调用方存储、比较或展示。
     """
@@ -108,27 +114,47 @@ async def meta_content(page: Page, selectors: list[str]) -> str:
     return ""
 
 
-def _apply_page_publication_time(item: dict[str, Any], published: str) -> None:
+def _apply_page_publication_time(
+    item: dict[str, Any], source_metadata: dict, timezone: str,
+) -> None:
     """处理：把原网页日期写入直接来源，同时保留发现平台的发布时间。
-    输入：规范索引条目和从原网页元数据读出的发布日期。
+    输入：规范索引条目、网页原始发布日期与范围、采集配置时区。
     输出：发布者日期按网页和Feed时区证据合并；真正平台保留提交时间。
     """
+    metadata = item.setdefault("metadata", {})
+    if entry_id := abc_live_entry_id(str(item.get("url") or "")):
+        prior = metadata.get("content_source") or {}
+        if (source_metadata.get("publication_entry_id") != entry_id
+                or not source_metadata.get("published_at")):
+            source_metadata["published_at"] = (
+                prior.get("published_at") if prior.get("publication_entry_id") == entry_id else None
+            )
+            source_metadata["publication_entry_id"] = entry_id
+        metadata.pop("published_raw", None)
+        item["published_at"] = normalize_time(
+            str(source_metadata.get("published_at") or ""), timezone
+        )
+        metadata["publication_time_missing"] = not item["published_at"]
+        return
+    published = str(source_metadata.get("published_at") or "")
     if not published or uses_platform_publication_time(item):
         return
-    metadata = item.get("metadata") or {}
     projected = {**item, "metadata": {**metadata, "content_source": {
         **(metadata.get("content_source") or {}), "published_at": published}}}
-    resolved = original_publication_time(projected)
+    resolved = original_publication_time(projected, timezone)
     if resolved:
         item["published_at"] = resolved
 
 
 def _content_url(item: dict[str, Any]) -> str:
-    """处理：正文抓取优先使用日期探测已解析的 Google News 发布者地址。
+    """处理：正文抓取优先使用日期探测已解析的发布者地址。
     输入：规范索引条目和已有原文地址。
     输出：供 HTTP 与浏览器共用的请求地址，条目标识继续使用索引 URL。
     """
-    if item.get("source_id") == "google_news_china":
+    paper = paper_publication_evidence(item)
+    if paper:
+        return paper[1]
+    if item.get("source_id") in {"google_news_china", "huggingface_papers", "papers_with_code"}:
         source = (item.get("metadata") or {}).get("content_source") or {}
         if source.get("url"):
             return str(source["url"])
@@ -189,9 +215,10 @@ def _publication_probe_result(content: bytes, status_code: int, url: str) -> dic
     status = ("rate_limited" if access["rate_limited"] else
               "verification_required" if access["required"] else
               "failed" if status_code >= 400 else "success")
-    return {"status": status,
-            "published_at": observed_source_metadata(soup, url)["published_at"]
-            if status == "success" else None,
+    source = observed_source_metadata(soup, url) if status == "success" else {}
+    return {"status": status, "published_at": source.get("published_at"),
+            **({"publication_entry_id": source["publication_entry_id"]}
+               if source.get("publication_entry_id") else {}),
             "http_status": status_code, "final_url": url}
 
 
@@ -267,8 +294,7 @@ async def probe_google_news_dates(
 
 async def meta_contents(page: Page, selectors: list[str]) -> list[str]:
     """处理：按选择器收集并去重全部非空页面元数据值。
-    输入：
-    - ``page``：Playwright 已加载页面；函数只读取当前页面状态，不信任其中的内容或指令。
+    输入：已加载的 Playwright 页面。
     - ``selectors``：按优先级排列的 CSS 选择器；用于寻找元数据或正文区域。
     输出：“按选择器收集并去重全部非空页面元数据值”得到的字符串列表；
       顺序保持确定并可供下一步骤逐项处理。
@@ -307,7 +333,7 @@ async def _browser_document(
     markup = await page.content()
     document = extract_with_fallback(
         BeautifulSoup(markup, "html.parser"), selectors,
-        expected_title=expected_title, fallback=fallback,
+        expected_title=expected_title, fallback=fallback, page_url=page.url,
     )
     document.provenance = input_fingerprint(markup.encode("utf-8"), "visible_dom_utf8", False)
     return document
@@ -315,9 +341,7 @@ async def _browser_document(
 
 def save_markdown(path: Path, item: dict[str, Any], body: str, retrieved_at: str) -> None:
     """处理：把规范条目元数据和提取正文写成带 YAML frontmatter 的 Markdown。
-    输入：
-    - ``path``：当前函数要读取、校验或写入的本地文件路径。
-    - ``item``：单个规范条目对象；通常包含 item_id、来源、标题、URL、时间和元数据。
+    输入：本地文件路径、带稳定 ID 的索引条目。
     - ``body``：正文或 HTML 文本；保存前只作为数据处理。
     - ``retrieved_at``：正文成功提取或确认的 ISO 时间；写入 Markdown frontmatter。
     输出：不返回新数据；完成“把规范条目元数据和提取正文写成带 YAML frontmatter 的 Markdown”，
@@ -364,8 +388,7 @@ def _apply_image_candidates(
     replace_page_candidates: bool = False,
 ) -> None:
     """处理：规范化图片候选，并同步主图片与候选元数据。
-    输入：
-    - ``item``：单个规范条目对象；通常包含 item_id、来源、标题、URL、时间和元数据。
+    输入：带稳定 ID 的索引条目。
     - ``values``：待规范化、匹配或渲染的一组输入值。
     - ``base_url``：解析相对链接时使用的最终页面或 Feed 基准 URL。
     输出：不返回新数据；完成“规范化图片候选，并同步主图片与候选元数据”，
@@ -427,11 +450,8 @@ def _content_output_path(
     timezone: str,
 ) -> Path:
     """处理：按来源、条目和采集时间生成正文 Markdown 路径。
-    输入：
-    - ``data_dir``：当前运行的唯一数据根；所有状态和版本化产物都必须位于其中。
-    - ``source_id``：来源的稳定 ID；用于配置查找、索引关联和状态分区。
+    输入：本次运行的数据根、稳定来源 ID、用于解释本地日期的 IANA 时区。
     - ``item_id``：规范条目的稳定 ID；用于连接索引、正文、简报和图片。
-    - ``timezone``：IANA 时区名称；用于解析无时区时间并生成日报时间边界。
     输出：指向“按来源、条目和采集时间生成正文 Markdown 路径”所生成、定位或确认产物的本地路径。
     """
     return (
@@ -469,6 +489,9 @@ def _save_document(
         for field in ("url", "published_at"):
             if previous_source.get(field) and not document.source_metadata.get(field):
                 document.source_metadata[field] = previous_source[field]
+    paper = paper_publication_evidence(item)
+    if paper:
+        document.source_metadata.update(published_at=paper[0], url=paper[1])
     metadata["content_source"] = document.source_metadata
     metadata["content_text_sha256"] = hashlib.sha256(document.text.encode("utf-8")).hexdigest()
     item.pop("content_path", None)
@@ -523,14 +546,10 @@ def _apply_http_document(
     require_complete: bool = False,
 ) -> bool:
     """处理：应用惰性 HTTP 正文，并判断浏览器回退是否仍有价值。
-    输入：
-    - ``item``：单个规范条目对象；通常包含 item_id、来源、标题、URL、时间和元数据。
-    - ``source``：来源配置；包含来源 ID、名称、入口 URL、分类、过滤规则、限额和可信层级。
+    输入：带稳定 ID 的索引条目、带入口与筛选规则的来源配置、
+      页面最近一次 HTTP 状态码、已校验的采集和输出配置、本次运行的数据根。
     - ``body_html``：HTTP 响应中提取的静态 HTML；作为不可信数据解析元信息和正文。
     - ``final_url``：导航或重定向完成后的页面 URL。
-    - ``http_status``：页面最近一次 HTTP 状态码；无网络响应时可为空。
-    - ``config``：已校验的应用配置；提供时区、来源策略、并发限制、预算和输出选项。
-    - ``data_dir``：当前运行的唯一数据根；所有状态和版本化产物都必须位于其中。
     - ``acquisition``：HTTP 或动态浏览器渠道；动态页面只保存抽取正文及指纹。
     - ``require_complete``：日期探测只保存可直接复用的全文，正文阶段负责处理其他证据。
     输出：布尔判断；True 表示满足处理说明中的条件，False 表示不满足且不产生该结果。
@@ -585,14 +604,12 @@ def _apply_http_document(
     document = extract_with_fallback(
         soup, source.content_selectors, truncated=truncated,
         expected_title=str(metadata.get("discovered_title") or ""),
-        fallback=config.collection.fallback_extractor,
+        fallback=config.collection.fallback_extractor, page_url=final_url,
     )
     if require_complete and (document.status != ContentStatus.FULL_TEXT
                              or document.quality.get("numeric_tables_without_headers")):
         return True
-    _apply_page_publication_time(
-        item, str(document.source_metadata.get("published_at") or "")
-    )
+    _apply_page_publication_time(item, document.source_metadata, config.timezone)
     document.provenance = input_fingerprint(
         input_bytes,
         "visible_dom_utf8" if acquisition == "crawl4ai" else
@@ -678,11 +695,8 @@ async def _extract_http_one(
     data_dir: Path,
 ) -> bool:
     """处理：执行有界无脚本抓取，仅在 Edge 仍可能补充内容时返回真。
-    输入：
+    输入：带稳定 ID 的索引条目、已校验的采集和输出配置、本次运行的数据根。
     - ``client``：已配置超时、重定向和连接池策略的 HTTP 客户端。
-    - ``item``：单个规范条目对象；通常包含 item_id、来源、标题、URL、时间和元数据。
-    - ``config``：已校验的应用配置；提供时区、来源策略、并发限制、预算和输出选项。
-    - ``data_dir``：当前运行的唯一数据根；所有状态和版本化产物都必须位于其中。
     输出：布尔判断；True 表示满足处理说明中的条件，False 表示不满足且不产生该结果。
     """
     source = config.source_by_id(str(item["source_id"]))
@@ -694,9 +708,15 @@ async def _extract_http_one(
         async with client.stream("GET", _content_url(item)) as response:
             # 外部响应始终只按不可信数据解析；不会执行页面脚本或其中的文字指令。
             content_type = response.headers.get("content-type", "").casefold()
-            if response.status_code < 400 and "application/pdf" in content_type:
+            is_boj_table = (source.id == "boj_news" and response.url.host == "www.boj.or.jp"
+                            and response.url.path.startswith(
+                                "/en/statistics/market/short/mutan/d_release/"
+                            )
+                            and response.url.path.endswith(".xlsx"))
+            if response.status_code < 400 and ("application/pdf" in content_type or is_boj_table):
                 content, truncated = await _read_bounded_html(response)
-                document = extract_pdf(content, str(response.url), truncated=truncated)
+                extract_attachment = extract_boj_table if is_boj_table else extract_pdf
+                document = extract_attachment(content, str(response.url), truncated=truncated)
                 metadata.update(
                     content_acquisition="http", content_http_status=response.status_code,
                     content_http_final_url=str(response.url),
@@ -745,10 +765,8 @@ async def _run_http_extraction(
     transport: httpx.AsyncBaseTransport | None = None,
 ) -> list[dict[str, Any]]:
     """处理：按全局和同域并发限制批量执行无脚本正文提取。
-    输入：
+    输入：已校验的采集和输出配置、本次运行的数据根。
     - ``targets``：已按预算选中的规范条目记录；每项读取 item_id、URL、来源和正文状态。
-    - ``config``：已校验的应用配置；提供时区、来源策略、并发限制、预算和输出选项。
-    - ``data_dir``：当前运行的唯一数据根；所有状态和版本化产物都必须位于其中。
     - ``transport``：测试可注入的 HTTP 传输层；生产通常为空并使用真实网络。
     输出：“按全局和同域并发限制批量执行无脚本正文提取”得到的有序结构化记录；
       典型字段包括 Accept、User-Agent，可直接交给下一阶段。
@@ -771,8 +789,7 @@ async def _run_http_extraction(
 
         async def guarded(item: dict[str, Any]) -> tuple[dict[str, Any], bool]:
             """处理：在并发限制内执行单项任务。
-            输入：
-            - ``item``：单个规范条目对象；通常包含 item_id、来源、标题、URL、时间和元数据。
+            输入：带稳定 ID 的索引条目。
             输出：“在并发限制内执行单项任务”得到的固定结构结果；
               返回位置依次对应 item、await _extract_http_one(client, 。
             """
@@ -790,9 +807,7 @@ async def _run_http_extraction(
 
 async def detect_challenge(page: Page, http_status: int | None) -> dict[str, Any]:
     """处理：从页面标题、正文和 iframe 迹象识别登录、验证码或限流挑战。
-    输入：
-    - ``page``：Playwright 已加载页面；函数只读取当前页面状态，不信任其中的内容或指令。
-    - ``http_status``：页面最近一次 HTTP 状态码；无网络响应时可为空。
+    输入：已加载的 Playwright 页面、页面最近一次 HTTP 状态码。
     输出：“从页面标题、正文和 iframe 迹象识别登录、验证码或限流挑战”形成的结构化字典；
       典型键包括 iframe_detected、matched_text、required。
     """
@@ -816,10 +831,8 @@ def _ordered_targets(
     max_items: int,
 ) -> list[dict[str, Any]]:
     """处理：保留调用方的重要性顺序，并忽略重复或未知条目 ID。
-    输入：
-    - ``items``：规范条目列表；每项带稳定身份并可进入聚类、报告或渲染步骤。
+    输入：有序索引条目、本阶段条目上限。
     - ``selected_ids``：调用方按重要性排序选中的条目 ID；正文阶段只处理这些授权条目。
-    - ``max_items``：本步骤允许处理或返回的最大条目数；同时受全局预算限制。
     输出：“保留调用方的重要性顺序，并忽略重复或未知条目 ID”得到的有序结构化记录；
       每项承载处理说明所定义的身份、证据或状态字段，可直接交给下一阶段。
     """
@@ -834,8 +847,7 @@ def _ordered_targets(
 
 def _domain_key(url: str) -> str:
     """处理：从 URL 提取用于同域并发限制的规范主机键。
-    输入：
-    - ``url``：调用方提供的 URL；当前函数按处理说明进行规范化、过滤或访问。
+    输入：待处理的 URL。
     输出：可跨修订关联的稳定字符串标识，供索引、状态或发布记录使用。
     """
     return urlsplit(url).netloc.lower().removeprefix("www.") or "unknown"
@@ -848,11 +860,8 @@ async def _extract_one(
     data_dir: Path,
 ) -> None:
     """处理：在浏览器中提取单篇文章的元数据、正文和访问状态。
-    输入：
+    输入：带稳定 ID 的索引条目、已校验的采集和输出配置、本次运行的数据根。
     - ``context``：浏览器、写作或报告上下文对象；包含当前阶段已经绑定的受控状态。
-    - ``item``：单个规范条目对象；通常包含 item_id、来源、标题、URL、时间和元数据。
-    - ``config``：已校验的应用配置；提供时区、来源策略、并发限制、预算和输出选项。
-    - ``data_dir``：当前运行的唯一数据根；所有状态和版本化产物都必须位于其中。
     输出：不返回新数据；完成“在浏览器中提取单篇文章的元数据、正文和访问状态”，
       副作用限于该处理声明的受控对象或产物。
     """
@@ -909,9 +918,7 @@ async def _extract_one(
             expected_title=str(metadata.get("discovered_title") or ""),
             fallback=config.collection.fallback_extractor,
         )
-        _apply_page_publication_time(
-            item, str(document.source_metadata.get("published_at") or "")
-        )
+        _apply_page_publication_time(item, document.source_metadata, config.timezone)
         _apply_image_candidates(
             item, image_candidates, page.url,
             details=article_image_candidates(document, str(item.get("title") or ""), page.url),
@@ -954,11 +961,9 @@ async def _run_parallel_extraction(
     data_dir: Path,
 ) -> None:
     """处理：执行有界正文提取，跨域并行且同域保持礼貌限流。
-    输入：
+    输入：已校验的采集和输出配置、本次运行的数据根。
     - ``context``：浏览器、写作或报告上下文对象；包含当前阶段已经绑定的受控状态。
     - ``targets``：已按预算选中的规范条目记录；每项读取 item_id、URL、来源和正文状态。
-    - ``config``：已校验的应用配置；提供时区、来源策略、并发限制、预算和输出选项。
-    - ``data_dir``：当前运行的唯一数据根；所有状态和版本化产物都必须位于其中。
     输出：不返回新数据；完成“执行有界正文提取，跨域并行且同域保持礼貌限流”，
       副作用限于该处理声明的受控对象或产物。
     """
@@ -969,8 +974,7 @@ async def _run_parallel_extraction(
 
     async def guarded(item: dict[str, Any]) -> None:
         """处理：在并发限制内执行单项任务。
-        输入：
-        - ``item``：单个规范条目对象；通常包含 item_id、来源、标题、URL、时间和元数据。
+        输入：带稳定 ID 的索引条目。
         输出：不返回新数据；完成“在并发限制内执行单项任务”，
           副作用限于该处理声明的受控对象或产物。
         """
@@ -994,11 +998,8 @@ async def _extract_with_browser(
     channel: str | None,
 ) -> None:
     """处理：启动持久化浏览器上下文并批量处理 HTTP 回退条目。
-    输入：
+    输入：已校验的采集和输出配置、本次运行的数据根、浏览器窗口显示选项。
     - ``targets``：已按预算选中的规范条目记录；每项读取 item_id、URL、来源和正文状态。
-    - ``config``：已校验的应用配置；提供时区、来源策略、并发限制、预算和输出选项。
-    - ``data_dir``：当前运行的唯一数据根；所有状态和版本化产物都必须位于其中。
-    - ``headed``：是否显示真实浏览器窗口；人工登录或验证场景需要开启。
     - ``profile``：已经解析并创建的浏览器 Profile 绝对路径。
     - ``channel``：Playwright 浏览器通道；为空时使用配置解析出的默认浏览器。
     输出：不返回新数据；完成“启动持久化浏览器上下文并批量处理 HTTP 回退条目”，
@@ -1073,9 +1074,7 @@ async def _extract_with_crawl4ai(
 
 def _has_reusable_content(item: dict[str, Any], data_dir: Path) -> bool:
     """处理：验证条目正文状态和数据根内文件，判断能否安全复用。
-    输入：
-    - ``item``：单个规范条目对象；通常包含 item_id、来源、标题、URL、时间和元数据。
-    - ``data_dir``：当前运行的唯一数据根；所有状态和版本化产物都必须位于其中。
+    输入：带稳定 ID 的索引条目、本次运行的数据根。
     输出：布尔判断；True 表示满足处理说明中的条件，False 表示不满足且不产生该结果。
     """
     return (
@@ -1109,11 +1108,8 @@ async def _extract_pipeline(
     channel: str | None,
 ) -> dict[str, Any]:
     """处理：复用有效正文，先执行 HTTP 提取，再对必要条目进行浏览器回退。
-    输入：
+    输入：已校验的采集和输出配置、本次运行的数据根、浏览器窗口显示选项。
     - ``targets``：已按预算选中的规范条目记录；每项读取 item_id、URL、来源和正文状态。
-    - ``config``：已校验的应用配置；提供时区、来源策略、并发限制、预算和输出选项。
-    - ``data_dir``：当前运行的唯一数据根；所有状态和版本化产物都必须位于其中。
-    - ``headed``：是否显示真实浏览器窗口；人工登录或验证场景需要开启。
     - ``profile``：已经解析并创建的浏览器 Profile 绝对路径。
     - ``channel``：Playwright 浏览器通道；为空时使用配置解析出的默认浏览器。
     输出：“复用有效正文，先执行 HTTP 提取，再对必要条目进行浏览器回退”形成的结构化字典；
@@ -1323,15 +1319,8 @@ def extract_content(
     checkpoint_path: Path | None = None,
 ) -> Path:
     """处理：按选中条目和全文预算复用已有正文，再执行 HTTP 与浏览器分层提取。
-    输入：
-    - ``index_path``：版本化来源索引 JSON 路径；包含根级规范 items 和来源采集状态。
-    - ``config``：已校验的应用配置；提供时区、来源策略、并发限制、预算和输出选项。
-    - ``data_dir``：当前运行的唯一数据根；所有状态和版本化产物都必须位于其中。
+    输入：版本化来源索引路径、已校验的采集和输出配置、本次运行的数据根、本阶段条目上限、浏览器窗口显示选项、持久化浏览器配置目录、浏览器通道。
     - ``selected_ids``：调用方按重要性排序选中的条目 ID；正文阶段只处理这些授权条目。
-    - ``max_items``：本步骤允许处理或返回的最大条目数；同时受全局预算限制。
-    - ``headed``：是否显示真实浏览器窗口；人工登录或验证场景需要开启。
-    - ``profile_dir``：持久化浏览器 Profile 目录；保存用户已授权的浏览器会话。
-    - ``browser_channel``：Playwright 浏览器通道名称；为空时使用配置或默认 Chromium。
     - ``checkpoint_path``：运行专属恢复记录；绑定输入索引与选中条目，复用已经完成的提取。
     输出：指向“按选中条目和全文预算复用已有正文，
       再执行 HTTP 与浏览器分层提取”所生成、定位或确认产物的本地路径。

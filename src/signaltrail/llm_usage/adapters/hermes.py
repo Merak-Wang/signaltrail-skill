@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -114,23 +115,17 @@ class HermesAdapter:
             ("extra", "api_request_id"),
             ("data", "request_id"),
         )
-        safe_signature = {
-            "tokens": tokens.to_dict(),
-            "provider": provider,
-            "model": labels["requested_model"],
-            "completed_at": _safe_timestamp(
-                payload,
-                "completed_at",
-                "ended_at",
-                "timestamp",
-            ),
-        }
+        completed_at = _safe_timestamp(payload, "completed_at", "ended_at", "timestamp")
         lineage = lineage_hashes(payload, "hermes")
-        raw_identity = (
-            call_id
-            or external_id
-            or f"signature:{canonical_digest(safe_signature)}"
-        )
+        raw_identity = call_id or external_id
+        if not raw_identity:
+            signature = canonical_digest({
+                "tokens": tokens.to_dict(),
+                "provider": provider,
+                "model": labels["requested_model"],
+                "completed_at": completed_at,
+            })
+            raw_identity = f"signature:{signature}"
         identity = canonical_digest(
             {
                 "request_id_hash": hash_identifier("hermes-request", raw_identity),
@@ -172,19 +167,13 @@ class HermesAdapter:
                 "started_at",
                 "request_started_at",
             ),
-            completed_at=_safe_timestamp(
-                payload,
-                "completed_at",
-                "ended_at",
-                "timestamp",
-            ),
+            completed_at=completed_at,
             latency=_hermes_latency(payload),
             **lineage,
         )
-        dedupe_identity = identity
         return [
             AdapterRecord(
-                dedupe_key=f"hermes-hook:{hook_event or 'usage'}:{dedupe_identity}",
+                dedupe_key=f"hermes-hook:{hook_event or 'usage'}:{identity}",
                 observation=observation,
             )
         ]
@@ -209,78 +198,54 @@ class HermesAdapter:
             if isinstance(rows_value, list)
             else []
         )
-        if rows:
-            return self._rows(rows, phase=phase)
-        totals = nested_mapping(
-            payload,
-            ("totals",),
-            ("total_usage",),
-            ("usage",),
-        ) or payload
-        return [
-            self._aggregate_record(
-                totals,
-                row=payload,
-                phase=phase,
-                row_identity=(
-                    "top:"
-                    + canonical_digest(
-                        {
-                            "usage": _safe_numeric_signature(totals),
-                            "lineage": lineage_hashes(payload, "hermes"),
-                        }
-                    )
+        if not rows:
+            usage = nested_mapping(payload, ("totals",), ("total_usage",), ("usage",)) or payload
+            lineage = lineage_hashes(payload, "hermes")
+            identity = canonical_digest({
+                "usage": _safe_numeric_signature(usage), "lineage": lineage,
+            })
+            return [self._aggregate_record(
+                usage, tokens_from_usage(
+                    usage, source="hermes_usage_file",
+                    cached_relation=TokenRelation.UNKNOWN,
+                    cache_write_relation=TokenRelation.UNKNOWN,
                 ),
-            )
-        ]
-
-    def _rows(
-        self,
-        rows: list[Mapping[str, Any]],
-        *,
-        phase: str | None,
-    ) -> list[AdapterRecord]:
-        """处理：把 usage-file 的批次行转换为独立 aggregate observations。
-        输入：JSON results/batches 中的映射行和可选 phase。
-        输出：按安全行内容摘要去重的 AdapterRecord 列表。
-        """
+                row=payload, phase=phase, row_identity=f"top:{identity}", lineage=lineage,
+            )]
 
         output: list[AdapterRecord] = []
         occurrences: dict[str, int] = {}
         for row in rows:
             usage = nested_mapping(row, ("usage",), ("tokens",)) or row
-            signature = canonical_digest(
-                {
-                    "usage": tokens_from_usage(
-                        usage,
-                        source="hermes_usage_file",
-                    ).to_dict(),
-                    "row": _safe_numeric_signature(row),
-                    "lineage": lineage_hashes(row, "hermes"),
-                }
-            )
+            tokens = tokens_from_usage(usage, source="hermes_usage_file")
+            lineage = lineage_hashes(row, "hermes")
+            signature = canonical_digest({
+                "usage": tokens.to_dict(), "row": _safe_numeric_signature(row), "lineage": lineage,
+            })
             occurrence = occurrences.get(signature, 0) + 1
             occurrences[signature] = occurrence
-            output.append(
-                self._aggregate_record(
-                    usage,
-                    row=row,
-                    phase=phase,
-                    row_identity=f"row:{signature}:{occurrence}",
-                )
-            )
+            # 行签名沿用推断的缓存关系，账本聚合记录保持历史 unknown 语义。
+            output.append(self._aggregate_record(
+                usage, replace(
+                    tokens, cached_input_relation=TokenRelation.UNKNOWN,
+                    cache_write_input_relation=TokenRelation.UNKNOWN,
+                ),
+                row=row, phase=phase, row_identity=f"row:{signature}:{occurrence}", lineage=lineage,
+            ))
         return output
 
     def _aggregate_record(
         self,
         usage: Mapping[str, Any],
+        tokens: TokenUsage,
         *,
         row: Mapping[str, Any],
         phase: str | None,
         row_identity: str,
+        lineage: dict[str, str | None],
     ) -> AdapterRecord:
         """处理：规范一条 Hermes usage-file 聚合行。
-        输入：安全 usage 映射、原行中的 allowlist 标签、phase 和稳定行身份。
+        输入：已解析的用量、宿主关联信息、行身份及原行中的安全标签。
         输出：covered calls 明确、逐 call 不足时保持 aggregate 的 AdapterRecord。
         """
 
@@ -295,7 +260,6 @@ class HermesAdapter:
         external_id = nested_value(row, ("request_id",), ("call_id",))
         batch_id = safe_label(row.get("batch_id"))
         correlation_source = external_id or batch_id or row_identity
-        lineage = lineage_hashes(row, "hermes")
         correlation_hash = hash_identifier(
             "hermes-call",
             canonical_digest(
@@ -308,12 +272,6 @@ class HermesAdapter:
                     "host_task_id_hash": lineage["host_task_id_hash"],
                 }
             ),
-        )
-        tokens = tokens_from_usage(
-            usage,
-            source="hermes_usage_file",
-            cached_relation=TokenRelation.UNKNOWN,
-            cache_write_relation=TokenRelation.UNKNOWN,
         )
         observation = UsageObservation(
             adapter=self.name,

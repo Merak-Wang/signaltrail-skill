@@ -5,6 +5,7 @@ import sqlite3
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -26,9 +27,11 @@ from .base import (
     nested_mapping,
     nested_value,
     non_negative_int,
+    optional_identifier_hash,
     parse_jsonl_bytes,
     read_bounded_bytes,
     safe_observation_labels,
+    scoped_event_identity,
     tokens_from_usage,
     tool_call_count_from_payload,
 )
@@ -71,12 +74,11 @@ _REQUIRED_SQLITE_COLUMNS = {
 @dataclass(frozen=True, slots=True)
 class _SessionContext:
     """处理：保存 OpenClaw header 或关系表提供的安全会话上下文。
-    输入：已哈希的 session/turn/parent/task 标识及 provider/model 安全标签。
+    输入：已哈希的 session/parent/task 标识及 provider/model 安全标签。
     输出：供后续 usage 事件继承的内存对象，不携带原始会话标识或正文。
     """
 
     session_id_hash: str | None
-    turn_id_hash: str | None
     parent_session_id_hash: str | None
     host_task_id_hash: str | None
     agent_id_hash: str | None
@@ -111,36 +113,10 @@ class OpenClawAdapter:
         if usage is None:
             raise ValueError("OpenClaw payload has no supported usage object")
         context = _context_from_payload(payload)
-        external_identity = source_event_id or call_id or nested_value(
-            payload,
-            ("request_id",),
-            ("call_id",),
-            ("event_id",),
-            ("id",),
-            ("message", "id"),
-        )
-        if external_identity is None:
-            external_identity = canonical_digest(_safe_usage_signature(usage, payload))
-        identity = _scoped_identity(
-            context.session_id_hash,
-            context.agent_id_hash,
-            external_identity,
-        )
-        context = _with_turn_identity(context, payload, identity)
-        return [
-            AdapterRecord(
-                dedupe_key=f"openclaw-hook:{identity}",
-                observation=_observation(
-                    payload,
-                    usage,
-                    identity=identity,
-                    phase=phase,
-                    source_kind="usage_hook",
-                    source="openclaw_hook",
-                    context=context,
-                ),
-            )
-        ]
+        external_identity = source_event_id or call_id or _event_identity(payload)
+        return [_usage_record(
+            payload, usage, context, None, phase, "hook", external_identity=external_identity,
+        )]
 
     def from_path(
         self,
@@ -183,34 +159,12 @@ class OpenClawAdapter:
                 continue
             direct = _context_from_payload(payload)
             effective = _merge_context(direct, context)
-            raw_identity = nested_value(
-                payload,
-                ("request_id",),
-                ("call_id",),
-                ("event_id",),
-                ("id",),
-                ("message", "id"),
-            ) or line_identity
-            identity = _scoped_identity(
-                effective.session_id_hash or file_scope,
-                effective.agent_id_hash,
-                raw_identity,
+            identity = scoped_event_identity(
+                "openclaw", _event_identity(payload) or line_identity,
+                session_id_hash=effective.session_id_hash or file_scope,
+                agent_id_hash=effective.agent_id_hash,
             )
-            effective = _with_turn_identity(effective, payload, identity)
-            records.append(
-                AdapterRecord(
-                    dedupe_key=f"openclaw-legacy-session:{identity}",
-                    observation=_observation(
-                        payload,
-                        usage,
-                        identity=identity,
-                        phase=phase,
-                        source_kind="legacy_session_jsonl",
-                        source="openclaw_legacy_session",
-                        context=effective,
-                    ),
-                )
-            )
+            records.append(_usage_record(payload, usage, effective, identity, phase, "legacy"))
         return records
 
     def _from_sqlite(
@@ -230,7 +184,25 @@ class OpenClawAdapter:
             connection.execute("PRAGMA query_only = ON")
             connection.execute("BEGIN")
             agent_id = _validate_sqlite_schema(connection)
-            agent_hash = _optional_identifier_hash("openclaw-agent", agent_id)
+            agent_hash = optional_identifier_hash("openclaw-agent", agent_id)
+
+            @lru_cache(maxsize=1, typed=True)
+            def session_context(session_id: str, parent_id: object, provider: object,
+                                model: object) -> _SessionContext:
+                """处理：复用相邻转录行共同引用的会话元数据。
+                输入：同一只读事务中关联出的会话、父会话和模型列。
+                输出：写入观察记录前可继承的哈希身份与模型标签。
+                """
+                return _SessionContext(
+                    session_id_hash=_scoped_identifier_hash("session", agent_id, session_id),
+                    parent_session_id_hash=_scoped_identifier_hash("session", agent_id, parent_id),
+                    host_task_id_hash=None,
+                    agent_id_hash=agent_hash,
+                    provider=safe_label(provider),
+                    requested_model=safe_label(model),
+                    served_model=None,
+                )
+
             records: list[AdapterRecord] = []
             contexts: dict[str, _SessionContext] = {}
             cursor = connection.execute(
@@ -260,13 +232,8 @@ class OpenClawAdapter:
                 payload = _parse_sqlite_event(row["event_json"])
                 session_id = _required_identifier(row["session_id"], "session_id")
                 seq = _required_sequence(row["seq"])
-                base_context = _sqlite_context(
-                    agent_id=agent_id,
-                    agent_hash=agent_hash,
-                    session_id=session_id,
-                    parent_session_id=row["parent_session_id"],
-                    provider=row["model_provider"],
-                    model=row["model"],
+                base_context = session_context(
+                    session_id, row["parent_session_id"], row["model_provider"], row["model"],
                 )
                 header = _context_from_header(payload, default_agent_id=agent_id)
                 if header is not None:
@@ -276,43 +243,21 @@ class OpenClawAdapter:
                 usage = _usage_mapping(payload)
                 if usage is None:
                     continue
-                event_identity = nested_value(
-                    payload,
-                    ("request_id",),
-                    ("call_id",),
-                    ("event_id",),
-                    ("id",),
-                    ("message", "id"),
-                )
                 identity = canonical_digest(
                     {
                         "agent_id_hash": effective.agent_id_hash,
                         "session_id_hash": effective.session_id_hash,
                         "seq": seq,
-                        "event_id_hash": _optional_identifier_hash(
+                        "event_id_hash": optional_identifier_hash(
                             "openclaw-event",
-                            event_identity,
+                            _event_identity(payload),
                         ),
                     }
                 )
-                effective = _with_turn_identity(effective, payload, identity)
-                records.append(
-                    AdapterRecord(
-                        dedupe_key=f"openclaw-agent-sqlite:{identity}",
-                        observation=_observation(
-                            payload,
-                            usage,
-                            identity=identity,
-                            phase=phase,
-                            source_kind="agent_sqlite_transcript",
-                            source="openclaw_agent_sqlite",
-                            context=effective,
-                            completed_at_fallback=_epoch_millis_timestamp(
-                                row["event_created_at"]
-                            ),
-                        ),
-                    )
-                )
+                records.append(_usage_record(
+                    payload, usage, effective, identity, phase, "sqlite",
+                    completed_at_fallback=_epoch_millis_timestamp(row["event_created_at"]),
+                ))
             return records
         except ValueError:
             raise
@@ -447,22 +392,39 @@ def _usage_mapping(payload: Mapping[str, Any]) -> Mapping[str, Any] | None:
     )
 
 
-def _observation(
+_USAGE_SOURCES = {
+    "hook": ("openclaw-hook", "usage_hook", "openclaw_hook"),
+    "legacy": ("openclaw-legacy-session", "legacy_session_jsonl", "openclaw_legacy_session"),
+    "sqlite": ("openclaw-agent-sqlite", "agent_sqlite_transcript", "openclaw_agent_sqlite"),
+}
+
+
+def _event_identity(payload: Mapping[str, Any]) -> object:
+    """处理：按固定优先级选取事件身份。
+    输入：hook 或转录事件的映射。
+    输出：参与哈希的标识候选，缺失时交给各格式回退。
+    """
+    return nested_value(
+        payload, ("request_id",), ("call_id",), ("event_id",), ("id",), ("message", "id"),
+    )
+
+
+def _usage_record(
     payload: Mapping[str, Any],
     usage: Mapping[str, Any],
-    *,
-    identity: object,
-    phase: str | None,
-    source_kind: str,
-    source: str,
     context: _SessionContext,
+    identity: str | None,
+    phase: str | None,
+    format_name: str,
+    *,
     completed_at_fallback: str | None = None,
-) -> UsageObservation:
-    """处理：将 OpenClaw usage 和继承上下文映射为统一 observation。
-    输入：事件、usage、哈希身份、来源、phase 与 header/关系表上下文。
-    输出：逐调用或聚合记录；无显式 provider-call 数时保持不可观测。
+    external_identity: object = None,
+) -> AdapterRecord:
+    """处理：将事件和继承上下文转换为去重记录。
+    输入：事件、用量字段、会话上下文和导入格式；hook 可提供外部事件标识代替已哈希身份。
+    输出：逐调用或聚合记录，缺少明确调用计数时保留未知状态。
     """
-
+    dedupe_prefix, source_kind, source = _USAGE_SOURCES[format_name]
     labels = safe_observation_labels(payload)
     covered = _covered_call_count(payload, usage, source=source)
     read_relation, write_relation = _cache_relations(
@@ -475,7 +437,18 @@ def _observation(
         cached_relation=read_relation,
         cache_write_relation=write_relation,
     )
-    return UsageObservation(
+    if identity is None:
+        if external_identity is None:
+            external_identity = canonical_digest({
+                "tokens": tokens.to_dict(),
+                "labels": labels,
+                "covered_call_count": covered.to_dict(),
+            })
+        identity = scoped_event_identity(
+            "openclaw", external_identity,
+            agent_id_hash=context.agent_id_hash, session_id_hash=context.session_id_hash,
+        )
+    observation = UsageObservation(
         adapter="openclaw",
         adapter_version="1.1",
         source_kind=source_kind,
@@ -498,10 +471,11 @@ def _observation(
         completed_at=_safe_timestamp(payload) or completed_at_fallback,
         latency=latency_from_payload(payload, source),
         session_id_hash=context.session_id_hash,
-        turn_id_hash=context.turn_id_hash,
+        turn_id_hash=_event_turn_hash(context.session_id_hash, payload, identity),
         parent_session_id_hash=context.parent_session_id_hash,
         host_task_id_hash=context.host_task_id_hash,
     )
+    return AdapterRecord(dedupe_key=f"{dedupe_prefix}:{identity}", observation=observation)
 
 
 def _covered_call_count(
@@ -617,142 +591,53 @@ def _context_from_header(
         "session_start",
     }:
         return None
-    agent_id = nested_value(
-        payload,
-        ("agent_id",),
-        ("agentId",),
-        ("transcriptScope", "agentId"),
-    ) or default_agent_id
-    session_id = nested_value(
-        payload,
-        ("session_id",),
-        ("sessionId",),
-        ("transcriptScope", "sessionId"),
-        ("id",),
-    )
-    parent_agent_id = nested_value(
-        payload,
-        ("parentTranscriptScope", "agentId"),
-        ("parent_transcript_scope", "agent_id"),
-    ) or agent_id
-    parent_session_id = nested_value(
-        payload,
-        ("parentTranscriptScope", "sessionId"),
-        ("parent_transcript_scope", "session_id"),
-        ("parentSession",),
-        ("parent_session_id",),
-        ("parentSessionId",),
-    )
-    labels = safe_observation_labels(payload)
-    return _SessionContext(
-        session_id_hash=_scoped_identifier_hash("session", agent_id, session_id),
-        turn_id_hash=None,
-        parent_session_id_hash=_scoped_identifier_hash(
-            "session",
-            parent_agent_id,
-            parent_session_id,
-        ),
-        host_task_id_hash=_optional_identifier_hash(
-            "openclaw-host-task",
-            nested_value(payload, ("task_id",), ("taskId",)),
-        ),
-        agent_id_hash=_optional_identifier_hash("openclaw-agent", agent_id),
-        provider=labels["provider"],
-        requested_model=labels["requested_model"],
-        served_model=labels["served_model"],
-    )
+    return _context_from_payload(payload, header=True, default_agent_id=default_agent_id)
 
 
-def _context_from_payload(payload: Mapping[str, Any]) -> _SessionContext:
-    """处理：从非 header 事件的固定 lineage 路径提取安全上下文。
-    输入：OpenClaw hook 或转录事件映射。
-    输出：可与 header/SQLite context 合并的哈希和安全标签集合。
-    """
-
-    agent_id = nested_value(
-        payload,
-        ("agent_id",),
-        ("agentId",),
-        ("meta", "agent_id"),
-        ("metadata", "agent_id"),
-    )
-    session_id = nested_value(
-        payload,
-        ("session_id",),
-        ("sessionId",),
-        ("meta", "session_id"),
-        ("metadata", "session_id"),
-    )
-    parent_agent_id = nested_value(
-        payload,
-        ("parentTranscriptScope", "agentId"),
-        ("parent_transcript_scope", "agent_id"),
-    ) or agent_id
-    parent_session_id = nested_value(
-        payload,
-        ("parentTranscriptScope", "sessionId"),
-        ("parent_transcript_scope", "session_id"),
-        ("parent_session_id",),
-        ("parentSessionId",),
-        ("meta", "parent_session_id"),
-        ("metadata", "parent_session_id"),
-    )
-    labels = safe_observation_labels(payload)
-    return _SessionContext(
-        session_id_hash=_scoped_identifier_hash("session", agent_id, session_id),
-        turn_id_hash=_scoped_turn_hash(
-            _scoped_identifier_hash("session", agent_id, session_id),
-            nested_value(payload, ("turn_id",), ("turnId",)),
-        ),
-        parent_session_id_hash=_scoped_identifier_hash(
-            "session",
-            parent_agent_id,
-            parent_session_id,
-        ),
-        host_task_id_hash=_optional_identifier_hash(
-            "openclaw-host-task",
-            nested_value(
-                payload,
-                ("task_id",),
-                ("taskId",),
-                ("meta", "task_id"),
-                ("metadata", "task_id"),
-            ),
-        ),
-        agent_id_hash=_optional_identifier_hash("openclaw-agent", agent_id),
-        provider=labels["provider"],
-        requested_model=labels["requested_model"],
-        served_model=labels["served_model"],
-    )
-
-
-def _sqlite_context(
-    *,
-    agent_id: str,
-    agent_hash: str | None,
-    session_id: str,
-    parent_session_id: object,
-    provider: object,
-    model: object,
+def _context_from_payload(
+    payload: Mapping[str, Any], *, header: bool = False, default_agent_id: object = None,
 ) -> _SessionContext:
-    """处理：把 OpenClaw 关系表列转换为可继承的安全 session context。
-    输入：schema_meta agent、session ID、已解析父 session ID 及模型列。
-    输出：SQLite 行的哈希 lineage 与安全模型标签。
+    """处理：从固定字段提取会话、父会话和任务身份。
+    输入：事件或会话头映射，SQLite 可提供默认 agent。
+    输出：源格式归一化后的安全标签和哈希。
     """
-
+    agent_aliases = (
+        (("transcriptScope", "agentId"),) if header
+        else (("meta", "agent_id"), ("metadata", "agent_id"))
+    )
+    session_aliases = (
+        (("transcriptScope", "sessionId"), ("id",)) if header
+        else (("meta", "session_id"), ("metadata", "session_id"))
+    )
+    agent_id = nested_value(payload, ("agent_id",), ("agentId",), *agent_aliases)
+    if header:
+        agent_id = agent_id or default_agent_id
+    session_id = nested_value(payload, ("session_id",), ("sessionId",), *session_aliases)
+    parent_agent_id = nested_value(
+        payload, ("parentTranscriptScope", "agentId"), ("parent_transcript_scope", "agent_id"),
+    ) or agent_id
+    parent_aliases = (("parent_session_id",), ("parentSessionId",))
+    if header:
+        parent_aliases = (("parentSession",), *parent_aliases)
+    else:
+        parent_aliases += (("meta", "parent_session_id"), ("metadata", "parent_session_id"))
+    parent_session_id = nested_value(
+        payload, ("parentTranscriptScope", "sessionId"), ("parent_transcript_scope", "session_id"),
+        *parent_aliases,
+    )
+    task_aliases = () if header else (("meta", "task_id"), ("metadata", "task_id"))
+    task_id = nested_value(payload, ("task_id",), ("taskId",), *task_aliases)
+    labels = safe_observation_labels(payload)
     return _SessionContext(
         session_id_hash=_scoped_identifier_hash("session", agent_id, session_id),
-        turn_id_hash=None,
         parent_session_id_hash=_scoped_identifier_hash(
-            "session",
-            agent_id,
-            parent_session_id,
+            "session", parent_agent_id, parent_session_id,
         ),
-        host_task_id_hash=None,
-        agent_id_hash=agent_hash,
-        provider=safe_label(provider),
-        requested_model=safe_label(model),
-        served_model=None,
+        host_task_id_hash=optional_identifier_hash("openclaw-host-task", task_id),
+        agent_id_hash=optional_identifier_hash("openclaw-agent", agent_id),
+        provider=labels["provider"],
+        requested_model=labels["requested_model"],
+        served_model=labels["served_model"],
     )
 
 
@@ -769,7 +654,6 @@ def _merge_context(
     fallback = fallback or _empty_context()
     return _SessionContext(
         session_id_hash=preferred.session_id_hash or fallback.session_id_hash,
-        turn_id_hash=preferred.turn_id_hash or fallback.turn_id_hash,
         parent_session_id_hash=preferred.parent_session_id_hash
         or fallback.parent_session_id_hash,
         host_task_id_hash=preferred.host_task_id_hash or fallback.host_task_id_hash,
@@ -786,19 +670,18 @@ def _empty_context() -> _SessionContext:
     输出：全部字段为 None 的 _SessionContext，供合并逻辑作为中性值。
     """
 
-    return _SessionContext(None, None, None, None, None, None, None, None)
+    return _SessionContext(None, None, None, None, None, None, None)
 
 
-def _with_turn_identity(
-    context: _SessionContext,
+def _event_turn_hash(
+    session_id_hash: str | None,
     payload: Mapping[str, Any],
-    fallback_identity: object,
-) -> _SessionContext:
-    """处理：为 usage 事件补充 session-scoped turn 身份并保留原上下文。
-    输入：已合并上下文、当前事件和无事件 ID 时的安全回退身份。
-    输出：除 turn_id_hash 外等同输入的上下文副本。
+    fallback_identity: str,
+) -> str | None:
+    """处理：在会话范围内计算本条用量事件的 turn 哈希。
+    输入：会话哈希、固定 turn 字段及当前事件的回退身份。
+    输出：可归并同一会话中请求的 turn 哈希。
     """
-
     raw_turn = nested_value(
         payload,
         ("turn_id",),
@@ -808,30 +691,7 @@ def _with_turn_identity(
         ("id",),
         ("message", "id"),
     ) or fallback_identity
-    return _SessionContext(
-        session_id_hash=context.session_id_hash,
-        turn_id_hash=_scoped_turn_hash(context.session_id_hash, raw_turn),
-        parent_session_id_hash=context.parent_session_id_hash,
-        host_task_id_hash=context.host_task_id_hash,
-        agent_id_hash=context.agent_id_hash,
-        provider=context.provider,
-        requested_model=context.requested_model,
-        served_model=context.served_model,
-    )
-
-
-def _optional_identifier_hash(namespace: str, value: object) -> str | None:
-    """处理：只哈希长度受限标量，拒绝把正文对象误当成 lineage。
-    输入：固定命名空间和从 allowlist 路径读取的候选标识。
-    输出：SHA-256 标签或 None；原始宿主 ID 不会离开本次调用。
-    """
-
-    if isinstance(value, bool) or not isinstance(value, (str, int)):
-        return None
-    text = str(value)
-    if not 1 <= len(text) <= 512 or "\n" in text or "\r" in text:
-        return None
-    return hash_identifier(namespace, text)
+    return _scoped_turn_hash(session_id_hash, raw_turn)
 
 
 def _scoped_identifier_hash(
@@ -844,10 +704,10 @@ def _scoped_identifier_hash(
     输出：跨 agent 不碰撞的 SHA-256 标签；无合法 session 值时为 None。
     """
 
-    value_hash = _optional_identifier_hash(f"openclaw-{kind}", value)
+    value_hash = optional_identifier_hash(f"openclaw-{kind}", value)
     if value_hash is None:
         return None
-    agent_hash = _optional_identifier_hash("openclaw-agent", agent_id)
+    agent_hash = optional_identifier_hash("openclaw-agent", agent_id)
     return hash_identifier(
         f"openclaw-{kind}-scope",
         canonical_digest({"agent_id_hash": agent_hash, "value_hash": value_hash}),
@@ -860,7 +720,7 @@ def _scoped_turn_hash(session_id_hash: str | None, value: object) -> str | None:
     输出：SHA-256 turn 标签；候选身份非法时为 None。
     """
 
-    value_hash = _optional_identifier_hash("openclaw-turn", value)
+    value_hash = optional_identifier_hash("openclaw-turn", value)
     if value_hash is None:
         return None
     return hash_identifier(
@@ -869,53 +729,6 @@ def _scoped_turn_hash(session_id_hash: str | None, value: object) -> str | None:
             {"session_id_hash": session_id_hash, "turn_id_hash": value_hash}
         ),
     )
-
-
-def _scoped_identity(
-    session_id_hash: str | None,
-    agent_id_hash: str | None,
-    value: object,
-) -> str:
-    """处理：为 hook/JSONL 事件构造 agent/session 范围内的去重身份。
-    输入：可选 agent/session 哈希和只在内存使用的事件身份。
-    输出：稳定十六进制摘要；不同子 session 的同名事件不会折叠。
-    """
-
-    return canonical_digest(
-        {
-            "agent_id_hash": agent_id_hash,
-            "session_id_hash": session_id_hash,
-            "source_event_id_hash": hash_identifier("openclaw-source-event", value),
-        }
-    )
-
-
-def _safe_usage_signature(
-    usage: Mapping[str, Any],
-    payload: Mapping[str, Any],
-) -> dict[str, Any]:
-    """处理：为缺少 ID 的 OpenClaw hook 构造无正文去重签名。
-    输入：usage 数字和仅用于安全标签、调用数提取的 payload。
-    输出：可哈希且不含 prompt/response/reasoning/tool arguments 的字典。
-    """
-
-    labels = safe_observation_labels(payload)
-    read_relation, write_relation = _cache_relations(labels["provider"], usage)
-    tokens = tokens_from_usage(
-        usage,
-        source="openclaw_hook",
-        cached_relation=read_relation,
-        cache_write_relation=write_relation,
-    )
-    return {
-        "tokens": tokens.to_dict(),
-        "labels": labels,
-        "covered_call_count": _covered_call_count(
-            payload,
-            usage,
-            source="openclaw_hook",
-        ).to_dict(),
-    }
 
 
 def _safe_timestamp(payload: Mapping[str, Any]) -> str | None:

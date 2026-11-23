@@ -5,11 +5,14 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from contextvars import ContextVar
 from dataclasses import dataclass
 from pathlib import Path
 
 from ..config import AppConfig
 from ..utils import read_json
+
+JSON_RECEIPTS: ContextVar[list | None] = ContextVar("json_receipts", default=None)
 
 
 @dataclass(frozen=True)
@@ -35,6 +38,9 @@ def print_json(payload: object, *, indent: int | None = 2) -> None:
     - ``indent``：调用命令选择的缩进；None 用于紧凑的单行结果。
     输出：标准输出中的 JSON；宿主可直接解析，函数不写入运行文件。
     """
+    if (receipts := JSON_RECEIPTS.get()) is not None:
+        receipts.append(payload)
+        return
     separators = (",", ":") if indent is None else None
     rendered = json.dumps(payload, ensure_ascii=False, indent=indent, separators=separators)
     try:
@@ -133,3 +139,15 @@ def print_command_result(payload: dict, context: CommandContext,
     if artifact_path is not None:
         result = {"artifact_path": str(artifact_path), **result}
     print_json(result, indent=None)
+
+
+def batch_submission_result(rows: list[dict], accepted: list[str], check_only: bool) -> dict:
+    """处理：汇总简报和图文共用的批次接收结果，保留接收顺序和逐项错误。
+    输入：逐批判定、已接收产物及预检标记。
+    输出：命令行和调度器读取的相同收据。
+    """
+    pending = [row["batch_id"] for row in rows if not row.get("accepted_path")]
+    invalid = [row["batch_id"] for row in rows if row["errors"]]
+    return {"status": "partial" if invalid else "ready_to_submit" if pending else "ready",
+            "check_only": check_only, "accepted": accepted, "pending": pending, "invalid": invalid,
+            "expected_paths": [row["expected_path"] for row in rows], "batches": rows}

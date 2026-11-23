@@ -49,8 +49,7 @@ def python_targets(root: Path = ROOT) -> list[Path]:
 
 def definition_errors(path: Path, root: Path = ROOT) -> list[str]:
     """处理：检查一个 Python 文件内所有函数和类的中文结构化说明。
-    输入：
-    - ``path``：当前函数要读取、校验或写入的本地文件路径。
+    输入：本地文件路径。
     - ``root``：安全边界或检查根目录；目标路径必须位于其中。
     输出：可操作的校验错误消息列表；空列表表示通过当前规则。
     """

@@ -108,6 +108,8 @@ def _html_index_document(
             )
             if part
         )
+        cell = anchor.parent
+        release_cell = cell.find_previous_sibling("td") if cell.name == "td" else None
         rows.append(
             {
                 "title": str(anchor_title or ""),
@@ -115,6 +117,13 @@ def _html_index_document(
                 "image_url": image_candidates[0] if image_candidates else "",
                 "image_candidates": image_candidates,
                 "context": context,
+                "table_date": release_cell.get_text(" ", strip=True) if release_cell else "",
+                "reuters_syndication": (
+                    anchor.select("p")[-1].get_text(" ", strip=True)
+                    if anchor.select_one('img[alt="Reuters"]') and anchor.select("p")
+                    and any(p.get_text(" ", strip=True) == "Reuters" for p in anchor.select("p"))
+                    else ""
+                ),
             }
         )
     return soup, title, rows
@@ -156,11 +165,8 @@ async def _prefetch_one(
     domain_limits: defaultdict[str, asyncio.Semaphore],
 ) -> SourceResult:
     """处理：用有界 HTTP 请求预取单个来源页面并分类访问状态。
-    输入：
+    输入：带入口与筛选规则的来源配置、待处理的 URL、已校验的采集和输出配置。
     - ``client``：已配置超时、重定向和连接池策略的 HTTP 客户端。
-    - ``source``：来源配置；包含来源 ID、名称、入口 URL、分类、过滤规则、限额和可信层级。
-    - ``url``：调用方提供的 URL；当前函数按处理说明进行规范化、过滤或访问。
-    - ``config``：已校验的应用配置；提供时区、来源策略、并发限制、预算和输出选项。
     - ``global_limit``：当前网络阶段共享的全局异步信号量。
     - ``domain_limits``：按主机名懒创建的异步信号量；限制同域并发请求数。
     输出：供索引汇总的来源采集结果；包含明确状态、错误或挑战信息、页面元数据和规范文章条目。
@@ -245,6 +251,15 @@ async def _prefetch_one(
         challenge["first_transport_error"] = first_transport_error
     if truncated:
         challenge["response_truncated"] = True
+    if any(
+        "cookie" in hop.request.headers or "authorization" in hop.request.headers
+        or "set-cookie" in hop.headers
+        or any(value.strip().lower() in {"cookie", "authorization", "*"}
+               for value in hop.headers.get("vary", "").split(","))
+        for hop in (*response.history, response)
+    ):
+        # 不保留请求头值，仅标识另一个 HTTP 客户端不能复用的会话响应。
+        challenge["session_dependent"] = True
     if challenge["rate_limited"]:
         status = SourceStatus.RATE_LIMITED
         items = []
@@ -283,15 +298,30 @@ async def _prefetch_all(
     data_dir: Path,
     *,
     transport: httpx.AsyncBaseTransport | None = None,
+    shared_listing_pages: dict[tuple[str, str], SourceResult] | None = None,
 ) -> dict[tuple[str, str], SourceResult]:
     """处理：按全局和同域并发限制预取全部来源页面。
-    输入：
+    输入：已校验的采集和输出配置、本次运行的数据根。
     - ``sources``：本轮选择的来源配置列表；每项定义采集入口、策略和身份信息。
-    - ``config``：已校验的应用配置；提供时区、来源策略、并发限制、预算和输出选项。
-    - ``data_dir``：当前运行的唯一数据根；所有状态和版本化产物都必须位于其中。
     - ``transport``：测试可注入的 HTTP 传输层；生产通常为空并使用真实网络。
+    - ``shared_listing_pages``：同轮监控保留的完整 HTTP 页面，按来源及原始 URL 匹配。
     输出：供索引汇总的来源采集结果；包含明确状态、错误或挑战信息、页面元数据和规范文章条目。
     """
+    requested = [
+        (source, url)
+        for source in sources
+        if source.adapter_name in {"browser_index", "weibo_api"}
+        for url in source_urls(source, data_dir)
+    ]
+    shared_listing_pages = shared_listing_pages or {}
+    reused = {
+        (source.id, url): shared_listing_pages[(source.id, url)]
+        for source, url in requested
+        if (source.id, url) in shared_listing_pages
+    }
+    jobs = [(source, url) for source, url in requested if (source.id, url) not in reused]
+    if not jobs:
+        return reused
     global_limit = asyncio.Semaphore(
         max(1, config.browser.collection_global_concurrency)
     )
@@ -306,12 +336,6 @@ async def _prefetch_all(
         headers={"User-Agent": _USER_AGENT, "Accept": "text/html,application/xhtml+xml"},
         transport=transport,
     ) as client:
-        jobs = [
-            (source, url)
-            for source in sources
-            if source.adapter_name in {"browser_index", "weibo_api"}
-            for url in source_urls(source, data_dir)
-        ]
         results = await asyncio.gather(
             *(
                 _prefetch_one(
@@ -325,25 +349,29 @@ async def _prefetch_all(
                 for source, url in jobs
             )
         )
-    return {
+    reused.update({
         (source.id, url): result
         for (source, url), result in zip(jobs, results, strict=True)
-    }
+    })
+    return reused
 
 
 def prefetch_browser_pages(
     sources: list[SourceConfig],
     config: AppConfig,
     data_dir: Path,
+    *,
+    shared_listing_pages: dict[tuple[str, str], SourceResult] | None = None,
 ) -> dict[tuple[str, str], SourceResult]:
     """处理：按全局与同域并发限制预取来源页面，供后续采集判断是否需要浏览器。
-    输入：
+    输入：已校验的采集和输出配置、本次运行的数据根。
     - ``sources``：本轮选择的来源配置列表；每项定义采集入口、策略和身份信息。
-    - ``config``：已校验的应用配置；提供时区、来源策略、并发限制、预算和输出选项。
-    - ``data_dir``：当前运行的唯一数据根；所有状态和版本化产物都必须位于其中。
+    - ``shared_listing_pages``：可选的同轮、同配置完整 HTML 预取结果。
     输出：供索引汇总的来源采集结果；包含明确状态、错误或挑战信息、页面元数据和规范文章条目。
     """
-    return asyncio.run(_prefetch_all(sources, config, data_dir))
+    return asyncio.run(_prefetch_all(
+        sources, config, data_dir, shared_listing_pages=shared_listing_pages,
+    ))
 
 
 def page_needs_browser(result: SourceResult | None) -> bool:

@@ -10,6 +10,7 @@ import sqlite3
 from collections import Counter, defaultdict
 from contextlib import contextmanager
 from datetime import UTC, datetime
+from functools import lru_cache
 from pathlib import Path
 from urllib.parse import quote, urlencode
 
@@ -56,6 +57,33 @@ def _records(connection: sqlite3.Connection, kind: str) -> dict[str, dict]:
     }
 
 
+def _record(connection: sqlite3.Connection, kind: str, key: str) -> dict | None:
+    """处理：按主键读取单条归档记录。
+    输入：记录类型及文章、事件或别名的身份。
+    输出：已解析的数据，尚未收录时返回空值。
+    """
+    row = connection.execute("SELECT payload FROM records WHERE kind=? AND id=?", (kind, key))
+    return json.loads(found[0]) if (found := row.fetchone()) else None
+
+
+def _event_articles(connection: sqlite3.Connection, event: dict) -> list[dict]:
+    """处理：按原顺序批量取回同一事件的文章。
+    输入：已归档事件中的文章键。
+    输出：详情时间线和图片回填共同使用的完整文章。
+    """
+    keys = event["article_keys"]
+    articles = {}
+    # 分段查询也兼容每条语句仅允许 999 个参数的 SQLite。
+    for start in range(0, len(keys), 900):
+        batch = keys[start:start + 900]
+        placeholders = ",".join("?" for _ in batch)
+        records = connection.execute(
+            f"SELECT id,payload FROM records WHERE kind='article' AND id IN ({placeholders})", batch
+        )
+        articles.update((key, json.loads(payload)) for key, payload in records)
+    return [articles[key] for key in keys]
+
+
 def _put(connection: sqlite3.Connection, kind: str, key: str, value: dict) -> None:
     """处理：在当前事务内保存一项平台记录。
     输入：记录类别、身份和新的完整内容。
@@ -85,11 +113,8 @@ def _canonical_event(connection: sqlite3.Connection, event_id: str) -> str:
     输入：数据库连接和旧或当前事件身份。
     输出：档案读取与关注操作使用的当前身份。
     """
-    while row := connection.execute(
-        "SELECT payload FROM records WHERE kind='event_alias' AND id=?",
-        (event_id,),
-    ).fetchone():
-        event_id = json.loads(row[0])["event_id"]
+    while (alias := _record(connection, "event_alias", event_id)) is not None:
+        event_id = alias["event_id"]
     return event_id
 
 
@@ -190,6 +215,7 @@ def sync_monitor_snapshot(data_dir: Path, snapshot: dict | None = None) -> None:
         article_events = {
             key: event["event_id"] for event in events.values() for key in event["article_keys"]
         }
+        title_vector = lru_cache(maxsize=512)(lexical_vector)
         title_events = defaultdict(set)
         for event in events.values():
             for token in set(lexical_tokens(event["title"])):
@@ -226,7 +252,7 @@ def sync_monitor_snapshot(data_dir: Path, snapshot: dict | None = None) -> None:
                     if (
                         event["category"] == cluster.get("category")
                         and len(tokens.intersection(lexical_tokens(event["title"]))) >= 3
-                        and cosine_similarity(lexical_vector(title), lexical_vector(event["title"]))
+                        and cosine_similarity(title_vector(title), title_vector(event["title"]))
                         >= 0.86
                         and abs(
                             _time(cluster.get("published_at") or snapshot["generated_at"])
@@ -252,6 +278,8 @@ def sync_monitor_snapshot(data_dir: Path, snapshot: dict | None = None) -> None:
             for item in members:
                 key = _article_key(item)
                 previous = articles.get(key, {})
+                old_meta = previous.get("metadata", {})
+                new_meta = item.get("metadata", {})
                 article = {**previous, **item, "event_id": event["event_id"]}
                 article["first_discovered_at"] = (
                     previous.get("first_discovered_at")
@@ -267,10 +295,6 @@ def sync_monitor_snapshot(data_dir: Path, snapshot: dict | None = None) -> None:
                             if field.startswith("content") or field == "body"
                         }
                     )
-                article["metadata"] = {**previous.get("metadata", {}), **item.get("metadata", {})}
-                if previous.get("content_path") and not item.get("content_path"):
-                    old_meta = previous.get("metadata") or {}
-                    new_meta = item.get("metadata") or {}
                     changed_feed = (old_meta.get("feed_content_sha256")
                                     and new_meta.get("feed_content_sha256")
                                     and old_meta["feed_content_sha256"]
@@ -281,7 +305,8 @@ def sync_monitor_snapshot(data_dir: Path, snapshot: dict | None = None) -> None:
                     )
                     # 同 URL 的实际文字变化才重验正文，单纯刷新发现时间不触发。
                     if changed_feed or changed_text:
-                        article["metadata"]["content_needs_refresh"] = True
+                        new_meta = {**new_meta, "content_needs_refresh": True}
+                article["metadata"] = {**old_meta, **new_meta}
                 source = sources.get(str(item.get("source_id")), {})
                 article["source_name"] = (
                     item.get("source_name")
@@ -492,19 +517,11 @@ def report_event_cards(data_dir: Path, report: dict) -> list[dict]:
                 for ref in item.get("source_refs", []):
                     if not ref.get("url"):
                         continue
-                    row = connection.execute(
-                        "SELECT payload FROM records WHERE kind='article' AND id=?",
-                        (canonicalize_url(ref["url"]),),
-                    ).fetchone()
-                    if row is None:
+                    article = _record(connection, "article", canonicalize_url(ref["url"]))
+                    if article is None:
                         continue
-                    article = json.loads(row[0])
                     event_id = _canonical_event(connection, article["event_id"])
-                    event = json.loads(
-                        connection.execute(
-                            "SELECT payload FROM records WHERE kind='event' AND id=?", (event_id,)
-                        ).fetchone()[0]
-                    )
+                    event = _record(connection, "event", event_id)
                     card = _card(event, follows)
                     break
                 platform_id = card["event_id"] if card else None
@@ -630,23 +647,11 @@ def get_event(data_dir: Path, event_id: str) -> dict | None:
     sync_monitor_snapshot(data_dir)
     with _connect(data_dir) as connection:
         event_id = _canonical_event(connection, event_id)
-        row = connection.execute(
-            "SELECT payload FROM records WHERE kind='event' AND id=?", (event_id,)
-        ).fetchone()
-        if row is None:
+        event = _record(connection, "event", event_id)
+        if event is None:
             return None
-        event = json.loads(row[0])
-        stored = {
-            key: json.loads(
-                connection.execute(
-                    "SELECT payload FROM records WHERE kind='article' AND id=?",
-                    (key,),
-                ).fetchone()[0]
-            )
-            for key in event["article_keys"]
-        }
-    articles = sorted(
-        (stored[key] for key in event["article_keys"]),
+        articles = _event_articles(connection, event)
+    articles.sort(
         key=lambda row: _time(_article_time(row)),
         reverse=True,
     )
@@ -718,22 +723,15 @@ def update_event_articles(data_dir: Path, event_id: str, articles: list[dict]) -
     with _connect(data_dir) as connection:
         connection.execute("BEGIN IMMEDIATE")
         event_id = _canonical_event(connection, event_id)
-        row = connection.execute(
-            "SELECT payload FROM records WHERE kind='event' AND id=?", (event_id,)
-        ).fetchone()
-        if row is None:
+        event = _record(connection, "event", event_id)
+        if event is None:
             raise ValueError("事件不存在")
-        event = json.loads(row[0])
+        member_keys = set(event["article_keys"])
         for article in articles:
             key = _article_key(article)
-            if key not in event["article_keys"]:
+            if key not in member_keys:
                 continue
-            previous = json.loads(
-                connection.execute(
-                    "SELECT payload FROM records WHERE kind='article' AND id=?",
-                    (key,),
-                ).fetchone()[0]
-            )
+            previous = _record(connection, "article", key)
             updated = {
                 **previous,
                 **{
@@ -756,12 +754,9 @@ def refresh_event_images(data_dir: Path, items: list[dict]) -> None:
         affected = set()
         for item in items:
             key = _article_key(item)
-            row = connection.execute(
-                "SELECT payload FROM records WHERE kind='article' AND id=?", (key,)
-            ).fetchone()
-            if row is None:
+            article = _record(connection, "article", key)
+            if article is None:
                 continue
-            article = json.loads(row[0])
             article["image_url"] = item.get("image_url")
             article.setdefault("metadata", {})["image_candidates"] = item.get("metadata", {}).get(
                 "image_candidates", []
@@ -769,20 +764,8 @@ def refresh_event_images(data_dir: Path, items: list[dict]) -> None:
             _put(connection, "article", key, article)
             affected.add(article["event_id"])
         for event_id in affected:
-            event = json.loads(
-                connection.execute(
-                    "SELECT payload FROM records WHERE kind='event' AND id=?", (event_id,)
-                ).fetchone()[0]
-            )
-            articles = [
-                json.loads(
-                    connection.execute(
-                        "SELECT payload FROM records WHERE kind='article' AND id=?",
-                        (key,),
-                    ).fetchone()[0]
-                )
-                for key in event["article_keys"]
-            ]
+            event = _record(connection, "event", event_id)
+            articles = _event_articles(connection, event)
             articles.sort(key=_news_time, reverse=True)
             event["image_url"] = next(
                 iter(

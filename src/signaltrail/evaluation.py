@@ -83,6 +83,15 @@ _EVALUATION_DIMENSION_GUIDANCE = {
 }
 
 
+def _project_rows(rows, fields: tuple[str, ...]) -> list[dict]:
+    """处理：按评估字段顺序摘录证据，保留空字符串和零值。
+    输入：来源、简报或研判记录及其评估字段。
+    输出：供独立评估阅读的记录，省略未观测的字段。
+    """
+    return [{key: row[key] for key in fields if row.get(key) is not None}
+            for row in rows if isinstance(row, dict)]
+
+
 def build_evaluation_dossier(
     report_path: Path,
     index_path: Path,
@@ -119,20 +128,30 @@ def build_evaluation_dossier(
         for item in index.get("items", [])
         if isinstance(item, dict) and item.get("item_id")
     }
-    report_item_ids = [
-        str(brief.get("item_id"))
-        for section in report.get("sections", [])
-        if isinstance(section, dict)
-        for brief in section.get("briefs", [])
-        if isinstance(brief, dict) and brief.get("item_id")
-    ]
-    featured = [
-        event
-        for section in report.get("sections", [])
-        if isinstance(section, dict)
-        for event in section.get("items", [])
-        if isinstance(event, dict)
-    ]
+    sections = [section for section in report.get("sections", []) if isinstance(section, dict)]
+    briefs = []
+    featured = []
+    source_coverage: dict[str, dict[str, Any]] = {}
+    ordinary_order = []
+    for section in sections:
+        featured.extend(event for event in section.get("items", []) if isinstance(event, dict))
+        for brief in section.get("briefs", []):
+            if not isinstance(brief, dict):
+                continue
+            briefs.append(brief)
+            source_id = str(brief.get("primary_source", {}).get("id") or "unknown")
+            row = source_coverage.setdefault(
+                source_id, {"brief_count": 0, "item_ids": [], "selection_ranks": []},
+            )
+            row["brief_count"] += 1
+            row["item_ids"].append(brief.get("item_id"))
+            row["selection_ranks"].append(brief.get("selection_rank"))
+            ordinary_order.append({
+                "section_id": section.get("id"), "source_id": source_id,
+                "item_id": brief.get("item_id"), "selection_rank": brief.get("selection_rank"),
+                "source_rank": brief.get("source_rank"),
+            })
+    report_item_ids = [str(brief["item_id"]) for brief in briefs if brief.get("item_id")]
     featured_item_ids = [
         str(item_id)
         for event in featured
@@ -145,31 +164,6 @@ def build_evaluation_dossier(
     ]
     evidence_item_ids = list(dict.fromkeys([*report_item_ids, *featured_item_ids]))
     contract_path = project_root() / "templates" / "report-contract.md"
-    source_coverage: dict[str, dict[str, Any]] = {}
-    ordinary_order: list[dict[str, Any]] = []
-    for section in report.get("sections", []):
-        if not isinstance(section, dict):
-            continue
-        for brief in section.get("briefs", []):
-            if not isinstance(brief, dict):
-                continue
-            source_id = str(brief.get("primary_source", {}).get("id") or "unknown")
-            row = source_coverage.setdefault(
-                source_id,
-                {"brief_count": 0, "item_ids": [], "selection_ranks": []},
-            )
-            row["brief_count"] += 1
-            row["item_ids"].append(brief.get("item_id"))
-            row["selection_ranks"].append(brief.get("selection_rank"))
-            ordinary_order.append(
-                {
-                    "section_id": section.get("id"),
-                    "source_id": source_id,
-                    "item_id": brief.get("item_id"),
-                    "selection_rank": brief.get("selection_rank"),
-                    "source_rank": brief.get("source_rank"),
-                }
-            )
     dossier = {
         "schema_version": "1.0",
         "policy": "independent_evaluation_dossier_v2",
@@ -229,23 +223,10 @@ def build_evaluation_dossier(
             "delivery_degradation": report.get("delivery_degradation"),
             "pending_verifications": report.get("pending_verifications", []),
         },
-        "index_source_status": [
-            {
-                key: source.get(key)
-                for key in (
-                    "source_id",
-                    "source_name",
-                    "module",
-                    "category",
-                    "status",
-                    "items_count",
-                    "collected_at",
-                )
-                if source.get(key) is not None
-            }
-            for source in index.get("sources", [])
-            if isinstance(source, dict)
-        ],
+        "index_source_status": _project_rows(index.get("sources", []), (
+            "source_id", "source_name", "module", "category", "status", "items_count",
+            "collected_at",
+        )),
         "source_coverage": source_coverage,
         "ordering": {
             "ordinary_briefs": ordinary_order,
@@ -254,84 +235,30 @@ def build_evaluation_dossier(
                 {"section_id": section.get("id"),
                  "event_ids": [event.get("event_id") for event in section.get("items", [])],
                  "importance": [event.get("importance") for event in section.get("items", [])]}
-                for section in report.get("sections", []) if isinstance(section, dict)
+                for section in sections
             ],
         },
-        "briefs": [
-            {
-                key: brief.get(key)
-                for key in (
-                    "item_id",
-                    "title",
-                    "title_zh",
-                    "title_en",
-                    "tldr",
-                    "status",
-                    "importance",
-                    "source_ref",
-                )
-                if brief.get(key) is not None
-            }
-            for section in report.get("sections", [])
-            if isinstance(section, dict)
-            for brief in section.get("briefs", [])
-            if isinstance(brief, dict)
-        ],
-        "featured_events": [
-            {
-                key: event.get(key)
-                for key in (
-                    "event_id",
-                    "title",
-                    "tldr",
-                    "why_it_matters",
-                    "importance",
-                    "importance_reason",
-                    "confidence",
-                    "status",
-                    "source_refs",
-                    "evidence_notes",
-                )
-                if event.get(key) is not None
-            }
-            for event in featured
-        ],
-        "analyses": [
-            {
-                key: analysis.get(key)
-                for key in _ANALYSIS_EVALUATION_FIELDS
-                if analysis.get(key) is not None
-            }
-            for analysis in report.get("analyses", [])
-            if isinstance(analysis, dict)
-        ],
+        "briefs": _project_rows(briefs, (
+            "item_id", "title", "title_zh", "title_en", "tldr", "status", "importance",
+            "source_ref",
+        )),
+        "featured_events": _project_rows(featured, (
+            "event_id", "title", "tldr", "why_it_matters", "importance", "importance_reason",
+            "confidence", "status", "source_refs", "evidence_notes",
+        )),
+        "analyses": _project_rows(report.get("analyses", []), _ANALYSIS_EVALUATION_FIELDS),
         "cross_perspective_synthesis": report.get("cross_perspective_synthesis"),
-        "index_evidence": [
-            {
-                key: indexed_items[item_id].get(key)
-                for key in (
-                    "item_id",
-                    "source_id",
-                    "source_name",
-                    "title",
-                    "description",
-                    "published_at",
-                    "content_status",
-                )
-                if indexed_items[item_id].get(key) is not None
-            }
-            for item_id in evidence_item_ids
-            if item_id in indexed_items
-        ],
+        "index_evidence": _project_rows(
+            (indexed_items[key] for key in evidence_item_ids if key in indexed_items),
+            ("item_id", "source_id", "source_name", "title", "description",
+             "published_at", "content_status"),
+        ),
         "cache_promotion_candidates": [
             {
                 "item_id": brief.get("item_id"),
                 "semantic_fingerprint": brief.get("semantic_fingerprint"),
             }
-            for section in report.get("sections", [])
-            if isinstance(section, dict)
-            for brief in section.get("briefs", [])
-            if isinstance(brief, dict) and brief.get("item_id")
+            for brief in briefs if brief.get("item_id")
         ],
     }
     report_id = str(report.get("report_id") or "unknown-report")

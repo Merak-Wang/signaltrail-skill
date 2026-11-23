@@ -55,28 +55,11 @@
 
 与运行关联的文字修订，通过 Python `save_report` 传入原 context 的 `coverage_targets` 和 `brief_plan_item_ids`，沿用覆盖目标与选择顺序，避免默认计划重建后改变排序；独立 `save-report` CLI 没有 `--run` 参数。
 
-核心流程不要求特定 harness。全程复用同一个 `--data-dir`，会话建立后用源码入口 `--advance-edition RUN.json --data-dir DATA_DIR` 推进确定性步骤。新的完整写作投影保存在专用 `author-inputs/`，程序按材料体量降序返回最多三个任务票据；用 `--task-limit 空槽数` 控制本次数量，并重复 `--in-flight 批次ID或包路径` 排除运行任务。简报、分析和讲稿均提供 `input_parts_dir` 及有序 `input_parts` 文件名，每块至多 7500 个 `o200k_base` token，按序拼接的 UTF-8 字节与完整输入一致。作者按序逐块读取，每个工具结果只放一块，读完全部材料后写作。`input_file` 留作审计，作者不再打印大文件或自行分块。完整错误位于 `repair_errors_file`，异常问题位于 `issues_file`。保存 `draft_result_path` 后在同一次工具执行中运行 `check_command`，只输出简短结果；接收由推进程序完成。日期或榜单信号确定的 WATCH 在预检和接收时归一，文字、重要性及其余有效编辑判断保持原值。事件审阅通过 `--slides-review REVIEW.json` 传入，规范 URL 别名绑定报告文字时保留原 event ID。
+常规收集、调度、后台任务和交付顺序见[技能入口](../SKILL.md)。恢复时复用清单和 `continue_command`，带上仍在执行的任务 ID。旧 `--coordinator-start` 参数仍可使用。宿主上下文耗尽时记录在途句柄、数据根、审核文件、运行清单和用户要求。
 
-`slides review --index INDEX.json --max-news 50 --model-input --parts-dir REVIEW_INPUT_DIR` 将每源限额内的全部合格候选按相同方法分块，模型仍需读完所有候选后给出决定。恢复已有冻结输入可运行 `scripts/run_signaltrail.py --prepare-input-parts FILE`。设置大的输出上限不能代替分块。每次只读一个 part，并把外层 pragma 和内层命令的输出上限均设为任务值（当前为 9000）：
+本地 Codex 直派读取完整作者文件；工具宿主读取 `input_parts_dir` 下的有序分块。每块至多 7,500 个 `o200k_base` token，拼接后还原冻结输入的 UTF-8 字节。恢复旧输入用 `scripts/run_signaltrail.py --prepare-input-parts FILE`。每次工具结果容纳一个分块，外层和内层的输出限额均取任务的 `read_max_output_tokens`。修复读取 `repair_errors_file`，异常读取 `issues_file`。写入 `draft_result_path` 后按任务的 `check_command` 检查，推进器负责接收。
 
-```javascript
-// @exec: {"max_output_tokens": 9000}
-const r = await tools.exec_command({
-  cmd: "Get-Content -Raw -LiteralPath 'INPUT_PART'",
-  max_output_tokens: 9000
-});
-text(r.output);
-```
-
-协调者只读短回执、完成通知和路径，作者独立读取正文与修复错误。候选审阅的 lead 跳过导航和孤立短行，保留 `body_chars`、`evidence_chars` 供判断材料可用性，重大短公告继续保留审阅资格。
-
-每次推进后沿用返回的 `continue_command`，追加空槽数和仍在途的任务 ID。收到作者完成通知后再移除对应的 `--in-flight`，程序跳过在途草稿，只为空闲槽位生成完整输入。整期只有一位协调者直接管理作者；四槽位最多容纳三位独立作者，不再常驻监督者或观察者。阶段切换和接收十批不会停派或产生接班协调者。Python 完成例行接收、组装和阶段推进，模型仅处理短票据、真实失败、编辑判断与最终交付。等待作者完成通知，长进程在工具内部等待；状态未变时不重新读取产物或启动额外审查。视频由当前协调者直接运行确定性导出命令并保留进程句柄。只有宿主实际上下文限制需要恢复时，才保存在途任务句柄、run/data/review 路径、继续命令及用户要求；旧 `--coordinator-start` 参数仍可读取，但不再强制交接。
-
-优化时保留完整作者证据、实质内容和交付质量。时间与 token 目标用于改进调度和上下文复用；如实报告实测结果及未达目标，不能为满足数字而压缩应交付内容。
-
-进入图文写作后，把 `background_commands` 返回的图片预取、未完成 tail/PDF 各作为后台工具进程启动一次，保留进程句柄；运行期间分别传 `--in-flight slides-images`、`--in-flight edition-tail`。二者与作者并行，渲染前在工具内等待全部结束，避免共同更新日报投影。图片手动命令为 `slides prefetch-images --plan PLAN.json`，原子写入同计划旁的 `images-slides-plan-rN.json`，渲染直接复用完整新闻图片和计量。重抓时加 `--refresh`，默认图片下载预算为 250 MiB。
-
-有隔离 worker 时最多同时运行 3 个 packet，一个完成就补下一个；否则顺序执行。简报、研判和图文每项任务重新创建作者，上下文仅含当前任务和写作指令。Codex 使用 `spawn_agent(fork_turns="none")`；`followup_task` 保留旧上下文，不能用于跨批派发。任务尚在执行时从待办中排除；依赖完成通知调度，多个草稿一起提交。长进程在同一次工具脚本内等待。
+图文复核覆盖每源限额内的全部合格候选。候选导语跳过导航和孤立短行；`body_chars` 与 `evidence_chars` 表示材料长度，重大短公告仍可入选。规范 URL 别名关联日报原 event ID。预检和接收时统一由日期或榜单信号确定的 WATCH，作者的文字、重要性及其他有效判断继续使用。预取回执保存每个事件的配图及计量，显式重抓使用 `slides prefetch-images --refresh`，默认下载预算为 250 MiB。
 
 Codex 运行的耗时和用量使用 `scripts/measure_codex_turn.py` 从运行记录确定性汇总，阶段耗时使用已有机器记录；不派模型执行计量。成本对照固定相同输入、模型和统计范围，包含协调器和全部子任务。cached input 是 token 数量，实际金额须有真实价格与计费数据；缺失时保留未知。
 
@@ -163,4 +146,4 @@ run manifest 固定在 `DATA_DIR/runs/YYYY-MM-DD/<edition>.json`。不要手改�
 
 简报 session 和图文 plan 可用 `scripts/run_signaltrail.py --advance-dispatch INPUT.json --data-dir DATA_DIR [--run RUN.json]` 接收合法草稿并列出待写或修复任务；作者返回草稿路径，协调者在完成后再次推进。处理返回的 `issues`。分析包仍用 `--dispatch-plan`。
 
-使用绝对解释器调用 `scripts/run_signaltrail.py`，并将共享 `author_instruction` 和票据交给作者。返回任务先排除已在执行的 batch ID 或 packet 路径；四槽位中一位协调者直接管理最多三名作者，有其他实际任务占槽时相应减少。作者使用新上下文，协调者批量提交。视频由当前协调者直接启动，按 `SKILL.md` 在工具内部等待，由进程输出进度，完成或失败后再进入模型。
+新简报作者输入在 `candidate_defaults_by_source` 中列出本批同一来源完全相同的字段，包括适用于该来源所有候选的证据限制。按候选的 `source_id` 读取共同字段，再结合逐条字段与 `evidence_by_item_id` 中的原文写作。已有 v2 票据继续读取派发时的文件。

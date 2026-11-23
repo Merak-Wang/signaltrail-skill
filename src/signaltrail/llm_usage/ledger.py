@@ -7,7 +7,7 @@ import sys
 import threading
 import time
 from collections import defaultdict
-from collections.abc import Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import replace
 from datetime import UTC, datetime
@@ -29,7 +29,6 @@ from .models import (
     ObservationQuality,
     TaskHandle,
     UsageObservation,
-    normalize_timestamp,
     safe_label,
     unobservable,
     validate_id,
@@ -37,15 +36,6 @@ from .models import (
 
 SCHEMA_VERSION = "1.0"
 MAX_HOOK_BYTES = 1024 * 1024
-EVENT_TYPES = frozenset(
-    {
-        "task.started",
-        "call.started",
-        "call.finished",
-        "usage.observed",
-        "task.finalized",
-    }
-)
 EVENT_ROOT_KEYS = frozenset(
     {
         "schema_version",
@@ -66,6 +56,19 @@ DEFAULT_ADAPTERS: dict[str, type[UsageAdapter]] = {
     "codex": CodexAdapter,
     "openclaw": OpenClawAdapter,
 }
+
+_CORRELATION_LABELS = ("batch_id", "agent_role")
+_CORRELATION_ATTEMPTS = ("run_attempt", "repair_attempt", "evaluation_attempt")
+_CORRELATION_FIELDS = (*_CORRELATION_LABELS, *_CORRELATION_ATTEMPTS, "parent_session_id_hash")
+USAGE_CORRELATION_ENV = {
+    "batch_id": "SIGNALTRAIL_USAGE_BATCH",
+    "agent_role": "SIGNALTRAIL_USAGE_AGENT_ROLE",
+    "run_attempt": "SIGNALTRAIL_USAGE_RUN_ATTEMPT",
+    "repair_attempt": "SIGNALTRAIL_USAGE_REPAIR_ATTEMPT",
+    "evaluation_attempt": "SIGNALTRAIL_USAGE_EVALUATION_ATTEMPT",
+    "parent_session_id": "SIGNALTRAIL_USAGE_PARENT_SESSION",
+}
+
 
 
 class UsageLedger:
@@ -114,41 +117,24 @@ class UsageLedger:
         if source_tag is not None and source_value is None:
             raise ValueError("source_tag must be a bounded safe label")
         with self._task_id_guard(task_value):
-            matches = [
-                path.parent.resolve()
-                for path in self.usage_root.glob(f"*/{task_value}/events")
-            ]
-            if len(matches) > 1:
-                raise ValueError(f"Usage task ID is not unique across dates: {task_value}")
-            if matches:
-                existing_path = matches[0]
+            handle = self._existing_task_handle(task_value)
+            if handle is None:
+                timestamp = _timestamp(started_at)
+                date = timestamp[:10]
                 handle = self._canonical_task_handle(
                     TaskHandle(
-                        self.data_dir,
-                        task_value,
-                        existing_path.parent.name,
-                        existing_path,
+                        self.data_dir, task_value, date, self.usage_root / date / task_value
                     )
                 )
-                events = self._events_unlocked(handle)
+            else:
                 existing_start = next(
-                    event for event in events if event["event_type"] == "task.started"
+                    event for event in self._events_unlocked(handle)
+                    if event["event_type"] == "task.started"
                 )
                 timestamp = (
                     _timestamp(started_at)
                     if started_at is not None
                     else existing_start["data"]["started_at"]
-                )
-            else:
-                timestamp = _timestamp(started_at)
-                date = timestamp[:10]
-                handle = self._canonical_task_handle(
-                    TaskHandle(
-                        self.data_dir,
-                        task_value,
-                        date,
-                        self.usage_root / date / task_value,
-                    )
                 )
             data: dict[str, Any] = {"agent": agent_label, "started_at": timestamp}
             if source_value is not None:
@@ -187,68 +173,35 @@ class UsageLedger:
         phase_label = _required_label(phase, "phase")
         call_value = validate_id(call_id or f"call-{uuid4().hex}", "call_id")
         safe_adapter = _optional_label(adapter, "adapter")
-        safe_batch_id = _optional_label(batch_id, "batch_id")
-        safe_agent_role = _optional_label(agent_role, "agent_role")
-        safe_run_attempt = _optional_non_negative_int(run_attempt, "run_attempt")
-        safe_repair_attempt = _optional_non_negative_int(
-            repair_attempt, "repair_attempt"
-        )
-        safe_evaluation_attempt = _optional_non_negative_int(
-            evaluation_attempt, "evaluation_attempt"
-        )
-        parent_session_id_hash = (
-            hash_identifier("parent-session", parent_session_id)
-            if parent_session_id is not None
-            else None
+        metadata = _correlation_fields(
+            batch_id=batch_id, agent_role=agent_role, run_attempt=run_attempt,
+            repair_attempt=repair_attempt, evaluation_attempt=evaluation_attempt,
+            parent_session_id=parent_session_id,
         )
         with self._task_guard(handle):
             events = self._events_unlocked(handle)
             _require_open_task(handle, events)
-            existing_starts = [
-                event
-                for event in events
-                if event["event_type"] == "call.started"
-                and event["data"]["call_id"] == call_value
-            ]
+            existing = _call_event_data(events, "call.started", call_value)
             timestamp = (
                 _timestamp(started_at)
-                if started_at is not None or not existing_starts
-                else existing_starts[0]["data"]["started_at"]
+                if started_at is not None or existing is None
+                else existing["started_at"]
             )
             data: dict[str, Any] = {
                 "call_id": call_value,
                 "phase": phase_label,
                 "started_at": timestamp,
             }
-            for name, value in (
-                ("adapter", safe_adapter),
-                ("batch_id", safe_batch_id),
-                ("agent_role", safe_agent_role),
-                ("run_attempt", safe_run_attempt),
-                ("repair_attempt", safe_repair_attempt),
-                ("evaluation_attempt", safe_evaluation_attempt),
-                ("parent_session_id_hash", parent_session_id_hash),
-            ):
-                if value is not None:
-                    data[name] = value
+            if safe_adapter is not None:
+                data["adapter"] = safe_adapter
+            data.update(metadata)
             self._write_event_unlocked(
                 handle,
                 "call.started",
                 dedupe_key=f"call-start:{call_value}",
                 data=data,
             )
-        return CallHandle(
-            handle,
-            call_value,
-            phase_label,
-            timestamp,
-            batch_id=safe_batch_id,
-            agent_role=safe_agent_role,
-            run_attempt=safe_run_attempt,
-            repair_attempt=safe_repair_attempt,
-            evaluation_attempt=safe_evaluation_attempt,
-            parent_session_id_hash=parent_session_id_hash,
-        )
+        return _call_handle_from_data(handle, data)
 
     def finish_call(
         self,
@@ -269,16 +222,11 @@ class UsageLedger:
         with self._task_guard(handle):
             events = self._events_unlocked(handle)
             _require_open_task(handle, events)
-            existing_finishes = [
-                event
-                for event in events
-                if event["event_type"] == "call.finished"
-                and event["data"]["call_id"] == call_id
-            ]
+            existing = _call_event_data(events, "call.finished", call_id)
             timestamp = (
                 _timestamp(completed_at)
-                if completed_at is not None or not existing_finishes
-                else existing_finishes[0]["data"]["completed_at"]
+                if completed_at is not None or existing is None
+                else existing["completed_at"]
             )
             data = {
                 "call_id": call_id,
@@ -286,7 +234,7 @@ class UsageLedger:
                 "status": status_label,
                 "completed_at": timestamp,
             }
-            _validate_new_event_against_snapshot("call.finished", data, events)
+            _validate_call_finish(data, events)
             return self._write_event_unlocked(
                 handle,
                 "call.finished",
@@ -401,28 +349,8 @@ class UsageLedger:
 
         handle = self._canonical_task_handle(task)
         with self._task_guard(handle):
-            events = self._events_unlocked(handle)
-            starts = [
-                event
-                for event in events
-                if event["event_type"] == "call.started"
-                and event["data"]["call_id"] == call_id
-            ]
-        if not starts:
-            return None
-        data = starts[0]["data"]
-        return CallHandle(
-            handle,
-            call_id,
-            data["phase"],
-            data["started_at"],
-            batch_id=data.get("batch_id"),
-            agent_role=data.get("agent_role"),
-            run_attempt=data.get("run_attempt"),
-            repair_attempt=data.get("repair_attempt"),
-            evaluation_attempt=data.get("evaluation_attempt"),
-            parent_session_id_hash=data.get("parent_session_id_hash"),
-        )
+            start = _call_event_data(self._events_unlocked(handle), "call.started", call_id)
+        return _call_handle_from_data(handle, start) if start is not None else None
 
     def import_usage_file(
         self,
@@ -464,8 +392,8 @@ class UsageLedger:
 
         handle = self.resolve_task(task)
         with self._task_guard(handle):
-            events = self._events_unlocked(handle)
-            return _summarize_events(handle.task_id, events)
+            events, observations, sealed_summary = self._load_events(handle)
+            return sealed_summary or _summarize_events(handle.task_id, events, observations)
 
     def finalize_task(
         self,
@@ -483,7 +411,7 @@ class UsageLedger:
         status_label = _required_label(status, "status")
         completion_timestamp = _timestamp(completed_at)
         with self._task_guard(handle):
-            events = self._events_unlocked(handle)
+            events, observations, _ = self._load_events(handle)
             finalized = [
                 event for event in events if event["event_type"] == "task.finalized"
             ]
@@ -505,6 +433,7 @@ class UsageLedger:
             summary = _summarize_events(
                 handle.task_id,
                 events,
+                observations,
                 completed_at_override=completion_timestamp,
             )
             if (
@@ -535,9 +464,19 @@ class UsageLedger:
         if isinstance(task, TaskHandle):
             return self._canonical_task_handle(task)
         task_id = validate_id(task, "task_id")
+        handle = self._existing_task_handle(task_id)
+        if handle is None:
+            raise FileNotFoundError(f"Usage task does not exist: {task_id}")
+        return handle
+
+    def _existing_task_handle(self, task_id: str) -> TaskHandle | None:
+        """处理：定位已有账本目录并确认任务 ID 唯一。
+        输入：创建或查询入口提供的规范任务 ID。
+        输出：任务句柄；任务尚未创建时返回 None。
+        """
         matches = [path.parent for path in self.usage_root.glob(f"*/{task_id}/events")]
         if not matches:
-            raise FileNotFoundError(f"Usage task does not exist: {task_id}")
+            return None
         if len(matches) > 1:
             raise ValueError(f"Usage task ID is not unique across dates: {task_id}")
         task_path = matches[0]
@@ -652,35 +591,6 @@ class UsageLedger:
                 )
         return output
 
-    def _write_event(
-        self,
-        task: TaskHandle,
-        event_type: str,
-        *,
-        dedupe_key: str,
-        data: Mapping[str, Any],
-        allow_finalized: bool = False,
-    ) -> Path:
-        """处理：以内容校验的排他创建语义写入单个不可变事件。
-        输入：任务、事件类型、仅内存去重键和严格 allowlist data。
-        输出：事件路径；同键同内容幂等，同键异内容报冲突且不覆盖。
-        """
-
-        handle = self._canonical_task_handle(task)
-        with self._task_guard(handle):
-            events = self._events_unlocked(handle, missing_ok=allow_finalized)
-            if not allow_finalized:
-                _require_open_task(handle, events)
-            elif event_type == "task.started":
-                self._reject_cross_date_task_id(handle)
-            _validate_new_event_against_snapshot(event_type, data, events)
-            return self._write_event_unlocked(
-                handle,
-                event_type,
-                dedupe_key=dedupe_key,
-                data=data,
-            )
-
     def _write_event_unlocked(
         self,
         task: TaskHandle,
@@ -696,7 +606,7 @@ class UsageLedger:
 
         if event_type not in EVENT_TYPES:
             raise ValueError(f"Unsupported usage event type: {event_type}")
-        dedupe_hash = _hash_text("event-dedupe", dedupe_key)
+        dedupe_hash = hash_identifier("event-dedupe", dedupe_key)
         event_id = _event_id(task.task_id, event_type, dedupe_hash)
         payload_hash = f"sha256:{canonical_digest(data)}"
         path = task.path / "events" / f"{event_id}.json"
@@ -710,16 +620,17 @@ class UsageLedger:
             "payload_hash": payload_hash,
             "data": dict(data),
         }
-        _validate_event_envelope(task, path, event)
+        _, observation = _validate_event_envelope(task, path, event)
         try:
             result = write_immutable_json(path, event)
             snapshot = getattr(self._transaction_state, "snapshots", {}).get(task.task_id)
             if snapshot is not None:
-                snapshot.append(event)
-                snapshot.sort(key=lambda row: row["event_id"])
+                snapshot[0].append(event)
+                if observation is not None:
+                    snapshot[1][event["event_id"]] = observation
             return result
         except FileExistsError:
-            existing, pending_legacy_hash = _read_validated_event(task, path)
+            existing, pending_legacy_hash, _ = _read_validated_event(task, path)
             if pending_legacy_hash:
                 raise RuntimeError(
                     f"Legacy finalized event requires full-task validation: {path.name}"
@@ -742,63 +653,42 @@ class UsageLedger:
         with self._task_guard(handle):
             return self._events_unlocked(handle)
 
-    def _events_unlocked(
-        self,
-        task: TaskHandle,
-        *,
-        missing_ok: bool = False,
-    ) -> list[dict[str, Any]]:
-        """处理：在 task guard 内读取并验证全部不可变事件及封存摘要。
-        输入：规范 TaskHandle；仅首次 task.started 创建可允许事件目录缺失。
-        输出：按事件文件名排序的完整事件；任一身份、hash 或结构异常都会失败。
+    def _events_unlocked(self, task: TaskHandle) -> list[dict[str, Any]]:
+        """处理：读取事务中的事件，供生命周期操作使用。
+        输入：持有任务锁的规范 TaskHandle。
+        输出：按文件名排序的事件。
         """
+        return self._load_events(task)[0]
 
+    def _load_events(
+        self, task: TaskHandle
+    ) -> tuple[list[dict[str, Any]], dict[str, UsageObservation], dict[str, Any] | None]:
+        """处理：验证不可变事件并在持锁快照内复用解析完成的观测。
+        输入：持有任务锁的规范 TaskHandle。
+        输出：按文件名排序的事件、按事件 ID 索引的观测及可用的封存摘要。
+        """
         event_dir = task.path / "events"
         snapshots = getattr(self._transaction_state, "snapshots", {})
         if snapshots.get(task.task_id) is not None:
-            return snapshots[task.task_id]
+            events, observations, summary = snapshots[task.task_id]
+            return sorted(events, key=lambda row: row["event_id"]), observations, summary
         if not event_dir.exists():
-            if missing_ok:
-                return []
             raise FileNotFoundError(f"Usage task has no event directory: {task.task_id}")
         events: list[dict[str, Any]] = []
+        observations: dict[str, UsageObservation] = {}
         pending_legacy_hashes: set[str] = set()
         for path in sorted(event_dir.glob("*.json")):
-            event, pending_legacy_hash = _read_validated_event(task, path)
+            event, pending_legacy_hash, observation = _read_validated_event(task, path)
             events.append(event)
+            if observation is not None:
+                observations[event["event_id"]] = observation
             if pending_legacy_hash:
                 pending_legacy_hashes.add(event["event_id"])
-        _validate_event_set(task, events, pending_legacy_hashes)
+        summary = _validate_event_set(task, events, observations, pending_legacy_hashes)
+        snapshot = (events, observations, summary)
         if task.task_id in snapshots:
-            snapshots[task.task_id] = events
-        return events
-
-    def _finalized_paths(self, task: TaskHandle) -> list[Path]:
-        """处理：定位任务中已存在的 task.finalized 事件。
-        输入：已定位 TaskHandle。
-        输出：finalized 事件路径列表；仅用于封存写入保护。
-        """
-
-        handle = self._canonical_task_handle(task)
-        with self._task_guard(handle):
-            return [
-                _event_path(handle, event)
-                for event in self._events_unlocked(handle)
-                if event["event_type"] == "task.finalized"
-            ]
-
-    def _reject_cross_date_task_id(self, task: TaskHandle) -> None:
-        """处理：阻止同一显式 task ID 在两个 UTC 日期目录下形成歧义。
-        输入：已持有全局 task-ID 锁的待创建任务句柄。
-        输出：没有返回值；发现另一日期已有同 ID 事件目录时抛出 ValueError。
-        """
-
-        matches = [
-            path.parent.resolve()
-            for path in self.usage_root.glob(f"*/{task.task_id}/events")
-        ]
-        if any(path != task.path for path in matches):
-            raise ValueError(f"Usage task ID already exists on another date: {task.task_id}")
+            snapshots[task.task_id] = snapshot
+        return snapshot
 
 
 def _correlate_records(
@@ -816,50 +706,50 @@ def _correlate_records(
     输出：只增加短标签、非负整数和父会话哈希的记录；宿主标识原文不会落盘。
     """
 
-    safe_batch_id = _optional_label(batch_id, "batch_id")
-    safe_agent_role = _optional_label(agent_role, "agent_role")
-    safe_run_attempt = _optional_non_negative_int(run_attempt, "run_attempt")
-    safe_repair_attempt = _optional_non_negative_int(repair_attempt, "repair_attempt")
-    safe_evaluation_attempt = _optional_non_negative_int(
-        evaluation_attempt, "evaluation_attempt"
+    metadata = _correlation_fields(
+        batch_id=batch_id, agent_role=agent_role, run_attempt=run_attempt,
+        repair_attempt=repair_attempt, evaluation_attempt=evaluation_attempt,
+        parent_session_id=parent_session_id,
     )
-    parent_hash = (
-        hash_identifier("parent-session", parent_session_id)
-        if parent_session_id is not None
-        else None
+    if not metadata:
+        return records
+    return [
+        AdapterRecord(record.dedupe_key, replace(record.observation, **metadata))
+        for record in records
+    ]
+
+
+def _correlation_fields(
+    *, batch_id: str | None, agent_role: str | None, run_attempt: int | None,
+    repair_attempt: int | None, evaluation_attempt: int | None, parent_session_id: str | None,
+) -> dict[str, Any]:
+    """处理：统一规范 call 与 usage 事件的任务关联字段。
+    输入：调用方提供的批次、角色、各阶段尝试次数和父会话。
+    输出：已验证的短字段和父会话摘要，省略未赋值字段。
+    """
+    values = {
+        "batch_id": _optional_label(batch_id, "batch_id"),
+        "agent_role": _optional_label(agent_role, "agent_role"),
+        "run_attempt": _optional_non_negative_int(run_attempt, "run_attempt"),
+        "repair_attempt": _optional_non_negative_int(repair_attempt, "repair_attempt"),
+        "evaluation_attempt": _optional_non_negative_int(evaluation_attempt, "evaluation_attempt"),
+        "parent_session_id_hash": (
+            hash_identifier("parent-session", parent_session_id)
+            if parent_session_id is not None else None
+        ),
+    }
+    return {name: value for name, value in values.items() if value is not None}
+
+
+def _call_handle_from_data(task: TaskHandle, data: Mapping[str, Any]) -> CallHandle:
+    """处理：从写入或重放的 call.started 数据恢复调用句柄。
+    输入：规范任务与本地起始事件数据。
+    输出：可用于完成和关联 usage 的调用句柄。
+    """
+    return CallHandle(
+        task, data["call_id"], data["phase"], data["started_at"],
+        **{name: data.get(name) for name in _CORRELATION_FIELDS},
     )
-    output: list[AdapterRecord] = []
-    for record in records:
-        observation = record.observation
-        output.append(
-            AdapterRecord(
-                dedupe_key=record.dedupe_key,
-                observation=replace(
-                    observation,
-                    batch_id=safe_batch_id or observation.batch_id,
-                    agent_role=safe_agent_role or observation.agent_role,
-                    run_attempt=(
-                        safe_run_attempt
-                        if safe_run_attempt is not None
-                        else observation.run_attempt
-                    ),
-                    repair_attempt=(
-                        safe_repair_attempt
-                        if safe_repair_attempt is not None
-                        else observation.repair_attempt
-                    ),
-                    evaluation_attempt=(
-                        safe_evaluation_attempt
-                        if safe_evaluation_attempt is not None
-                        else observation.evaluation_attempt
-                    ),
-                    parent_session_id_hash=(
-                        parent_hash or observation.parent_session_id_hash
-                    ),
-                ),
-            )
-        )
-    return output
 
 
 def _local_task_lock(path: Path) -> threading.RLock:
@@ -946,25 +836,25 @@ def _event_path(task: TaskHandle, event: Mapping[str, Any]) -> Path:
 def _read_validated_event(
     task: TaskHandle,
     path: Path,
-) -> tuple[dict[str, Any], bool]:
+) -> tuple[dict[str, Any], bool, UsageObservation | None]:
     """处理：读取一个事件并验证路径、身份、内容 hash 和事件专属安全结构。
     输入：规范 TaskHandle 与其 events 目录中的候选 JSON 路径。
-    输出：验证后的根对象及“旧版 finalized 缺 timing 待整组复核”标志。
+    输出：事件对象、旧版封存复核标志和已解析的用量观测。
     """
 
     event = read_json_object(path, "LLM usage event")
-    pending_legacy_hash = _validate_event_envelope(task, path, event)
-    return event, pending_legacy_hash
+    pending_legacy_hash, observation = _validate_event_envelope(task, path, event)
+    return event, pending_legacy_hash, observation
 
 
 def _validate_event_envelope(
     task: TaskHandle,
     path: Path,
     event: Mapping[str, Any],
-) -> bool:
+) -> tuple[bool, UsageObservation | None]:
     """处理：验证单个事件的规范 envelope、派生 ID、payload hash 与 data allowlist。
     输入：任务身份、实际文件路径和解析后的根映射。
-    输出：仅当旧版 finalized 被移除 timing 且需整组恢复校验时返回 True。
+    输出：旧版封存复核标志和用于汇总的规范观测。
     """
 
     try:
@@ -985,22 +875,21 @@ def _validate_event_envelope(
         expected_id = _event_id(task.task_id, event_type, dedupe_hash)
         if event["event_id"] != f"sha256:{expected_id}":
             raise ValueError("event_id does not match task/type/dedupe_hash")
-        expected_dir = (task.path / "events").resolve()
-        if path.parent.resolve() != expected_dir or path.name != f"{expected_id}.json":
+        if path.parent != task.path / "events" or path.name != f"{expected_id}.json":
             raise ValueError("event filename does not match event_id/task path")
         data = event["data"]
         if not isinstance(data, dict):
             raise ValueError("data must be an object")
-        _validate_event_data(task, event_type, dedupe_hash, data)
+        observation = _validate_event_data(task, event_type, dedupe_hash, data)
     except (KeyError, TypeError, ValueError) as exc:
         raise RuntimeError(f"Invalid LLM usage event structure: {path.name}") from exc
 
     expected_payload_hash = f"sha256:{canonical_digest(data)}"
     if payload_hash == expected_payload_hash:
-        return False
+        return False, observation
     summary = data.get("summary") if event_type == "task.finalized" else None
     if isinstance(summary, dict) and "timing" not in summary:
-        return True
+        return True, None
     raise RuntimeError(f"LLM usage event payload hash mismatch: {path.name}")
 
 
@@ -1009,116 +898,43 @@ def _validate_event_data(
     event_type: str,
     dedupe_hash: str,
     data: Mapping[str, Any],
-) -> None:
+) -> UsageObservation | None:
     """处理：按事件类型重建安全 data，拒绝额外字段、错误类型和悬空自由文本。
     输入：任务、事件类型、envelope 去重 hash 和 data 映射。
-    输出：没有业务返回值；data 与规范序列化不完全相等时抛出 ValueError。
+    输出：用量事件的规范观测，用于汇总；不符合持久化契约时抛出 ValueError。
     """
 
-    actual = dict(data)
-    if event_type == "task.started":
-        _require_keys(actual, {"agent", "started_at"}, {"source_tag", "parent_task_id"})
-        normalized: dict[str, Any] = {
-            "agent": _string_label(actual["agent"], "agent"),
-            "started_at": _canonical_timestamp(actual["started_at"], "started_at"),
-        }
-        if "source_tag" in actual:
-            normalized["source_tag"] = _string_label(actual["source_tag"], "source_tag")
-        if "parent_task_id" in actual:
-            normalized["parent_task_id"] = _string_id(
-                actual["parent_task_id"], "parent_task_id"
-            )
-        expected_dedupe = _hash_text("event-dedupe", f"task-start:{task.task_id}")
-    elif event_type == "call.started":
-        _require_keys(
-            actual,
-            {"call_id", "phase", "started_at"},
-            {
-                "adapter",
-                "batch_id",
-                "agent_role",
-                "run_attempt",
-                "repair_attempt",
-                "evaluation_attempt",
-                "parent_session_id_hash",
-            },
-        )
-        call_id = _string_id(actual["call_id"], "call_id")
-        normalized = {
-            "call_id": call_id,
-            "phase": _string_label(actual["phase"], "phase"),
-            "started_at": _canonical_timestamp(actual["started_at"], "started_at"),
-        }
-        if "adapter" in actual:
-            normalized["adapter"] = _string_label(actual["adapter"], "adapter")
-        for name in ("batch_id", "agent_role"):
-            if name in actual:
-                normalized[name] = _string_label(actual[name], name)
-        for name in ("run_attempt", "repair_attempt", "evaluation_attempt"):
-            if name in actual:
-                normalized[name] = _optional_non_negative_int(actual[name], name)
-        if "parent_session_id_hash" in actual:
-            parent_hash = actual["parent_session_id_hash"]
-            if not _is_hash_label(parent_hash):
-                raise ValueError("parent_session_id_hash must be SHA-256")
-            normalized["parent_session_id_hash"] = parent_hash
-        expected_dedupe = _hash_text("event-dedupe", f"call-start:{call_id}")
-    elif event_type == "call.finished":
-        _require_keys(actual, {"call_id", "phase", "status", "completed_at"}, set())
-        call_id = _string_id(actual["call_id"], "call_id")
-        normalized = {
-            "call_id": call_id,
-            "phase": _string_label(actual["phase"], "phase"),
-            "status": _string_label(actual["status"], "status"),
-            "completed_at": _canonical_timestamp(actual["completed_at"], "completed_at"),
-        }
-        expected_dedupe = _hash_text("event-dedupe", f"call-finish:{call_id}")
-    elif event_type == "usage.observed":
-        _require_keys(actual, {"observation"}, {"call_id"})
-        observation = actual["observation"]
-        if not isinstance(observation, dict):
-            raise ValueError("observation must be an object")
-        normalized_observation = UsageObservation.from_dict(observation).to_dict()
-        for timestamp_key in ("started_at", "completed_at"):
-            historical_timestamp = observation.get(timestamp_key)
-            if (
-                isinstance(historical_timestamp, str)
-                and timestamp_key in normalized_observation
-                and normalize_timestamp(historical_timestamp)
-                == normalized_observation[timestamp_key]
-            ):
-                # v1.0 events could preserve provider fractional precision. The payload hash
-                # still protects those bytes, while new adapters write UTC whole seconds.
-                normalized_observation[timestamp_key] = historical_timestamp
-        normalized = {"observation": normalized_observation}
-        if "call_id" in actual:
-            normalized["call_id"] = _string_id(actual["call_id"], "call_id")
-        expected_dedupe = dedupe_hash
-    else:
-        _require_keys(actual, {"status", "completed_at", "summary"}, set())
-        summary = actual["summary"]
-        if not isinstance(summary, dict):
-            raise ValueError("finalized summary must be an object")
-        normalized = {
-            "status": _string_label(actual["status"], "status"),
-            "completed_at": _canonical_timestamp(actual["completed_at"], "completed_at"),
-            "summary": summary,
-        }
-        expected_dedupe = _hash_text("event-dedupe", f"task-finalize:{task.task_id}")
-    if actual != normalized:
+    required, optional, dedupe_format = _EVENT_DATA_FIELDS[event_type]
+    if not required.keys() <= data.keys() or data.keys() - required.keys() - optional.keys():
+        raise ValueError("event data fields do not match the canonical allowlist")
+    normalized = {
+        name: validator(data[name], name)
+        for fields in (required, optional)
+        for name, validator in fields.items()
+        if name in data
+    }
+    observation = None
+    if event_type == "usage.observed":
+        observation = normalized["observation"]
+        normalized["observation"] = observation.to_dict()
+    if data != normalized:
         raise ValueError(f"{event_type} data is not canonical")
-    if dedupe_hash != expected_dedupe:
+    if dedupe_format and dedupe_hash != hash_identifier(
+        "event-dedupe", dedupe_format.format(task=task.task_id, call=normalized.get("call_id"))
+    ):
         raise ValueError(f"{event_type} dedupe hash is not canonical")
+    return observation
 
 
 def _validate_event_set(
     task: TaskHandle,
     events: list[dict[str, Any]],
+    observations: Mapping[str, UsageObservation],
     pending_legacy_hashes: set[str],
-) -> None:
+) -> dict[str, Any] | None:
     """处理：验证 task 事件集合的唯一生命周期根和 finalized 派生摘要。
     输入：任务、逐个已验证事件和待恢复验证的旧版 finalized event_id 集合。
-    输出：没有业务返回值；缺少/重复 task root、重复 seal 或摘要不一致时失败。
+    输出：已重建的封存摘要；开放任务返回空，事件不一致时失败。
     """
 
     started = [event for event in events if event["event_type"] == "task.started"]
@@ -1127,33 +943,37 @@ def _validate_event_set(
     finalized = [event for event in events if event["event_type"] == "task.finalized"]
     if len(finalized) > 1:
         raise RuntimeError(f"Usage task contains multiple finalized seals: {task.task_id}")
-    _call_lifecycle(events)
     if finalized:
-        _validate_finalized_summary(
+        return _validate_finalized_summary(
             task,
             finalized[0],
             [event for event in events if event["event_type"] != "task.finalized"],
+            observations,
             finalized[0]["event_id"] in pending_legacy_hashes,
         )
-    elif pending_legacy_hashes:
+    _call_lifecycle(events)
+    if pending_legacy_hashes:
         raise RuntimeError(f"Usage task contains an invalid legacy event: {task.task_id}")
+    return None
 
 
 def _validate_finalized_summary(
     task: TaskHandle,
     finalized: Mapping[str, Any],
     non_final_events: list[dict[str, Any]],
+    observations: Mapping[str, UsageObservation],
     pending_legacy_hash: bool,
-) -> None:
+) -> dict[str, Any]:
     """处理：重建 finalized summary 并验证旧版兼容投影及缺 timing 的历史 hash。
     输入：任务、唯一 seal、seal 前事件快照和是否存在旧版待验证 payload hash。
-    输出：没有业务返回值；封存摘要、完成状态或历史 hash 不一致时失败。
+    输出：经校验的当前格式摘要，补齐旧版摘要缺少的字段。
     """
 
     data = dict(finalized["data"])
     expected = _summarize_events(
         task.task_id,
         non_final_events,
+        observations,
         completed_at_override=data["completed_at"],
     )
     stored = dict(data["summary"])
@@ -1171,6 +991,7 @@ def _validate_finalized_summary(
         legacy = _summarize_events(
             task.task_id,
             non_final_events,
+            observations,
             completed_at_override=data["completed_at"],
             legacy_latency_sum=True,
         )
@@ -1187,6 +1008,8 @@ def _validate_finalized_summary(
             raise RuntimeError(
                 f"Legacy finalized usage payload hash mismatch: {task.task_id}"
             )
+
+    return expected
 
 
 def _require_open_task(task: TaskHandle, events: list[dict[str, Any]]) -> None:
@@ -1214,51 +1037,37 @@ def _hook_call_id(observation: UsageObservation) -> str | None:
     return f"hook-{observation.correlation_id_hash.removeprefix('sha256:')}"
 
 
-def _validate_new_event_against_snapshot(
-    event_type: str,
-    data: Mapping[str, Any],
+def _call_event_data(
     events: list[dict[str, Any]],
-) -> None:
-    """处理：在持锁快照上拒绝本地生命周期 API 制造孤立或倒序结束事件。
-    输入：待写事件类型、安全 data 映射和同一 task 的完整已验证事件快照。
-    输出：没有业务返回值；call.finished 无对应 start、phase 不同或时间倒序时失败。
+    event_type: str,
+    call_id: str,
+) -> dict[str, Any] | None:
+    """处理：在已验证快照中查找指定调用的生命周期事件。
+    输入：同一任务的事件、生命周期类型和调用 ID。
+    输出：已有的 start 或 finish 数据；没有匹配时返回 None。
     """
+    return next(
+        (event["data"] for event in events
+         if event["event_type"] == event_type and event["data"]["call_id"] == call_id),
+        None,
+    )
 
-    if event_type != "call.finished":
-        return
-    call_id = _string_id(data.get("call_id"), "call_id")
-    phase = _string_label(data.get("phase"), "phase")
-    completed_at = _canonical_timestamp(data.get("completed_at"), "completed_at")
-    matching = [
-        event
-        for event in events
-        if event["event_type"] == "call.started"
-        and event["data"]["call_id"] == call_id
-    ]
-    if not matching:
+
+def _validate_call_finish(data: Mapping[str, Any], events: list[dict[str, Any]]) -> None:
+    """处理：确保待写入的结束边界对应已有调用并且时间顺序正确。
+    输入：finish_call 已规范化的事件数据及持锁快照。
+    输出：无返回值；缺少起点、阶段不同或时间倒序时抛出 RuntimeError。
+    """
+    call_id = data["call_id"]
+    started = _call_event_data(events, "call.started", call_id)
+    if started is None:
         raise RuntimeError(f"Cannot finish call without call.started: {call_id}")
-    started = matching[0]["data"]
-    if started["phase"] != phase:
+    if started["phase"] != data["phase"]:
         raise RuntimeError(f"Cannot finish call with another phase: {call_id}")
-    if datetime.fromisoformat(completed_at) < datetime.fromisoformat(
+    if datetime.fromisoformat(data["completed_at"]) < datetime.fromisoformat(
         started["started_at"]
     ):
         raise RuntimeError(f"Cannot finish call before it started: {call_id}")
-
-
-def _require_keys(
-    payload: Mapping[str, Any],
-    required: set[str],
-    optional: set[str],
-) -> None:
-    """处理：验证事件 data 恰好使用声明的必需和可选键。
-    输入：待验证映射、必需键集合和可选键集合。
-    输出：没有业务返回值；缺键或额外键均抛出 ValueError。
-    """
-
-    keys = set(payload)
-    if not required.issubset(keys) or keys - required - optional:
-        raise ValueError("event data fields do not match the canonical allowlist")
 
 
 def _string_label(value: object, label: str) -> str:
@@ -1314,6 +1123,34 @@ def _is_hash_label(value: object) -> bool:
     )
 
 
+def _event_object(value: object, label: str) -> dict[str, Any]:
+    """处理：读取事件内的 JSON 对象。
+    输入：对象候选值和字段名。
+    输出：原对象；其他 JSON 类型抛出 ValueError。
+    """
+    if not isinstance(value, dict):
+        raise ValueError(f"{label} must be an object")
+    return value
+
+
+def _event_observation(value: object, label: str) -> UsageObservation:
+    """处理：从事件对象解析已持久化的用量记录。
+    输入：单条事件的观测字段和字段名。
+    输出：用于规范化比较及后续汇总的同一条观测。
+    """
+    return UsageObservation.from_dict(_event_object(value, label))
+
+
+def _event_hash(value: object, label: str) -> object:
+    """处理：验证事件引用的 SHA-256 标签。
+    输入：事件哈希字段候选值和字段名。
+    输出：合法标签原值。
+    """
+    if not _is_hash_label(value):
+        raise ValueError(f"{label} must be SHA-256")
+    return value
+
+
 def _task_date(value: object) -> str:
     """处理：验证 TaskHandle 日期为规范公历 YYYY-MM-DD。
     输入：调用方构造句柄中的 date 候选值。
@@ -1334,6 +1171,7 @@ def _task_date(value: object) -> str:
 def _summarize_events(
     task_id: str,
     events: list[dict[str, Any]],
+    observations_by_event: Mapping[str, UsageObservation],
     *,
     completed_at_override: str | None = None,
     legacy_latency_sum: bool = False,
@@ -1344,10 +1182,7 @@ def _summarize_events(
     """
 
     usage_events = [event for event in events if event["event_type"] == "usage.observed"]
-    observations = [
-        UsageObservation.from_dict(dict(event["data"]["observation"]))
-        for event in usage_events
-    ]
+    observations = [observations_by_event[event["event_id"]] for event in usage_events]
     selected, conflicts = _reconcile_observations(observations)
     token_summary = {
         name: _sum_measurements([getattr(item.tokens, name) for item in selected])
@@ -1484,6 +1319,10 @@ def _lineage_coverage(observations: list[UsageObservation]) -> dict[str, Any]:
         "parent_session_id_hash",
     )
     total = len(observations)
+    present = {
+        name: sum(getattr(item, name) is not None for item in observations)
+        for name in fields
+    }
     by_phase: dict[str, int] = defaultdict(int)
     for observation in observations:
         if observation.phase is not None:
@@ -1491,11 +1330,8 @@ def _lineage_coverage(observations: list[UsageObservation]) -> dict[str, Any]:
     return {
         "observation_count": total,
         "fields": {
-            name: {
-                "present": sum(getattr(item, name) is not None for item in observations),
-                "missing": sum(getattr(item, name) is None for item in observations),
-            }
-            for name in fields
+            name: {"present": count, "missing": total - count}
+            for name, count in present.items()
         },
         "by_phase": dict(sorted(by_phase.items())),
     }
@@ -1539,12 +1375,7 @@ def ingest_hook_from_env(
         phase=env.get("SIGNALTRAIL_USAGE_PHASE"),
         call_id=env.get("SIGNALTRAIL_USAGE_CALL"),
         source_event_id=env.get("SIGNALTRAIL_USAGE_EVENT"),
-        batch_id=env.get("SIGNALTRAIL_USAGE_BATCH"),
-        agent_role=env.get("SIGNALTRAIL_USAGE_AGENT_ROLE"),
-        run_attempt=env.get("SIGNALTRAIL_USAGE_RUN_ATTEMPT"),
-        repair_attempt=env.get("SIGNALTRAIL_USAGE_REPAIR_ATTEMPT"),
-        evaluation_attempt=env.get("SIGNALTRAIL_USAGE_EVALUATION_ATTEMPT"),
-        parent_session_id=env.get("SIGNALTRAIL_USAGE_PARENT_SESSION"),
+        **{name: env.get(key) for name, key in USAGE_CORRELATION_ENV.items()},
     )
 
 
@@ -1822,16 +1653,6 @@ def _timestamp(value: str | None) -> str:
     return parsed.astimezone(UTC).isoformat(timespec="seconds")
 
 
-def _hash_text(namespace: str, value: str) -> str:
-    """处理：不可逆哈希可能来自宿主的去重材料。
-    输入：固定命名空间和只在内存中使用的文本。
-    输出：SHA-256 标签；外部 request/session ID 不会明文落盘。
-    """
-
-    digest = hashlib.sha256(f"{namespace}\0{value}".encode()).hexdigest()
-    return f"sha256:{digest}"
-
-
 def _required_label(value: str, label: str) -> str:
     """处理：要求生命周期元数据是受限短标签。
     输入：候选值和错误字段名。
@@ -1875,3 +1696,38 @@ def _optional_non_negative_int(value: int | str | None, label: str) -> int | Non
     if parsed < 0 or str(value).strip() not in {str(parsed), f"+{parsed}"}:
         raise ValueError(f"{label} must be a non-negative integer")
     return parsed
+
+
+_EventField = Callable[[Any, str], Any]
+_EVENT_DATA_FIELDS: dict[str, tuple[dict[str, _EventField], dict[str, _EventField], str]] = {
+    "task.started": (
+        {"agent": _string_label, "started_at": _canonical_timestamp},
+        {"source_tag": _string_label, "parent_task_id": _string_id},
+        "task-start:{task}",
+    ),
+    "call.started": (
+        {"call_id": _string_id, "phase": _string_label, "started_at": _canonical_timestamp},
+        {
+            "adapter": _string_label,
+            **dict.fromkeys(_CORRELATION_LABELS, _string_label),
+            **dict.fromkeys(_CORRELATION_ATTEMPTS, _optional_non_negative_int),
+            "parent_session_id_hash": _event_hash,
+        },
+        "call-start:{call}",
+    ),
+    "call.finished": (
+        {
+            "call_id": _string_id, "phase": _string_label, "status": _string_label,
+            "completed_at": _canonical_timestamp,
+        },
+        {},
+        "call-finish:{call}",
+    ),
+    "usage.observed": ({"observation": _event_observation}, {"call_id": _string_id}, ""),
+    "task.finalized": (
+        {"status": _string_label, "completed_at": _canonical_timestamp, "summary": _event_object},
+        {},
+        "task-finalize:{task}",
+    ),
+}
+EVENT_TYPES = frozenset(_EVENT_DATA_FIELDS)

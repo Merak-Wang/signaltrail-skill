@@ -19,10 +19,8 @@ from .common import CommandContext, print_json
 
 def handle_validate_report(args: argparse.Namespace, context: CommandContext) -> int:
     """处理：检查报告草稿与本轮证据及覆盖计划。
-    输入：
-    - ``args``：解析器校验过的 validate-report 参数；指定本次操作的选项与文件。
-    - ``context``：入口解析的 data_dir、parser；提供运行配置和路径约束。
-    输出：向标准输出报告操作结果，并返回供终端或宿主判断成败的退出码。
+    输入：已解析的命令选项、当前命令的运行上下文。
+    输出：终端结果及供宿主判断成败的退出码。
     """
     data_dir = context.data_dir
     parser = context.parser
@@ -70,10 +68,8 @@ def handle_validate_report(args: argparse.Namespace, context: CommandContext) ->
 
 def handle_save_report(args: argparse.Namespace, context: CommandContext) -> int:
     """处理：保存经验证的报告及本地投影。
-    输入：
-    - ``args``：解析器校验过的 save-report 参数；指定本次操作的选项与文件。
-    - ``context``：入口解析的 config、data_dir；提供运行配置和路径约束。
-    输出：向标准输出报告操作结果，并返回供终端或宿主判断成败的退出码。
+    输入：已解析的命令选项、当前命令的运行上下文。
+    输出：终端结果及供宿主判断成败的退出码。
     """
     config = context.config
     data_dir = context.data_dir
@@ -92,10 +88,8 @@ def handle_save_report(args: argparse.Namespace, context: CommandContext) -> int
 
 def handle_finalize_evaluation(args: argparse.Namespace, context: CommandContext) -> int:
     """处理：保存独立评分并按选项更新远程副本。
-    输入：
-    - ``args``：解析器校验过的 finalize-evaluation 参数；指定本次操作的选项与文件。
-    - ``context``：入口解析的 config、data_dir；提供运行配置和路径约束。
-    输出：向标准输出报告操作结果，并返回供终端或宿主判断成败的退出码。
+    输入：已解析的命令选项、当前命令的运行上下文。
+    输出：终端结果及供宿主判断成败的退出码。
     """
     config = context.config
     data_dir = context.data_dir
@@ -121,10 +115,8 @@ def handle_finalize_evaluation(args: argparse.Namespace, context: CommandContext
 
 def handle_publish_notion(args: argparse.Namespace, context: CommandContext) -> int:
     """处理：发布指定报告到已配置的 Notion。
-    输入：
-    - ``args``：解析器校验过的 publish-notion 参数；指定本次操作的选项与文件。
-    - ``context``：入口解析的 data_dir；提供运行配置和路径约束。
-    输出：向标准输出报告操作结果，并返回供终端或宿主判断成败的退出码。
+    输入：已解析的命令选项、当前命令的运行上下文。
+    输出：终端结果及供宿主判断成败的退出码。
     """
     data_dir = context.data_dir
     report_path = require_data_root_path(args.report, data_dir, "Published report")
@@ -140,10 +132,8 @@ def handle_publish_notion(args: argparse.Namespace, context: CommandContext) -> 
 
 def handle_backfill_notion_images(args: argparse.Namespace, context: CommandContext) -> int:
     """处理：补充已发布 Notion 报告的缺失图片。
-    输入：
-    - ``args``：解析器校验过的 backfill-notion-images 参数；指定本次操作的选项与文件。
-    - ``context``：入口解析的 data_dir；提供运行配置和路径约束。
-    输出：向标准输出报告操作结果，并返回供终端或宿主判断成败的退出码。
+    输入：已解析的命令选项、当前命令的运行上下文。
+    输出：终端结果及供宿主判断成败的退出码。
     """
     data_dir = context.data_dir
     report_path = require_data_root_path(args.report, data_dir, "Published report")

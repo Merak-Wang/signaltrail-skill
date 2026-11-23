@@ -2,12 +2,19 @@ from __future__ import annotations
 
 import os
 import sys
+from copy import deepcopy
 from dataclasses import dataclass, field, replace
+from itertools import chain
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
-import yaml
+from yaml import SafeLoader, load
+
+try:
+    from yaml import CSafeLoader as ConfigLoader
+except ImportError:
+    ConfigLoader = SafeLoader
 
 from .localization import validate_output_language
 from .models import ITEM_ORDER_VALUES
@@ -383,7 +390,7 @@ class AppConfig:
         输出：所有来源都得到已校验的具体 ``item_order``，供采集与监控路径一致执行。
         """
         validate_collection_config(self.collection)
-        for source in [*self.sources, *self.monitor_sources]:
+        for source in chain(self.sources, self.monitor_sources):
             if source.rsshub_route:
                 base = self.rsshub.base_url.rstrip("/")
                 parsed = urlsplit(base)
@@ -403,12 +410,11 @@ class AppConfig:
 
     def source_by_id(self, source_id: str) -> SourceConfig:
         """处理：按来源 ID 返回对应的来源配置。
-        输入：
-        - ``source_id``：来源的稳定 ID；用于配置查找、索引关联和状态分区。
+        输入：稳定来源 ID。
         输出：封装“按来源 ID 返回对应的来源配置”业务结果的 ``SourceConfig`` 对象；
           调用方据此继续相邻阶段或识别无结果状态。
         """
-        for source in [*self.sources, *self.monitor_sources]:
+        for source in chain(self.sources, self.monitor_sources):
             if source.id == source_id:
                 return source
         raise KeyError(f"Unknown source: {source_id}")
@@ -420,28 +426,17 @@ class AppConfig:
         输出：按配置顺序排列的来源，正式配置优先同ID实现。
         """
         ordered = {}
-        for source in [*self.sources, *self.monitor_sources]:
+        for source in chain(self.sources, self.monitor_sources):
             ordered.setdefault(source.id, source)
         return [replace(source, collect_all_items=True) for source in ordered.values()]
 
     @property
     def all_monitor_sources(self) -> list[SourceConfig]:
-        """处理：返回全部需要监控的来源配置。
-        输入：
-        - 无显式业务参数：不接收额外业务参数；
-          从当前实例读取“返回全部需要监控的来源配置”所需状态；
-          实现会明确读取属性 monitor_sources、sources。
-        输出：按“返回全部需要监控的来源配置”规则得到的 ``SourceConfig`` 列表；
-          列表顺序表达配置优先级、业务排名或稳定扫描顺序。
+        """处理：从已去重的日报来源中筛选允许监控的来源。
+        输入：正式和扩展目录合并后的日报来源。
+        输出：保留正式来源优先级与配置顺序的监控列表。
         """
-        seen: set[str] = set()
-        sources: list[SourceConfig] = []
-        for source in self.report_sources:
-            if source.id in seen or not source.monitor_enabled:
-                continue
-            seen.add(source.id)
-            sources.append(source)
-        return sources
+        return [source for source in self.report_sources if source.monitor_enabled]
 
 
 def validate_monitor_config(monitor: MonitorConfig) -> MonitorConfig:
@@ -491,14 +486,13 @@ def validate_collection_config(collection: CollectionConfig) -> CollectionConfig
 
 def _load_source_rows(path: Path) -> list[dict[str, Any]]:
     """处理：读取 YAML 来源配置文件并返回 sources 数组中的原始来源记录。
-    输入：
-    - ``path``：当前函数要读取、校验或写入的本地文件路径。
+    输入：本地文件路径。
     输出：来源配置原始记录列表；每项是待构造 SourceConfig 的映射，
       包含来源身份、入口、分类、过滤规则、限额及可选采集设置。
     """
     if not path.exists():
         return []
-    payload = yaml.safe_load(path.read_text(encoding="utf-8"))
+    payload = load(path.read_text(encoding="utf-8"), Loader=ConfigLoader)
     if payload is None:
         return []
     if isinstance(payload, list):
@@ -512,13 +506,10 @@ def _load_source_rows(path: Path) -> list[dict[str, Any]]:
     return rows
 
 
-def _validate_source(source: SourceConfig, budget: BudgetConfig) -> None:
-    """处理：校验来源并在不满足约束时报告错误。
-    输入：
-    - ``source``：来源配置；包含来源 ID、名称、入口 URL、分类、过滤规则、限额和可信层级。
-    - ``budget``：运行时长、模型 Token、情境条目和全文提取预算。
-    输出：不返回新数据；完成“校验来源并在不满足约束时报告错误”，
-      副作用限于该处理声明的受控对象或产物。
+def _validate_source(source: SourceConfig) -> None:
+    """处理：校验来源分类、范围和 Feed 地址。
+    输入：带入口、分类与筛选规则的来源。
+    输出：非法配置在采集前抛出 ValueError。
     """
     validate_content_taxonomy(source.module, source.category)
     if source.tier not in {1, 2, 3}:
@@ -545,6 +536,19 @@ def _validate_source(source: SourceConfig, budget: BudgetConfig) -> None:
         )
 
 
+def _build_sources(
+    rows: list[dict[str, Any]], **defaults: Any
+) -> list[SourceConfig]:
+    """处理：构造并校验一个来源目录，解除 YAML 别名在来源之间的可变引用。
+    输入：已解析的目录条目与该目录的默认值。
+    输出：按配置顺序排列的来源实例。
+    """
+    sources = [SourceConfig(**deepcopy({**defaults, **row})) for row in rows]
+    for source in sources:
+        _validate_source(source)
+    return sources
+
+
 def project_root() -> Path:
     """处理：从显式技能目录、安装包或完整工作目录定位配置资源。
     输入：SIGNALTRAIL_SKILL_DIR 优先，其次检查包目录和当前工作目录。
@@ -565,15 +569,13 @@ def project_root() -> Path:
 
 def load_config(path: Path | None = None, timezone: str | None = None) -> AppConfig:
     """处理：合并应用 YAML、来源文件和时区覆盖，校验后构造完整应用配置。
-    输入：
-    - ``path``：当前函数要读取、校验或写入的本地文件路径。
-    - ``timezone``：IANA 时区名称；用于解析无时区时间并生成日报时间边界。
+    输入：本地文件路径、用于解释本地日期的 IANA 时区。
     输出：封装“合并应用 YAML、来源文件和时区覆盖，
       校验后构造完整应用配置”业务结果的 ``AppConfig`` 对象；
       调用方据此继续相邻阶段或识别无结果状态。
     """
     config_path = path or project_root() / "configs" / "sources.yaml"
-    raw: dict[str, Any] = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    raw: dict[str, Any] = load(config_path.read_text(encoding="utf-8"), Loader=ConfigLoader)
     browser = BrowserConfig(**raw.get("browser", {}))
     collection_values = dict(raw.get("collection", {}))
     collection_values.pop("discovery_brief_limit", None)
@@ -584,25 +586,13 @@ def load_config(path: Path | None = None, timezone: str | None = None) -> AppCon
     output = validate_output_config(OutputConfig(**output_values))
     media = validate_media_config(MediaConfig(**raw.get("media", {})))
     monitor = validate_monitor_config(MonitorConfig(**raw.get("monitor", {})))
-    sources = [SourceConfig(**item) for item in raw.get("sources", [])]
-    for source in sources:
-        _validate_source(source, budget)
+    sources = _build_sources(raw.get("sources", []))
     monitor_sources: list[SourceConfig] = []
     if monitor.sources_file:
         bundle_path = (config_path.parent / monitor.sources_file).resolve()
-        monitor_sources = [
-            SourceConfig(
-                **{
-                    "report_target": 0,
-                    "report_max": 0,
-                    "bundle": "discovery",
-                    **item,
-                }
-            )
-            for item in _load_source_rows(bundle_path)
-        ]
-    for source in monitor_sources:
-        _validate_source(source, budget)
+        monitor_sources = _build_sources(
+            _load_source_rows(bundle_path), report_target=0, report_max=0, bundle="discovery"
+        )
     configured_timezone = timezone or raw.get("timezone", "Asia/Shanghai")
     return AppConfig(
         timezone=configured_timezone,
@@ -686,8 +676,7 @@ def resolve_data_dir(explicit: Path | None = None, *, allow_conflict: bool = Fal
 
 def resolve_profile_dir(config: AppConfig, explicit: Path | None = None) -> Path:
     """处理：确定持久化浏览器 Profile 目录并规范为绝对路径。
-    输入：
-    - ``config``：已校验的应用配置；提供时区、来源策略、并发限制、预算和输出选项。
+    输入：已校验的采集和输出配置。
     - ``explicit``：调用方显式指定的路径或配置值；优先级高于环境变量和默认值。
     输出：指向“确定持久化浏览器 Profile 目录并规范为绝对路径”所生成、定位或确认产物的本地路径。
     """
@@ -752,8 +741,7 @@ def resolve_browser_channel(
     platform: str | None = None,
 ) -> str | None:
     """处理：按显式参数、环境变量和配置选择 Playwright 浏览器通道。
-    输入：
-    - ``config``：已校验的应用配置；提供时区、来源策略、并发限制、预算和输出选项。
+    输入：已校验的采集和输出配置。
     - ``explicit``：调用方显式指定的路径或配置值；优先级高于环境变量和默认值。
     - ``platform``：可注入的操作系统名称；为空时读取当前 Python 运行平台。
     输出：封装“按显式参数、环境变量和配置选择 Playwright 浏览器通道”业务结果的 ``str | None`` 对
@@ -773,9 +761,7 @@ def resolve_browser_channel(
 
 def canonical_source_page_url(source_id: str, url: str) -> str:
     """处理：升级已知过期索引页地址，同时不修改不可变旧索引。
-    输入：
-    - ``source_id``：来源的稳定 ID；用于配置查找、索引关联和状态分区。
-    - ``url``：调用方提供的 URL；当前函数按处理说明进行规范化、过滤或访问。
+    输入：稳定来源 ID、待处理的 URL。
     输出：经过选择、规范化或安全处理的 URL 字符串，供后续访问或渲染使用。
     """
     return SOURCE_PAGE_REWRITES.get((source_id, url.rstrip("/")), url)
@@ -783,8 +769,7 @@ def canonical_source_page_url(source_id: str, url: str) -> str:
 
 def _source_pages_path(data_dir: Path) -> Path:
     """处理：返回运行时来源扩展页面配置文件的位置。
-    输入：
-    - ``data_dir``：当前运行的唯一数据根；所有状态和版本化产物都必须位于其中。
+    输入：本次运行的数据根。
     输出：指向“返回运行时来源扩展页面配置文件的位置”所生成、定位或确认产物的本地路径。
     """
     return data_dir / "state" / "source-pages.json"
@@ -792,8 +777,7 @@ def _source_pages_path(data_dir: Path) -> Path:
 
 def load_source_pages(data_dir: Path) -> list[dict[str, Any]]:
     """处理：读取运行时扩展来源页 JSON，并忽略损坏、重复或字段不完整的记录。
-    输入：
-    - ``data_dir``：当前运行的唯一数据根；所有状态和版本化产物都必须位于其中。
+    输入：本次运行的数据根。
     输出：“读取运行时扩展来源页 JSON，并忽略损坏、重复或字段不完整的记录”得到的有序结构化记录；
       每项承载处理说明所定义的身份、证据或状态字段，可直接交给下一阶段。
     """
@@ -808,9 +792,7 @@ def load_source_pages(data_dir: Path) -> list[dict[str, Any]]:
 
 def validate_source_page(source: SourceConfig, url: str) -> str:
     """处理：校验来源页面并在不满足约束时报告错误。
-    输入：
-    - ``source``：来源配置；包含来源 ID、名称、入口 URL、分类、过滤规则、限额和可信层级。
-    - ``url``：调用方提供的 URL；当前函数按处理说明进行规范化、过滤或访问。
+    输入：带入口与筛选规则的来源配置、待处理的 URL。
     输出：“校验来源页面并在不满足约束时报告错误”得到的规范字符串，供调用方存储、比较或展示。
     """
     parsed = urlsplit(url)
@@ -834,11 +816,7 @@ def add_source_page(
     reason: str,
 ) -> Path:
     """处理：校验来源与 URL 后，把扩展页面写入运行时配置。
-    输入：
-    - ``config``：已校验的应用配置；提供时区、来源策略、并发限制、预算和输出选项。
-    - ``data_dir``：当前运行的唯一数据根；所有状态和版本化产物都必须位于其中。
-    - ``source_id``：来源的稳定 ID；用于配置查找、索引关联和状态分区。
-    - ``url``：调用方提供的 URL；当前函数按处理说明进行规范化、过滤或访问。
+    输入：已校验的采集和输出配置、本次运行的数据根、稳定来源 ID、待处理的 URL。
     - ``reason``：创建或打开额外来源页面的审计原因；写入页面追踪记录。
     输出：指向“校验来源与 URL 后，把扩展页面写入运行时配置”所生成、定位或确认产物的本地路径。
     """
@@ -868,10 +846,7 @@ def add_source_page(
 
 def remove_source_page(data_dir: Path, source_id: str, url: str) -> Path:
     """处理：从运行时配置移除指定来源页面并持久化结果。
-    输入：
-    - ``data_dir``：当前运行的唯一数据根；所有状态和版本化产物都必须位于其中。
-    - ``source_id``：来源的稳定 ID；用于配置查找、索引关联和状态分区。
-    - ``url``：调用方提供的 URL；当前函数按处理说明进行规范化、过滤或访问。
+    输入：本次运行的数据根、稳定来源 ID、待处理的 URL。
     输出：指向“从运行时配置移除指定来源页面并持久化结果”所生成、定位或确认产物的本地路径。
     """
     retained = [
@@ -886,9 +861,7 @@ def remove_source_page(data_dir: Path, source_id: str, url: str) -> Path:
 
 def source_urls(source: SourceConfig, data_dir: Path) -> list[str]:
     """处理：合并来源主页、探索页和运行时扩展页并保持去重顺序。
-    输入：
-    - ``source``：来源配置；包含来源 ID、名称、入口 URL、分类、过滤规则、限额和可信层级。
-    - ``data_dir``：当前运行的唯一数据根；所有状态和版本化产物都必须位于其中。
+    输入：带入口与筛选规则的来源配置、本次运行的数据根。
     输出：“合并来源主页、探索页和运行时扩展页并保持去重顺序”得到的字符串列表；
       顺序保持确定并可供下一步骤逐项处理。
     """

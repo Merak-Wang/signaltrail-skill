@@ -5,6 +5,7 @@ import re
 import time
 from collections import Counter
 from copy import deepcopy
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from enum import StrEnum
 from hashlib import sha256
@@ -18,12 +19,13 @@ from jsonschema import Draft202012Validator
 from .config import project_root
 from .llm_budget import evaluate_llm_budget
 from .localization import (
+    brief_title_requires_translation,
     localized,
-    source_matches_output_language,
     text_matches_output_language,
     translated_title_field,
     validate_output_language,
 )
+from .reporting import split_narrative_paragraphs
 from .runtime import require_data_root_path
 from .semantics import brief_requires_watch, run_relative_brief_fields, tldr_quality_issue
 from .storage import write_immutable_json
@@ -128,6 +130,7 @@ def _brief_output_schema(output_language: str) -> dict[str, Any]:
 
     translation_field = translated_title_field(output_language)
     report_schema = read_json(project_root() / "schemas" / "report.schema.json")
+    shared = report_schema["$defs"]
     section_properties = report_schema["properties"]["sections"]["items"]["properties"]
     brief_properties = section_properties["briefs"]["items"]["properties"]
     return {
@@ -148,11 +151,14 @@ def _brief_output_schema(output_language: str) -> dict[str, Any]:
                             "minLength": 2,
                             "description": localized(
                                 output_language,
-                                "译成自然的简体中文；专名（如 GitHub 项目名）可保留原文，"
-                                "其余标题文字须中文表达；只翻译源标题已有含义，不推测项目功能。",
+                                "译成自然的简体中文（包括繁体原题），去掉网页标题的栏目和媒体后缀；"
+                                "专名（如 GitHub 项目名）可保留原文，"
+                                "其余标题文字须中文表达。核对谁在何地做什么，保留计划或指控等限定；"
+                                "只翻译源标题已有含义，不推测项目功能。",
                                 "Translate naturally into English. Preserve proper names "
                                 "(e.g., GitHub project names), but translate remaining "
-                                "headline text; do not infer project functionality.",
+                                "headline text. Check who acted and where. Keep planned or alleged "
+                                "actions qualified; do not infer project functionality.",
                             ),
                         },
                         "tldr": {
@@ -160,19 +166,19 @@ def _brief_output_schema(output_language: str) -> dict[str, Any]:
                             "minLength": brief_properties["tldr"]["minLength"],
                             "description": localized(
                                 output_language,
-                                "只概括已观察到的新闻事实；不要追加抓取状态或正文缺失等流程说明，"
-                                "Python 会单独展示来源访问状态。",
-                                "Summarize observed news facts only. Do not append "
-                                "collection or missing-body notes; Python presents source "
-                                "access status separately.",
+                                "用一两句话说清谁做了什么。标题已交代的动作可直接接上原文中"
+                                "最有信息量的数字、条件或影响。保留提议、指控等事实状态，"
+                                "逐项对应主体与动作。保留原文币种；分别列出的刑期仅在原文明示时合计。页面单独展示来源访问状态。",
+                                "In one or two sentences, say who did what. After the headline, "
+                                "add the most informative supported figure, condition or effect. "
+                                "Keep proposals and allegations qualified and each action with "
+                                "its actor. Preserve the reported currency. Combine prison terms "
+                                "only when the source states the total. The page displays access "
+                                "status separately.",
                             ),
                         },
-                        "importance": {
-                            "type": "integer",
-                            "minimum": 0,
-                            "maximum": 100,
-                        },
-                        "status": {"enum": sorted(_ALLOWED_BRIEF_STATUSES)},
+                        "importance": shared["importanceScore"],
+                        "status": {"enum": sorted(shared["eventStatus"]["enum"])},
                     },
                 },
             }
@@ -197,200 +203,120 @@ def _analysis_output_schema(
             "0 <= minimum <= maximum <= 10"
         )
 
-    string = {"type": "string", "minLength": 1}
-    string_array = {"type": "array", "minItems": 1, "items": string}
-    featured_event = {
-        "type": "object",
-        "required": list(_FEATURED_EVENT_DRAFT_FIELDS),
-        "additionalProperties": False,
-        "properties": {
-            "section_id": {"enum": list(SECTION_ORDER_V13)},
-            "title": string,
-            "tldr": {"type": "string", "minLength": 4},
-            "why_it_matters": {"type": "string", "minLength": 4},
-            "importance": {"type": "integer", "minimum": 0, "maximum": 100},
-            "importance_reason": {"type": "string", "minLength": 4},
-            "confidence": {"type": "number", "minimum": 0, "maximum": 1},
-            "status": {"enum": sorted(_ALLOWED_BRIEF_STATUSES)},
-            "source_item_ids": {
-                "type": "array",
-                "minItems": 1,
-                "maxItems": 1,
-                "uniqueItems": True,
-                "items": string,
-            },
-            "evidence_notes": {"type": "array", "items": string},
-            "tags": {"type": "array", "items": string},
+    def text(min_length: int = 1) -> dict:
+        """处理：声明分析文本的最小长度。
+        输入：对应字段要求的字符下限。
+        输出：字符串字段的 Schema。
+        """
+        return {"type": "string", "minLength": min_length}
+
+    def array(items: dict, minimum: int | None = None, maximum: int | None = None) -> dict:
+        """处理：声明分析列表的元素类型与可选条数限制。
+        输入：元素 Schema 和条数上下限。
+        输出：数组字段的 Schema。
+        """
+        schema: dict[str, Any] = {"type": "array"}
+        if minimum is not None:
+            schema["minItems"] = minimum
+        if maximum is not None:
+            schema["maxItems"] = maximum
+        schema["items"] = items
+        return schema
+
+    def closed_object(properties: dict, *, optional: tuple[str, ...] = ()) -> dict:
+        """处理：按字段声明生成封闭对象，显式列出可缺省的字段。
+        输入：有序字段 Schema 与可选字段名。
+        输出：其余字段均必填、禁止额外属性的对象 Schema。
+        """
+        return {
+            "type": "object",
+            "required": [name for name in properties if name not in optional],
+            "additionalProperties": False,
+            "properties": properties,
+        }
+
+    string = text()
+    string_array = array(string, 1)
+    confidence = {"type": "number", "minimum": 0, "maximum": 1}
+    featured_event = closed_object({
+        "section_id": {"enum": list(SECTION_ORDER_V13)},
+        "title": string,
+        "tldr": text(4),
+        "why_it_matters": text(4),
+        "importance": {"type": "integer", "minimum": 0, "maximum": 100},
+        "importance_reason": text(4),
+        "confidence": confidence.copy(),
+        "status": {"enum": sorted(_ALLOWED_BRIEF_STATUSES)},
+        "source_item_ids": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 1,
+            "uniqueItems": True,
+            "items": string,
         },
-    }
-    analysis_fields = (
-        "domain",
-        "claim",
-        "narrative",
-        "historical_context",
-        "dialectical_analysis",
-        "facts",
-        "reasoning",
-        "causal_chain",
-        "stakeholder_positions",
-        "counter_evidence",
-        "scenarios",
-        "assumptions",
-        "implications",
-        "actions",
-        "watch_signals",
-        "invalidation_signals",
-        "time_horizon",
-        "confidence",
-        "confidence_rationale",
-        "evidence_gaps",
-        "change_from_prior",
-        "decision_relevance",
-        "evidence_item_ids",
-        "state_change",
-    )
-    analysis = {
-        "type": "object",
-        "required": list(analysis_fields),
-        "additionalProperties": False,
-        "properties": {
-            "domain": {"enum": list(_ANALYSIS_DOMAIN_ORDER)},
-            "claim": {"type": "string", "minLength": 10},
-            "narrative": {"type": "string", "minLength": 100},
-            "historical_context": {"type": "string", "minLength": 20},
-            "dialectical_analysis": {"type": "string", "minLength": 20},
-            "facts": string_array,
-            "reasoning": {"type": "string", "minLength": 10},
-            "causal_chain": {
-                "type": "array",
-                "minItems": 2,
-                "items": string,
-            },
-            "stakeholder_positions": {
-                "type": "array",
-                "minItems": 1,
-                "items": {
-                    "type": "object",
-                    "required": ["stakeholder", "position", "interests"],
-                    "additionalProperties": False,
-                    "properties": {
-                        "stakeholder": string,
-                        "position": string,
-                        "interests": string,
-                    },
-                },
-            },
-            "counter_evidence": string_array,
-            "scenarios": string_array,
-            "scenario_basis": {"type": "string", "minLength": 10},
-            "assumptions": string_array,
-            "implications": string_array,
-            "actions": string_array,
-            "watch_signals": string_array,
-            "invalidation_signals": string_array,
-            "time_horizon": string,
-            "confidence": {"type": "number", "minimum": 0, "maximum": 1},
-            "confidence_rationale": {"type": "string", "minLength": 10},
-            "evidence_gaps": string_array,
-            "change_from_prior": {"type": "string", "minLength": 10},
-            "decision_relevance": {"type": "string", "minLength": 10},
-            "evidence_item_ids": string_array,
-            "state_change": {
-                "enum": [
-                    "new",
-                    "strengthening",
-                    "unchanged",
-                    "weakening",
-                    "revised",
-                    "invalidated",
-                    "closed",
-                ]
-            },
+        "evidence_notes": array(string),
+        "tags": array(string),
+    })
+    stakeholder = closed_object({
+        "stakeholder": string,
+        "position": string,
+        "interests": string,
+    })
+    analysis = closed_object({
+        "domain": {"enum": list(_ANALYSIS_DOMAIN_ORDER)},
+        "claim": text(10),
+        "narrative": text(100),
+        "historical_context": text(20),
+        "dialectical_analysis": text(20),
+        "facts": string_array,
+        "reasoning": text(10),
+        "causal_chain": array(string, 2),
+        "stakeholder_positions": array(stakeholder, 1),
+        "counter_evidence": string_array,
+        "scenarios": string_array,
+        "scenario_basis": text(10),
+        "assumptions": string_array,
+        "implications": string_array,
+        "actions": string_array,
+        "watch_signals": string_array,
+        "invalidation_signals": string_array,
+        "time_horizon": string,
+        "confidence": confidence.copy(),
+        "confidence_rationale": text(10),
+        "evidence_gaps": string_array,
+        "change_from_prior": text(10),
+        "decision_relevance": text(10),
+        "evidence_item_ids": string_array,
+        "state_change": {
+            "enum": [
+                "new", "strengthening", "unchanged", "weakening",
+                "revised", "invalidated", "closed",
+            ]
         },
-    }
-    synthesis = {
-        "type": "object",
-        "required": [
-            "overall_judgment",
-            "consensus",
-            "tensions",
-            "transmission_chain",
-            "shared_watch_signals",
-            "revision_triggers",
-            "evidence_item_ids",
-        ],
-        "additionalProperties": False,
-        "properties": {
-            "overall_judgment": {"type": "string", "minLength": 20},
-            "consensus": string_array,
-            "tensions": {
-                "type": "array",
-                "minItems": 1,
-                "items": {
-                    "type": "object",
-                    "required": ["issue", "perspectives", "source_of_difference"],
-                    "additionalProperties": False,
-                    "properties": {
-                        "issue": string,
-                        "perspectives": {
-                            "type": "array",
-                            "minItems": 2,
-                            "items": string,
-                        },
-                        "source_of_difference": string,
-                    },
-                },
-            },
-            "transmission_chain": {
-                "type": "array",
-                "minItems": 2,
-                "items": string,
-            },
-            "shared_watch_signals": {
-                "type": "array",
-                "minItems": 3,
-                "maxItems": 5,
-                "items": string,
-            },
-            "revision_triggers": string_array,
-            "evidence_item_ids": string_array,
-        },
-    }
-    return {
-        "type": "object",
-        "required": [
-            "title",
-            "executive_summary",
-            "featured_events",
-            "analyses",
-            "cross_perspective_synthesis",
-        ],
-        "additionalProperties": False,
-        "properties": {
-            "title": {"type": "string", "minLength": 5},
-            "executive_summary": {
-                "type": "array",
-                "minItems": 1,
-                "maxItems": 10,
-                "items": string,
-            },
-            "featured_events": {
-                "type": "array",
-                "minItems": featured_event_minimum,
-                "maxItems": featured_event_maximum,
-                "items": featured_event,
-            },
-            "analyses": {
-                "type": "array",
-                "minItems": 3,
-                "maxItems": 3,
-                "items": analysis,
-            },
-            "cross_perspective_synthesis": synthesis,
-            "changes": {"type": "array", "items": string},
-            "tomorrow_watch_items": {"type": "array", "items": string},
-        },
-    }
+    }, optional=("scenario_basis",))
+    tension = closed_object({
+        "issue": string,
+        "perspectives": array(string, 2),
+        "source_of_difference": string,
+    })
+    synthesis = closed_object({
+        "overall_judgment": text(20),
+        "consensus": string_array,
+        "tensions": array(tension, 1),
+        "transmission_chain": array(string, 2),
+        "shared_watch_signals": array(string, 3, 5),
+        "revision_triggers": string_array,
+        "evidence_item_ids": string_array,
+    })
+    return closed_object({
+        "title": text(5),
+        "executive_summary": array(string, 1, 10),
+        "featured_events": array(featured_event, featured_event_minimum, featured_event_maximum),
+        "analyses": array(analysis, 3, 3),
+        "cross_perspective_synthesis": synthesis,
+        "changes": array(string),
+        "tomorrow_watch_items": array(string),
+    }, optional=("changes", "tomorrow_watch_items"))
 
 
 def _contract_schema_errors(
@@ -453,8 +379,7 @@ class AuthoringStatus(StrEnum):
 
 def _parse_timestamp(value: object) -> datetime | None:
     """处理：把可选 ISO 时间文本解析为带时区时间，空值或非法值返回 None。
-    输入：
-    - ``value``：待解析或规范化的单个输入值；非法值按函数契约返回空值或报错。
+    输入：待解析的值。
     输出：封装“把可选 ISO 时间文本解析为带时区时间，
       空值或非法值返回 None”业务结果的 ``datetime | None`` 对象；
       调用方据此继续相邻阶段或识别无结果状态。
@@ -677,10 +602,8 @@ def begin_authoring_session(
     analysis_reserve_seconds: int = 120,
 ) -> Path:
     """处理：校验情境身份并创建带截止时间和批次清单的写作会话。
-    输入：
-    - ``run``：当前运行清单对象；包含状态、尝试次数、截止时间和产物路径。
+    输入：记录阶段与产物的运行清单、本次运行的数据根。
     - ``context_path``：版本化写作情境包路径；包含候选、预算、批次和历史连续性信息。
-    - ``data_dir``：当前运行的唯一数据根；所有状态和版本化产物都必须位于其中。
     - ``analysis_reserve_seconds``：总截止时间中专门留给跨栏目分析和最终组装的秒数。
     输出：指向“校验情境身份并创建带截止时间和批次清单的写作会话”所生成、定位或确认产物的本地路径
       。
@@ -689,6 +612,8 @@ def begin_authoring_session(
     context = read_json(context_path)
     if not isinstance(context, dict):
         raise ValueError("Authoring context must be a JSON object")
+    if context.get("selection_only"):
+        raise ValueError("Run enrich-edition before dispatching from a selection-only context")
     paths = _authoring_paths(context_path)
     context_sha256 = sha256(context_path.read_bytes()).hexdigest()
     bound_batches = {}
@@ -781,13 +706,16 @@ def begin_authoring_session(
     return write_immutable_json(paths["session"], session)
 
 
-def _read_bound_packet(batch: dict[str, Any], data_dir: Path) -> dict[str, Any]:
+def _read_bound_packet(
+    batch: dict[str, Any], data_dir: Path, *, content: bytes | None = None,
+) -> dict[str, Any]:
     """处理：在使用作者包前校验派发时绑定的字节摘要和授权条目。
-    输入：权威情境或会话中的批次记录与数据根；旧记录没有摘要时仅兼容读取。
+    输入：权威情境或会话中的批次记录、数据根和本次读取的可选字节。
     输出：同一次读取解析出的包；改包或扩大授权范围会失败。
     """
     path = require_data_root_path(Path(batch["packet_path"]), data_dir, "Authoring packet")
-    content = path.read_bytes()
+    if content is None:
+        content = path.read_bytes()
     if batch.get("packet_sha256") and sha256(content).hexdigest() != batch["packet_sha256"]:
         raise RuntimeError("Authoring packet changed after binding")
     packet = json.loads(content)
@@ -901,8 +829,8 @@ def validate_authoring_batch(
         tldr = str(brief.get("tldr") or "").strip()
         if not item_id:
             errors.append(f"{prefix}.item_id is required")
-        if title and not source_matches_output_language(
-            indexed.get("source_language"), title, output_language
+        if title and brief_title_requires_translation(
+            indexed, output_language
         ) and not text_matches_output_language(
             translated, output_language, minimum_units=2
         ):
@@ -1031,7 +959,7 @@ def validate_analysis_evidence(
         for position, analysis in enumerate(analyses):
             check_evidence(analysis, f"analyses[{position}]")
             if isinstance(analysis, dict) and "narrative" in analysis:
-                paragraphs = _narrative_paragraphs(analysis.get("narrative"))
+                paragraphs = split_narrative_paragraphs(analysis.get("narrative"))
                 if not 4 <= len(paragraphs) <= 7:
                     errors.append(
                         f"analyses[{position}].narrative must contain 4-7 natural "
@@ -1070,23 +998,6 @@ def validate_analysis_evidence(
     return errors
 
 
-def _narrative_paragraphs(value: object) -> list[str]:
-    """处理：按空行识别分析主文中的自然段并折叠段内软换行。
-    输入：
-    - ``value``：模型生成或确定性规范化后的 narrative 文本；只读取读者层主文。
-    输出：去除空段后的自然段列表；不改变句子字词或标点。
-    """
-
-    text = str(value or "").replace("\r\n", "\n").replace("\r", "\n").strip()
-    if not text:
-        return []
-    return [
-        re.sub(r"[ \t]*\n[ \t]*", " ", paragraph).strip()
-        for paragraph in re.split(r"\n[ \t]*\n+", text)
-        if paragraph.strip()
-    ]
-
-
 def _normalize_narrative(value: object) -> str:
     """处理：只用原有句子把单段或过密分析主文规范为 4—7 个自然段。
     输入：
@@ -1094,7 +1005,7 @@ def _normalize_narrative(value: object) -> str:
     输出：能够安全切分时返回目标五段文本；句子不足时保留原段供验证器拒绝。
     """
 
-    paragraphs = _narrative_paragraphs(value)
+    paragraphs = split_narrative_paragraphs(value)
     if 4 <= len(paragraphs) <= 7:
         return "\n\n".join(paragraphs)
     sentences = [
@@ -1290,80 +1201,47 @@ def _canonicalize_brief_statuses(packet: dict, payload: object) -> object:
     return result
 
 
-def check_authoring_batch(
+@dataclass(frozen=True, slots=True)
+class CheckedAuthoringDraft:
+    """处理：保存在同一次批量命令内通过预检的草稿。
+    输入：预检读到的作者包字节、草稿文本及校验后的规范稿件。
+    输出：可在提交锁内对照当前文件的临时结果。
+    """
+
+    packet_bytes: bytes
+    draft_text: str
+    payload: dict[str, Any]
+
+
+def _load_authoring_session(
+    run: dict[str, Any], data_dir: Path, validated_session: dict[str, Any] | None = None,
+) -> tuple[Path, dict[str, Any]]:
+    """处理：解析运行绑定的写作会话，可复用当前批量接收已经读取的对象。
+    输入：运行清单、数据根以及可选的会话快照。
+    输出：归属本次运行的数据根内路径和会话对象。
+    """
+    authoring = run.get("artifacts", {}).get("authoring", {})
+    session_path = require_data_root_path(
+        Path(str(authoring.get("session_path") or "")),
+        data_dir,
+        "Authoring session",
+    )
+    session = read_json(session_path) if validated_session is None else validated_session
+    if not isinstance(session, dict):
+        raise ValueError("Authoring session must be a JSON object")
+    return session_path, session
+
+
+def _bound_batch_submission(
     run: dict[str, Any], batch_id: str, input_path: Path, data_dir: Path,
-    *, _validated_session: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    """处理：只读检查草稿与写作会话绑定及内容契约。
-    输入：运行记录、批次 ID、草稿路径和数据根。
-    输出：批次标识、草稿与预期结果路径、全部字段错误。
+    validated_session: dict[str, Any] | None,
+) -> tuple[dict[str, Any], dict[str, Any], Path, Path, Path]:
+    """处理：让预检和提交共用会话绑定、授权草稿与结果路径校验。
+    输入：运行清单、待接收批次、草稿路径和可复用的会话快照。
+    输出：会话、批次及已绑定的作者包、草稿和接收回执路径。
     """
-    authoring = run.get("artifacts", {}).get("authoring", {})
-    session_path = require_data_root_path(
-        Path(str(authoring.get("session_path") or "")),
-        data_dir,
-        "Authoring session",
-    )
-    session = read_json(session_path) if _validated_session is None else _validated_session
-    if not isinstance(session, dict):
-        raise ValueError("Authoring session must be a JSON object")
-    if _validated_session is None:
-        _validate_session_binding(run, session, data_dir)
-    else:
-        _validate_session_identity(run, session, data_dir)
-    batch = _batch_entry(session, batch_id)
-    require_data_root_path(
-        Path(str(batch["packet_path"])),
-        data_dir,
-        "Authoring packet",
-    )
-    input_path = require_data_root_path(input_path, data_dir, "Authoring batch draft")
-    expected_input_path = Path(str(batch["draft_result_path"])).resolve()
-    if input_path.resolve() != expected_input_path:
-        raise ValueError(
-            "Authoring batch draft must use the packet-assigned path: "
-            f"{expected_input_path}"
-        )
-    result_path = require_data_root_path(
-        Path(str(batch["result_path"])),
-        data_dir,
-        "Authoring batch result",
-    )
-    packet = _read_bound_packet(batch, data_dir)
-    payload = _canonicalize_brief_statuses(packet, read_json(input_path))
-    if not isinstance(packet, dict):
-        raise ValueError("Authoring packet must be a JSON object")
-    errors = validate_authoring_batch(packet, payload)
-    return {"batch_id": batch_id, "draft_path": str(input_path),
-            "expected_path": str(result_path), "errors": errors}
-
-
-def submit_authoring_batch(
-    run: dict[str, Any],
-    batch_id: str,
-    input_path: Path,
-    data_dir: Path,
-    *, _validated_session: dict[str, Any] | None = None,
-) -> Path:
-    """处理：校验模型批次结果与当前授权包匹配后，创建不可变接收回执。
-    输入：
-    - ``run``：当前运行清单对象；包含状态、尝试次数、截止时间和产物路径。
-    - ``batch_id``：情境计划分配的写作批次 ID；连接授权包、模型结果和接收回执。
-    - ``input_path``：上游阶段生成的输入文件路径；读取前会执行存在性或数据根校验。
-    - ``data_dir``：当前运行的唯一数据根；所有状态和版本化产物都必须位于其中。
-    输出：指向“校验模型批次结果与当前授权包匹配后，
-      创建不可变接收回执”所生成、定位或确认产物的本地路径。
-    """
-    authoring = run.get("artifacts", {}).get("authoring", {})
-    session_path = require_data_root_path(
-        Path(str(authoring.get("session_path") or "")),
-        data_dir,
-        "Authoring session",
-    )
-    session = read_json(session_path) if _validated_session is None else _validated_session
-    if not isinstance(session, dict):
-        raise ValueError("Authoring session must be a JSON object")
-    if _validated_session is None:
+    _, session = _load_authoring_session(run, data_dir, validated_session)
+    if validated_session is None:
         _validate_session_binding(run, session, data_dir)
     else:
         _validate_session_identity(run, session, data_dir)
@@ -1385,13 +1263,66 @@ def submit_authoring_batch(
         data_dir,
         "Authoring batch result",
     )
+    return session, batch, packet_path, input_path, result_path
+
+
+def check_authoring_batch(
+    run: dict[str, Any], batch_id: str, input_path: Path, data_dir: Path,
+    *,
+    _validated_session: dict[str, Any] | None = None,
+    checked_drafts: dict[str, CheckedAuthoringDraft] | None = None,
+) -> dict[str, Any]:
+    """处理：只读检查草稿与写作会话绑定及内容契约。
+    输入：运行记录、批次 ID、草稿路径、数据根及可选的本轮批量接收暂存区。
+    输出：批次标识、草稿与预期结果路径、全部字段错误。
+    """
+    _, batch, packet_path, input_path, result_path = _bound_batch_submission(
+        run, batch_id, input_path, data_dir, _validated_session,
+    )
+    packet_bytes = packet_path.read_bytes()
+    packet = _read_bound_packet(batch, data_dir, content=packet_bytes)
+    draft_text = input_path.read_text(encoding="utf-8")
+    payload = _canonicalize_brief_statuses(packet, json.loads(draft_text))
+    errors = validate_authoring_batch(packet, payload)
+    if checked_drafts is not None and not errors and isinstance(payload, dict):
+        checked_drafts[batch_id] = CheckedAuthoringDraft(packet_bytes, draft_text, payload)
+    return {"batch_id": batch_id, "draft_path": str(input_path),
+            "expected_path": str(result_path), "errors": errors}
+
+
+def submit_authoring_batch(
+    run: dict[str, Any],
+    batch_id: str,
+    input_path: Path,
+    data_dir: Path,
+    *,
+    _validated_session: dict[str, Any] | None = None,
+    checked_draft: CheckedAuthoringDraft | None = None,
+) -> Path:
+    """处理：校验模型批次结果与当前授权包匹配后，创建不可变接收回执。
+    输入：记录阶段与产物的运行清单、本次运行的数据根。
+    - ``batch_id``：情境计划分配的写作批次 ID；连接授权包、模型结果和接收回执。
+    - ``input_path``：上游阶段生成的输入文件路径；读取前会执行存在性或数据根校验。
+    - ``checked_draft``：同次批量命令预检通过的暂存结果，提交时核对输入后可复用。
+    输出：指向“校验模型批次结果与当前授权包匹配后，
+      创建不可变接收回执”所生成、定位或确认产物的本地路径。
+    """
+    session, batch, packet_path, input_path, result_path = _bound_batch_submission(
+        run, batch_id, input_path, data_dir, _validated_session,
+    )
     rejection_dir = packet_path.with_name(f"{packet_path.stem}-rejections")
     rejection_paths = _validation_rejection_paths(rejection_dir)
-    packet = _read_bound_packet(batch, data_dir)
-    payload = _canonicalize_brief_statuses(packet, read_json(input_path))
-    if not isinstance(packet, dict):
-        raise ValueError("Authoring packet must be a JSON object")
-    errors = validate_authoring_batch(packet, payload)
+    packet_bytes = packet_path.read_bytes()
+    packet = _read_bound_packet(batch, data_dir, content=packet_bytes)
+    draft_text = input_path.read_text(encoding="utf-8")
+    # 重新核对锁内实际读到的作者包与草稿。内容变化时使用完整的提交校验及拒绝流程。
+    if (checked_draft is not None and packet_bytes == checked_draft.packet_bytes
+            and draft_text == checked_draft.draft_text):
+        payload = checked_draft.payload
+        errors = []
+    else:
+        payload = _canonicalize_brief_statuses(packet, json.loads(draft_text))
+        errors = validate_authoring_batch(packet, payload)
     if errors:
         if len(rejection_paths) >= _MAX_BRIEF_SUBMISSIONS:
             raise RuntimeError(
@@ -1508,8 +1439,7 @@ def _non_negative_number(
     integer: bool = False,
 ) -> int | float | None:
     """处理：解析非负数值，并按要求限制为整数。
-    输入：
-    - ``value``：待解析或规范化的单个输入值；非法值按函数契约返回空值或报错。
+    输入：待解析的值。
     - ``label``：用于错误消息的字段或产物名称，使失败能定位到具体输入。
     - ``integer``：是否要求输入数值必须为整数；否则允许非负浮点数。
     输出：封装“解析非负数值，并按要求限制为整数”业务结果的 ``int | float | None`` 对象；
@@ -1532,28 +1462,140 @@ def _non_negative_number(
     return round(parsed, 3)
 
 
+_DELEGATION_STATUSES = {"completed", "failed", "error", "timeout", "interrupted", "pending"}
+_DELEGATION_SPANS = ("queue_seconds", "first_token_seconds", "prefill_seconds", "decode_seconds")
+_DELEGATION_CALL_COUNTERS = ("api_calls", "input_tokens", "output_tokens")
+_DELEGATION_RESOURCE_COUNTERS = (
+    "cache_read_tokens", "cache_write_tokens", "reasoning_tokens",
+    "total_tokens", "tool_call_count",
+)
+_DELEGATION_COUNTERS = (*_DELEGATION_CALL_COUNTERS, *_DELEGATION_RESOURCE_COUNTERS)
+_DELEGATION_TOKEN_ALIASES = {"input_tokens": "input", "output_tokens": "output"}
+_DELEGATION_LABEL_LIMITS = {"model": 160, "exit_reason": 80, "cost_status": 80, "cost_source": 160}
+# 顺序与原回执兼容；每个字段的解析规则由它所属的类别决定。
+_DELEGATION_DETAIL_FIELDS = (
+    *_DELEGATION_CALL_COUNTERS, "model", "exit_reason",
+    *_DELEGATION_SPANS, *_DELEGATION_RESOURCE_COUNTERS,
+    "estimated_cost_usd", "cost_status", "cost_source",
+)
+_DELEGATION_METRIC_FIELDS = ("duration_seconds", *_DELEGATION_DETAIL_FIELDS)
+
+
+def _normalize_delegation_metrics(
+    rows: list[dict[str, Any]], batches: list[dict[str, Any]], known_ids: dict[str, int],
+) -> tuple[list[dict[str, Any]], int]:
+    """处理：以会话授权的批次顺序记录宿主观测，给缺失批次保留空值。
+    输入：宿主提交的行、会话批次以及批次 ID 到位置的映射。
+    输出：完整批次指标和已提交批次数。
+    """
+    submitted = {}
+    for position, row in enumerate(rows):
+        batch_id = str(row.get("batch_id") or "")
+        task_index = row.get("task_index")
+        location = f"delegation metrics row {position}"
+        if not batch_id:
+            if type(task_index) is not int or not 0 <= task_index < len(batches):
+                raise ValueError(f"{location} requires a known batch_id or task_index")
+            batch_id = str(batches[task_index]["batch_id"])
+        if batch_id not in known_ids:
+            raise ValueError(f"Unknown delegation metrics batch_id: {batch_id}")
+        if batch_id in submitted:
+            raise ValueError(f"Duplicate delegation metrics batch_id: {batch_id}")
+        status = str(row.get("status") or "completed")
+        if status not in _DELEGATION_STATUSES:
+            raise ValueError(f"{location}.status must be one of {sorted(_DELEGATION_STATUSES)}")
+
+        tokens = row.get("tokens")
+        tokens = tokens if isinstance(tokens, dict) else {}
+        metric = {"batch_id": batch_id, "task_index": known_ids[batch_id], "status": status}
+        for field in _DELEGATION_METRIC_FIELDS:
+            token_field = _DELEGATION_TOKEN_ALIASES.get(field)
+            value = row.get(field, tokens.get(token_field) if token_field else None)
+            if field in _DELEGATION_LABEL_LIMITS:
+                limit = _DELEGATION_LABEL_LIMITS[field]
+                metric[field] = str(value)[:limit] if value is not None else None
+            else:
+                metric[field] = _non_negative_number(
+                    value, f"{location}.{field}", integer=field in _DELEGATION_COUNTERS,
+                )
+        submitted[batch_id] = metric
+
+    submitted_count = len(submitted)
+    unobserved_fields = dict.fromkeys(_DELEGATION_METRIC_FIELDS)
+    normalized = [
+        submitted.get(batch_id) or {
+            "batch_id": batch_id,
+            "task_index": position,
+            "status": "unobserved",
+            **unobserved_fields,
+        }
+        for batch_id, position in sorted(known_ids.items(), key=lambda item: item[1])
+    ]
+    return normalized, submitted_count
+
+
+def _summarize_delegation_metrics(
+    batches: list[dict[str, Any]], submitted: int, wall_seconds: int | float | None,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """处理：汇总批次观测，区分完整总量和已知小计。
+    输入：归一后的全部批次、已提交批次数和宿主报告的墙钟时间。
+    输出：正式回执中的总量与覆盖情况。
+    """
+    expected = len(batches)
+    durations = [
+        float(row["duration_seconds"]) for row in batches if row["duration_seconds"] is not None
+    ]
+    totals: dict[str, Any] = {
+        "wall_seconds": wall_seconds,
+        "child_compute_seconds": round(sum(durations), 3) if durations else None,
+    }
+    coverage = {
+        "batches": {
+            "expected_batches": expected,
+            "submitted_batches": submitted,
+            "unobserved_batches": expected - submitted,
+        },
+        "wall_seconds": {
+            "quality": "exact" if wall_seconds is not None else "unobservable",
+            "source": (
+                "reported_total_duration" if wall_seconds is not None else "missing_total_duration"
+            ),
+        },
+        "child_compute_seconds": {
+            "quality": (
+                ("exact" if len(durations) == expected else "partial")
+                if durations else "unobservable"
+            ),
+            "known_batches": len(durations),
+            "missing_batches": expected - len(durations),
+        },
+    }
+    for field in (*_DELEGATION_COUNTERS, "estimated_cost_usd"):
+        observed = [row[field] for row in batches if row[field] is not None]
+        subtotal = sum(observed)
+        if field == "estimated_cost_usd":
+            subtotal = round(float(subtotal), 8)
+        totals[field] = subtotal if observed and len(observed) == expected else None
+        coverage[field] = {
+            "known_batches": len(observed),
+            "missing_batches": expected - len(observed),
+            "known_subtotal": subtotal if observed else None,
+        }
+    return totals, coverage
+
+
 def record_authoring_metrics(
     run: dict[str, Any],
     input_path: Path,
     data_dir: Path,
 ) -> Path:
     """处理：持久化智能体宿主委派结果中受限且可审计的观测指标。
-    输入：
-    - ``run``：当前运行清单对象；包含状态、尝试次数、截止时间和产物路径。
+    输入：记录阶段与产物的运行清单、本次运行的数据根。
     - ``input_path``：上游阶段生成的输入文件路径；读取前会执行存在性或数据根校验。
-    - ``data_dir``：当前运行的唯一数据根；所有状态和版本化产物都必须位于其中。
     输出：指向“持久化 Hermes 委派结果中受限且可审计的观测指标”所生成、定位或确认产物的本地路径。
     """
 
-    authoring = run.get("artifacts", {}).get("authoring", {})
-    session_path = require_data_root_path(
-        Path(str(authoring.get("session_path") or "")),
-        data_dir,
-        "Authoring session",
-    )
-    session = read_json(session_path)
-    if not isinstance(session, dict):
-        raise ValueError("Authoring session must be a JSON object")
+    session_path, session = _load_authoring_session(run, data_dir)
     input_path = require_data_root_path(
         input_path,
         data_dir,
@@ -1584,214 +1626,14 @@ def record_authoring_metrics(
         for position, batch in enumerate(batches)
         if batch.get("batch_id")
     }
-    allowed_statuses = {
-        "completed",
-        "failed",
-        "error",
-        "timeout",
-        "interrupted",
-        "pending",
-    }
-    optional_spans = (
-        "queue_seconds",
-        "first_token_seconds",
-        "prefill_seconds",
-        "decode_seconds",
-    )
-    normalized: list[dict[str, Any]] = []
-    seen: set[str] = set()
-    for position, row in enumerate(rows):
-        batch_id = str(row.get("batch_id") or "")
-        task_index = row.get("task_index")
-        if not batch_id:
-            if (
-                not isinstance(task_index, int)
-                or isinstance(task_index, bool)
-                or not 0 <= task_index < len(batches)
-            ):
-                raise ValueError(
-                    f"delegation metrics row {position} requires a known batch_id "
-                    "or task_index"
-                )
-            batch_id = str(batches[task_index]["batch_id"])
-        if batch_id not in known_ids:
-            raise ValueError(f"Unknown delegation metrics batch_id: {batch_id}")
-        if batch_id in seen:
-            raise ValueError(f"Duplicate delegation metrics batch_id: {batch_id}")
-        seen.add(batch_id)
-
-        status = str(row.get("status") or "completed")
-        if status not in allowed_statuses:
-            raise ValueError(
-                f"delegation metrics row {position}.status must be one of "
-                f"{sorted(allowed_statuses)}"
-            )
-        tokens = row.get("tokens")
-        tokens = tokens if isinstance(tokens, dict) else {}
-        metric = {
-            "batch_id": batch_id,
-            "task_index": known_ids[batch_id],
-            "status": status,
-            "duration_seconds": _non_negative_number(
-                row.get("duration_seconds"),
-                f"delegation metrics row {position}.duration_seconds",
-            ),
-            "api_calls": _non_negative_number(
-                row.get("api_calls"),
-                f"delegation metrics row {position}.api_calls",
-                integer=True,
-            ),
-            "input_tokens": _non_negative_number(
-                row.get("input_tokens", tokens.get("input")),
-                f"delegation metrics row {position}.input_tokens",
-                integer=True,
-            ),
-            "output_tokens": _non_negative_number(
-                row.get("output_tokens", tokens.get("output")),
-                f"delegation metrics row {position}.output_tokens",
-                integer=True,
-            ),
-            "model": (
-                str(row["model"])[:160] if row.get("model") is not None else None
-            ),
-            "exit_reason": (
-                str(row["exit_reason"])[:80]
-                if row.get("exit_reason") is not None
-                else None
-            ),
-        }
-        for field in optional_spans:
-            metric[field] = _non_negative_number(
-                row.get(field),
-                f"delegation metrics row {position}.{field}",
-            )
-        metric["cache_read_tokens"] = _non_negative_number(
-            row.get("cache_read_tokens"),
-            f"delegation metrics row {position}.cache_read_tokens",
-            integer=True,
-        )
-        for field in (
-            "cache_write_tokens",
-            "reasoning_tokens",
-            "total_tokens",
-            "tool_call_count",
-        ):
-            metric[field] = _non_negative_number(
-                row.get(field),
-                f"delegation metrics row {position}.{field}",
-                integer=True,
-            )
-        metric["estimated_cost_usd"] = _non_negative_number(
-            row.get("estimated_cost_usd"),
-            f"delegation metrics row {position}.estimated_cost_usd",
-        )
-        metric["cost_status"] = (
-            str(row["cost_status"])[:80]
-            if row.get("cost_status") is not None
-            else None
-        )
-        metric["cost_source"] = (
-            str(row["cost_source"])[:160]
-            if row.get("cost_source") is not None
-            else None
-        )
-        normalized.append(metric)
-
-    submitted_batch_count = len(seen)
-    for batch_id, task_index in known_ids.items():
-        if batch_id in seen:
-            continue
-        metric = {
-            "batch_id": batch_id,
-            "task_index": task_index,
-            "status": "unobserved",
-            "duration_seconds": None,
-            "api_calls": None,
-            "input_tokens": None,
-            "output_tokens": None,
-            "model": None,
-            "exit_reason": None,
-        }
-        for field in optional_spans:
-            metric[field] = None
-        for field in (
-            "cache_read_tokens",
-            "cache_write_tokens",
-            "reasoning_tokens",
-            "total_tokens",
-            "tool_call_count",
-            "estimated_cost_usd",
-        ):
-            metric[field] = None
-        metric["cost_status"] = None
-        metric["cost_source"] = None
-        normalized.append(metric)
-    normalized.sort(key=lambda row: int(row["task_index"]))
-
-    measured_durations = [
-        float(row["duration_seconds"])
-        for row in normalized
-        if row.get("duration_seconds") is not None
-    ]
+    normalized, submitted_batch_count = _normalize_delegation_metrics(rows, batches, known_ids)
     total_duration = _non_negative_number(
         payload.get("total_duration_seconds"),
         "delegation metrics total_duration_seconds",
     )
-    summed_fields = (
-        "api_calls",
-        "input_tokens",
-        "output_tokens",
-        "cache_read_tokens",
-        "cache_write_tokens",
-        "reasoning_tokens",
-        "total_tokens",
-        "tool_call_count",
-        "estimated_cost_usd",
+    totals, coverage = _summarize_delegation_metrics(
+        normalized, submitted_batch_count, total_duration,
     )
-    totals: dict[str, Any] = {
-        "wall_seconds": total_duration,
-        "child_compute_seconds": (
-            round(sum(measured_durations), 3) if measured_durations else None
-        ),
-    }
-    coverage: dict[str, dict[str, Any]] = {
-        "batches": {
-            "expected_batches": len(known_ids),
-            "submitted_batches": submitted_batch_count,
-            "unobserved_batches": len(known_ids) - submitted_batch_count,
-        },
-        "wall_seconds": {
-            "quality": "exact" if total_duration is not None else "unobservable",
-            "source": (
-                "reported_total_duration"
-                if total_duration is not None
-                else "missing_total_duration"
-            ),
-        },
-        "child_compute_seconds": {
-            "quality": (
-                "exact"
-                if normalized and len(measured_durations) == len(normalized)
-                else ("partial" if measured_durations else "unobservable")
-            ),
-            "known_batches": len(measured_durations),
-            "missing_batches": len(normalized) - len(measured_durations),
-        },
-    }
-    for field in summed_fields:
-        values = [row.get(field) for row in normalized]
-        known_values = [value for value in values if value is not None]
-        known_sum: int | float = sum(known_values)
-        if field == "estimated_cost_usd":
-            known_sum = round(float(known_sum), 8)
-        totals[field] = (
-            known_sum if values and len(known_values) == len(values) else None
-        )
-        coverage[field] = {
-            "known_batches": len(known_values),
-            "missing_batches": len(values) - len(known_values),
-            "known_subtotal": known_sum if known_values else None,
-        }
 
     accepted = {
         "schema_version": "1.1",
@@ -1843,25 +1685,29 @@ def _delegation_metrics_by_batch(session: dict[str, Any]) -> dict[str, dict[str,
     }
 
 
+def _batch_duration(measured: dict, receipt: object) -> dict:
+    """处理：为批次选择委派耗时或回执耗时，并标记来源。
+    输入：批次的宿主观测和已接收草稿回执。
+    输出：时长和时长来源字段，供进度与分析阶段共享。
+    """
+    if measured:
+        return {"duration_seconds": measured.get("duration_seconds"),
+                "duration_source": "delegate_result"}
+    return {
+        "duration_seconds": receipt.get("duration_seconds") if isinstance(receipt, dict) else None,
+        "duration_source": "receipt_wall_since_dispatch",
+    }
+
+
 def authoring_status(run: dict[str, Any], data_dir: Path) -> dict[str, Any]:
     """处理：汇总各批次回执、委派遥测和分析截止时间形成写作进度。
-    输入：
-    - ``run``：当前运行清单对象；包含状态、尝试次数、截止时间和产物路径。
-    - ``data_dir``：当前运行的唯一数据根；所有状态和版本化产物都必须位于其中。
+    输入：记录阶段与产物的运行清单、本次运行的数据根。
     输出：“汇总各批次回执、委派遥测和分析截止时间形成写作进度”形成的结构化字典；
       典型键包括 analysis_deadline_at、api_calls、batch_id、batches、brief_count、completed_batc
       hes、deadline_exceeded、duration_seconds、duration_source、expected_batches、input_tokens
       、output_tokens。
     """
-    authoring = run.get("artifacts", {}).get("authoring", {})
-    session_path = require_data_root_path(
-        Path(str(authoring.get("session_path") or "")),
-        data_dir,
-        "Authoring session",
-    )
-    session = read_json(session_path)
-    if not isinstance(session, dict):
-        raise ValueError("Authoring session must be a JSON object")
+    _, session = _load_authoring_session(run, data_dir)
     now = datetime.now(ZoneInfo(str(run.get("timezone") or "Asia/Shanghai")))
     deadline = _parse_timestamp(session.get("analysis_deadline_at"))
     rows = []
@@ -1879,18 +1725,7 @@ def authoring_status(run: dict[str, Any], data_dir: Path) -> dict[str, Any]:
             {
                 "batch_id": batch.get("batch_id"),
                 "status": "completed" if isinstance(receipt, dict) else "pending",
-                "duration_seconds": (
-                    measured.get("duration_seconds")
-                    if measured
-                    else (
-                        receipt.get("duration_seconds")
-                        if isinstance(receipt, dict)
-                        else None
-                    )
-                ),
-                "duration_source": (
-                    "delegate_result" if measured else "receipt_wall_since_dispatch"
-                ),
+                **_batch_duration(measured, receipt),
                 "api_calls": measured.get("api_calls"),
                 "input_tokens": measured.get("input_tokens"),
                 "prompt_tokens_including_cache": measured.get("input_tokens"),
@@ -2434,9 +2269,7 @@ def prepare_analysis_packet(
     max_candidates: int = 18,
 ) -> dict[str, Any]:
     """处理：合并写作回执并生成供主分析阶段读取的紧凑数据包。
-    输入：
-    - ``run``：当前运行清单对象；包含状态、尝试次数、截止时间和产物路径。
-    - ``data_dir``：当前运行的唯一数据根；所有状态和版本化产物都必须位于其中。
+    输入：记录阶段与产物的运行清单、本次运行的数据根。
     - ``allow_degraded``：达到截止条件后是否允许使用明确标记的降级内容继续组装。
     - ``max_candidates``：分析任务包允许携带的最大候选数，防止挤占写作情境。
     输出：“合并写作回执并生成供主分析阶段读取的紧凑数据包”形成的结构化字典；
@@ -2444,15 +2277,7 @@ def prepare_analysis_packet(
       col、analysis_result_path、analysis_started_at、batch_id、batch_metrics、brief_assembly_se
       conds、brief_count、briefs_completed_at。
     """
-    authoring = run.get("artifacts", {}).get("authoring", {})
-    session_path = require_data_root_path(
-        Path(str(authoring.get("session_path") or "")),
-        data_dir,
-        "Authoring session",
-    )
-    session = read_json(session_path)
-    if not isinstance(session, dict):
-        raise ValueError("Authoring session must be a JSON object")
+    session_path, session = _load_authoring_session(run, data_dir)
     _validate_session_binding(run, session, data_dir)
     context_path = require_data_root_path(
         Path(str(session["context_path"])),
@@ -2616,41 +2441,12 @@ def prepare_analysis_packet(
             "status": (
                 "completed" if isinstance(receipt, dict) and receipt else "missing"
             ),
-            "duration_seconds": (
-                measured.get("duration_seconds")
-                if measured
-                else (
-                    receipt.get("duration_seconds")
-                    if isinstance(receipt, dict)
-                    else None
-                )
-            ),
-            "duration_source": (
-                "delegate_result" if measured else "receipt_wall_since_dispatch"
-            ),
+            **_batch_duration(measured, receipt),
             "brief_count": (
                 receipt.get("brief_count") if isinstance(receipt, dict) else 0
             ),
         }
-        for field in (
-            "api_calls",
-            "input_tokens",
-            "output_tokens",
-            "model",
-            "exit_reason",
-            "queue_seconds",
-            "first_token_seconds",
-            "prefill_seconds",
-            "decode_seconds",
-            "cache_read_tokens",
-            "cache_write_tokens",
-            "reasoning_tokens",
-            "total_tokens",
-            "tool_call_count",
-            "estimated_cost_usd",
-            "cost_status",
-            "cost_source",
-        ):
+        for field in _DELEGATION_DETAIL_FIELDS:
             if field in measured:
                 row[field] = measured[field]
         batch_metrics.append(row)
@@ -2694,24 +2490,14 @@ def assemble_report_draft(
     data_dir: Path,
 ) -> dict[str, Any]:
     """处理：把分析结果和写作骨架组装成可交给确定性编译器的报告草稿。
-    输入：
-    - ``run``：当前运行清单对象；包含状态、尝试次数、截止时间和产物路径。
+    输入：记录阶段与产物的运行清单、本次运行的数据根。
     - ``analysis_path``：上游模型生成并已通过契约校验的跨栏目分析 JSON 路径。
-    - ``data_dir``：当前运行的唯一数据根；所有状态和版本化产物都必须位于其中。
     输出：“把分析结果和写作骨架组装成可交给确定性编译器的报告草稿”形成的结构化字典；
       典型键包括 analysis_completed_at、analysis_seconds、batch_metrics、brief_assembly_seconds
       、brief_count、coverage_targets、delegation_metrics、media_prefetch、metrics、missing_batc
       hes、report_draft_path、session_path。
     """
-    authoring = run.get("artifacts", {}).get("authoring", {})
-    session_path = require_data_root_path(
-        Path(str(authoring.get("session_path") or "")),
-        data_dir,
-        "Authoring session",
-    )
-    session = read_json(session_path)
-    if not isinstance(session, dict):
-        raise ValueError("Authoring session must be a JSON object")
+    session_path, session = _load_authoring_session(run, data_dir)
     _validate_session_binding(run, session, data_dir)
     context_path = require_data_root_path(
         Path(str(session["context_path"])),

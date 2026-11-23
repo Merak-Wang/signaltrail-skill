@@ -17,67 +17,38 @@ from urllib.request import url2pathname
 
 from .config import OutputConfig, load_config, validate_output_config
 from .localization import (
+    ANALYSIS_SECTION_LABELS as ANALYSIS_LABELS,
+)
+from .localization import (
+    ANALYSIS_SECTION_LABELS_EN as ANALYSIS_LABELS_EN,
+)
+from .localization import (
+    EVALUATION_LABELS,
+    EVALUATION_LABELS_EN,
+    STATUS_LABELS,
+    STATUS_LABELS_EN,
     is_chinese_output,
     localized,
     translated_title,
 )
-from .reporting import reference_time_label, split_narrative_paragraphs
+from .localization import (
+    GROUP_LABELS as MODULE_LABELS,
+)
+from .localization import (
+    GROUP_LABELS_EN as MODULE_LABELS_EN,
+)
+from .reporting import (
+    group_items_by_source,
+    ordered_sections,
+    reference_time_label,
+    report_followups,
+    split_narrative_paragraphs,
+)
 from .storage import write_text_atomic
-from .taxonomy import SECTION_GROUPS_V13
 from .utils import read_json
 
 EDITION_LABELS = {"daily": "日报", "morning": "晨间版", "evening": "晚间版"}
 EDITION_LABELS_EN = {"daily": "Daily Edition", "morning": "Morning Edition", "evening": "Evening Edition"}
-MODULE_LABELS = {"information": "资讯", "technology": "技术"}
-MODULE_LABELS_EN = {"information": "News", "technology": "Technology"}
-STATUS_LABELS = {
-    "NEW": "新增",
-    "UPD": "更新",
-    "CONF": "确认",
-    "REV": "修正",
-    "WATCH": "观察",
-    "CLOSED": "关闭",
-}
-STATUS_LABELS_EN = {
-    "NEW": "New",
-    "UPD": "Updated",
-    "CONF": "Confirmed",
-    "REV": "Revised",
-    "WATCH": "Watch",
-    "CLOSED": "Closed",
-}
-ANALYSIS_LABELS = {
-    "geopolitics": "从地缘政治专家的角度",
-    "ai_technology": "从 AI 研究/开发工程师的角度",
-    "markets": "从股票分析师的角度",
-}
-ANALYSIS_LABELS_EN = {
-    "geopolitics": "Geopolitical Perspective",
-    "ai_technology": "AI Research and Engineering Perspective",
-    "markets": "Equity-Market Perspective",
-}
-EVALUATION_LABELS = {
-    "coverage": "信息覆盖度",
-    "importance_ordering": "重要性排序",
-    "factual_reliability": "事实可靠性",
-    "summary_accuracy": "摘要准确性",
-    "analysis_traceability": "分析可追溯性",
-    "historical_continuity": "历史连续性",
-    "readability": "可读性",
-    "timeliness": "时效性",
-    "compliance_boundaries": "合规与边界",
-}
-EVALUATION_LABELS_EN = {
-    "coverage": "Coverage",
-    "importance_ordering": "Importance Ordering",
-    "factual_reliability": "Factual Reliability",
-    "summary_accuracy": "Summary Accuracy",
-    "analysis_traceability": "Analysis Traceability",
-    "historical_continuity": "Historical Continuity",
-    "readability": "Readability",
-    "timeliness": "Timeliness",
-    "compliance_boundaries": "Compliance and Boundaries",
-}
 
 UI_LABELS = {
     "zh-CN": {
@@ -133,8 +104,6 @@ UI_LABELS = {
         "empty": "本时段暂无可发布内容。",
         "pending_sources": "待验证来源",
         "analysis_empty": "本版没有形成达到证据门槛的该领域研判。",
-        "changes": "日间新增、确认与修正",
-        "next_watch": "次日观察项",
         "archive": "日报中心",
         "revision": "修订",
         "filter": "筛选标题、摘要或来源",
@@ -209,8 +178,6 @@ UI_LABELS = {
         "empty": "No publishable items were available in this window.",
         "pending_sources": "Sources Pending Verification",
         "analysis_empty": "No analysis in this domain met the evidence threshold.",
-        "changes": "New, Confirmed, and Revised Since Morning",
-        "next_watch": "Next-Day Watch List",
         "archive": "Report Archive",
         "revision": "Revision",
         "filter": "Filter titles, summaries, or sources",
@@ -237,8 +204,7 @@ UI_LABELS = {
 
 def _ui(language: object) -> dict[str, str]:
     """处理：按输出语言选择本地报告界面文本。
-    输入：
-    - ``language``：规范语言标识；用于本地化选择或语言一致性判断。
+    输入：输出语言。
     输出：“按输出语言选择本地报告界面文本”形成的结构化字典；
       键值表达该处理定义的业务记录或查找关系。
     """
@@ -247,8 +213,7 @@ def _ui(language: object) -> dict[str, str]:
 
 def _escape(value: object) -> str:
     """处理：对不可信值执行 HTML 属性和文本转义。
-    输入：
-    - ``value``：待解析或规范化的单个输入值；非法值按函数契约返回空值或报错。
+    输入：待解析的值。
     输出：“对不可信值执行 HTML 属性和文本转义”得到的规范字符串，供调用方存储、比较或展示。
     """
     return html.escape(str(value or ""), quote=True)
@@ -256,8 +221,7 @@ def _escape(value: object) -> str:
 
 def _safe_url(value: object) -> str:
     """处理：仅保留具有主机名的 HTTP(S) URL，并对 HTML 属性进行转义。
-    输入：
-    - ``value``：待解析或规范化的单个输入值；非法值按函数契约返回空值或报错。
+    输入：待解析的值。
     输出：经过选择、规范化或安全处理的 URL 字符串，供后续访问或渲染使用。
     """
     url = str(value or "")
@@ -284,9 +248,8 @@ def _validated_local_image_path(
     data_dir: Path,
 ) -> Path | None:
     """处理：校验报告图片位于数据根媒体目录且类型、大小可嵌入。
-    输入：
+    输入：本次运行的数据根。
     - ``image``：报告或索引中的图片元数据；包含 URL、本地路径、哈希、尺寸和说明。
-    - ``data_dir``：当前运行的唯一数据根；所有状态和版本化产物都必须位于其中。
     输出：指向“校验报告图片位于数据根媒体目录且类型、大小可嵌入”所生成、定位或确认产物的本地路径
       ；条件不满足时返回 None。
     """
@@ -319,9 +282,8 @@ def _image_src(
     embedded_image_sources: dict[str, str] | None = None,
 ) -> str:
     """处理：优先选择内嵌或本地图片地址，最后回退到安全公网 URL。
-    输入：
+    输入：本地媒体相对路径前缀。
     - ``image``：报告或索引中的图片元数据；包含 URL、本地路径、哈希、尺寸和说明。
-    - ``media_path_prefix``：HTML 或 Markdown 相对引用本地媒体文件时添加的路径前缀。
     - ``embedded_image_sources``：按图片哈希或路径索引的数据 URI；用于生成可独立打开的 HTML。
     输出：“优先选择内嵌或本地图片地址，最后回退到安全公网 URL”得到的规范字符串，
       供调用方存储、比较或展示。
@@ -347,9 +309,7 @@ def _embedded_image_sources(
     optimize_for_pdf: bool = False,
 ) -> dict[str, str]:
     """处理：校验本地报告图片并构造可离线使用的数据 URI。
-    输入：
-    - ``report``：当前报告结构；包含栏目、简报或事件、来源引用及质量元数据。
-    - ``data_dir``：当前运行的唯一数据根；所有状态和版本化产物都必须位于其中。
+    输入：含栏目和来源引用的报告、本次运行的数据根。
     - ``optimize_for_pdf``：是否按打印分辨率重采样并压缩图片，避免把原图字节重复嵌入 PDF。
     输出：“校验本地报告图片并构造可离线使用的数据 URI”形成的结构化字典；
       键值表达该处理定义的业务记录或查找关系。
@@ -420,9 +380,8 @@ def _optimized_pdf_image_bytes(path: Path) -> tuple[bytes, str] | None:
 
 def _external_link(label: object, url: object, *, css_class: str = "") -> str:
     """处理：渲染经过协议校验和转义的外部链接。
-    输入：
+    输入：待处理的 URL。
     - ``label``：用于错误消息的字段或产物名称，使失败能定位到具体输入。
-    - ``url``：调用方提供的 URL；当前函数按处理说明进行规范化、过滤或访问。
     - ``css_class``：渲染到 HTML 元素的受控 CSS 类名；不接受外部任意标记。
     输出：“渲染经过协议校验和转义的外部链接”得到的规范字符串，供调用方存储、比较或展示。
     """
@@ -433,51 +392,6 @@ def _external_link(label: object, url: object, *, css_class: str = "") -> str:
     )
 
 
-def _ordered_sections(report: dict[str, Any], module: str) -> list[dict[str, Any]]:
-    """处理：按契约顺序排列已存在的报告栏目。
-    输入：
-    - ``report``：当前报告结构；包含栏目、简报或事件、来源引用及质量元数据。
-    - ``module``：报告顶层领域 ID，例如 information 或 technology。
-    输出：“按契约顺序排列已存在的报告栏目”得到的有序结构化记录；
-      每项承载处理说明所定义的身份、证据或状态字段，可直接交给下一阶段。
-    """
-    sections = [section for section in report.get("sections", []) if section.get("module") == module]
-    by_id = {str(section.get("id")): section for section in sections}
-    ordered = [by_id[key] for key in SECTION_GROUPS_V13[module] if key in by_id]
-    ordered.extend(section for section in sections if section not in ordered)
-    return ordered
-
-
-def _group_items(
-    section: dict[str, Any],
-    language: object = "zh-CN",
-) -> list[tuple[dict[str, Any], list[dict[str, Any]]]]:
-    """处理：按来源 ID 分组报告条目，同时保留来源首次出现顺序。
-    输入：
-    - ``section``：报告中的栏目对象；包含栏目 ID、标题、简报或事件列表。
-    - ``language``：规范语言标识；用于本地化选择或语言一致性判断。
-    输出：按“按来源 ID 分组报告条目，
-      同时保留来源首次出现顺序”规则得到的 ``tuple[dict[str, Any`` 列表；
-      列表顺序表达配置优先级、业务排名或稳定扫描顺序。
-    """
-    values = section.get("briefs") if "briefs" in section else section.get("items", [])
-    groups: dict[str, tuple[dict[str, Any], list[dict[str, Any]]]] = {}
-    for item in values or []:
-        source = item.get("primary_source")
-        if not isinstance(source, dict):
-            refs = item.get("source_refs") or [item.get("source_ref") or {}]
-            source = {
-                "id": "unknown",
-                "name": _ui(language)["unknown_source"],
-                "url": refs[0].get("url", "#"),
-            }
-        key = str(source.get("id") or source.get("name") or "unknown")
-        groups.setdefault(key, (source, []))[1].append(item)
-    ordered = list(groups.values())
-    # HTML/PDF 保留报告 JSON 的 canonical 顺序，避免投影层再次按重要性重排。
-    return ordered
-
-
 def _list_html(
     values: list[object],
     *,
@@ -485,10 +399,9 @@ def _list_html(
     language: object = "zh-CN",
 ) -> str:
     """处理：把文本列表渲染为经过转义的 HTML 列表。
-    输入：
+    输入：输出语言。
     - ``values``：待规范化、匹配或渲染的一组输入值。
     - ``css_class``：渲染到 HTML 元素的受控 CSS 类名；不接受外部任意标记。
-    - ``language``：规范语言标识；用于本地化选择或语言一致性判断。
     输出：“把文本列表渲染为经过转义的 HTML 列表”得到的规范字符串，供调用方存储、比较或展示。
     """
     if not values:
@@ -499,8 +412,7 @@ def _list_html(
 
 def _prose_html(value: object, *, css_class: str = "") -> str:
     """处理：把多段正文渲染为经过转义的 HTML 段落。
-    输入：
-    - ``value``：待解析或规范化的单个输入值；非法值按函数契约返回空值或报错。
+    输入：待解析的值。
     - ``css_class``：渲染到 HTML 元素的受控 CSS 类名；不接受外部任意标记。
     输出：“把多段正文渲染为经过转义的 HTML 段落”得到的规范字符串，供调用方存储、比较或展示。
     """
@@ -513,8 +425,7 @@ def _prose_html(value: object, *, css_class: str = "") -> str:
 
 def _item_ref(item: dict[str, Any]) -> dict[str, Any]:
     """处理：从报告条目提取首选来源引用。
-    输入：
-    - ``item``：单个规范条目对象；通常包含 item_id、来源、标题、URL、时间和元数据。
+    输入：带稳定 ID 的索引条目。
     输出：“从报告条目提取首选来源引用”形成的结构化字典；键值表达该处理定义的业务记录或查找关系。
     """
     ref = item.get("source_ref")
@@ -532,12 +443,9 @@ def _brief_html(
     language: object = "zh-CN",
 ) -> str:
     """处理：把单条简报渲染为本地报告卡片。
-    输入：
-    - ``item``：单个规范条目对象；通常包含 item_id、来源、标题、URL、时间和元数据。
+    输入：带稳定 ID 的索引条目、本地媒体相对路径前缀、输出语言。
     - ``rank``：简报或来源在当前栏目中的一基排序号。
-    - ``media_path_prefix``：HTML 或 Markdown 相对引用本地媒体文件时添加的路径前缀。
     - ``embedded_image_sources``：按图片哈希或路径索引的数据 URI；用于生成可独立打开的 HTML。
-    - ``language``：规范语言标识；用于本地化选择或语言一致性判断。
     输出：“把单条简报渲染为本地报告卡片”得到的规范字符串，供调用方存储、比较或展示。
     """
     ref = _item_ref(item)
@@ -549,17 +457,13 @@ def _brief_html(
     badges = [f'<span class="badge status">{_escape(status)}</span>'] if status else []
     if source_rank:
         badges.append(f'<span class="badge rank">{_escape(source_rank)}</span>')
-    title = _external_link(
-        item.get("title", localized(language, "无标题", "Untitled")),
-        ref.get("url"),
-        css_class="story-link",
-    )
     localized_title = translated_title(item, language)
-    translation = (
-        f'<p class="translated-title">{_escape(localized_title)}</p>'
-        if localized_title
-        else ""
+    original = item.get("title", localized(language, "无标题", "Untitled"))
+    title = _external_link(
+        localized_title or original, ref.get("url"),
+        css_class="story-link translated-title" if localized_title else "story-link",
     )
+    original_line = f'<p class="original-title">{_escape(original)}</p>' if localized_title else ""
     time_html = ""
     if time_info := reference_time_label(ref, language):
         label, value = time_info
@@ -584,10 +488,9 @@ def _brief_html(
         f'data-search="{_escape(item.get("title"))} '
         f'{_escape(localized_title)} {_escape(item.get("tldr"))}">'
         '<div class="brief-heading">'
-        f'<span class="ordinal">{rank:02d}</span><div><h4>{title}</h4>{translation}{time_html}</div>'
+        f'<span class="ordinal">{rank:02d}</span><div><h4>{title}</h4>{original_line}{time_html}</div>'
         f'<div class="badges">{"".join(badges)}</div></div>'
-        f'{figure}<p class="tldr"><span>TL;DR</span>'
-        f'{_escape(item.get("tldr"))}</p></article>'
+        f'<p class="tldr"><span>TL;DR</span>{_escape(item.get("tldr"))}</p>{figure}</article>'
     )
 
 
@@ -607,16 +510,13 @@ def _source_section_html(
     embedded_image_sources: dict[str, str] | None = None,
     language: object = "zh-CN",
     section_title: str = "",
-    section_id: str = "",
+    anchor: str = "",
 ) -> str:
     """处理：把同一来源的简报集合渲染为报告分区。
-    输入：
-    - ``source``：来源配置；包含来源 ID、名称、入口 URL、分类、过滤规则、限额和可信层级。
-    - ``items``：规范条目列表；每项带稳定身份并可进入聚类、报告或渲染步骤。
-    - ``media_path_prefix``：HTML 或 Markdown 相对引用本地媒体文件时添加的路径前缀。
+    输入：带入口与筛选规则的来源配置、有序索引条目、本地媒体相对路径前缀、输出语言。
     - ``embedded_image_sources``：按图片哈希或路径索引的数据 URI；用于生成可独立打开的 HTML。
-    - ``language``：规范语言标识；用于本地化选择或语言一致性判断。
     - ``section_title``：报告原栏目名称；显示在来源标题右侧，保持来源内顺序。
+    - ``anchor``：正文中的小节锚点，由目录共用。
     输出：“把同一来源的简报集合渲染为报告分区”得到的规范字符串，供调用方存储、比较或展示。
     """
     source_name = source.get("name") or _ui(language)["unknown_source"]
@@ -631,7 +531,7 @@ def _source_section_html(
         for rank, item in enumerate(items, start=1)
     )
     return (
-        f'<section class="source-group" id="{_escape(_source_anchor(section_id, source))}" '
+        f'<section class="source-group" id="{_escape(anchor)}" '
         f'data-search="{_escape(source_name)}">'
         '<div class="source-heading">'
         f'<h3>{_external_link(source_name, source.get("url"))}</h3>'
@@ -641,14 +541,34 @@ def _source_section_html(
     )
 
 
+_ANALYSIS_FIELDS = (
+    ("facts", "facts", True),
+    ("history", "historical_context", False),
+    ("dialectic", "dialectical_analysis", False),
+    ("reasoning", "reasoning", False),
+    ("counter", "counter_evidence", True),
+    ("scenarios", "scenarios", True),
+    ("implications", "implications", True),
+    ("actions", "actions", True),
+    ("watch", "watch_signals", True),
+    ("invalidation", "invalidation_signals", True),
+    ("causal", "causal_chain", True),
+    ("assumptions", "assumptions", True),
+    ("gaps", "evidence_gaps", True),
+    ("horizon", "time_horizon", False),
+    ("confidence_basis", "confidence_rationale", False),
+    ("change_prior", "change_from_prior", False),
+    ("decision", "decision_relevance", False),
+)
+
+
 def _analysis_html(
     analysis: dict[str, Any],
     language: object = "zh-CN",
 ) -> str:
     """处理：把单个分析视角渲染为结构化 HTML。
-    输入：
+    输入：输出语言。
     - ``analysis``：已校验的跨栏目分析对象；包含模式、风险、机会和展望。
-    - ``language``：规范语言标识；用于本地化选择或语言一致性判断。
     输出：“把单个分析视角渲染为结构化 HTML”得到的规范字符串，供调用方存储、比较或展示。
     """
     labels = _ui(language)
@@ -663,40 +583,11 @@ def _analysis_html(
         for row in analysis.get("stakeholder_positions", [])
         if isinstance(row, dict)
     )
-    sections = [
-        (labels["facts"], _list_html(analysis.get("facts", []), language=language)),
-        (labels["history"], f'<p>{_escape(analysis.get("historical_context"))}</p>'),
-        (labels["dialectic"], f'<p>{_escape(analysis.get("dialectical_analysis"))}</p>'),
-        (labels["reasoning"], f'<p>{_escape(analysis.get("reasoning"))}</p>'),
-        (
-            labels["counter"],
-            _list_html(analysis.get("counter_evidence", []), language=language),
-        ),
-        (labels["scenarios"], _list_html(analysis.get("scenarios", []), language=language)),
-        (
-            labels["implications"],
-            _list_html(analysis.get("implications", []), language=language),
-        ),
-        (labels["actions"], _list_html(analysis.get("actions", []), language=language)),
-        (labels["watch"], _list_html(analysis.get("watch_signals", []), language=language)),
-        (
-            labels["invalidation"],
-            _list_html(analysis.get("invalidation_signals", []), language=language),
-        ),
-        (labels["causal"], _list_html(analysis.get("causal_chain", []), language=language)),
-        (
-            labels["assumptions"],
-            _list_html(analysis.get("assumptions", []), language=language),
-        ),
-        (labels["gaps"], _list_html(analysis.get("evidence_gaps", []), language=language)),
-        (labels["horizon"], f'<p>{_escape(analysis.get("time_horizon"))}</p>'),
-        (
-            labels["confidence_basis"],
-            f'<p>{_escape(analysis.get("confidence_rationale"))}</p>',
-        ),
-        (labels["change_prior"], f'<p>{_escape(analysis.get("change_from_prior"))}</p>'),
-        (labels["decision"], f'<p>{_escape(analysis.get("decision_relevance"))}</p>'),
-    ]
+    sections = (
+        (labels[label], _list_html(analysis.get(key, []), language=language) if is_list
+         else f'<p>{_escape(analysis.get(key))}</p>')
+        for label, key, is_list in _ANALYSIS_FIELDS
+    )
     body = "".join(
         f'<section class="analysis-part"><h5>{title}</h5>{content}</section>'
         for title, content in sections
@@ -732,9 +623,8 @@ def _synthesis_html(
     language: object = "zh-CN",
 ) -> str:
     """处理：渲染跨视角综合结论及其分歧和共识。
-    输入：
+    输入：输出语言。
     - ``synthesis``：可选执行摘要对象；包含核心判断、优先事项和观察信号。
-    - ``language``：规范语言标识；用于本地化选择或语言一致性判断。
     输出：“渲染跨视角综合结论及其分歧和共识”得到的规范字符串，供调用方存储、比较或展示。
     """
     if not isinstance(synthesis, dict):
@@ -787,33 +677,41 @@ def _synthesis_html(
     )
 
 
-def _toc_html(report: dict[str, Any], *, slides_href: str | None = None) -> str:
+def _analysis_contents(report: dict[str, Any]) -> list[tuple[str, str]]:
+    """处理：从每个研判领域选出首篇标题，生成摘要页的跳转目录。
+    输入：含研判和跨视角综合的已存日报。
+    输出：本期实际可读的章节锚点与标题，供 HTML 和 PDF 共用。
+    """
+    claims = {}
+    for row in report.get("analyses", []):
+        if row.get("claim"):
+            claims.setdefault(row.get("domain"), row["claim"])
+    links = [(f"analysis-{domain}", claims[domain]) for domain in ANALYSIS_LABELS
+             if domain in claims]
+    if isinstance(report.get("cross_perspective_synthesis"), dict):
+        links.append(("analysis-synthesis", _ui(report.get("language") or "zh-CN")["synthesis"]))
+    return links
+
+
+def _toc_html(
+    report: dict[str, Any],
+    contents: list[tuple[str, str, int]],
+    *,
+    slides_href: str | None = None,
+) -> str:
     """处理：根据实际栏目和可用演示生成可折叠的报告目录。
-    输入：
-    - ``report``：当前报告结构；包含栏目、简报或事件、来源引用及质量元数据。
-    输出：“根据实际栏目生成可折叠的报告目录”得到的规范字符串，供调用方存储、比较或展示。
+    输入：报告与正文生成的栏目和来源锚点。
+    输出：按正文顺序排列的可折叠目录。
     """
     language = report.get("language") or "zh-CN"
     labels = _ui(language)
-    modules = MODULE_LABELS if is_chinese_output(language) else MODULE_LABELS_EN
     analyses = ANALYSIS_LABELS if is_chinese_output(language) else ANALYSIS_LABELS_EN
     first_entry = (
         ("visual-briefing", localized(language, "日报图文流与视频", "Daily news slides and video"))
         if slides_href else ("summary", labels["summary"])
     )
     entries: list[tuple[str, str, int]] = [(*first_entry, 0)]
-    for module in ("information", "technology"):
-        entries.append((f"module-{module}", modules[module], 0))
-        for section in _ordered_sections(report, module):
-            section_id = str(section.get("id") or "")
-            if not section_id:
-                continue
-            entries.append((section_id, str(section.get("title") or section_id), 1))
-            entries.extend(
-                (_source_anchor(section_id, source),
-                 str(source.get("name") or labels["unknown_source"]), 2)
-                for source, _ in _group_items(section, language)
-            )
+    entries.extend(contents)
     entries.append(("analysis", labels["analysis"], 0))
     entries.extend(
         (f"analysis-{domain}", label, 1)
@@ -853,9 +751,7 @@ def _evaluation_html(
     language: object = "zh-CN",
 ) -> str:
     """处理：把质量评估和改进建议渲染为 HTML。
-    输入：
-    - ``evaluation``：独立质量评估对象；包含评分、问题和改进建议。
-    - ``language``：规范语言标识；用于本地化选择或语言一致性判断。
+    输入：独立质量评估、输出语言。
     输出：“把质量评估和改进建议渲染为 HTML”得到的规范字符串，供调用方存储、比较或展示。
     """
     labels = _ui(language)
@@ -962,11 +858,8 @@ def render_report_html(
     video_title: str | None = None,
 ) -> str:
     """处理：把已验证报告、来源证据和本地图片投影为可离线阅读的完整 HTML。
-    输入：
-    - ``report``：当前报告结构；包含栏目、简报或事件、来源引用及质量元数据。
-    - ``evaluation``：独立质量评估对象；包含评分、问题和改进建议。
+    输入：含栏目和来源引用的报告、独立质量评估、本地媒体相对路径前缀。
     - ``include_pdf_link``：HTML 页面是否展示指向同版本 PDF 的下载链接。
-    - ``media_path_prefix``：HTML 或 Markdown 相对引用本地媒体文件时添加的路径前缀。
     - ``embedded_image_sources``：按图片哈希或路径索引的数据 URI；用于生成可独立打开的 HTML。
     - ``archive_href``：同日期报告归档页的受控相对链接；为空时不渲染。
     - ``pdf_href``：同版本 PDF 的受控相对链接；为空时不渲染。
@@ -988,21 +881,29 @@ def render_report_html(
         else None
     )
     module_blocks = []
+    contents: list[tuple[str, str, int]] = []
     for module in ("information", "technology"):
+        contents.append((f"module-{module}", module_labels[module], 0))
         section_blocks = []
-        for section in _ordered_sections(report, module):
-            source_groups = "".join(
-                _source_section_html(
-                    source,
-                    items,
-                    media_path_prefix,
-                    embedded_image_sources,
-                    language,
-                    str(section.get("title") or ""),
-                    str(section.get("id") or ""),
+        for section in ordered_sections(report, module, preserve_extra=True):
+            section_id = str(section.get("id") or "")
+            section_title = str(section.get("title") or "")
+            groups = group_items_by_source(section, language, local=True)
+            if section_id:
+                contents.append((section_id, section_title or section_id, 1))
+            source_blocks = []
+            for source, items in groups:
+                anchor = _source_anchor(section_id, source)
+                if section_id:
+                    source_name = str(source.get("name") or labels["unknown_source"])
+                    contents.append((anchor, source_name, 2))
+                source_blocks.append(
+                    _source_section_html(
+                        source, items, media_path_prefix, embedded_image_sources,
+                        language, section_title, anchor,
+                    )
                 )
-                for source, items in _group_items(section, language)
-            )
+            source_groups = "".join(source_blocks)
             coverage_note = ""
             if section.get("coverage_note") or not source_groups:
                 coverage_note = (
@@ -1046,19 +947,10 @@ def render_report_html(
     synthesis_block = _synthesis_html(
         report.get("cross_perspective_synthesis"), language
     )
-    changes = report.get("changes", [])
-    changes_block = (
-        f'<section class="follow-up"><h3>{_escape(labels["changes"])}</h3>'
-        f'{_list_html(changes, language=language)}</section>'
-        if changes
-        else ""
-    )
-    watch = report.get("tomorrow_watch_items", [])
-    watch_block = (
-        f'<section class="follow-up"><h3>{_escape(labels["next_watch"])}</h3>'
-        f'{_list_html(watch, language=language)}</section>'
-        if watch
-        else ""
+    followups = "".join(
+        f'<section class="follow-up"><h3>{_escape(label)}</h3>'
+        f'{_list_html(values, language=language)}</section>'
+        for label, values in report_followups(report, language)
     )
     report_id = str(report.get("report_id") or "daily-intelligence")
     feedback_data = json.dumps(
@@ -1115,13 +1007,19 @@ def render_report_html(
         f'" allowfullscreen></iframe>{video_frame}</section>'
         if slides_href else ""
     )
+    analysis_links = "".join(
+        f'<li><a href="#{anchor}">{_escape(text)}</a></li>'
+        for anchor, text in _analysis_contents(report)
+    )
+    analysis_contents = (f'<nav class="analysis-contents"><h3>{labels["analysis"]}</h3>'
+                         f'<ul>{analysis_links}</ul></nav>' if analysis_links else "")
     summary_class = "summary summary-print-fallback" if slides_href else "summary"
     archive_link = (
         f'<a href="{_escape(archive_href)}">{_escape(labels["archive"])}</a>'
         if archive_href
         else ""
     )
-    toc_block = _toc_html(report, slides_href=slides_href)
+    toc_block = _toc_html(report, contents, slides_href=slides_href)
     masthead_block = _masthead_html(report, language)
     feedback_fields = (
         (labels["relevance"], "relevance"),
@@ -1156,7 +1054,7 @@ a{{color:var(--blue);text-decoration:none}}a:hover{{text-decoration:underline}}.
 .analysis-narrative{{max-width:76ch;margin:22px 0 18px;font-family:Georgia,"Noto Serif CJK SC",serif;font-size:17px;line-height:1.92;color:#303030}}.analysis-narrative p{{margin:0 0 1em}}.analysis-notebook{{margin-top:20px;border-top:1px solid var(--line);padding-top:14px}}.analysis-notebook summary{{cursor:pointer;color:var(--blue);font-weight:800;list-style-position:outside}}.analysis-notebook-body{{margin-top:12px;padding:2px 16px 12px;border-left:3px solid var(--line);color:#303030}}
 .summary,.module,.content-section,.source-group,.analysis-module,.analysis-domain,.evaluation,.feedback{{scroll-margin-top:88px}}.toc-toggle{{position:fixed;z-index:32;left:14px;top:50%;display:flex;flex-direction:column;align-items:center;gap:6px;width:42px;margin:0;padding:13px 8px;transform:translateY(-50%);border:1px solid rgba(182,31,36,.2);border-radius:10px;background:rgba(255,255,255,.96);box-shadow:0 8px 24px rgba(30,30,30,.14);color:var(--blue);font-size:12px;letter-spacing:.12em;backdrop-filter:blur(12px);transition:opacity .2s,transform .2s}}.toc-toggle span:first-child{{font-size:17px;line-height:1}}body.toc-open .toc-toggle{{opacity:0;pointer-events:none;transform:translate(-12px,-50%)}}.report-toc{{position:fixed;z-index:31;left:14px;top:84px;bottom:18px;width:286px;display:flex;flex-direction:column;overflow:hidden;border:1px solid rgba(182,31,36,.16);border-radius:14px;background:rgba(255,255,255,.97);box-shadow:0 16px 42px rgba(30,30,30,.18);backdrop-filter:blur(16px);transform:translateX(calc(-100% - 30px));transition:transform .24s ease}}body.toc-open .report-toc{{transform:translateX(0)}}.toc-heading{{display:flex;align-items:center;justify-content:space-between;padding:16px 16px 12px;border-bottom:1px solid var(--line);color:var(--blue)}}.toc-heading strong{{font:700 18px Georgia,"Noto Serif CJK SC",serif}}.toc-close{{margin:0;padding:5px 9px;border:1px solid var(--line);border-radius:7px;background:var(--soft);color:var(--blue);font-size:12px}}.toc-nav{{overflow-y:auto;padding:10px}}.toc-link{{display:block;margin:2px 0;padding:7px 10px;border-left:3px solid transparent;border-radius:6px;color:#303030;font-size:14px;line-height:1.4}}.toc-link:hover{{background:var(--soft);text-decoration:none}}.toc-link.toc-level-0{{margin-top:7px;font-weight:800;color:var(--blue)}}.toc-link.toc-level-1{{padding-left:22px;font-size:13px}}.toc-link.toc-level-2{{padding-left:34px;font-size:12px;color:var(--muted)}}.toc-link.active{{border-left-color:var(--gold);background:#f9eded;color:#b61f24}}.toc-scrim{{position:fixed;z-index:30;inset:0;visibility:hidden;background:rgba(20,20,20,.22);opacity:0;transition:opacity .2s,visibility .2s}}body.toc-open .toc-scrim{{visibility:visible;opacity:1}}
 @media(min-width:1500px){{.toc-scrim{{display:none}}}}
-@media(max-width:720px){{.toolbar-inner{{align-items:flex-start;flex-wrap:wrap}}.toolbar input{{order:3;margin:0;width:100%;min-width:0}}.tools{{margin-left:auto}}.summary,.module,.analysis-module,.evaluation,.feedback,.pending{{padding:20px}}.brief{{grid-template-columns:32px minmax(0,1fr);gap:10px 12px}}.brief-heading{{grid-column:1/-1;grid-template-columns:32px 1fr}}.badges{{grid-column:2;justify-content:flex-start}}.brief>figure{{grid-column:2;grid-row:2}}.brief.has-image>.tldr{{grid-column:2;grid-row:3}}.brief:not(.has-image)>.tldr{{grid-column:2;grid-row:2}}.feedback-grid{{grid-template-columns:1fr 1fr}}.toc-toggle{{left:auto;right:8px;top:auto;bottom:12px;width:38px;padding:10px 8px;transform:none}}.toc-toggle span:last-child{{display:none}}body.toc-open .toc-toggle{{transform:translateX(12px)}}.report-toc{{left:8px;top:72px;bottom:8px;width:min(300px,calc(100vw - 24px))}}}}
+@media(max-width:720px){{.toolbar-inner{{align-items:flex-start;flex-wrap:wrap}}.toolbar input{{order:3;margin:0;width:100%;min-width:0}}.tools{{margin-left:auto}}.summary,.module,.analysis-module,.evaluation,.feedback,.pending{{padding:20px}}.brief{{grid-template-columns:32px minmax(0,1fr);gap:10px 12px}}.brief-heading{{grid-column:1/-1;grid-template-columns:32px 1fr}}.badges{{grid-column:2;justify-content:flex-start}}.brief>figure{{grid-column:2;grid-row:3}}.brief.has-image>.tldr{{grid-column:2;grid-row:2}}.brief:not(.has-image)>.tldr{{grid-column:2;grid-row:2}}.feedback-grid{{grid-template-columns:1fr 1fr}}.toc-toggle{{left:auto;right:8px;top:auto;bottom:12px;width:38px;padding:10px 8px;transform:none}}.toc-toggle span:last-child{{display:none}}body.toc-open .toc-toggle{{transform:translateX(12px)}}.report-toc{{left:8px;top:72px;bottom:8px;width:min(300px,calc(100vw - 24px))}}}}
 @media print{{body{{background:#fff;font-size:10.5pt}}.masthead{{padding:28px 0;background:#fff!important;color:#ffffff;border-bottom:3px solid #b61f24}}.eyebrow{{color:#b61f24}}.metadata{{color:#626262}}.toolbar,.toc-toggle,.report-toc,.toc-scrim,.feedback button,.feedback-note,.feedback-grid,.feedback .comment{{display:none}}.feedback-print{{display:block}}.shell{{width:auto;margin:0 14mm}}main{{padding:12px 0}}.summary,.module,.analysis-module,.evaluation,.feedback,.pending{{box-shadow:none;border:0;border-radius:0;padding:10px 0;margin:0 0 12px}}.source-group,.brief,table,figure{{break-inside:avoid}}.analysis-domain>h3{{break-after:avoid}}.analysis-card{{break-inside:auto}}details.analysis-notebook:not([open])>.analysis-notebook-body{{display:block!important}}.analysis-notebook summary{{list-style:none}}a{{color:#111111}}.content-section{{break-before:auto}}}}
 
 .evaluation{{overflow-wrap:anywhere}}
@@ -1165,6 +1063,8 @@ a{{color:var(--blue);text-decoration:none}}a:hover{{text-decoration:underline}}.
 
 .story-link,.source-heading h3 a,.summary h2,.module-label,.analysis-module>h2,.evaluation>h2,.feedback>h2{{color:#111111}}
 .ordinal{{color:#626262}}.badge.rank{{background:#f0f0f0;color:#626262}}
+.brief .original-title{{margin:4px 0;color:#555;font-size:.9em;line-height:1.45}}
+.brief h4 .translated-title{{font:inherit;margin:0;color:inherit}}
 .masthead{{background:#fff;color:#111;border-top:5px solid #b61f24}}
 .masthead-grid{{display:grid;grid-template-columns:minmax(0,1fr) auto minmax(0,1fr);align-items:end;gap:16px;padding:22px 0 18px;border-bottom:1px solid #111}}
 .report-brand{{display:flex;flex-direction:column;align-items:center;font:700 43px/1.3 "Noto Serif CJK SC","Songti SC",SimSun,serif;letter-spacing:4px;margin:0;max-width:none}}
@@ -1193,6 +1093,7 @@ a{{color:var(--blue);text-decoration:none}}a:hover{{text-decoration:underline}}.
 .slides-embed-heading button{{border:0;margin:0;padding:0;background:none;cursor:pointer;text-decoration:underline;line-height:inherit}}
 .slides-embed [hidden]{{display:none!important}}
 .slides-embed iframe{{display:block;width:100%;height:clamp(620px,78vh,880px);border:1px solid #d7ddd6;border-radius:8px;background:#f3f4ef}}
+.analysis-contents a{{text-decoration:underline;text-underline-offset:.15em}}
 .summary-print-fallback{{display:none}}
 .slides-expanded{{overflow:hidden}}
 .slides-expanded .slides-embed iframe{{position:fixed;z-index:40;inset:3vh 3vw;width:94vw;height:94vh;min-height:0;box-shadow:0 0 0 100vmax #15201ec9}}
@@ -1205,7 +1106,7 @@ a{{color:var(--blue);text-decoration:none}}a:hover{{text-decoration:underline}}.
 {toc_block}
 {masthead_block}
 <div class="toolbar"><div class="shell toolbar-inner"><nav><a href="#evaluation">{_escape(labels["source_status"])}</a></nav><input id="search" type="search" placeholder="{_escape(labels["filter"])}"><div class="tools">{archive_link}{pdf_link}{slides_link}</div></div></div>
-<main class="shell">{slides_embed}<section class="{summary_class}" id="summary"><h2>{_escape(labels["summary"])}</h2>{_list_html(report.get('executive_summary', []), language=language)}</section>{''.join(module_blocks)}{pending_block}<section class="analysis-module" id="analysis"><h2>{_escape(labels["analysis"])}</h2>{''.join(analysis_groups)}{synthesis_block}{changes_block}{watch_block}</section><section class="evaluation" id="evaluation"><h2>{_escape(labels["evaluation"])}</h2>{_evaluation_html(evaluation, language)}</section><section class="feedback" id="feedback"><h2>{_escape(labels["feedback"])}</h2><div class="feedback-grid">{feedback_controls}</div><label class="comment">{_escape(labels["comments"])}<textarea data-feedback="comment" placeholder="{_escape(labels["feedback_placeholder"])}"></textarea></label><div class="feedback-print">{_escape(feedback_print)}<br>{_escape(labels["comments"])}: ________________________________</div><button id="download-feedback" type="button">{_escape(labels["download_feedback"])}</button><p class="feedback-note">{_escape(labels["feedback_note"])}</p></section></main><footer class="shell">{_escape(labels["footer"])}</footer>
+<main class="shell">{slides_embed}<section class="{summary_class}" id="summary"><h2>{_escape(labels["summary"])}</h2>{_list_html(report.get('executive_summary', []), language=language)}{analysis_contents}</section>{''.join(module_blocks)}{pending_block}<section class="analysis-module" id="analysis"><h2>{_escape(labels["analysis"])}</h2>{''.join(analysis_groups)}{synthesis_block}{followups}</section><section class="evaluation" id="evaluation"><h2>{_escape(labels["evaluation"])}</h2>{_evaluation_html(evaluation, language)}</section><section class="feedback" id="feedback"><h2>{_escape(labels["feedback"])}</h2><div class="feedback-grid">{feedback_controls}</div><label class="comment">{_escape(labels["comments"])}<textarea data-feedback="comment" placeholder="{_escape(labels["feedback_placeholder"])}"></textarea></label><div class="feedback-print">{_escape(feedback_print)}<br>{_escape(labels["comments"])}: ________________________________</div><button id="download-feedback" type="button">{_escape(labels["download_feedback"])}</button><p class="feedback-note">{_escape(labels["feedback_note"])}</p></section></main><footer class="shell">{_escape(labels["footer"])}</footer>
 <script>
 const reportMeta={feedback_data};
 const tocToggle=document.getElementById('toc-toggle');
@@ -1258,11 +1159,8 @@ def _reportlab_pdf(
     data_dir: Path | None = None,
 ) -> None:
     """处理：使用 ReportLab 从报告数据生成离线 PDF 备用投影。
-    输入：
-    - ``report``：当前报告结构；包含栏目、简报或事件、来源引用及质量元数据。
-    - ``evaluation``：独立质量评估对象；包含评分、问题和改进建议。
+    输入：含栏目和来源引用的报告、独立质量评估、本次运行的数据根。
     - ``output_path``：当前阶段允许写入的目标路径；父目录和覆盖语义由函数负责。
-    - ``data_dir``：当前运行的唯一数据根；所有状态和版本化产物都必须位于其中。
     输出：不返回新数据；完成“使用 ReportLab 从报告数据生成离线 PDF 备用投影”，
       副作用限于该处理声明的受控对象或产物。
     """
@@ -1378,8 +1276,7 @@ def _reportlab_pdf(
 
     def paragraph(value: object, style: ParagraphStyle = base) -> Paragraph:
         """处理：清理输入文本并按指定样式创建可加入 PDF 排版流的正文段落。
-        输入：
-        - ``value``：待解析或规范化的单个输入值；非法值按函数契约返回空值或报错。
+        输入：待解析的值。
         - ``style``：ReportLab 段落样式；控制字体、字号、行距和段后间距。
         输出：封装“清理输入文本并按指定样式创建可加入 PDF 排版流的正文段落”业务结果的 ``Paragrap
           h`` 对象；调用方据此继续相邻阶段或识别无结果状态。
@@ -1388,8 +1285,7 @@ def _reportlab_pdf(
 
     def bullet(value: object) -> Paragraph:
         """处理：为清理后的文本添加项目符号并创建可加入 PDF 排版流的列表段落。
-        输入：
-        - ``value``：待解析或规范化的单个输入值；非法值按函数契约返回空值或报错。
+        输入：待解析的值。
         输出：封装“为清理后的文本添加项目符号并创建可加入 PDF 排版流的列表段落”业务结果的 ``Para
           graph`` 对象；调用方据此继续相邻阶段或识别无结果状态。
         """
@@ -1424,11 +1320,15 @@ def _reportlab_pdf(
         paragraph(labels["summary"], h1),
     ]
     story.extend(bullet(value) for value in report.get("executive_summary", []))
+    if contents := _analysis_contents(report):
+        story.append(paragraph(labels["analysis"], h2))
+        for anchor, text in contents:
+            story.append(Paragraph(f'<link href="#{anchor}" color="#234A70"><u>{pdf_markup(text)}</u></link>', base))
     for module in ("information", "technology"):
         story.extend([Spacer(1, 4 * mm), paragraph(module_labels[module], h1)])
-        for section in _ordered_sections(report, module):
+        for section in ordered_sections(report, module, preserve_extra=True):
             story.append(paragraph(section.get("title"), h2))
-            groups = _group_items(section, language)
+            groups = group_items_by_source(section, language, local=True)
             if section.get("coverage_note") or not groups:
                 story.append(paragraph(section.get("coverage_note") or labels["empty"], small))
             for source, items in groups:
@@ -1441,18 +1341,20 @@ def _reportlab_pdf(
                 for rank, item in enumerate(items, start=1):
                     ref = _item_ref(item)
                     source_rank = f" [{item.get('source_rank_label')}]" if item.get("source_rank_label") else ""
-                    label = f"{rank}. {item.get('title')}{source_rank}"
+                    localized_title = translated_title(item, language)
+                    label = f"{rank}. {localized_title or item.get('title')}{source_rank}"
                     link = _safe_url(ref.get("url"))
                     linked_title = Paragraph(
                         f'<link href="{link}">{pdf_markup(label)}</link>',
-                        base,
+                        h3,
                     )
                     blocks: list[Any] = [linked_title]
-                    if localized_title := translated_title(item, language):
-                        blocks.append(paragraph(localized_title, h3))
+                    if localized_title:
+                        blocks.append(paragraph(item.get("title"), small))
                     if time_info := reference_time_label(ref, language):
                         time_label, time_value = time_info
                         blocks.append(paragraph(f"{time_label}：{time_value}", small))
+                    blocks.append(paragraph(f"TL;DR：{item.get('tldr')}"))
                     image = item.get("image")
                     if data_dir is not None and isinstance(image, dict):
                         image_path = _validated_local_image_path(image, data_dir)
@@ -1492,12 +1394,11 @@ def _reportlab_pdf(
                                     )
                             except (OSError, ValueError, ZeroDivisionError):
                                 pass
-                    blocks.append(paragraph(f"TL;DR：{item.get('tldr')}"))
                     story.append(KeepTogether(blocks))
                     story.append(Spacer(1, 2 * mm))
     story.extend([PageBreak(), paragraph(labels["analysis"], h1)])
     for domain in ("geopolitics", "ai_technology", "markets"):
-        story.append(paragraph(analysis_labels[domain], h2))
+        story.append(Paragraph(f'<a name="analysis-{domain}"/>{pdf_markup(analysis_labels[domain])}', h2))
         rows = [row for row in report.get("analyses", []) if row.get("domain") == domain]
         if not rows:
             story.append(paragraph(labels["analysis_empty"], small))
@@ -1508,25 +1409,8 @@ def _reportlab_pdf(
                 for value in split_narrative_paragraphs(analysis.get("narrative"))
             )
             story.append(paragraph(labels["support"], h3))
-            for label, key in (
-                (labels["facts"], "facts"),
-                (labels["history"], "historical_context"),
-                (labels["dialectic"], "dialectical_analysis"),
-                (labels["reasoning"], "reasoning"),
-                (labels["counter"], "counter_evidence"),
-                (labels["scenarios"], "scenarios"),
-                (labels["implications"], "implications"),
-                (labels["actions"], "actions"),
-                (labels["watch"], "watch_signals"),
-                (labels["invalidation"], "invalidation_signals"),
-                (labels["causal"], "causal_chain"),
-                (labels["assumptions"], "assumptions"),
-                (labels["gaps"], "evidence_gaps"),
-                (labels["horizon"], "time_horizon"),
-                (labels["confidence_basis"], "confidence_rationale"),
-                (labels["change_prior"], "change_from_prior"),
-                (labels["decision"], "decision_relevance"),
-            ):
+            for label_key, key, _ in _ANALYSIS_FIELDS:
+                label = labels[label_key]
                 value = analysis.get(key)
                 if not value:
                     continue
@@ -1537,7 +1421,7 @@ def _reportlab_pdf(
                     story.append(paragraph(value))
     synthesis = report.get("cross_perspective_synthesis")
     if isinstance(synthesis, dict):
-        story.append(paragraph(labels["synthesis"], h2))
+        story.append(Paragraph(f'<a name="analysis-synthesis"/>{pdf_markup(labels["synthesis"])}', h2))
         story.append(paragraph(synthesis.get("overall_judgment"), h3))
         for label, key in (
             (labels["consensus"], "consensus"),
@@ -1711,13 +1595,10 @@ def render_pdf_from_html(
     embedded_html: str | None = None,
 ) -> tuple[str, str | None]:
     """处理：按配置选择 Edge 或 ReportLab，把报告 HTML 投影为 PDF。
-    输入：
+    输入：含栏目和来源引用的报告、独立质量评估、本次运行的数据根。
     - ``html_path``：已生成并通过本地路径校验的报告 HTML 文件。
     - ``pdf_path``：目标版本化 PDF 文件；写入前执行不可覆盖和父目录检查。
-    - ``report``：当前报告结构；包含栏目、简报或事件、来源引用及质量元数据。
-    - ``evaluation``：独立质量评估对象；包含评分、问题和改进建议。
     - ``engine``：PDF 引擎选择；edge、reportlab 或 auto 决定渲染与回退路径。
-    - ``data_dir``：当前运行的唯一数据根；所有状态和版本化产物都必须位于其中。
     - ``embedded_html``：已内嵌样式和图片的独立 HTML；供浏览器离线打印 PDF。
     输出：“按配置选择 Edge 或 ReportLab，把报告 HTML 投影为 PDF”得到的固定结构结果；
       返回位置依次对应 'reportlab'、warning。
@@ -1751,8 +1632,7 @@ def render_pdf_from_html(
 
 def _evaluation_map(data_dir: Path) -> dict[str, dict[str, Any]]:
     """处理：按报告 ID 和内容哈希索引可用质量评估。
-    输入：
-    - ``data_dir``：当前运行的唯一数据根；所有状态和版本化产物都必须位于其中。
+    输入：本次运行的数据根。
     输出：“按报告 ID 和内容哈希索引可用质量评估”形成的结构化字典；
       键值表达该处理定义的业务记录或查找关系。
     """
@@ -1775,8 +1655,7 @@ def _evaluation_map(data_dir: Path) -> dict[str, dict[str, Any]]:
 
 def render_archive_index(data_dir: Path) -> Path:
     """处理：扫描版本化报告并生成按日期排列的本地 HTML 归档索引。
-    输入：
-    - ``data_dir``：当前运行的唯一数据根；所有状态和版本化产物都必须位于其中。
+    输入：本次运行的数据根。
     输出：指向“扫描版本化报告并生成按日期排列的本地 HTML 归档索引”所生成、定位或确认产物的本地路
       径。
     """
@@ -1863,8 +1742,7 @@ def render_archive_index(data_dir: Path) -> Path:
 
 def resolve_desktop_directory(config: OutputConfig) -> Path:
     """处理：按输出配置和平台默认值确定桌面交付目录。
-    输入：
-    - ``config``：已校验的应用配置；提供时区、来源策略、并发限制、预算和输出选项。
+    输入：已校验的采集和输出配置。
     输出：指向“按输出配置和平台默认值确定桌面交付目录”所生成、定位或确认产物的本地路径。
     """
     if config.desktop_dir:
@@ -1876,41 +1754,29 @@ def resolve_desktop_directory(config: OutputConfig) -> Path:
     return (Path.home() / "Desktop").resolve()
 
 
-def _available_video_player(player: Path) -> bool:
-    """处理：确认播放器和它引用的本地视频均存在。
-    输入：日报同版本播放器页面路径。
-    输出：视频文件可用时返回真，供重建日报时展示入口。
+def _video_entry(player: Path) -> tuple[str | None, bool]:
+    """处理：一次读取同版本播放器的标题和视频路径。
+    输入：日报旁的播放器 HTML。
+    输出：已存标题和本机视频可播放状态，用于本地报告和桌面副本。
     """
     from bs4 import BeautifulSoup
 
     if not player.is_file():
-        return False
+        return None, False
     document = BeautifulSoup(player.read_text(encoding="utf-8"), "html.parser")
+    meta = document.select_one('meta[name="signaltrail-video-title"]')
+    title = str(meta["content"]) if meta else None
     video = document.select_one("video[src]")
     if video is None:
-        return False
+        return title, False
     source = urlsplit(str(video["src"]))
     if source.scheme == "file":
         path = Path(url2pathname(source.path))
     elif not source.scheme and not source.netloc:
         path = player.parent / unquote(source.path)
     else:
-        return False
-    return path.is_file()
-
-
-def _saved_video_title(player: Path) -> str | None:
-    """处理：读取播放器保存的主题标题，供日报重建沿用。
-    输入：同版本播放器页面路径。
-    输出：已保存标题；旧播放器或尚未导出视频时为空。
-    """
-    from bs4 import BeautifulSoup
-
-    if not player.is_file():
-        return None
-    document = BeautifulSoup(player.read_text(encoding="utf-8"), "html.parser")
-    title = document.select_one('meta[name="signaltrail-video-title"]')
-    return str(title["content"]) if title else None
+        return title, False
+    return title, path.is_file()
 
 
 def write_desktop_html(
@@ -1922,11 +1788,7 @@ def write_desktop_html(
     embedded_image_sources: dict[str, str] | None = None,
 ) -> Path:
     """处理：生成内嵌图片、绝对链接和可嵌入演示的独立桌面 HTML 副本。
-    输入：
-    - ``report``：当前报告结构；包含栏目、简报或事件、来源引用及质量元数据。
-    - ``data_dir``：当前运行的唯一数据根；所有状态和版本化产物都必须位于其中。
-    - ``config``：已校验的应用配置；提供时区、来源策略、并发限制、预算和输出选项。
-    - ``evaluation``：独立质量评估对象；包含评分、问题和改进建议。
+    输入：含栏目和来源引用的报告、本次运行的数据根、已校验的采集和输出配置、独立质量评估。
     - ``embedded_image_sources``：按图片哈希或路径索引的数据 URI；用于生成可独立打开的 HTML。
     输出：指向“生成内嵌图片、绝对链接和可嵌入演示的独立桌面 HTML 副本”所生成、定位或确认产物的本地路径。
     """
@@ -1940,6 +1802,7 @@ def write_desktop_html(
     pdf_path = report_dir / f"{report['edition']}-r{report['revision']}.pdf"
     slides_path = report_dir / f"{report['edition']}-r{report['revision']}-slides.html"
     video_path = report_dir / f"{report['edition']}-r{report['revision']}-video.html"
+    video_title, video_available = _video_entry(video_path)
     return write_text_atomic(
         destination,
         render_report_html(
@@ -1954,8 +1817,8 @@ def write_desktop_html(
             archive_href=(data_dir / "reports" / "index.html").resolve().as_uri(),
             pdf_href=pdf_path.resolve().as_uri(),
             slides_href=slides_path.resolve().as_uri() if slides_path.is_file() else None,
-            video_href=video_path.resolve().as_uri() if _available_video_player(video_path) else None,
-            video_title=_saved_video_title(video_path),
+            video_href=video_path.resolve().as_uri() if video_available else None,
+            video_title=video_title,
         ),
     )
 
@@ -1990,7 +1853,7 @@ def refresh_report_video_entry(
     except ValueError:
         source = video_path.as_uri()
     language = report.get("language") or "zh-CN"
-    title = (title or _saved_video_title(player) or deck["payload"].get("video_title")
+    title = (title or _video_entry(player)[0] or deck["payload"].get("video_title")
              or deck["payload"].get("title") or report["title"])
     document = f'''<!doctype html><html lang="{_escape(language)}"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>{_escape(title)}</title>
@@ -2000,20 +1863,9 @@ def refresh_report_video_entry(
 </head><body><main><h1>{_escape(title)}</h1><video controls preload="metadata" src="{_escape(source)}"></video>
 <p><a href="{_escape(source)}">{"打开视频文件" if is_chinese_output(language) else "Open video file"}</a></p></main></body></html>'''
     write_text_atomic(player, document)
-    evaluation = _evaluation_map(data_dir).get(str(report.get("report_id", "")))
-    report_html = report_path.with_suffix(".html")
-    slides_path = report_html.with_name(report_html.stem + "-slides.html")
-    write_text_atomic(report_html, render_report_html(
-        report, evaluation, include_pdf_link=report_html.with_suffix(".pdf").is_file(),
-        media_path_prefix="../..", slides_href=slides_path.name if slides_path.is_file() else None,
-        video_href=player.name, video_title=title,
-    ))
-    config = config or load_config().output
-    desktop = resolve_desktop_directory(config) / (
-        f"daily-intelligence-{report['date']}-{report['edition']}-r{report['revision']}.html"
-    )
-    if config.copy_html_to_desktop and desktop.is_file():
-        write_desktop_html(report, data_dir, config, evaluation=evaluation)
+    slides = report_path.with_name(report_path.stem + "-slides.html")
+    _refresh_report_entry(report_path, report, data_dir, config or load_config().output,
+                          slides.name if slides.is_file() else None, player.name, title)
     return player
 
 
@@ -2025,25 +1877,26 @@ def refresh_report_slides_entry(report_path: Path, slides_path: Path, data_dir: 
     report = read_json(report_path)
     if not isinstance(report, dict):
         raise ValueError(f"Report must be an object: {report_path}")
-    evaluation = _evaluation_map(data_dir).get(str(report.get("report_id", "")))
-    report_html = report_path.with_suffix(".html")
-    slides_href = os.path.relpath(slides_path, report_html.parent).replace(os.sep, "/")
-    write_text_atomic(
-        report_html,
-        render_report_html(
-            report,
-            evaluation,
-            include_pdf_link=(report_html.with_suffix(".pdf").is_file()),
-            media_path_prefix="../..",
-            slides_href=slides_href,
-            video_title=_saved_video_title(report_html.with_name(report_html.stem + "-video.html")),
-            video_href=(report_html.stem + "-video.html"
-                        if _available_video_player(report_html.with_name(report_html.stem + "-video.html"))
-                        else None),
-        ),
-    )
+    player = report_path.with_name(report_path.stem + "-video.html")
+    title, available = _video_entry(player)
+    slides_href = os.path.relpath(slides_path, report_path.parent).replace(os.sep, "/")
+    _refresh_report_entry(report_path, report, data_dir, load_config().output, slides_href,
+                          player.name if available else None, title)
 
-    config = load_config().output
+
+def _refresh_report_entry(
+    report_path: Path, report: dict, data_dir: Path, config: OutputConfig,
+    slides_href: str | None, video_href: str | None, video_title: str | None,
+) -> None:
+    """处理：图文或视频交付后，刷新日报页面和已存在的桌面副本。
+    输入：本期日报、媒体入口、数据目录和桌面配置。
+    输出：使用同一份评分和对应版本媒体的 HTML 投影。
+    """
+    evaluation = _evaluation_map(data_dir).get(str(report.get("report_id", "")))
+    write_text_atomic(report_path.with_suffix(".html"), render_report_html(
+        report, evaluation, include_pdf_link=report_path.with_suffix(".pdf").is_file(),
+        media_path_prefix="../..", slides_href=slides_href, video_href=video_href, video_title=video_title,
+    ))
     desktop_path = resolve_desktop_directory(config) / (
         f"daily-intelligence-{report['date']}-{report['edition']}-r{report['revision']}.html"
     )
@@ -2061,11 +1914,7 @@ def write_local_outputs(
     regenerate_pdf: bool = True,
 ) -> dict[str, Any]:
     """处理：从已验证报告生成 HTML、PDF、桌面副本和归档索引。
-    输入：
-    - ``report``：当前报告结构；包含栏目、简报或事件、来源引用及质量元数据。
-    - ``data_dir``：当前运行的唯一数据根；所有状态和版本化产物都必须位于其中。
-    - ``config``：已校验的应用配置；提供时区、来源策略、并发限制、预算和输出选项。
-    - ``evaluation``：独立质量评估对象；包含评分、问题和改进建议。
+    输入：含栏目和来源引用的报告、本次运行的数据根、已校验的采集和输出配置、独立质量评估。
     - ``open_after_finalize``：完成本地输出后是否用默认浏览器打开 HTML。
     - ``regenerate_pdf``：是否重绘已存在 PDF；评估刷新可复用同一报告内容的 PDF。
     输出：“从已验证报告生成 HTML、PDF、桌面副本和归档索引”形成的结构化字典；
@@ -2092,6 +1941,8 @@ def write_local_outputs(
         else None
     )
     if "html" in config.formats:
+        player = report_dir / f"{stem}-video.html"
+        video_title, video_available = _video_entry(player)
         # HTML/PDF 都从已验证报告对象生成，不回读或修改权威 JSON。
         write_text_atomic(
             html_path,
@@ -2100,9 +1951,8 @@ def write_local_outputs(
                 evaluation,
                 include_pdf_link="pdf" in config.formats,
                 media_path_prefix="../..",
-                video_title=_saved_video_title(report_dir / f"{stem}-video.html"),
-                video_href=(f"{stem}-video.html"
-                            if _available_video_player(report_dir / f"{stem}-video.html") else None),
+                video_title=video_title,
+                video_href=player.name if video_available else None,
                 slides_href=(
                     f"{stem}-slides.html"
                     if (report_dir / f"{stem}-slides.html").is_file()
@@ -2145,7 +1995,7 @@ def write_local_outputs(
                     evaluation,
                     include_pdf_link=False,
                     embedded_image_sources=pdf_embedded_image_sources,
-                ),
+                ) if config.pdf_engine in {"edge", "auto"} else None,
             )
             pdf_bytes = pdf_path.stat().st_size
             budget_status = (

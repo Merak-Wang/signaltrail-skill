@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import re
 import time
+from collections import defaultdict, deque
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -12,32 +13,8 @@ import yaml
 
 from .config import project_root
 from .local_output import render_report_html
-from .localization import is_chinese_output, localized, translated_title
-from .reporting import (
-    reference_time_label,
-    validate_evaluation_data,
-    validate_report,
-)
-from .reports import (
-    ACCESS_LABELS,
-    ACCESS_LABELS_EN,
-    ANALYSIS_SECTION_LABELS,
-    ANALYSIS_SECTION_LABELS_EN,
-    DOMAIN_LABELS,
-    DOMAIN_LABELS_EN,
-    EVALUATION_LABELS,
-    EVALUATION_LABELS_EN,
-    GROUP_LABELS,
-    GROUP_LABELS_EN,
-    PERSPECTIVE_LABELS,
-    PERSPECTIVE_LABELS_EN,
-    STATE_LABELS,
-    STATE_LABELS_EN,
-    STATUS_LABELS,
-    STATUS_LABELS_EN,
-    group_items_by_source,
-    ordered_sections,
-)
+from .localization import localized
+from .reporting import validate_evaluation_data, validate_report
 from .storage import write_text_atomic
 from .utils import canonicalize_url, environment_value, read_json, write_json
 
@@ -58,8 +35,7 @@ _HTML_ATTACHMENT_MODE = "html_attachment_v1"
 
 def validate_notion_schema(config: dict[str, Any], schema: dict[str, Any]) -> None:
     """处理：校验NotionSchema并在不满足约束时报告错误。
-    输入：
-    - ``config``：已校验的应用配置；提供时区、来源策略、并发限制、预算和输出选项。
+    输入：已校验的采集和输出配置。
     - ``schema``：远端或本地 schema 描述；用于字段类型和映射校验。
     输出：不返回新数据；完成“校验NotionSchema并在不满足约束时报告错误”，
       副作用限于该处理声明的受控对象或产物。
@@ -111,8 +87,7 @@ def validate_notion_schema(config: dict[str, Any], schema: dict[str, Any]) -> No
 
 def resolve_notion_mapping(config: dict[str, Any], schema: dict[str, Any]) -> dict[str, Any]:
     """处理：在显式属性映射或多个 schema profile 中选择匹配配置。
-    输入：
-    - ``config``：已校验的应用配置；提供时区、来源策略、并发限制、预算和输出选项。
+    输入：已校验的采集和输出配置。
     - ``schema``：远端或本地 schema 描述；用于字段类型和映射校验。
     输出：“在显式属性映射或多个 schema profile 中选择匹配配置”形成的结构化字典；
       键值表达该处理定义的业务记录或查找关系。
@@ -160,10 +135,9 @@ class NotionPublisher:
         config_path: Path | None = None,
     ) -> None:
         """处理：初始化当前实例及其内部状态。
-        输入：
+        输入：可选配置文件路径。
         - ``token``：调用方从环境或秘密存储读取的 Notion API Token；不会写入本地产物。
         - ``data_source_id``：Notion 报告数据库的数据源 ID；用于查询 schema 和创建页面。
-        - ``config_path``：可选配置文件路径；为空时使用仓库或安装包默认配置。
         输出：不返回新数据；完成“初始化当前实例及其内部状态”，
           副作用限于该处理声明的受控对象或产物。
         """
@@ -239,8 +213,7 @@ class NotionPublisher:
 
     def upload_file(self, path: Path, content_type: str) -> str:
         """处理：创建 Notion 单段上传、发送本地文件并确认上传状态。
-        输入：
-        - ``path``：当前函数要读取、校验或写入的本地文件路径。
+        输入：本地文件路径。
         - ``content_type``：HTTP 内容类型或待上传文件 MIME 类型；用于解析、校验和响应头。
         输出：“创建 Notion 单段上传、发送本地文件并确认上传状态”得到的规范字符串，
           供调用方存储、比较或展示。
@@ -295,8 +268,7 @@ class NotionPublisher:
 
     def build_properties(self, report: dict[str, Any]) -> dict[str, Any]:
         """处理：把报告日期、版本、状态、标签和计数映射为 Notion 属性。
-        输入：
-        - ``report``：当前报告结构；包含栏目、简报或事件、来源引用及质量元数据。
+        输入：含栏目和来源引用的报告。
         输出：“把报告日期、版本、状态、标签和计数映射为 Notion 属性”形成的结构化字典；
           典型键包括 date、multi_select、name、number、select、start、status、title。
         """
@@ -308,9 +280,8 @@ class NotionPublisher:
 
         def add(key: str, value: dict[str, Any] | None) -> None:
             """处理：向当前集合追加一个规范化条目。
-            输入：
+            输入：待解析的值。
             - ``key``：当前集合、登记表或界面记录使用的稳定键。
-            - ``value``：待解析或规范化的单个输入值；非法值按函数契约返回空值或报错。
             输出：不返回新数据；完成“向当前集合追加一个规范化条目”，
               副作用限于该处理声明的受控对象或产物。
             """
@@ -349,8 +320,7 @@ class NotionPublisher:
 
     def create_page(self, report: dict[str, Any]) -> str:
         """处理：按已解析数据库属性创建 Notion 报告页，并分批追加正文块。
-        输入：
-        - ``report``：当前报告结构；包含栏目、简报或事件、来源引用及质量元数据。
+        输入：含栏目和来源引用的报告。
         输出：“按已解析数据库属性创建 Notion 报告页，并分批追加正文块”得到的规范字符串，
           供调用方存储、比较或展示。
         """
@@ -363,9 +333,8 @@ class NotionPublisher:
 
     def update_properties(self, page_id: str, report: dict[str, Any]) -> None:
         """处理：把报告属性映射后更新到指定 Notion 页面。
-        输入：
+        输入：含栏目和来源引用的报告。
         - ``page_id``：Notion 页面或块 ID；用于读取、更新或追加远端内容。
-        - ``report``：当前报告结构；包含栏目、简报或事件、来源引用及质量元数据。
         输出：不返回新数据；完成“把报告属性映射后更新到指定 Notion 页面”，
           副作用限于该处理声明的受控对象或产物。
         """
@@ -421,65 +390,12 @@ class NotionPublisher:
             cursor = payload.get("next_cursor")
 
 
-def _text(content: str, url: str | None = None, bold: bool = False) -> dict[str, Any]:
-    """处理：构造具有长度上限和可选链接的 Notion rich_text 节点。
-    输入：
-    - ``content``：待编码、解析或写入的原始内容；边界和可信级别由当前函数说明。
-    - ``url``：调用方提供的 URL；当前函数按处理说明进行规范化、过滤或访问。
-    - ``bold``：富文本片段是否使用粗体注解。
-    输出：“构造具有长度上限和可选链接的 Notion rich_text 节点”形成的结构化字典；
-      典型键包括 bold、code、color、content、italic、strikethrough、text、type、underline、url。
+def _text(content: str) -> dict[str, Any]:
+    """处理：将可见文本编码为 Notion 富文本片段。
+    输入：报告标题或附件说明。
+    输出：截断到 Notion 长度上限的文本对象。
     """
-    text: dict[str, Any] = {"content": content[:2000]}
-    if url:
-        text["link"] = {"url": url}
-    result: dict[str, Any] = {"type": "text", "text": text}
-    if bold:
-        result["annotations"] = {
-            "bold": True,
-            "italic": False,
-            "strikethrough": False,
-            "underline": False,
-            "code": False,
-            "color": "default",
-        }
-    return result
-
-
-def _block(kind: str, text: str, color: str = "default") -> dict[str, Any]:
-    """处理：构造指定类型的 Notion 富文本块。
-    输入：
-    - ``kind``：要创建的 Notion 块类型，例如 paragraph、heading 或 callout。
-    - ``text``：待解析、匹配或渲染的文本；作为不可信数据时会先转义或清理。
-    - ``color``：Notion 块使用的受控颜色枚举值。
-    输出：“构造指定类型的 Notion 富文本块”形成的结构化字典；
-      典型键包括 color、object、rich_text、type。
-    """
-    return {
-        "object": "block",
-        "type": kind,
-        kind: {"rich_text": [_text(text)], "color": color},
-    }
-
-
-def _callout(text: str, color: str = "blue_background", icon: str = "💡") -> dict[str, Any]:
-    """处理：把受控文本、颜色与 emoji 图标组装成 Notion callout 块。
-    输入：
-    - ``text``：待解析、匹配或渲染的文本；作为不可信数据时会先转义或清理。
-    - ``color``：Notion 块使用的受控颜色枚举值。
-    - ``icon``：Notion callout 使用的 emoji 图标。
-    输出：“把受控文本、颜色与 emoji 图标组装成 Notion callout 块”形成的结构化字典；
-      典型键包括 callout、color、emoji、icon、object、rich_text、type。
-    """
-    return {
-        "object": "block",
-        "type": "callout",
-        "callout": {
-            "rich_text": [_text(text)],
-            "icon": {"type": "emoji", "emoji": icon},
-            "color": color,
-        },
-    }
+    return {"type": "text", "text": {"content": content[:2000]}}
 
 
 def _image_block(
@@ -488,10 +404,9 @@ def _image_block(
     language: object = "zh-CN",
 ) -> dict[str, Any] | None:
     """处理：优先使用已上传文件构造图片块，否则使用安全外链。
-    输入：
+    输入：输出语言。
     - ``image``：报告或索引中的图片元数据；包含 URL、本地路径、哈希、尺寸和说明。
     - ``image_uploads``：按本地图片哈希或路径索引的 Notion 文件上传 ID。
-    - ``language``：规范语言标识；用于本地化选择或语言一致性判断。
     输出：“优先使用已上传文件构造图片块，否则使用安全外链”形成的结构化字典；
       典型键包括 caption、external、file_upload、id、image、object、type、url。
     """
@@ -524,189 +439,6 @@ def _image_block(
         "image": {
             **file_data,
             "caption": [_text(caption_text)] if caption_text else [],
-        },
-    }
-
-
-def _event_block(
-    item: dict[str, Any],
-    image_uploads: dict[str, str] | None = None,
-    language: object = "zh-CN",
-) -> dict[str, Any]:
-    """处理：把报告事件转换为带来源链接的 Notion 列表块。
-    输入：
-    - ``item``：单个规范条目对象；通常包含 item_id、来源、标题、URL、时间和元数据。
-    - ``image_uploads``：按本地图片哈希或路径索引的 Notion 文件上传 ID。
-    - ``language``：规范语言标识；用于本地化选择或语言一致性判断。
-    输出：“把报告事件转换为带来源链接的 Notion 列表块”形成的结构化字典；
-      典型键包括 bulleted_list_item、children、color、numbered_list_item、object、rich_text、tog
-      gle、type。
-    """
-    chinese = is_chinese_output(language)
-    status_labels = STATUS_LABELS if chinese else STATUS_LABELS_EN
-    access_labels = ACCESS_LABELS if chinese else ACCESS_LABELS_EN
-    status = status_labels.get(item["status"], item["status"])
-    link = item["source_refs"][0]["url"]
-    evidence_children: list[dict[str, Any]] = []
-    for ref in item.get("source_refs", []):
-        time_text = ""
-        if time_info := reference_time_label(ref, language):
-            time_label, time_value = time_info
-            time_text = (
-                f"，{time_label}：{time_value}"
-                if chinese
-                else f", {time_label}: {time_value}"
-            )
-        label = f"{access_labels.get(ref['access'], ref['access'])}{time_text}"
-        evidence_children.append(
-            {
-                "object": "block",
-                "type": "bulleted_list_item",
-                "bulleted_list_item": {
-                    "rich_text": [_text(f"{ref['title']} ({label})", ref["url"])]
-                },
-            }
-        )
-    evidence_children.extend(
-        _block(
-            "paragraph",
-            f"{localized(language, '证据说明', 'Evidence note')}: {note}",
-            "gray_background",
-        )
-        for note in item.get("evidence_notes", [])
-    )
-    children: list[dict[str, Any]] = [
-        _block("paragraph", f"TL;DR｜{item['tldr']}"),
-        _callout(
-            f"{localized(language, '重要性', 'Importance')} {item['importance']}/100 · "
-            f"{localized(language, '置信度', 'Confidence')} {item['confidence']:.2f} | "
-            f"{item['why_it_matters']}",
-            "yellow_background",
-            "⭐",
-        ),
-        {
-            "object": "block",
-            "type": "toggle",
-            "toggle": {
-                "rich_text": [
-                    _text(
-                        localized(
-                            language,
-                            "证据、原文与访问状态",
-                            "Evidence, Sources, and Access Status",
-                        )
-                    )
-                ],
-                "color": "gray_background",
-                "children": evidence_children,
-            },
-        },
-    ]
-    image = item.get("image")
-    if isinstance(image, dict) and (
-        image_block := _image_block(image, image_uploads, language)
-    ):
-        children.insert(0, image_block)
-    return {
-        "object": "block",
-        "type": "numbered_list_item",
-        "numbered_list_item": {
-            "rich_text": [_text(f"[{status}] {item['title']}", link, bold=True)],
-            "color": "default",
-            "children": children,
-        },
-    }
-
-
-def _brief_block(
-    item: dict[str, Any],
-    image_uploads: dict[str, str] | None = None,
-    language: object = "zh-CN",
-) -> dict[str, Any]:
-    """处理：把报告简报转换为带来源和图片的 Notion 块。
-    输入：
-    - ``item``：单个规范条目对象；通常包含 item_id、来源、标题、URL、时间和元数据。
-    - ``image_uploads``：按本地图片哈希或路径索引的 Notion 文件上传 ID。
-    - ``language``：规范语言标识；用于本地化选择或语言一致性判断。
-    输出：“把报告简报转换为带来源和图片的 Notion 块”形成的结构化字典；
-      典型键包括 children、color、numbered_list_item、object、rich_text、type。
-    """
-    ref = item["source_ref"]
-    status_labels = STATUS_LABELS if is_chinese_output(language) else STATUS_LABELS_EN
-    status = status_labels.get(item["status"], item["status"])
-    source_rank = f" [{item['source_rank_label']}]" if item.get("source_rank_label") else ""
-    children: list[dict[str, Any]] = []
-    image = item.get("image")
-    if isinstance(image, dict) and (
-        image_block := _image_block(image, image_uploads, language)
-    ):
-        children.append(image_block)
-    if localized_title := translated_title(item, language):
-        title_separator = "｜" if is_chinese_output(language) else " | "
-        children.append(
-            _block(
-                "paragraph",
-                f"{localized(language, '中文标题', 'English title')}"
-                f"{title_separator}{localized_title}",
-            )
-        )
-    if time_info := reference_time_label(ref, language):
-        label, value = time_info
-        children.append(_block("paragraph", f"{label}｜{value}"))
-    children.append(_block("paragraph", f"TL;DR｜{item['tldr']}"))
-    return {
-        "object": "block",
-        "type": "numbered_list_item",
-        "numbered_list_item": {
-            "rich_text": [
-                _text(f"[{status}] {item['title']}{source_rank}", ref["url"], bold=True)
-            ],
-            "color": "default",
-            "children": children,
-        },
-    }
-
-
-def _evaluation_table(
-    dimensions: list[dict[str, Any]],
-    language: object = "zh-CN",
-) -> dict[str, Any]:
-    """处理：把评估维度和分数转换为 Notion 表格块。
-    输入：
-    - ``dimensions``：独立评估结果中的维度记录；每项读取 name、score、reason 和 evidence。
-    - ``language``：规范语言标识；用于本地化选择或语言一致性判断。
-    输出：“把评估维度和分数转换为 Notion 表格块”形成的结构化字典；
-      典型键包括 cells、children、has_column_header、has_row_header、object、table、table_row、t
-      able_width、type。
-    """
-    evaluation_labels = (
-        EVALUATION_LABELS if is_chinese_output(language) else EVALUATION_LABELS_EN
-    )
-    rows = [
-        [
-            localized(language, "维度", "Dimension"),
-            localized(language, "得分", "Score"),
-            localized(language, "重点结论", "Finding"),
-        ]
-    ] + [
-        [evaluation_labels.get(item["id"], item["id"]), f"{item['score']}/5", item["finding"]]
-        for item in dimensions
-    ]
-    return {
-        "object": "block",
-        "type": "table",
-        "table": {
-            "table_width": 3,
-            "has_column_header": True,
-            "has_row_header": False,
-            "children": [
-                {
-                    "object": "block",
-                    "type": "table_row",
-                    "table_row": {"cells": [[_text(cell)] for cell in row]},
-                }
-                for row in rows
-            ],
         },
     }
 
@@ -745,9 +477,7 @@ def parse_user_feedback(text: str) -> dict[str, Any] | None:
 
 def sync_user_feedback(data_dir: Path, config_path: Path | None = None) -> Path | None:
     """处理：从 Notion 页面读取反馈并同步到本地状态文件。
-    输入：
-    - ``data_dir``：当前运行的唯一数据根；所有状态和版本化产物都必须位于其中。
-    - ``config_path``：可选配置文件路径；为空时使用仓库或安装包默认配置。
+    输入：本次运行的数据根、可选配置文件路径。
     输出：指向“从 Notion 页面读取反馈并同步到本地状态文件”所生成、定位或确认产物的本地路径；
       条件不满足时返回 None。
     """
@@ -793,535 +523,6 @@ def sync_user_feedback(data_dir: Path, config_path: Path | None = None) -> Path 
     return path
 
 
-def report_to_blocks(
-    report: dict[str, Any],
-    image_uploads: dict[str, str] | None = None,
-) -> list[dict[str, Any]]:
-    """处理：把报告各栏目、分析和来源转换为有序 Notion 块。
-    输入：
-    - ``report``：当前报告结构；包含栏目、简报或事件、来源引用及质量元数据。
-    - ``image_uploads``：按本地图片哈希或路径索引的 Notion 文件上传 ID。
-    输出：“把报告各栏目、分析和来源转换为有序 Notion 块”得到的有序结构化记录；
-      典型字段包括 bulleted_list_item、children、color、divider、heading_3、object、rich_text、t
-      able_of_contents、toggle、type，可直接交给下一阶段。
-    """
-    language = report.get("language") or "zh-CN"
-    chinese = is_chinese_output(language)
-    colon = "：" if chinese else ": "
-    joiner = "、" if chinese else ", "
-    group_labels = GROUP_LABELS if chinese else GROUP_LABELS_EN
-    domain_labels = DOMAIN_LABELS if chinese else DOMAIN_LABELS_EN
-    state_labels = STATE_LABELS if chinese else STATE_LABELS_EN
-    perspective_labels = PERSPECTIVE_LABELS if chinese else PERSPECTIVE_LABELS_EN
-    analysis_labels = (
-        ANALYSIS_SECTION_LABELS if chinese else ANALYSIS_SECTION_LABELS_EN
-    )
-    edition_label = (
-        localized(language, "日报", "Daily Brief")
-        if report["edition"] == "daily" else
-        localized(language, "06:00 早报", "06:00 Morning Brief")
-        if report["edition"] == "morning"
-        else localized(language, "18:00 晚报", "18:00 Evening Brief")
-    )
-    blocks: list[dict[str, Any]] = [
-        {"object": "block", "type": "divider", "divider": {}},
-        _block("heading_2", edition_label, "blue_background"),
-        _block(
-            "paragraph",
-            f"{localized(language, '生成时间', 'Generated at')}{colon}"
-            f"{report['generated_at']} · "
-            f"{localized(language, '修订号', 'Revision')}{colon}{report['revision']}",
-        ),
-        _callout(
-            "\n".join(report.get("executive_summary", []))
-            or localized(language, "本版暂无摘要。", "No summary is available."),
-            "blue_background",
-            "🧭",
-        ),
-        {"object": "block", "type": "table_of_contents", "table_of_contents": {}},
-    ]
-    for module in ("information", "technology"):
-        color = "blue_background" if module == "information" else "purple_background"
-        blocks.append(_block("heading_1", group_labels[module], color))
-        for section in ordered_sections(report, module):
-            blocks.append(
-                _block(
-                    "heading_2",
-                    section.get("title")
-                    or localized(language, "未命名栏目", "Untitled section"),
-                )
-            )
-            if section.get("coverage_note") or (
-                not section.get("items") and not section.get("briefs")
-            ):
-                blocks.append(
-                    _block(
-                        "paragraph",
-                        section.get("coverage_note")
-                        or localized(
-                            language,
-                            "本时段暂无内容。",
-                            "No items were available in this window.",
-                        ),
-                        "gray_background",
-                    )
-                )
-            for source, items in group_items_by_source(section, language):
-                blocks.append(
-                    {
-                        "object": "block",
-                        "type": "heading_3",
-                        "heading_3": {
-                            "rich_text": [_text(source["name"], source["url"], bold=True)],
-                            "color": "default",
-                        },
-                    }
-                )
-                renderer = (
-                    _brief_block
-                    if report.get("schema_version") in {"1.5", "2.0"}
-                    else _event_block
-                )
-                blocks.extend(
-                    renderer(item, image_uploads, language) for item in items
-                )
-        if module == "information" and report.get("pending_verifications"):
-            blocks.append(
-                _callout(
-                    localized(
-                        language,
-                        "以下来源访问失败，保留链接供人工查看。",
-                        "The following sources could not be accessed; links are retained "
-                        "for manual review.",
-                    ),
-                    "gray_background",
-                    "🔒",
-                )
-            )
-            for pending in report["pending_verifications"]:
-                blocks.append(
-                    {
-                        "object": "block",
-                        "type": "bulleted_list_item",
-                        "bulleted_list_item": {
-                            "rich_text": [
-                                _text(
-                                    f"{pending['source_name']}{colon}"
-                                    f"{pending.get('note', pending['status'])}",
-                                    pending.get("url"),
-                                )
-                            ]
-                        },
-                    }
-                )
-
-    blocks.append(
-        _block(
-            "heading_1",
-            localized(language, "研判", "Analysis"),
-            "orange_background",
-        )
-    )
-    if report.get("analyses"):
-        last_domain = None
-        for analysis in report["analyses"]:
-            domain = analysis.get("domain")
-            if domain != last_domain:
-                blocks.append(
-                    _block(
-                        "heading_2",
-                        analysis_labels.get(
-                            domain, domain_labels.get(domain, str(domain))
-                        ),
-                    )
-                )
-                last_domain = domain
-            blocks.append(_block("heading_3", analysis["claim"]))
-            perspectives = joiner.join(
-                perspective_labels.get(item, item)
-                for item in analysis.get("perspectives", [])
-            )
-            blocks.append(
-                _callout(
-                    f"{localized(language, '视角', 'Perspective')}{colon}"
-                    f"{perspectives or domain_labels.get(analysis['domain'], analysis['domain'])}"
-                    " | "
-                    f"{localized(language, '置信度', 'Confidence')} "
-                    f"{analysis['confidence']:.2f} | "
-                    f"{localized(language, '变化', 'Change')} "
-                    f"{state_labels.get(analysis['state_change'], analysis['state_change'])}",
-                    "orange_background",
-                    "🔎",
-                )
-            )
-            if analysis.get("narrative"):
-                blocks.append(_block("quote", analysis["narrative"]))
-            if analysis.get("historical_context"):
-                blocks.append(_callout(analysis["historical_context"], "brown_background", "📚"))
-            if analysis.get("dialectical_analysis"):
-                blocks.append(_callout(analysis["dialectical_analysis"], "yellow_background", "⚖️"))
-            for position in analysis.get("stakeholder_positions", []):
-                blocks.append(
-                    _block(
-                        "bulleted_list_item",
-                        f"{position['stakeholder']}｜{position['position']} "
-                        f"{localized(language, '利益基础', 'Interest basis')}{colon}"
-                        f"{position['interests']}",
-                    )
-                )
-            details = [
-                _block(
-                    "paragraph",
-                    f"{localized(language, '证据事件', 'Evidence events')}{colon}"
-                    + ", ".join(analysis["evidence_event_ids"]),
-                ),
-                *[
-                    _block(
-                        "bulleted_list_item",
-                        f"{localized(language, '事实', 'Fact')}{colon}{value}",
-                    )
-                    for value in analysis.get("facts", [])
-                ],
-                _block(
-                    "paragraph",
-                    f"{localized(language, '推理链', 'Reasoning chain')}{colon}"
-                    f"{analysis.get('reasoning', '')}",
-                ),
-                *[
-                    _block(
-                        "bulleted_list_item",
-                        f"{localized(language, '反证', 'Counterevidence')}{colon}{value}",
-                    )
-                    for value in analysis.get("counter_evidence", [])
-                ],
-                *[
-                    _block(
-                        "bulleted_list_item",
-                        f"{localized(language, '情景', 'Scenario')}{colon}{value}",
-                    )
-                    for value in analysis.get("scenarios", [])
-                ],
-                *[
-                    _block(
-                        "bulleted_list_item",
-                        f"{localized(language, '建议', 'Action')}{colon}{value}",
-                    )
-                    for value in analysis.get("actions", [])
-                ],
-                *[
-                    _block(
-                        "bulleted_list_item",
-                        f"{localized(language, '观察', 'Watch')}{colon}{value}",
-                    )
-                    for value in analysis.get("watch_signals", [])
-                ],
-                *[
-                    _block(
-                        "bulleted_list_item",
-                        f"{localized(language, '因果链', 'Causal chain')}{colon}{value}",
-                    )
-                    for value in analysis.get("causal_chain", [])
-                ],
-                *[
-                    _block(
-                        "bulleted_list_item",
-                        f"{localized(language, '关键假设', 'Key assumption')}{colon}{value}",
-                    )
-                    for value in analysis.get("assumptions", [])
-                ],
-                *[
-                    _block(
-                        "bulleted_list_item",
-                        f"{localized(language, '证据缺口', 'Evidence gap')}{colon}{value}",
-                    )
-                    for value in analysis.get("evidence_gaps", [])
-                ],
-                *[
-                    _block("paragraph", f"{label}{colon}{analysis[key]}")
-                    for label, key in (
-                        (
-                            localized(language, "时间跨度", "Time horizon"),
-                            "time_horizon",
-                        ),
-                        (
-                            localized(
-                                language, "置信度依据", "Confidence rationale"
-                            ),
-                            "confidence_rationale",
-                        ),
-                        (
-                            localized(language, "相对上一版", "Change from prior"),
-                            "change_from_prior",
-                        ),
-                        (
-                            localized(
-                                language, "决策相关性", "Decision relevance"
-                            ),
-                            "decision_relevance",
-                        ),
-                    )
-                    if analysis.get(key)
-                ],
-            ]
-            blocks.append(
-                {
-                    "object": "block",
-                    "type": "toggle",
-                    "toggle": {
-                        "rich_text": [
-                            _text(
-                                localized(
-                                    language,
-                                    "证据链、反证、情景与建议",
-                                    "Evidence Chain, Counterevidence, Scenarios, and Actions",
-                                )
-                            )
-                        ],
-                        "color": "gray_background",
-                        "children": details,
-                    },
-                }
-            )
-    else:
-        blocks.append(
-            _block(
-                "paragraph",
-                localized(
-                    language,
-                    "本版没有形成达到证据门槛的研判。",
-                    "No analysis met the evidence threshold in this edition.",
-                ),
-            )
-        )
-    synthesis = report.get("cross_perspective_synthesis")
-    if isinstance(synthesis, dict):
-        blocks.append(
-            _block(
-                "heading_2",
-                localized(
-                    language,
-                    "跨视角综合",
-                    "Cross-Perspective Synthesis",
-                ),
-            )
-        )
-        blocks.append(
-            _callout(
-                synthesis.get("overall_judgment", ""),
-                "blue_background",
-                "🧭",
-            )
-        )
-        for value in synthesis.get("consensus", []):
-            blocks.append(
-                _block(
-                    "bulleted_list_item",
-                    f"{localized(language, '共同结论', 'Consensus')}{colon}{value}",
-                )
-            )
-        for tension in synthesis.get("tensions", []):
-            if not isinstance(tension, dict):
-                continue
-            perspectives = joiner.join(tension.get("perspectives", []))
-            blocks.append(
-                _block(
-                    "bulleted_list_item",
-                    f"{localized(language, '分歧', 'Tension')} | "
-                    f"{tension.get('issue', '')} ({perspectives}){colon}"
-                    f"{tension.get('source_of_difference', '')}",
-                )
-            )
-        for label, key in (
-            (localized(language, "传导链", "Transmission chain"), "transmission_chain"),
-            (localized(language, "共同观察", "Shared watch"), "shared_watch_signals"),
-            (localized(language, "修正触发", "Revision trigger"), "revision_triggers"),
-        ):
-            for value in synthesis.get(key, []):
-                blocks.append(
-                    _block("bulleted_list_item", f"{label}{colon}{value}")
-                )
-        blocks.append(
-            _block(
-                "paragraph",
-                f"{localized(language, '综合引用事件', 'Synthesis evidence events')}{colon}"
-                + joiner.join(synthesis.get("evidence_event_ids", [])),
-            )
-        )
-    if report.get("changes"):
-        blocks.append(
-            _block(
-                "heading_2",
-                localized(
-                    language,
-                    "日间新增、确认与修正",
-                    "New, Confirmed, and Revised Since Morning",
-                ),
-            )
-        )
-        for change in report["changes"]:
-            blocks.append(_block("bulleted_list_item", change))
-    if report.get("tomorrow_watch_items"):
-        blocks.append(
-            _block(
-                "heading_2",
-                localized(language, "次日观察项", "Next-Day Watch List"),
-            )
-        )
-        for item in report["tomorrow_watch_items"]:
-            blocks.append(_block("bulleted_list_item", item))
-
-    evaluation = report.get("quality_evaluation")
-    if evaluation:
-        blocks.append(
-            _block(
-                "heading_1",
-                localized(
-                    language,
-                    "质量评估与用户反馈",
-                    "Quality Evaluation and Reader Feedback",
-                ),
-                "green_background",
-            )
-        )
-        blocks.append(
-            _callout(
-                f"{localized(language, '独立评估总分', 'Independent evaluation score')}"
-                f"{colon}{evaluation['total_score']}/45 | "
-                f"{localized(language, '连续性建议', 'Continuity recommendation')}"
-                f"{colon}{evaluation['continuity_decision']}",
-                "green_background",
-                "✅",
-            )
-        )
-        blocks.append(_evaluation_table(evaluation["dimensions"], language))
-        for title, key in (
-            (localized(language, "主要缺陷", "Main Defects"), "main_defects"),
-            (
-                localized(language, "证据不足项", "Insufficient Evidence"),
-                "insufficient_evidence",
-            ),
-            (
-                localized(language, "改进建议", "Recommended Improvements"),
-                "improvements",
-            ),
-        ):
-            blocks.append(_block("heading_2", title))
-            values = evaluation.get(key, []) or [localized(language, "无", "None")]
-            blocks.extend(_block("bulleted_list_item", value) for value in values)
-        blocks.append(
-            _callout(
-                localized(
-                    language,
-                    "请直接编辑下一行评分；这些反馈会在后续日报中同步使用。",
-                    "Edit the scores on the next line; this feedback will be used in "
-                    "later reports.",
-                ),
-                "pink_background",
-                "📝",
-            )
-        )
-        blocks.append(
-            _block(
-                "quote",
-                (
-                    "用户反馈|相关性=|准确性=|分析价值=|整体满意度=|补充意见="
-                    if chinese
-                    else "Reader Feedback|Relevance=|Accuracy=|Analysis Value=|"
-                    "Overall Satisfaction=|Additional Comments="
-                ),
-            )
-        )
-    elif report.get("schema_version") in {"1.5", "2.0"}:
-        blocks.append(
-            _block(
-                "heading_1",
-                localized(
-                    language,
-                    "质量评估与用户反馈",
-                    "Quality Evaluation and Reader Feedback",
-                ),
-                "green_background",
-            )
-        )
-        blocks.append(
-            _callout(
-                localized(
-                    language,
-                    "尚未评分。质量评分默认关闭，仅在用户明确要求时补充。",
-                    "Not scored. Quality scoring is off by default and runs only "
-                    "when explicitly requested.",
-                ),
-                "gray_background",
-                "⏳",
-            )
-        )
-        blocks.append(
-            _block(
-                "quote",
-                (
-                    "用户反馈|相关性=|准确性=|分析价值=|整体满意度=|补充意见="
-                    if chinese
-                    else "Reader Feedback|Relevance=|Accuracy=|Analysis Value=|"
-                    "Overall Satisfaction=|Additional Comments="
-                ),
-            )
-        )
-    return blocks
-
-
-def evaluation_to_blocks(
-    evaluation: dict[str, Any],
-    language: object = "zh-CN",
-) -> list[dict[str, Any]]:
-    """处理：把独立质量评估转换为可追加的 Notion 块。
-    输入：
-    - ``evaluation``：独立质量评估对象；包含评分、问题和改进建议。
-    - ``language``：规范语言标识；用于本地化选择或语言一致性判断。
-    输出：“把独立质量评估转换为可追加的 Notion 块”得到的有序结构化记录；
-      每项承载处理说明所定义的身份、证据或状态字段，可直接交给下一阶段。
-    """
-    colon = "：" if is_chinese_output(language) else ": "
-    blocks = [
-        _block(
-            "heading_2",
-            localized(
-                language,
-                "独立评估结果（发布后补充）",
-                "Independent Evaluation (Post-Publication)",
-            ),
-            "green_background",
-        ),
-        _callout(
-            f"{localized(language, '总分', 'Score')}{colon}"
-            f"{evaluation['total_score']}/45 | "
-            f"{localized(language, '连续性建议', 'Continuity recommendation')}"
-            f"{colon}{evaluation['continuity_decision']}",
-            "green_background",
-            "✅",
-        ),
-        _evaluation_table(evaluation["dimensions"], language),
-    ]
-    for title, key in (
-        (localized(language, "主要缺陷", "Main Defects"), "main_defects"),
-        (
-            localized(language, "证据不足项", "Insufficient Evidence"),
-            "insufficient_evidence",
-        ),
-        (
-            localized(language, "改进建议", "Recommended Improvements"),
-            "improvements",
-        ),
-    ):
-        blocks.append(_block("heading_3", title))
-        blocks.extend(
-            _block("bulleted_list_item", value)
-            for value in (
-                evaluation.get(key) or [localized(language, "无", "None")]
-            )
-        )
-    return blocks
-
-
 def append_evaluation(
     report_path: Path,
     evaluation_path: Path,
@@ -1329,11 +530,8 @@ def append_evaluation(
     config_path: Path | None = None,
 ) -> tuple[str, str]:
     """处理：把独立质量评估追加到匹配的 Notion 报告页，并返回页面与发布状态。
-    输入：
-    - ``report_path``：版本化报告 JSON 路径；本地报告是 HTML、PDF 和 Notion 的事实源。
+    输入：版本化报告路径、本次运行的数据根、可选配置文件路径。
     - ``evaluation_path``：独立评估 JSON 路径；读取后追加到对应报告页面。
-    - ``data_dir``：当前运行的唯一数据根；所有状态和版本化产物都必须位于其中。
-    - ``config_path``：可选配置文件路径；为空时使用仓库或安装包默认配置。
     输出：“把独立质量评估追加到匹配的 Notion 报告页，并返回页面与发布状态”得到的固定结构结果；
       返回位置依次对应 str(entry['page_id'])、'html_attached'。
     """
@@ -1410,9 +608,7 @@ def _local_report_images(
     data_dir: Path,
 ) -> dict[str, tuple[Path, str]]:
     """处理：校验报告引用的本地图片并按内容哈希建立索引。
-    输入：
-    - ``report``：当前报告结构；包含栏目、简报或事件、来源引用及质量元数据。
-    - ``data_dir``：当前运行的唯一数据根；所有状态和版本化产物都必须位于其中。
+    输入：含栏目和来源引用的报告、本次运行的数据根。
     输出：“校验报告引用的本地图片并按内容哈希建立索引”形成的结构化字典；
       键值表达该处理定义的业务记录或查找关系。
     """
@@ -1442,8 +638,7 @@ def _local_report_images(
 
 def _file_sha256(path: Path) -> str:
     """处理：流式计算文件 SHA-256，避免一次读取整个附件。
-    输入：
-    - ``path``：当前函数要读取、校验或写入的本地文件路径。
+    输入：本地文件路径。
     输出：“流式计算文件 SHA-256，避免一次读取整个附件”得到的规范字符串，
       供调用方存储、比较或展示。
     """
@@ -1456,8 +651,7 @@ def _file_sha256(path: Path) -> str:
 
 def _saved_upload_id(value: object) -> str | None:
     """处理：从发布检查点提取可复用的 Notion 上传 ID。
-    输入：
-    - ``value``：待解析或规范化的单个输入值；非法值按函数契约返回空值或报错。
+    输入：待解析的值。
     输出：封装“从发布检查点提取可复用的 Notion 上传 ID”业务结果的 ``str | None`` 对象；
       调用方据此继续相邻阶段或识别无结果状态。
     """
@@ -1474,13 +668,9 @@ def _portable_report_html(
     *,
     evaluation: dict[str, Any] | None = None,
 ) -> Path:
-    """处理：生成内嵌本地图片且可作为附件独立打开的报告 HTML。
-    输入：
-    - ``report``：当前报告结构；包含栏目、简报或事件、来源引用及质量元数据。
-    - ``data_dir``：当前运行的唯一数据根；所有状态和版本化产物都必须位于其中。
-    - ``evaluation``：独立质量评估对象；包含评分、问题和改进建议。
-    输出：指向“生成内嵌本地图片且可作为附件独立打开的报告 HTML”所生成、定位或确认产物的本地路径
-      。
+    """处理：生成可独立打开的报告 HTML 附件，图片使用公共来源地址。
+    输入：已校验日报、本次运行数据根及可选独立评估。
+    输出：可供上传并记录哈希的 HTML 文件路径。
     """
     report_id = str(report.get("report_id") or "").strip()
     if not report_id:
@@ -1510,10 +700,8 @@ def _html_attachment_block(
     evaluated: bool = False,
 ) -> dict[str, Any]:
     """处理：构造指向已上传 HTML 报告的 Notion 文件块。
-    输入：
+    输入：本地文件路径、输出语言。
     - ``file_upload_id``：Notion 已创建的文件上传 ID；用于查询状态或挂接页面。
-    - ``path``：当前函数要读取、校验或写入的本地文件路径。
-    - ``language``：规范语言标识；用于本地化选择或语言一致性判断。
     - ``evaluated``：报告是否已有独立评估；决定附件块的说明文本。
     输出：“构造指向已上传 HTML 报告的 Notion 文件块”形成的结构化字典；
       典型键包括 caption、file、file_upload、id、name、object、type。
@@ -1544,9 +732,8 @@ def _prepare_html_upload(
     on_progress: Callable[[], None],
 ) -> str:
     """处理：校验已有上传检查点或创建新的 HTML 文件上传。
-    输入：
+    输入：本地文件路径。
     - ``publisher``：已校验 schema 且具备断点续传能力的 Notion 发布客户端。
-    - ``path``：当前函数要读取、校验或写入的本地文件路径。
     - ``state``：可恢复发布状态对象；记录已创建页面、文件上传和完成检查点。
     - ``on_progress``：每完成一个远端步骤调用的检查点回调。
     输出：“校验已有上传检查点或创建新的 HTML 文件上传”得到的规范字符串，
@@ -1674,10 +861,9 @@ def _edition_story_blocks(
     language: object = "zh-CN",
 ) -> list[dict[str, Any]]:
     """处理：定位指定日报版本分区并提取其中的故事列表块。
-    输入：
+    输入：输出语言。
     - ``blocks``：按报告顺序生成的 Notion 块列表；每项包含 type 及对应内容对象。
     - ``edition``：日报版本标识，通常为 morning 或 evening；参与窗口和产物命名。
-    - ``language``：规范语言标识；用于本地化选择或语言一致性判断。
     输出：“定位指定日报版本分区并提取其中的故事列表块”得到的有序结构化记录；
       每项承载处理说明所定义的身份、证据或状态字段，可直接交给下一阶段。
     """
@@ -1712,8 +898,7 @@ def _report_items_with_images(
     report: dict[str, Any],
 ) -> list[tuple[str, str, dict[str, Any]]]:
     """处理：列出报告中同时具有来源 URL 和图片的条目。
-    输入：
-    - ``report``：当前报告结构；包含栏目、简报或事件、来源引用及质量元数据。
+    输入：含栏目和来源引用的报告。
     输出：按“列出报告中同时具有来源 URL 和图片的条目”规则得到的 ``tuple[str, str, dict[str, Any`
       ` 列表；列表顺序表达配置优先级、业务排名或稳定扫描顺序。
     """
@@ -1741,10 +926,7 @@ def backfill_report_images(
     config_path: Path | None = None,
 ) -> tuple[str, str]:
     """处理：向已有故事块补充缺失图片，同时避免重复创建日报。
-    输入：
-    - ``report_path``：版本化报告 JSON 路径；本地报告是 HTML、PDF 和 Notion 的事实源。
-    - ``data_dir``：当前运行的唯一数据根；所有状态和版本化产物都必须位于其中。
-    - ``config_path``：可选配置文件路径；为空时使用仓库或安装包默认配置。
+    输入：版本化报告路径、本次运行的数据根、可选配置文件路径。
     输出：“向已有故事块补充缺失图片，同时避免重复创建日报”得到的固定结构结果；
       返回位置依次对应 page_id、status。
     """
@@ -1810,29 +992,27 @@ def backfill_report_images(
             str(report["edition"]),
             report.get("language") or "zh-CN",
         )
-        stories_by_url: dict[str, list[dict[str, Any]]] = {}
+        stories_by_url: dict[str, deque[dict[str, Any]]] = defaultdict(deque)
         for story in stories:
             url = _block_link_url(story)
             if url:
-                stories_by_url.setdefault(canonicalize_url(url), []).append(story)
+                stories_by_url[canonicalize_url(url)].append(story)
 
         used_block_ids: set[str] = set()
         for item_id, url, image in image_items:
-            matches = [
-                block
-                for block in stories_by_url.get(canonicalize_url(url), [])
-                if str(block.get("id") or "") not in used_block_ids
-            ]
+            matches = stories_by_url.get(canonicalize_url(url))
+            while matches and str(matches[0].get("id") or "") in used_block_ids:
+                matches.popleft()
             if not matches:
                 progress["missing_item_ids"].append(item_id)
                 save_progress()
                 continue
-            story = matches[0]
-            story_id = str(story.get("id") or "")
+            story_id = str(matches[0].get("id") or "")
             if not story_id:
                 progress["missing_item_ids"].append(item_id)
                 save_progress()
                 continue
+            matches.popleft()
             used_block_ids.add(story_id)
             children = publisher.retrieve_blocks(story_id)
             if any(child.get("type") == "image" for child in children):

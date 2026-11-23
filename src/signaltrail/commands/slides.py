@@ -3,92 +3,24 @@
 from __future__ import annotations
 
 import argparse
-import re
+import json
+from collections.abc import Collection
 from pathlib import Path
 
 from httpx import HTTPError
 
-from ..news_slides import check_slides, prepare_slides, render_slides, slides_status, submit_slides
+from ..news_slides import (
+    SlideDraftError,
+    check_slides,
+    prepare_slides,
+    render_slides,
+    slide_batch_paths,
+    slides_status,
+    submit_slides,
+)
 from ..utils import read_json_object
-from .common import CommandContext, print_json
-
-
-def add_slides_parser(sub: argparse._SubParsersAction) -> None:
-    """处理：注册图文流的准备、批次提交、进度和 HTML 生成命令。
-    输入：主命令树；筛选与预算选项仅作用于独立图文产物。
-    输出：slides 子命令，不改变既有日报命令的参数与默认输出。
-    """
-    parser = sub.add_parser(
-        "slides", help="Build animated HTML news slides from an index or report"
-    )
-    stages = parser.add_subparsers(dest="action", required=True)
-    prepare = stages.add_parser(
-        "prepare", help="Select indexed or report news and split bounded batches"
-    )
-    review = stages.add_parser("review", help="Review today's candidates before writing narration")
-    review.add_argument("--parts-dir", type=Path,
-                        help="Save complete compact review as ordered small input parts")
-    review.add_argument("--report", type=Path)
-    review.add_argument("--index", type=Path, required=True)
-    review.add_argument("--max-news", type=int, default=50)
-    review.add_argument("--model-input", action="store_true",
-                        help="Emit full-pool columnar review input without repeated metadata")
-    prepare.add_argument("--review", type=Path,
-                         help="Model candidate selection and merge decisions")
-    prepare.add_argument("--report", type=Path)
-    prepare.add_argument("--index", type=Path, required=True)
-    prepare.add_argument("--language", choices=("zh-CN", "en"))
-    prepare.add_argument("--reuse-plan", type=Path)
-    prepare.add_argument("--item-id", action="append")
-    prepare.add_argument("--exclude-event-id", action="append",
-                         help="Exclude an event before selecting the top stories; repeatable")
-    prepare.add_argument("--min-importance", type=int, default=0,
-                         help="Optional importance cutoff; index mode requires supplied scores")
-    prepare.add_argument("--max-news", type=int, default=50,
-                         help="Maximum stories by report importance or index rank (default: 50)")
-    prepare.add_argument("--batch-size", type=int, default=5)
-    prepare.add_argument("--max-input-tokens", type=int,
-                         help="Hard input limit; default targets 64000 and expands for one article")
-    prepare.add_argument("--max-output-tokens", type=int, default=4000)
-    author_input = stages.add_parser("input", help="Read one complete, compact writing input")
-    author_input.add_argument("--packet", type=Path, required=True)
-    image_prefetch = stages.add_parser("prefetch-images",
-                                       help="Fetch slide images during authoring")
-    image_prefetch.add_argument("--plan", type=Path, required=True)
-    image_prefetch.add_argument("--refresh", action="store_true")
-    submit = stages.add_parser("submit", help="Accept and reuse one authored batch")
-    submit.add_argument("--packet", type=Path)
-    submit.add_argument("--input", type=Path)
-    submit.add_argument("--plan", type=Path, help="Check all batches of this plan")
-    submit.add_argument("--draft-dir", type=Path, help="Directory of batch-N-draft.json files")
-    submit.add_argument("--skip-batch", action="append", default=[],
-                        help="With --plan, skip active batch IDs or packet paths")
-    submit.add_argument("--check-only", action="store_true", help="Validate without saving results")
-    video = stages.add_parser("video", help="Export locally narrated MP4 from a saved deck")
-    video.add_argument("--title", help="Topic-specific title for this video")
-    video.add_argument("--voice")
-    video.add_argument("--reference-id")
-    video.add_argument("--deck", type=Path, required=True)
-    video.add_argument("--output", type=Path, required=True)
-    video.add_argument("--model-dir", type=Path)
-    video.add_argument("--tts-executable", type=Path)
-    video.add_argument("--ffmpeg")
-    video.add_argument("--threads", type=int, default=2)
-    video.add_argument("--device", choices=("auto", "cuda", "vulkan", "metal", "cpu"))
-    setup = stages.add_parser("video-setup", help="Prepare native TTS and video tools")
-    setup.add_argument("--voice")
-    setup.add_argument("--reference-id")
-    setup.add_argument("--device", choices=("auto", "cuda", "vulkan", "metal", "cpu"))
-    setup.add_argument("--proxy", help="Proxy URL for this initial download only")
-    voice_setup = stages.add_parser("voice-setup", help="Import a portable local voice profile")
-    voice_setup.add_argument("--profile", type=Path, required=True)
-    voice_setup.add_argument("--default", action="store_true")
-    for name in ("status", "render"):
-        command = stages.add_parser(name)
-        command.add_argument("--plan", type=Path, required=True)
-        if name == "render":
-            command.add_argument("--offline", action="store_true",
-                                 help="Reuse saved images without fetching article pages")
+from .common import CommandContext, batch_submission_result, print_json
+from .parser import add_slides_parser as add_slides_parser
 
 
 def handle_slides(args: argparse.Namespace, context: CommandContext) -> int:
@@ -107,12 +39,14 @@ def handle_slides(args: argparse.Namespace, context: CommandContext) -> int:
                 if args.parts_dir is not None:
                     from ..author_inputs import materialize_input_parts
                     from ..runtime import require_data_root_path
-                    from ..utils import write_json
+                    from ..utils import write_text_atomic
 
                     directory = require_data_root_path(args.parts_dir, context.data_dir,
                                                        "Review input directory")
                     path = directory / "review-input.json"
-                    write_json(path, review_model_input(result))
+                    write_text_atomic(path, json.dumps(
+                        review_model_input(result), ensure_ascii=False, separators=(",", ":"),
+                    ))
                     print_json({"eligible_count": result["eligible_count"],
                                 "max_news": result["max_news"],
                                 **materialize_input_parts(path)}, indent=None)
@@ -140,6 +74,15 @@ def handle_slides(args: argparse.Namespace, context: CommandContext) -> int:
                           ensure_video_runtime(context.data_dir, proxy=args.proxy,
                                                device=args.device, voice=args.voice,
                                                reference_id=args.reference_id).items()}
+            case "prefetch-speech":
+                from ..slide_video import prefetch_speech
+
+                result = prefetch_speech(
+                    args.plan, args.output, args.model_dir, context.data_dir,
+                    ffmpeg=args.ffmpeg, threads=args.threads, tts_executable=args.tts_executable,
+                    device=args.device, voice=args.voice, reference_id=args.reference_id,
+                    follow_seconds=args.follow_seconds,
+                )
             case "video":
                 from ..slide_video import render_video
                 result = render_video(args.deck, args.output, args.model_dir, context.data_dir,
@@ -192,7 +135,11 @@ def handle_slides(args: argparse.Namespace, context: CommandContext) -> int:
                     result = submit_slides(args.packet, read_json_object(args.input, "Slide draft"),
                                            context.data_dir)
                 else:
-                    result = _submit_many(args, context.data_dir)
+                    result = submit_slide_batches(
+                        context.data_dir, plan_path=args.plan, draft_dir=args.draft_dir,
+                        packet_path=args.packet, input_path=args.input, check_only=args.check_only,
+                        skip_batch=args.skip_batch,
+                    )
                     print_json(result)
                     return 1 if result["invalid"] else 0
             case "status":
@@ -214,73 +161,72 @@ def handle_slides(args: argparse.Namespace, context: CommandContext) -> int:
         return 1
 
 
-def _submit_many(args: argparse.Namespace, data_dir: Path) -> dict:
-    """处理：先检查所有草稿，再逐项保存通过检查的批次。
+def submit_slide_batches(data_dir: Path, *, plan_path: Path | None = None,
+                         draft_dir: Path | None = None, packet_path: Path | None = None,
+                         input_path: Path | None = None, check_only: bool = False,
+                         skip_batch: Collection[str] = ()) -> dict:
+    """处理：一次读取各份草稿，逐批预检或验证并提交，共享本轮核对的父链。
     输入：单批或计划路径、草稿目录及数据根。
     输出：已接受、待处理和无效批次，以及各项路径与错误。
     """
-    from ..narrative_store import load_artifact
+    from ..narrative_store import ArtifactReader
 
-    skipped = set(args.skip_batch)
-    if skipped and not args.plan:
+    reader = ArtifactReader(data_dir)
+    skipped = set(skip_batch)
+    if skipped and not plan_path:
         raise ValueError("--skip-batch requires --plan")
-    if args.plan:
-        if not args.draft_dir or args.packet or args.input:
+    if plan_path:
+        if not draft_dir or packet_path or input_path:
             raise ValueError("--plan requires --draft-dir and excludes --packet/--input")
-        plan = load_artifact(args.plan, data_dir, kind="slides-plan")
+        plan = reader.load(plan_path, kind="slides-plan")
+        packets = slide_batch_paths(plan_path, "packet")
         entries = []
         for number in range(1, len(plan["payload"]["batches"]) + 1):
-            packets = sorted(path for path in args.plan.parent.glob(
-                f"slides-packet-{number}-r*.json") if re.fullmatch(
-                    rf"slides-packet-{number}-r\d+\.json", path.name))
-            if not packets:
+            packet = packets.get(str(number))
+            if packet is None:
                 raise ValueError(f"Missing packet for batch {number}")
-            draft = args.draft_dir / f"batch-{number}-draft.json"
-            legacy = args.draft_dir / f"slides-draft-{number}.json"
-            entries.append((number, packets[0], draft if draft.is_file() or not legacy.is_file()
+            draft = draft_dir / f"batch-{number}-draft.json"
+            legacy = draft_dir / f"slides-draft-{number}.json"
+            entries.append((number, packet, draft if draft.is_file() or not legacy.is_file()
                             else legacy))
     else:
-        if not args.packet or not args.input or args.draft_dir:
+        if not packet_path or not input_path or draft_dir:
             raise ValueError("--packet and --input are required")
-        packet = load_artifact(args.packet, data_dir)
-        entries = [(packet["payload"]["batch_id"], args.packet, args.input)]
-    rows = []
+        packet = reader.load(packet_path)
+        entries = [(packet["payload"]["batch_id"], packet_path, input_path)]
+    rows, already_accepted, submitted = [], [], []
     for number, packet, draft_path in entries:
         row = {"batch_id": number, "packet_path": str(packet), "draft_path": str(draft_path),
                "expected_path": str(packet.parent / f"slides-result-{number}-r1.json")}
+        rows.append(row)
         try:
-            existing = sorted(packet.parent.glob(f"slides-result-{number}-r*.json"))
-            if existing and (args.plan or not draft_path.is_file()):
-                accepted_record = load_artifact(existing[0], data_dir,
-                                                kind=f"slides-result-{number}")
-                from ..narrative_store import parent_path
-                if parent_path(accepted_record, "packet", data_dir).resolve() != packet.resolve():
-                    raise ValueError("Accepted batch belongs to another packet")
-                row["accepted_path"] = str(existing[0])
-                row["expected_path"] = str(existing[0])
-                row["errors"] = []
-            elif str(number) in skipped or str(packet) in skipped:
+            existing = min(packet.parent.glob(f"slides-result-{number}-r*.json"), default=None)
+            use_saved = existing is not None and (plan_path is not None or not draft_path.is_file())
+            if not use_saved and (str(number) in skipped or str(packet) in skipped):
                 row.update(errors=[], in_flight=True)
+                continue
+            draft = None if use_saved else read_json_object(draft_path, "Slide draft")
+            if plan_path:
+                packet_record = reader.load(packet, kind=f"slides-packet-{number}")
+                if reader.parent_path(packet_record, "plan") != plan_path.resolve():
+                    raise ValueError("Batch belongs to another slide plan")
+            if use_saved:
+                accepted_record = reader.load(existing, kind=f"slides-result-{number}")
+                if reader.parent_path(accepted_record, "packet") != packet.resolve():
+                    raise ValueError("Accepted batch belongs to another packet")
+                row["accepted_path"] = str(existing)
+                row["expected_path"] = str(existing)
+                row["errors"] = []
+                already_accepted.append(str(existing))
+            elif check_only:
+                row["errors"] = check_slides(packet, draft, data_dir, reader=reader)
             else:
-                draft = read_json_object(draft_path, "Slide draft")
-                row["errors"] = check_slides(packet, draft, data_dir)
+                # 传入同一份草稿；提交只验一次，锁内重新绑定该版本写作包。
+                path = submit_slides(packet, draft, data_dir, reader=reader)
+                row.update(accepted_path=str(path), errors=[])
+                submitted.append(str(path))
+        except SlideDraftError as exc:
+            row["errors"] = exc.errors
         except (ValueError, KeyError, OSError, RuntimeError) as exc:
             row["errors"] = [str(exc)]
-        rows.append(row)
-    accepted = [row["accepted_path"] for row in rows if row.get("accepted_path")]
-    if not args.check_only:
-        for row in rows:
-            if not (row["errors"] or row.get("accepted_path") or row.get("in_flight")):
-                try:
-                    path = submit_slides(Path(row["packet_path"]),
-                        read_json_object(Path(row["draft_path"]), "Slide draft"), data_dir)
-                    row["accepted_path"] = str(path)
-                    accepted.append(str(path))
-                except (ValueError, KeyError, OSError, RuntimeError) as exc:
-                    row["errors"].append(str(exc))
-    pending = [row["batch_id"] for row in rows if not row.get("accepted_path")]
-    invalid = [row["batch_id"] for row in rows if row["errors"]]
-    status = "partial" if invalid else "ready_to_submit" if pending else "ready"
-    return {"status": status, "check_only": args.check_only, "accepted": accepted,
-            "pending": pending, "invalid": invalid,
-            "expected_paths": [row["expected_path"] for row in rows], "batches": rows}
+    return batch_submission_result(rows, already_accepted + submitted, check_only)

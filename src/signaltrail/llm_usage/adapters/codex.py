@@ -23,12 +23,16 @@ from .base import (
     lineage_hashes,
     nested_mapping,
     nested_value,
+    optional_identifier_hash,
     parse_jsonl_bytes,
     read_bounded_bytes,
     safe_observation_labels,
+    scoped_event_identity,
     tokens_from_usage,
     tool_call_count_from_payload,
 )
+
+_SOURCE_EVENT_ID_PATHS = (("id",), ("event_id",), ("payload", "id"), ("payload", "call_id"))
 
 
 @dataclass(frozen=True, slots=True)
@@ -71,20 +75,17 @@ class CodexAdapter:
         usage, source_kind = _usage_mapping(payload)
         if usage is None:
             raise ValueError("Codex payload has no supported usage object")
-        raw_identity = source_event_id or nested_value(
-            payload,
-            ("id",),
-            ("event_id",),
-            ("payload", "id"),
-            ("payload", "call_id"),
-        )
+        labels = safe_observation_labels(payload)
+        tokens = _tokens_from_codex_usage(usage)
+        raw_identity = source_event_id or nested_value(payload, *_SOURCE_EVENT_ID_PATHS)
         if raw_identity is None:
-            raw_identity = canonical_digest(_safe_usage_signature(usage, payload))
+            raw_identity = canonical_digest({"tokens": tokens.to_dict(), "labels": labels})
         lineage = lineage_hashes(payload, "codex")
-        identity = _scoped_identity(lineage["session_id_hash"], raw_identity)
-        dedupe_identity = _scoped_identity(
-            lineage["session_id_hash"],
-            call_id or raw_identity,
+        scope = lineage["session_id_hash"]
+        identity = scoped_event_identity("codex", raw_identity, session_id_hash=scope)
+        dedupe_identity = (
+            scoped_event_identity("codex", call_id, session_id_hash=scope)
+            if call_id else identity
         )
         observation = _observation(
             payload,
@@ -92,6 +93,8 @@ class CodexAdapter:
             source_kind=source_kind,
             identity=identity,
             phase=phase,
+            tokens=tokens,
+            labels=labels,
             lineage=lineage,
         )
         return [
@@ -124,17 +127,16 @@ class CodexAdapter:
                 continue
 
             last, cumulative, direct = _usage_mappings(payload)
-            if last is None and cumulative is None and direct is None:
+            snapshot = cumulative or last or direct
+            if snapshot is None:
                 continue
 
             lineage = _effective_lineage(payload, current_context)
             session_scope = lineage["session_id_hash"] or file_scope
-            snapshot = cumulative or last or direct
-            if snapshot is None:
-                continue
+            snapshot_tokens = _tokens_from_codex_usage(snapshot)
             identity = _rollout_event_identity(
                 payload,
-                snapshot,
+                snapshot_tokens,
                 session_scope=session_scope,
                 line_identity=line_identity,
             )
@@ -143,7 +145,11 @@ class CodexAdapter:
             seen_events.add(identity)
 
             if cumulative is not None:
-                current = _tokens_from_codex_usage(cumulative)
+                # 空累计对象可与逐次用量共存，两者在旧回执中代表不同信息。
+                current = (
+                    snapshot_tokens if cumulative is snapshot
+                    else _tokens_from_codex_usage(cumulative)
+                )
                 previous = previous_cumulative.get(session_scope)
                 incremental = _cumulative_increment(
                     current,
@@ -157,11 +163,9 @@ class CodexAdapter:
                 source_kind = "rollout_cumulative_delta"
                 tokens = incremental
             else:
-                usage = last or direct
-                if usage is None:
-                    continue
+                usage = snapshot
                 source_kind = "rollout_last_usage" if last is not None else "rollout_usage"
-                tokens = _tokens_from_codex_usage(usage)
+                tokens = snapshot_tokens
 
             observation = _observation(
                 payload,
@@ -170,6 +174,7 @@ class CodexAdapter:
                 identity=identity,
                 phase=phase,
                 tokens=tokens,
+                labels=safe_observation_labels(payload),
                 lineage=lineage,
                 inherited=current_context,
             )
@@ -240,18 +245,16 @@ def _observation(
     source_kind: str,
     identity: object,
     phase: str | None,
-    tokens: TokenUsage | None = None,
-    lineage: Mapping[str, str | None] | None = None,
+    tokens: TokenUsage,
+    labels: Mapping[str, str | None],
+    lineage: Mapping[str, str | None],
     inherited: _SessionContext | None = None,
 ) -> UsageObservation:
     """处理：把已选中的 Codex usage 映射规范化为安全 observation。
-    输入：原行、usage 数字、计数语义、仅用于哈希的身份和 phase。
+    输入：原行、已规范化的 token 与标签、哈希身份和 phase。
     输出：call 粒度的 UsageObservation；输出细分永远只作 output 子集。
     """
 
-    labels = safe_observation_labels(payload)
-    resolved_tokens = tokens or _tokens_from_codex_usage(usage)
-    resolved_lineage = dict(lineage or lineage_hashes(payload, "codex"))
     return UsageObservation(
         adapter="codex",
         adapter_version="1.0",
@@ -259,7 +262,7 @@ def _observation(
         correlation_id_hash=hash_identifier("codex-call", identity),
         granularity="call",
         covered_call_count=exact(1, "codex_rollout", "usage_event_count_v1"),
-        tokens=resolved_tokens,
+        tokens=tokens,
         tool_call_count=tool_call_count_from_payload(
             payload,
             source="codex_rollout",
@@ -278,22 +281,8 @@ def _observation(
         finish_reason=labels["finish_reason"],
         completed_at=_safe_timestamp(payload),
         latency=latency_from_payload(payload, "codex_rollout"),
-        **resolved_lineage,
+        **lineage,
     )
-
-
-def _safe_usage_signature(
-    usage: Mapping[str, Any],
-    payload: Mapping[str, Any],
-) -> dict[str, Any]:
-    """处理：为缺少事件 ID 的 Codex hook 构造只含 usage 与短标签的身份材料。
-    输入：已选择的 usage 映射和宿主 payload。
-    输出：不含消息或工具内容的规范字典，供哈希去重。
-    """
-
-    tokens = _tokens_from_codex_usage(usage)
-    labels = safe_observation_labels(payload)
-    return {"tokens": tokens.to_dict(), "labels": labels}
 
 
 def _tokens_from_codex_usage(usage: Mapping[str, Any]) -> TokenUsage:
@@ -357,12 +346,13 @@ def _session_context_from_header(payload: Mapping[str, Any]) -> _SessionContext 
         parent_id = root_session_id
     task_id = nested_value(payload, ("payload", "task_id"), ("task_id",))
     return _SessionContext(
-        session_id_hash=_optional_identifier_hash("codex-session_id_hash", current_id),
-        parent_session_id_hash=_optional_identifier_hash(
+        session_id_hash=optional_identifier_hash("codex-session_id_hash", current_id, 256),
+        parent_session_id_hash=optional_identifier_hash(
             "codex-parent_session_id_hash",
             parent_id,
+            256,
         ),
-        host_task_id_hash=_optional_identifier_hash("codex-host_task_id_hash", task_id),
+        host_task_id_hash=optional_identifier_hash("codex-host_task_id_hash", task_id, 256),
         provider=safe_label(
             nested_value(
                 payload,
@@ -414,48 +404,20 @@ def _effective_lineage(
     }
 
 
-def _optional_identifier_hash(namespace: str, value: object) -> str | None:
-    """处理：只哈希短标量宿主 ID，拒绝把任意对象当成 lineage。
-    输入：固定哈希命名空间和 header 固定路径读出的候选值。
-    输出：SHA-256 标签或 None；原始 ID 只在本次调用内存在。
-    """
-
-    if isinstance(value, bool) or not isinstance(value, (str, int)):
-        return None
-    text = str(value)
-    if not 1 <= len(text) <= 256 or "\n" in text or "\r" in text:
-        return None
-    return hash_identifier(namespace, text)
-
-
 def _different_identifiers(left: object, right: object) -> bool:
     """处理：安全判断两个候选 header ID 是否是不同短标量。
     输入：当前线程和根 session 固定字段的内存值。
     输出：两者均合法且不同时为 True；不序列化或返回任一原始值。
     """
 
-    left_hash = _optional_identifier_hash("codex-header-compare", left)
-    right_hash = _optional_identifier_hash("codex-header-compare", right)
+    left_hash = optional_identifier_hash("codex-header-compare", left, 256)
+    right_hash = optional_identifier_hash("codex-header-compare", right, 256)
     return left_hash is not None and right_hash is not None and left_hash != right_hash
-
-
-def _scoped_identity(session_id_hash: str | None, identity: object) -> str:
-    """处理：为 hook 调用构造包含 session 范围的无明文身份摘要。
-    输入：可选 session 哈希和只在内存使用的 call/event 身份。
-    输出：稳定十六进制摘要；相同外部 ID 在不同子 session 不会碰撞。
-    """
-
-    return canonical_digest(
-        {
-            "session_id_hash": session_id_hash,
-            "source_event_id_hash": hash_identifier("codex-source-event", identity),
-        }
-    )
 
 
 def _rollout_event_identity(
     payload: Mapping[str, Any],
-    snapshot: Mapping[str, Any],
+    snapshot: TokenUsage,
     *,
     session_scope: str,
     line_identity: str,
@@ -465,14 +427,8 @@ def _rollout_event_identity(
     输出：不含原始 ID/正文的摘要；同 session 重叠导入幂等，不同 session 隔离。
     """
 
-    raw_event_id = nested_value(
-        payload,
-        ("id",),
-        ("event_id",),
-        ("payload", "id"),
-        ("payload", "call_id"),
-    )
-    event_id_hash = _optional_identifier_hash("codex-source-event", raw_event_id)
+    raw_event_id = nested_value(payload, *_SOURCE_EVENT_ID_PATHS)
+    event_id_hash = optional_identifier_hash("codex-source-event", raw_event_id, 256)
     timestamp = _safe_timestamp(payload)
     timestamp_hash = (
         hash_identifier("codex-event-timestamp", timestamp) if timestamp is not None else None
@@ -481,7 +437,7 @@ def _rollout_event_identity(
         "session_id_hash": session_scope,
         "source_event_id_hash": event_id_hash,
         "timestamp_hash": timestamp_hash,
-        "cumulative_snapshot": _tokens_from_codex_usage(snapshot).to_dict(),
+        "cumulative_snapshot": snapshot.to_dict(),
     }
     if event_id_hash is None and timestamp_hash is None:
         material["line_identity"] = line_identity

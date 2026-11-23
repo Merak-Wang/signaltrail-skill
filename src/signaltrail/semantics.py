@@ -9,8 +9,10 @@ from pathlib import Path
 from typing import Any
 
 from .localization import (
+    brief_title_requires_translation,
     localized,
     text_matches_output_language,
+    translated_title,
     validate_output_language,
 )
 from .utils import canonicalize_url, clean_title, now_iso, read_json, write_json
@@ -234,53 +236,9 @@ def run_relative_brief_fields(
     return {"importance": importance, "status": status}
 
 
-def semantic_cache_reuse_issue(
-    item: dict[str, Any],
-    entry: dict[str, Any] | None,
-    output_language: str,
-) -> str | None:
-    """处理：为语义缓存未复用原因返回一个稳定机器标签。
-    输入：
-    - ``item``：当前索引候选；用于重新计算内容指纹和标题质量边界。
-    - ``entry``：相同 item ID 的可选缓存条目；包含审批状态、语言和稳定语义。
-    - ``output_language``：当前报告目标语言；阻止跨语言复用。
-    输出：可复用时为 None；否则为 miss/pending/rejected/fingerprint/language/editorial 标签。
-    """
-
-    language = validate_output_language(output_language)
-    if not entry:
-        return "cache_miss"
-    if entry.get("fingerprint") != semantic_fingerprint(item):
-        return "fingerprint_mismatch"
-    if str(entry.get("language") or "zh-CN") != language:
-        return "language_mismatch"
-    state = str(entry.get("state") or "pending")
-    if state == "pending":
-        return "pending_evaluation"
-    if state == "rejected":
-        return "rejected"
-    if state == "invalidated":
-        return "invalidated_editorial_rule"
-    if state != "approved":
-        return "unsupported_state"
-    brief = entry.get("brief")
-    if not isinstance(brief, dict):
-        return "invalidated_editorial_rule"
-    tldr = _sanitize_cached_tldr(brief.get("tldr"))
-    if tldr_quality_issue(
-        tldr,
-        str(item.get("title") or ""),
-        language,
-        [brief.get("title_zh"), brief.get("title_en")],
-    ):
-        return "invalidated_editorial_rule"
-    return None
-
-
 def semantic_cache_path(data_dir: Path) -> Path:
     """处理：返回按语言隔离的语义简报缓存文件路径。
-    输入：
-    - ``data_dir``：当前运行的唯一数据根；所有状态和版本化产物都必须位于其中。
+    输入：本次运行的数据根。
     输出：指向“返回按语言隔离的语义简报缓存文件路径”所生成、定位或确认产物的本地路径。
     """
     return data_dir / "state" / "semantic-cache.json"
@@ -288,8 +246,7 @@ def semantic_cache_path(data_dir: Path) -> Path:
 
 def load_semantic_cache(data_dir: Path) -> dict[str, dict[str, Any]]:
     """处理：读取指定语言的语义简报缓存，文件缺失或损坏时返回空缓存。
-    输入：
-    - ``data_dir``：当前运行的唯一数据根；所有状态和版本化产物都必须位于其中。
+    输入：本次运行的数据根。
     输出：“读取指定语言的语义简报缓存，文件缺失或损坏时返回空缓存”形成的结构化字典；
       键值表达该处理定义的业务记录或查找关系。
     """
@@ -313,43 +270,62 @@ def reusable_semantic_brief(
     reference_date: object = None,
 ) -> dict[str, Any] | None:
     """处理：校验指纹、语言和审核状态后返回可复用简报。
-    输入：
-    - ``item``：单个规范条目对象；通常包含 item_id、来源、标题、URL、时间和元数据。
+    输入：带稳定 ID 的索引条目、报告目标语言。
     - ``cache``：本地持久化缓存对象；包含状态、时间、响应元数据和可复用结果。
-    - ``output_language``：目标报告语言；决定标题译文字段、校验规则和界面文本。
     - ``reference_date``：当前报告或索引日期；用于重算本轮 status 与 importance。
     输出：“校验指纹、语言和审核状态后返回可复用简报”形成的结构化字典；
       键值表达该处理定义的业务记录或查找关系。
     """
-    language = validate_output_language(output_language)
     item_id = str(item.get("item_id") or "")
-    entry = cache.get(item_id)
-    if semantic_cache_reuse_issue(item, entry, language) is not None:
-        return None
+    return semantic_brief_with_issue(item, cache.get(item_id), output_language, reference_date)[0]
+
+
+def semantic_brief_with_issue(
+    item: dict[str, Any],
+    entry: dict[str, Any] | None,
+    output_language: str,
+    reference_date: object = None,
+) -> tuple[dict[str, Any] | None, str | None]:
+    """处理：一次检查缓存身份与文字质量，为通过的简报重算当前版次字段。
+    输入：来源条目、缓存条目、报告语言和日期。
+    输出：已复用简报或跳过原因。
+    """
+    language = validate_output_language(output_language)
+    if not entry:
+        return None, "cache_miss"
+    if entry.get("fingerprint") != semantic_fingerprint(item):
+        return None, "fingerprint_mismatch"
+    if str(entry.get("language") or "zh-CN") != language:
+        return None, "language_mismatch"
+    state = str(entry.get("state") or "pending")
+    if state == "pending":
+        return None, "pending_evaluation"
+    if state == "rejected":
+        return None, "rejected"
+    if state == "invalidated":
+        return None, "invalidated_editorial_rule"
+    if state != "approved":
+        return None, "unsupported_state"
     brief = entry.get("brief")
     if not isinstance(brief, dict):
-        return None
-    reused = {
-        key: deepcopy(brief[key])
-        for key in REUSABLE_BRIEF_FIELDS
-        if key in brief
-    }
-    reused["tldr"] = _sanitize_cached_tldr(reused.get("tldr"))
-    if (
-        not reused.get("tldr")
-        or tldr_quality_issue(
-            reused.get("tldr"),
-            str(item.get("title") or ""),
-            language,
-            [reused.get("title_zh"), reused.get("title_en")],
-        )
+        return None, "invalidated_editorial_rule"
+    if brief_title_requires_translation(item, language) and not translated_title(brief, language):
+        return None, "invalidated_editorial_rule"
+    tldr = _sanitize_cached_tldr(brief.get("tldr"))
+    if tldr_quality_issue(
+        tldr,
+        str(item.get("title") or ""),
+        language,
+        [brief.get("title_zh"), brief.get("title_en")],
     ):
-        return None
+        return None, "invalidated_editorial_rule"
+    reused = {key: deepcopy(brief[key]) for key in REUSABLE_BRIEF_FIELDS if key in brief}
+    reused["tldr"] = tldr
     reused.update(run_relative_brief_fields(item, reference_date))
     reused["semantic_fingerprint"] = entry["fingerprint"]
     reused["semantic_cache_source_report_id"] = entry.get("report_id")
     reused["semantic_cache_reused"] = True
-    return reused
+    return reused, None
 
 
 def _coerce_date(value: object) -> date | None:
@@ -375,10 +351,7 @@ def update_semantic_cache_from_report(
     report: dict[str, Any], index: dict[str, Any], data_dir: Path
 ) -> Path:
     """处理：从已验证报告更新按条目指纹索引的语义缓存。
-    输入：
-    - ``report``：当前报告结构；包含栏目、简报或事件、来源引用及质量元数据。
-    - ``index``：当前来源索引对象；包含规范条目、来源结果、策略和采集时间。
-    - ``data_dir``：当前运行的唯一数据根；所有状态和版本化产物都必须位于其中。
+    输入：含栏目和来源引用的报告、规范来源索引、本次运行的数据根。
     输出：指向“从已验证报告更新按条目指纹索引的语义缓存”所生成、定位或确认产物的本地路径。
     """
     path = semantic_cache_path(data_dir)
@@ -436,9 +409,7 @@ def finalize_semantic_cache_evaluation(
     evaluation: dict[str, Any], data_dir: Path
 ) -> Path | None:
     """处理：完成并固化语义缓存评估。
-    输入：
-    - ``evaluation``：独立质量评估对象；包含评分、问题和改进建议。
-    - ``data_dir``：当前运行的唯一数据根；所有状态和版本化产物都必须位于其中。
+    输入：独立质量评估、本次运行的数据根。
     输出：指向“完成并固化语义缓存评估”所生成、定位或确认产物的本地路径；条件不满足时返回 None。
     """
     path = semantic_cache_path(data_dir)

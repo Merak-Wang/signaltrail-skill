@@ -3,10 +3,12 @@ from __future__ import annotations
 import hashlib
 import math
 import re
-from collections import defaultdict
-from datetime import UTC, datetime
+from collections import defaultdict, deque
+from datetime import UTC, datetime, timedelta
+from functools import lru_cache
 from typing import Any
 
+_MATCH_WINDOW = timedelta(hours=96)
 _LATIN_TOKEN = re.compile(r"[a-z0-9][a-z0-9_-]*")
 _CJK_RUN = re.compile(r"[\u3400-\u9fff]+")
 _STOPWORDS = {
@@ -80,8 +82,7 @@ class _UnionFind:
 
     def find(self, value: int) -> int:
         """处理：查找并返回当前并查集节点的根节点。
-        输入：
-        - ``value``：待解析或规范化的单个输入值；非法值按函数契约返回空值或报错。
+        输入：待解析的值。
         输出：上述规则计算出的计数、分数、排名或限制值，供确定性决策使用。
         """
         while self.parent[value] != value:
@@ -110,8 +111,7 @@ class _UnionFind:
 
 def _normalized_title(value: str) -> str:
     """处理：统一标题大小写、空白和标点，保留可比较字符。
-    输入：
-    - ``value``：待解析或规范化的单个输入值；非法值按函数契约返回空值或报错。
+    输入：待解析的值。
     输出：“统一标题大小写、空白和标点，保留可比较字符”得到的规范字符串，
       供调用方存储、比较或展示。
     """
@@ -120,8 +120,7 @@ def _normalized_title(value: str) -> str:
 
 def lexical_tokens(value: str) -> list[str]:
     """处理：把中英文标题拆成去停用词的词项和中文二元组。
-    输入：
-    - ``value``：待解析或规范化的单个输入值；非法值按函数契约返回空值或报错。
+    输入：待解析的值。
     输出：“把中英文标题拆成去停用词的词项和中文二元组”得到的字符串列表；
       顺序保持确定并可供下一步骤逐项处理。
     """
@@ -154,8 +153,7 @@ def _hash_feature(feature: str, dimensions: int) -> tuple[int, float]:
 
 def lexical_vector(value: str, dimensions: int = 512) -> dict[int, float]:
     """处理：用词项、相邻词和字符特征构建归一化稀疏向量。
-    输入：
-    - ``value``：待解析或规范化的单个输入值；非法值按函数契约返回空值或报错。
+    输入：待解析的值。
     - ``dimensions``：词法哈希向量的维度数；决定碰撞率与计算开销。
     输出：“用词项、相邻词和字符特征构建归一化稀疏向量”形成的结构化字典；
       键值表达该处理定义的业务记录或查找关系。
@@ -189,8 +187,7 @@ def cosine_similarity(left: dict[int, float], right: dict[int, float]) -> float:
 
 def _parse_time(item: dict[str, Any]) -> datetime | None:
     """处理：把可选 ISO 时间文本解析为带时区时间，空值或非法值返回 None。
-    输入：
-    - ``item``：单个规范条目对象；通常包含 item_id、来源、标题、URL、时间和元数据。
+    输入：带稳定 ID 的索引条目。
     输出：封装“把可选 ISO 时间文本解析为带时区时间，
       空值或非法值返回 None”业务结果的 ``datetime | None`` 对象；
       调用方据此继续相邻阶段或识别无结果状态。
@@ -207,8 +204,7 @@ def _parse_time(item: dict[str, Any]) -> datetime | None:
 
 def _role_score(item: dict[str, Any]) -> int:
     """处理：把来源角色转换为聚类重要性分值。
-    输入：
-    - ``item``：单个规范条目对象；通常包含 item_id、来源、标题、URL、时间和元数据。
+    输入：带稳定 ID 的索引条目。
     输出：上述规则计算出的计数、分数、排名或限制值，供确定性决策使用。
     """
     metadata = item.get("metadata", {}) if isinstance(item.get("metadata"), dict) else {}
@@ -218,8 +214,7 @@ def _role_score(item: dict[str, Any]) -> int:
 
 def _tier(item: dict[str, Any]) -> int:
     """处理：把来源层级规范到 1 至 3，异常值回退到第二层。
-    输入：
-    - ``item``：单个规范条目对象；通常包含 item_id、来源、标题、URL、时间和元数据。
+    输入：带稳定 ID 的索引条目。
     输出：上述规则计算出的计数、分数、排名或限制值，供确定性决策使用。
     """
     metadata = item.get("metadata", {}) if isinstance(item.get("metadata"), dict) else {}
@@ -231,8 +226,7 @@ def _tier(item: dict[str, Any]) -> int:
 
 def _representative(items: list[dict[str, Any]]) -> dict[str, Any]:
     """处理：按层级、角色、标题信息量和 ID 稳定选择代表条目。
-    输入：
-    - ``items``：规范条目列表；每项带稳定身份并可进入聚类、报告或渲染步骤。
+    输入：有序索引条目。
     输出：“按层级、角色、标题信息量和 ID 稳定选择代表条目”形成的结构化字典；
       键值表达该处理定义的业务记录或查找关系。
     """
@@ -248,36 +242,19 @@ def _representative(items: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 def _cluster_importance(
-    items: list[dict[str, Any]],
-    generated_at: datetime,
-    prior_item_ids: set[str],
+    representative: dict, source_count: int, latest: datetime | None, generated: datetime,
+    terms: set[str], reported: bool,
 ) -> int:
-    """处理：综合来源层级、佐证、时效、严重性和新颖度计算聚类分数。
-    输入：
-    - ``items``：规范条目列表；每项带稳定身份并可进入聚类、报告或渲染步骤。
-    - ``generated_at``：当前快照或产物的生成时间；用于时效计算和确定性排序。
-    - ``prior_item_ids``：历史报告已经出现的条目 ID；命中后降低故事新鲜度评分。
-    输出：上述规则计算出的计数、分数、排名或限制值，供确定性决策使用。
+    """处理：合计代表来源、佐证数量、时效、严重事件词及新颖度的分值。
+    输入：聚类过程中已汇总的来源、时间、标题词项及历史命中情况。
+    输出：监控首页排序采用的百分制重要性。
     """
-    representative = _representative(items)
-    tier_score = {1: 25, 2: 18, 3: 12}[_tier(representative)]
-    role_score = _role_score(representative)
-    sources = {str(item.get("source_id") or "") for item in items}
-    corroboration = min(20, max(0, len(sources) - 1) * 7)
-    published = max(
-        (parsed for item in items if (parsed := _parse_time(item)) is not None),
-        default=None,
-    )
-    age_hours = (
-        max(0.0, (generated_at.astimezone(UTC) - published).total_seconds() / 3600)
-        if published is not None
-        else 168.0
-    )
+    age_hours = max(0.0, (generated - latest).total_seconds() / 3600) if latest else 168.0
     recency = round(20 * max(0.0, 1.0 - min(age_hours, 168.0) / 168.0))
-    title_tokens = set(lexical_tokens(" ".join(str(item.get("title") or "") for item in items)))
-    severity = min(15, 5 * len(title_tokens & _SEVERITY_TERMS))
-    novelty = 10 if not any(str(item.get("item_id")) in prior_item_ids for item in items) else 3
-    return min(100, tier_score + role_score + corroboration + recency + severity + novelty)
+    source_score = {1: 25, 2: 18, 3: 12}[_tier(representative)] + _role_score(representative)
+    corroboration = min(20, max(0, source_count - 1) * 7)
+    severity = min(15, 5 * len(terms & _SEVERITY_TERMS))
+    return min(100, source_score + corroboration + recency + severity + (3 if reported else 10))
 
 
 def cluster_articles(
@@ -287,88 +264,52 @@ def cluster_articles(
     threshold: float = 0.68,
     previous_clusters: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
-    """处理：使用确定性的零模型词法特征聚合同一事件的标题。
-    输入：
-    - ``items``：规范条目列表；每项带稳定身份并可进入聚类、报告或渲染步骤。
-    - ``generated_at``：当前快照或产物的生成时间；用于时效计算和确定性排序。
-    - ``threshold``：聚类判定阈值；相似度达到该值时可合并候选。
-    - ``previous_clusters``：上一份监控快照的故事簇；用于复用稳定 story_id 和连续性状态。
-    输出：“使用确定性的零模型词法特征聚合同一事件的标题”得到的有序结构化记录；
-      典型字段包括 category、first_seen_at、image_url、importance、item_ids、last_seen_at、modul
-      e、phase、published_at、representative_item_id、source_count、source_ids，
-      可直接交给下一阶段。
+    """处理：按同源链接或近期相似标题聚类，保留旧事件身份。
+    输入：有序快照条目、采集时间、相似度阈值和上一快照的事件。
+    输出：按重要性和时间排序的新闻簇，同时在条目元数据中写入归属。
     """
     if not items:
         return []
     generated = datetime.fromisoformat(generated_at.replace("Z", "+00:00"))
     generated = generated.replace(tzinfo=generated.tzinfo or UTC)
-    titles = [str(item.get("title") or "") for item in items]
-    vectors = [lexical_vector(title) for title in titles]
-    token_sets = [set(lexical_tokens(title)) for title in titles]
-    # 预先解析匹配所需的标题和时间，候选对复用结果，避免高频词放大解析开销。
-    normalized_titles = [_normalized_title(title) for title in titles]
-    compact_titles = [title.replace(" ", "") for title in normalized_titles]
-    parsed_times_by_item = [_parse_time(item) for item in items]
-    canonical_to_index: dict[str, int] = {}
-    inverted: defaultdict[str, list[int]] = defaultdict(list)
-    pairs: set[tuple[int, int]] = set()
-    for index, item in enumerate(items):
-        canonical = str(item.get("canonical_url") or "")
-        if canonical and canonical in canonical_to_index:
-            pairs.add((canonical_to_index[canonical], index))
-        elif canonical:
-            canonical_to_index[canonical] = index
-        candidates: set[int] = set()
-        # 倒排索引只比较共享词项的近期候选，避免对全部标题做平方级两两比较。
-        for token in sorted(token_sets[index]):
-            candidates.update(inverted[token][-80:])
-        for candidate in candidates:
-            pairs.add((candidate, index))
-        for token in token_sets[index]:
-            inverted[token].append(index)
-
+    titles = [_normalized_title(str(item.get("title") or "")) for item in items]
+    compact = [title.replace(" ", "") for title in titles]
+    terms = [set(lexical_tokens(title)) for title in titles]
+    times = [_parse_time(item) for item in items]
+    modules = [str(item.get("module")) for item in items]
+    urls = [item.get("canonical_url") for item in items]
+    vector = lru_cache(maxsize=None)(lexical_vector)
+    first_by_url: dict[str, int] = {}
+    postings: defaultdict[str, deque[int]] = defaultdict(lambda: deque(maxlen=80))
     union = _UnionFind(len(items))
-    # 排序后合并保证相同输入产生相同的并查集结构与聚类结果。
-    for left, right in sorted(pairs):
-        left_item = items[left]
-        right_item = items[right]
-        if str(left_item.get("module")) != str(right_item.get("module")):
-            continue
-        left_time = parsed_times_by_item[left]
-        right_time = parsed_times_by_item[right]
-        if (
-            left_time is not None
-            and right_time is not None
-            and abs((left_time - right_time).total_seconds()) > 96 * 3600
-        ):
-            continue
-        canonical_match = left_item.get("canonical_url") and left_item.get(
-            "canonical_url"
-        ) == right_item.get("canonical_url")
-        shared_tokens = token_sets[left] & token_sets[right]
-        if (
-            not canonical_match
-            and min(len(token_sets[left]), len(token_sets[right])) < 4
-            and normalized_titles[left] != normalized_titles[right]
-        ):
-            continue
-        if not canonical_match and len(shared_tokens) < 2:
-            continue
-        similarity = cosine_similarity(vectors[left], vectors[right])
-        shorter, longer = compact_titles[left], compact_titles[right]
-        if len(shorter) > len(longer):
-            shorter, longer = longer, shorter
-        if (
-            canonical_match
-            or similarity >= threshold
-            or (len(shorter) >= 24 and len(shorter) / len(longer) >= 0.65
-                and shorter in longer)
-        ):
-            union.union(left, right)
+    for right, right_terms in enumerate(terms):
+        candidates = set()
+        for token in right_terms:
+            candidates.update(postings[token])
+            postings[token].append(right)
+        url = str(urls[right] or "")
+        if url and (first := first_by_url.setdefault(url, right)) != right:
+            candidates.add(first)
+        # 连通分量与边的处理顺序无关，逐条合并即可丢弃本条的候选。
+        for left in candidates:
+            if modules[left] != modules[right]:
+                continue
+            if times[left] and times[right] and abs(times[left] - times[right]) > _MATCH_WINDOW:
+                continue
+            if urls[left] and urls[left] == urls[right]:
+                union.union(left, right)
+                continue
+            if (min(len(terms[left]), len(right_terms)) < 4 and titles[left] != titles[right]
+                    or len(terms[left] & right_terms) < 2):
+                continue
+            shorter, longer = sorted((compact[left], compact[right]), key=len)
+            if (len(shorter) >= 24 and len(shorter) / len(longer) >= 0.65 and shorter in longer
+                    or cosine_similarity(vector(titles[left]), vector(titles[right])) >= threshold):
+                union.union(left, right)
 
-    groups: defaultdict[int, list[dict[str, Any]]] = defaultdict(list)
-    for index, item in enumerate(items):
-        groups[union.find(index)].append(item)
+    groups: defaultdict[int, list[int]] = defaultdict(list)
+    for index in range(len(items)):
+        groups[union.find(index)].append(index)
 
     previous_clusters = previous_clusters or []
     prior_story_by_item = {
@@ -377,35 +318,25 @@ def cluster_articles(
         if isinstance(cluster, dict) and cluster.get("story_id")
         for item_id in cluster.get("item_ids", [])
     }
-    prior_item_ids = set(prior_story_by_item)
     clusters: list[dict[str, Any]] = []
-    for grouped_items in groups.values():
+    for members in groups.values():
+        grouped_items = [items[index] for index in members]
         representative = _representative(grouped_items)
-        old_story_ids = sorted(
-            {
-                prior_story_by_item[str(item.get("item_id"))]
-                for item in grouped_items
-                if str(item.get("item_id")) in prior_story_by_item
-            }
-        )
-        if old_story_ids:
-            # 只要与旧聚类共享条目，就沿用最小的稳定 story_id，保持跨快照连续性。
-            story_id = old_story_ids[0]
+        item_ids = [str(item.get("item_id")) for item in grouped_items]
+        previous_ids = [prior_story_by_item[key] for key in item_ids if key in prior_story_by_item]
+        if previous_ids:
+            story_id = min(previous_ids)
         else:
             # 新故事由确定性的代表标题生成身份，不依赖本次列表顺序。
             identity = _normalized_title(str(representative.get("title") or ""))
             digest = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:12]
             story_id = f"story-{digest}"
-        source_ids = sorted(
-            {str(item.get("source_id") or "") for item in grouped_items if item.get("source_id")}
-        )
-        parsed_times = [
-            parsed for item in grouped_items if (parsed := _parse_time(item)) is not None
-        ]
-        prior_count = sum(str(item.get("item_id")) in prior_item_ids for item in grouped_items)
+        all_sources = {str(item.get("source_id") or "") for item in grouped_items}
+        source_ids = sorted(all_sources - {""})
+        latest = max((times[i] for i in members if times[i] is not None), default=None)
         if len(source_ids) >= 3:
             phase = "confirmed"
-        elif prior_count and prior_count < len(grouped_items):
+        elif 0 < len(previous_ids) < len(members):
             phase = "updated"
         elif len(source_ids) >= 2:
             phase = "developing"
@@ -415,13 +346,16 @@ def cluster_articles(
             "story_id": story_id,
             "title": representative.get("title"),
             "representative_item_id": representative.get("item_id"),
-            "item_ids": [str(item.get("item_id")) for item in grouped_items],
+            "item_ids": item_ids,
             "source_ids": source_ids,
             "source_count": len(source_ids),
             "module": representative.get("module"),
             "category": representative.get("category"),
             "phase": phase,
-            "importance": _cluster_importance(grouped_items, generated, prior_item_ids),
+            "importance": _cluster_importance(
+                representative, len(all_sources), latest, generated,
+                set().union(*(terms[i] for i in members)), bool(previous_ids),
+            ),
             "first_seen_at": min(
                 (str(item.get("discovered_at")) for item in grouped_items),
                 default=generated_at,
@@ -430,9 +364,7 @@ def cluster_articles(
                 (str(item.get("discovered_at")) for item in grouped_items),
                 default=generated_at,
             ),
-            "published_at": (
-                max(parsed_times).isoformat(timespec="seconds") if parsed_times else None
-            ),
+            "published_at": latest.isoformat(timespec="seconds") if latest else None,
             "image_url": next(
                 (str(item.get("image_url")) for item in grouped_items if item.get("image_url")),
                 None,

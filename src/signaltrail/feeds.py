@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import hashlib
 import math
+import re
 import time
 import xml.etree.ElementTree as ET
 from collections import defaultdict
-from dataclasses import asdict, dataclass, fields
+from dataclasses import dataclass, fields
 from datetime import UTC, datetime, timedelta
 from email.utils import parsedate_to_datetime
 from pathlib import Path
@@ -28,6 +29,8 @@ from .utils import canonicalize_url, clean_title, item_id, read_json, write_json
 
 _ARTICLE_FIELDS = {field.name for field in fields(ArticleItem)}
 _FEED_ROOTS = {"feed", "rss", "rdf", "rdf:rdf"}
+_SITEMAP = "{http://www.sitemaps.org/schemas/sitemap/0.9}"
+_NEWS = "{http://www.google.com/schemas/sitemap-news/0.9}"
 _IMAGE_EXTENSIONS = (".avif", ".gif", ".jpeg", ".jpg", ".png", ".webp")
 
 
@@ -99,17 +102,14 @@ class FeedFetchResult:
     next_refresh_at: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        """处理：将当前对象转换为可序列化字典。
-        输入：
-        - 无显式业务参数：不接收额外业务参数；
-          从当前实例读取“将当前对象转换为可序列化字典”所需状态。
-        输出：“将当前对象转换为可序列化字典”形成的结构化字典；
-          键值表达该处理定义的业务记录或查找关系。
+        """处理：序列化 Feed 回执，每篇文章只展开一次。
+        输入：本次抓取的来源状态、缓存观测和文章。
+        输出：监控快照使用的回执字段、规范文章和文章数。
         """
-        payload = asdict(self)
-        payload["items"] = [item.to_dict() for item in self.items]
-        payload["items_count"] = len(self.items)
-        return payload
+        result = {field.name: getattr(self, field.name) for field in fields(self)}
+        result["items"] = [item.to_dict() for item in self.items]
+        result["items_count"] = len(self.items)
+        return result
 
 
 def _local_name(tag: str) -> str:
@@ -160,9 +160,7 @@ def _direct_text(node: ET.Element, *names: str) -> str:
 
 def _parse_datetime(value: str, timezone: str) -> datetime | None:
     """处理：把 Feed 日期文本解析并统一到配置时区。
-    输入：
-    - ``value``：待解析或规范化的单个输入值；非法值按函数契约返回空值或报错。
-    - ``timezone``：IANA 时区名称；用于解析无时区时间并生成日报时间边界。
+    输入：待解析的值、用于解释本地日期的 IANA 时区。
     输出：封装“把 Feed 日期文本解析并统一到配置时区”业务结果的 ``datetime | None`` 对象；
       调用方据此继续相邻阶段或识别无结果状态。
     """
@@ -175,9 +173,8 @@ def _parse_datetime(value: str, timezone: str) -> datetime | None:
 
 def _entry_link(node: ET.Element, feed_url: str) -> str:
     """处理：从 Atom/RSS 条目中选择规范文章链接。
-    输入：
+    输入：用于抓取与缓存的 Feed URL。
     - ``node``：Feed 解析器当前处理的 RSS/Atom XML 元素。
-    - ``feed_url``：正在解析或抓取的 RSS/Atom 地址；同时作为缓存和来源追踪键。
     输出：“从 Atom/RSS 条目中选择规范文章链接”得到的规范字符串，供调用方存储、比较或展示。
     """
     links = _direct_elements(node, "link")
@@ -245,7 +242,7 @@ def _provider(node: ET.Element) -> tuple[str | None, str | None]:
 
 
 def looks_like_feed(content: bytes | str, content_type: str = "") -> bool:
-    """处理：结合响应类型和 XML 根标签判断内容是否为 RSS 或 Atom。
+    """处理：识别 RSS、Atom 与声明新闻命名空间的出版方新闻目录。
     输入：
     - ``content``：待编码、解析或写入的原始内容；边界和可信级别由当前函数说明。
     - ``content_type``：HTTP 内容类型或待上传文件 MIME 类型；用于解析、校验和响应头。
@@ -259,6 +256,8 @@ def looks_like_feed(content: bytes | str, content_type: str = "") -> bool:
     if normalized.startswith(("<!doctype html", "<html")):
         return False
     if any(marker in normalized for marker in ("<rss", "<feed", "<rdf:rdf")):
+        return True
+    if "<urlset" in normalized and _NEWS[1:-1] in normalized:
         return True
     return any(
         marker in content_type.lower() for marker in ("application/rss+xml", "application/atom+xml")
@@ -275,53 +274,59 @@ def parse_feed_document(
     max_items: int,
     data_dir: Path | None = None,
 ) -> list[ArticleItem]:
-    """处理：把有界且不可信的 RSS/Atom XML 解析为规范文章模型。
-    输入：
+    """处理：从 RSS、Atom 或新闻站点地图提取原文链接、标题和原发时间。
+    输入：用于抓取与缓存的 Feed URL、用于解释本地日期的 IANA 时区、本阶段条目上限。
     - ``content``：RSS/Atom HTTP 响应的原始 XML 字节或文本；按不可信输入和大小边界解析。
     - ``source``：当前 Feed 所属来源配置；提供来源身份、栏目、过滤规则和条目上限。
-    - ``feed_url``：正在解析或抓取的 RSS/Atom 地址；同时作为缓存和来源追踪键。
     - ``collected_at``：页面或 Feed 的采集时间；用于状态记录和时间回退，不冒充发布时间。
-    - ``timezone``：IANA 时区名称；用于解析无时区时间并生成日报时间边界。
-    - ``max_items``：本步骤允许处理或返回的最大条目数；同时受全局预算限制。
-    输出：可写入规范来源索引的文章条目列表；
-      每项包含稳定 ID、来源身份、规范 URL、时间和可用元数据，
-      并保持当前处理定义的筛选与排序语义。
+    输出：经筛选和排序的来源索引条目，含稳定 ID、规范 URL、时间及元数据。
     """
     raw = content.encode("utf-8") if isinstance(content, str) else content
     root = ET.fromstring(raw)
-    if _local_name(root.tag) not in _FEED_ROOTS:
+    news_map = root.tag == f"{_SITEMAP}urlset"
+    if not news_map and _local_name(root.tag) not in _FEED_ROOTS:
         raise ValueError(f"Unsupported feed root element: {_local_name(root.tag)!r}")
     contexts = xml_context(root)
-    entry_nodes = [node for node in root.iter() if _local_name(node.tag) in {"entry", "item"}]
-    observed = _parse_datetime(collected_at, timezone)
-    if observed is None:
-        observed = datetime.now(ZoneInfo(timezone))
+    entry_nodes = (root.iterfind(f"{_SITEMAP}url") if news_map else
+                   (node for node in root.iter() if _local_name(node.tag) in {"entry", "item"}))
+    observed = _parse_datetime(collected_at, timezone) or datetime.now(ZoneInfo(timezone))
+    future_cutoff = observed + timedelta(hours=1)
 
     items: list[ArticleItem] = []
     seen: set[str] = set()
     content_records: dict[str, dict[str, Any]] = {}
     for node in entry_nodes:
-        title = _direct_text(node, "title")
-        url = _entry_link(node, urljoin(feed_url, contexts[node][0]))
+        if news_map:
+            news = node.find(f"{_NEWS}news")
+            if news is None:
+                continue
+            title = clean_title(news.findtext(f"{_NEWS}title", ""))
+            url = _direct_text(node, "loc")
+            published_text = clean_title(news.findtext(f"{_NEWS}publication_date", ""))
+            if not published_text:
+                continue
+        else:
+            title = _direct_text(node, "title")
+            url = _entry_link(node, urljoin(feed_url, contexts[node][0]))
+            published_text = next((value for name in ("pubdate", "published", "issued", "date")
+                                   if (value := _direct_text(node, name))), "")
         if not is_eligible(source, title, url):
             continue
-        # 按发布时间字段优先级读取；更新时间不能使旧文重新成为当天新闻。
-        published_text = next(
-            (
-                value
-                for name in ("pubdate", "published", "issued", "date")
-                if (value := _direct_text(node, name))
-            ),
-            "",
-        )
         published_value = normalize_time(published_text, timezone)
         published = _parse_datetime(published_text, timezone)
-        if published is not None and published > observed + timedelta(hours=1):
+        if published is not None and published > future_cutoff:
             continue
         canonical = canonicalize_url(url)
         if canonical in seen:
             continue
         content_record = entry_content(node, contexts, url, feed_url)
+        filing_date: dict[str, str] = {}
+        if (source.id == "sec_edgar_latest" and content_record
+                and urlsplit(feed_url).hostname == "www.sec.gov"):
+            # EDGAR 的 Filed 是纽约记账日；原发时间须另有受理时刻的证据。
+            filing_day = re.match(r"Filed:\s*(\d{4}-\d{2}-\d{2})\b", content_record["text"])
+            if filing_day:
+                filing_date["sec_filing_date"] = filing_day[1]
         image_candidates = normalize_image_candidates(
             [
                 *(image["url"] for image in (content_record or {}).get("images", [])),
@@ -341,9 +346,7 @@ def parse_feed_document(
             module=source.module,
             category=source.category,
             description=clean_title(content_record["text"])[:600] if content_record else "",
-            published_at=(
-                published_value
-            ),
+            published_at=published_value,
             original_provider=provider_name,
             image_url=image_candidates[0] if image_candidates else None,
             metadata={
@@ -353,8 +356,10 @@ def parse_feed_document(
                 "language": source.language,
                 "region": source.region,
                 **source.origin_metadata,
+                **filing_date,
                 "acquisition_method": "feed",
                 "feed_url": feed_url,
+                **({"feed_format": "news_sitemap"} if news_map else {}),
                 "publication_time_missing": published is None,
                 "published_raw": published_text,
                 "published_precision": (
@@ -462,24 +467,18 @@ def article_from_dict(payload: dict[str, Any]) -> ArticleItem:
 
 def _cache_path(data_dir: Path, feed_url: str) -> Path:
     """处理：根据 Feed URL 哈希生成隔离且稳定的缓存文件路径。
-    输入：
-    - ``data_dir``：当前运行的唯一数据根；所有状态和版本化产物都必须位于其中。
-    - ``feed_url``：正在解析或抓取的 RSS/Atom 地址；同时作为缓存和来源追踪键。
+    输入：本次运行的数据根、用于抓取与缓存的 Feed URL。
     输出：指向“根据 Feed URL 哈希生成隔离且稳定的缓存文件路径”所生成、定位或确认产物的本地路径。
     """
     digest = hashlib.sha256(feed_url.encode("utf-8")).hexdigest()
     return data_dir / "monitor" / "feed-cache" / f"{digest}.json"
 
 
-def _load_cache(data_dir: Path, feed_url: str) -> dict[str, Any]:
-    """处理：读取单个 Feed 的本地缓存对象，文件缺失或损坏时返回空缓存。
-    输入：
-    - ``data_dir``：当前运行的唯一数据根；所有状态和版本化产物都必须位于其中。
-    - ``feed_url``：正在解析或抓取的 RSS/Atom 地址；同时作为缓存和来源追踪键。
-    输出：“读取单个 Feed 的本地缓存对象，文件缺失或损坏时返回空缓存”形成的结构化字典；
-      键值表达该处理定义的业务记录或查找关系。
+def _load_cache(path: Path) -> dict[str, Any]:
+    """处理：读取单个 Feed 的本地缓存。
+    输入：由 Feed URL 确定的缓存路径。
+    输出：缓存映射；文件缺失或不是对象时为空。
     """
-    path = _cache_path(data_dir, feed_url)
     if not path.exists():
         return {}
     payload = read_json(path)
@@ -500,8 +499,7 @@ def _cached_items(cache: dict[str, Any]) -> list[ArticleItem]:
 
 def _retry_after_seconds(value: str | None) -> int | None:
     """处理：把 Retry-After 响应头解析为有界等待秒数。
-    输入：
-    - ``value``：待解析或规范化的单个输入值；非法值按函数契约返回空值或报错。
+    输入：待解析的值。
     输出：封装“把 Retry-After 响应头解析为有界等待秒数”业务结果的 ``int | None`` 对象；
       调用方据此继续相邻阶段或识别无结果状态。
     """
@@ -555,41 +553,41 @@ async def fetch_feed(
     force: bool = False,
 ) -> FeedFetchResult:
     """处理：使用条件请求、缓存和刷新策略抓取并解析单个 RSS/Atom Feed。
-    输入：
+    输入：带入口与筛选规则的来源配置、用于抓取与缓存的 Feed URL、
+      本次运行的数据根、用于解释本地日期的 IANA 时区、本阶段条目上限。
     - ``client``：已配置超时、重定向和连接池策略的 HTTP 客户端。
-    - ``source``：来源配置；包含来源 ID、名称、入口 URL、分类、过滤规则、限额和可信层级。
-    - ``feed_url``：正在解析或抓取的 RSS/Atom 地址；同时作为缓存和来源追踪键。
-    - ``data_dir``：当前运行的唯一数据根；所有状态和版本化产物都必须位于其中。
-    - ``timezone``：IANA 时区名称；用于解析无时区时间并生成日报时间边界。
     - ``max_bytes``：允许读取或下载的最大字节数；达到上限后停止或报错。
-    - ``max_items``：本步骤允许处理或返回的最大条目数；同时受全局预算限制。
     - ``refresh_interval_minutes``：来源或 Feed 的最小刷新间隔；未到期时可复用缓存。
     - ``force``：是否忽略正常缓存或重复保护并显式重新执行允许的步骤。
     输出：单个 Feed 的抓取结果；包含访问状态、缓存信息、错误、刷新时间和规范文章条目。
     """
-    cache = _load_cache(data_dir, feed_url)
+    cache_path = _cache_path(data_dir, feed_url)
+    cache = _load_cache(cache_path)
     scope_changed = source.collect_all_items and not cache.get("collect_all_items")
     checked_at = datetime.now(ZoneInfo(timezone))
     checked_iso = checked_at.isoformat(timespec="seconds")
+
+    def result(
+        status: str, items: list[ArticleItem], cache_state: str, **details: Any,
+    ) -> FeedFetchResult:
+        """处理：按已判定的状态组装统一抓取结果。
+        输入：文章、状态、缓存命中类型及可选响应观测。
+        输出：供采集和监控使用的 Feed 结果。
+        """
+        return FeedFetchResult(source.id, source.name, feed_url, status, checked_iso, items,
+                               cache_state=cache_state, **details)
+
+    validators = {key: cache.get(key) for key in ("etag", "last_modified")}
     next_refresh_raw = str(cache.get("next_refresh_at") or "")
     if cache and not force and not scope_changed and next_refresh_raw:
         next_refresh = _parse_datetime(next_refresh_raw, timezone)
         if next_refresh is not None and checked_at < next_refresh:
             cached = _cached_items(cache)
-            return FeedFetchResult(
-                source_id=source.id,
-                source_name=source.name,
-                feed_url=feed_url,
-                status=str(cache.get("status", SourceStatus.NO_ITEMS)),
-                checked_at=checked_iso,
-                items=cached,
-                http_status=cache.get("http_status"),
-                error=cache.get("error"),
-                etag=cache.get("etag"),
-                last_modified=cache.get("last_modified"),
-                cache_state="fresh",
+            return result(
+                str(cache.get("status", SourceStatus.NO_ITEMS)), cached, "fresh",
+                http_status=cache.get("http_status"), error=cache.get("error"),
                 stale=bool(cached) and bool(cache.get("consecutive_failures")),
-                next_refresh_at=next_refresh_raw,
+                next_refresh_at=next_refresh_raw, **validators,
             )
 
     headers = {
@@ -624,7 +622,7 @@ async def fetch_feed(
         next_refresh_at = _next_refresh(checked_at, refresh_interval_minutes, failures)
         error = f"{type(exc).__name__}: {exc}"
         write_json(
-            _cache_path(data_dir, feed_url),
+            cache_path,
             {
                 **cache,
                 "feed_url": feed_url,
@@ -636,35 +634,28 @@ async def fetch_feed(
                 "consecutive_failures": failures,
             },
         )
-        return FeedFetchResult(
-            source_id=source.id,
-            source_name=source.name,
-            feed_url=feed_url,
-            status=SourceStatus.PARTIAL if cached else SourceStatus.FAILED,
-            checked_at=checked_iso,
-            items=cached,
-            error=error,
-            etag=cache.get("etag"),
-            last_modified=cache.get("last_modified"),
-            cache_state="stale" if cached else "miss",
-            stale=bool(cached),
+        return result(
+            SourceStatus.PARTIAL if cached else SourceStatus.FAILED,
+            cached, "stale" if cached else "miss",
+            error=error, stale=bool(cached),
             latency_ms=round((time.perf_counter() - started) * 1000),
-            next_refresh_at=next_refresh_at,
+            next_refresh_at=next_refresh_at, **validators,
         )
 
     assert response is not None
     latency_ms = round((time.perf_counter() - started) * 1000)
     status_code = response.status_code
-    etag = response.headers.get("etag") or cache.get("etag")
-    last_modified = response.headers.get("last-modified") or cache.get("last_modified")
+    validators = {key: response.headers.get(key.replace("_", "-")) or value
+                  for key, value in validators.items()}
     if status_code == 304:
         items = _cached_items(cache)
+        status = SourceStatus.SUCCESS if items else SourceStatus.NO_ITEMS
         next_refresh_at = _next_refresh(checked_at, refresh_interval_minutes, 0)
         write_json(
-            _cache_path(data_dir, feed_url),
+            cache_path,
             {
                 **cache,
-                "status": SourceStatus.SUCCESS if items else SourceStatus.NO_ITEMS,
+                "status": status,
                 "error": None,
                 "http_status": status_code,
                 "checked_at": checked_iso,
@@ -673,19 +664,10 @@ async def fetch_feed(
                 "last_success_at": checked_iso,
             },
         )
-        return FeedFetchResult(
-            source_id=source.id,
-            source_name=source.name,
-            feed_url=feed_url,
-            status=SourceStatus.SUCCESS if items else SourceStatus.NO_ITEMS,
-            checked_at=checked_iso,
-            items=items,
-            http_status=status_code,
-            etag=etag,
-            last_modified=last_modified,
-            cache_state="not_modified",
-            latency_ms=latency_ms,
-            next_refresh_at=next_refresh_at,
+        return result(
+            status, items, "not_modified",
+            http_status=status_code, latency_ms=latency_ms,
+            next_refresh_at=next_refresh_at, **validators,
         )
 
     challenge = classify_access_text(
@@ -710,7 +692,7 @@ async def fetch_feed(
         status = (
             SourceStatus.VERIFICATION_REQUIRED if challenge.get("required") else SourceStatus.FAILED
         )
-        error = "Response is HTML/challenge content, not RSS or Atom"
+        error = "Expected a publisher feed or news sitemap"
         items = _cached_items(cache)
     else:
         try:
@@ -753,8 +735,7 @@ async def fetch_feed(
         "status": status,
         "error": error,
         "http_status": status_code,
-        "etag": etag,
-        "last_modified": last_modified,
+        **validators,
         "checked_at": checked_iso,
         "last_success_at": (checked_iso if not failed else cache.get("last_success_at")),
         "next_refresh_at": next_refresh_at,
@@ -763,20 +744,9 @@ async def fetch_feed(
         "collect_all_items": source.collect_all_items if not failed else bool(
             cache.get("collect_all_items")),
     }
-    write_json(_cache_path(data_dir, feed_url), record)
-    return FeedFetchResult(
-        source_id=source.id,
-        source_name=source.name,
-        feed_url=feed_url,
-        status=status,
-        checked_at=checked_iso,
-        items=items,
-        http_status=status_code,
-        error=error,
-        etag=etag,
-        last_modified=last_modified,
-        cache_state="stale" if stale else "updated",
-        stale=stale,
-        latency_ms=latency_ms,
-        next_refresh_at=next_refresh_at,
+    write_json(cache_path, record)
+    return result(
+        status, items, "stale" if stale else "updated",
+        http_status=status_code, error=error, stale=stale, latency_ms=latency_ms,
+        next_refresh_at=next_refresh_at, **validators,
     )

@@ -1,50 +1,34 @@
-"""Explicit command dispatch. Every parser command has one handler."""
+"""Resolve the selected command without initializing unrelated pipeline stages."""
 
 from argparse import Namespace
-from collections.abc import Callable
+from functools import partial
+from importlib import import_module
 
-from . import (
-    editions,
-    monitor,
-    reports,
-    slides,
-    sources,
-    verification,
-)
 from .common import CommandContext
 
-HANDLERS: dict[str, Callable[[Namespace, CommandContext], int]] = {
-    "cleanup": sources.handle_cleanup,
-    "slides": slides.handle_slides,
-    "source-page": sources.handle_source_page,
-    "collect": sources.handle_collect,
-    "import-legacy": sources.handle_import_legacy,
-    "build-context": sources.handle_build_context,
-    "extract-content": sources.handle_extract_content,
-    "resume": sources.handle_resume,
-    "refresh-monitor": monitor.handle_refresh_monitor,
-    "monitor-status": monitor.handle_monitor_status,
-    "serve": monitor.handle_serve,
-    "run-edition": editions.handle_run_edition,
-    "enrich-edition": editions.handle_enrich_edition,
-    "begin-authoring": editions.handle_begin_authoring,
-    "submit-authoring-batch": editions.handle_submit_authoring_batch,
-    "brief-input": editions.handle_brief_input,
-    "record-authoring-metrics": editions.handle_record_authoring_metrics,
-    "authoring-status": editions.handle_authoring_status,
-    "prefetch-media": editions.handle_prefetch_media,
-    "prepare-analysis": editions.handle_prepare_analysis,
-    "analysis-stage": editions.handle_analysis_stage,
-    "assemble-authoring": editions.handle_assemble_authoring,
-    "finalize-edition": editions.handle_finalize_edition,
-    "complete-edition-tail": editions.handle_complete_edition_tail,
-    "edition-status": editions.handle_edition_status,
-    "validate-report": reports.handle_validate_report,
-    "save-report": reports.handle_save_report,
-    "finalize-evaluation": reports.handle_finalize_evaluation,
-    "publish-notion": reports.handle_publish_notion,
-    "backfill-notion-images": reports.handle_backfill_notion_images,
-    "verify-source": verification.handle_verify_source,
-    "verify-pending": verification.handle_verify_pending,
-    "serve-monitor": monitor.handle_serve,
+
+def _dispatch(module: str, command: str, args: Namespace, context: CommandContext) -> int:
+    """处理：在执行时载入命令所属模块。
+    输入：命令组、已解析参数和本次运行上下文。
+    输出：原处理函数返回的退出码。
+    """
+    handlers = import_module(f".{module}", __name__)
+    return getattr(handlers, "handle_" + command.replace("-", "_"))(args, context)
+
+
+_GROUPS = {
+    "sources": ("cleanup", "source-page", "collect", "import-legacy", "build-context",
+                "extract-content", "resume"),
+    "monitor": ("refresh-monitor", "monitor-status", "serve"),
+    "editions": ("run-edition", "enrich-edition", "begin-authoring", "submit-authoring-batch",
+                 "brief-input", "record-authoring-metrics", "authoring-status", "prefetch-media",
+                 "prepare-analysis", "analysis-stage", "assemble-authoring", "finalize-edition",
+                 "complete-edition-tail", "edition-status"),
+    "reports": ("validate-report", "save-report", "finalize-evaluation", "publish-notion",
+                "backfill-notion-images"),
+    "verification": ("verify-source", "verify-pending"),
+    "slides": ("slides",),
 }
+HANDLERS = {name: partial(_dispatch, group, name) for group, names in _GROUPS.items()
+            for name in names}
+HANDLERS["serve-monitor"] = HANDLERS["serve"]

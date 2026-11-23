@@ -15,7 +15,7 @@ signaltrail --help
 
 在宿主 Agent 中加载根目录 `SKILL.md`。配置、模板、Schema 和资源会在运行时读取，需保留完整目录。Python 分发包名为 `signaltrail-skill`，命令为 `signaltrail`，模块入口为 `python -m signaltrail.cli`。
 
-安装脚本可选同步到 Hermes Skill 目录。同步更新同名文件并保留额外文件，更新前备份自定义配置。Windows 的 `-Editable` 或 macOS/Linux 的 `--editable` 使用原始仓库。宿主设置见 [Hermes 集成](../../references/hermes-integration.md)。
+两个平台的安装入口按相同的文件规则将项目同步到 Hermes Skill 目录。同步更新同名文件并保留额外文件，更新前备份自定义配置。Windows 的 `-Editable` 或 macOS/Linux 的 `--editable` 使用原始仓库。宿主设置见 [Hermes 集成](../../references/hermes-integration.md)。
 
 Windows 可使用系统 Edge；macOS/Linux 的浏览器采集需在同一 Python 环境安装 Chromium：
 
@@ -57,8 +57,12 @@ output:
 ```
 
 标题、摘要、分析、图文讲解和语音使用所选语言，原始标题与来源链接保留供查阅。
+简报主标题使用目标语言，下方保留发布者原题，TL;DR 位于配图前。来源只给出日期时标注“发布日期”。
+简体中文日报为繁体来源写简体主标题，下方保留发布者原题。
 
 ## 来源与正文证据
+
+发布者列表只提供日期时，同一发布者当前 Feed 中的同篇原文可以补足精确发布时间。合并时核对发布者身份和日期相容性，转换时区后仍按本期截止时刻筛选。
 
 [sources.yaml](../../configs/sources.yaml) 和 [discovery-sources.yaml](../../configs/discovery-sources.yaml) 中的启用来源均按现有module/category进入正式日报栏目。默认配置共 45 项，其中 43 项启用。每源从有限公开Feed/页面响应内的合格当日新闻中，同源去重后按原发时间选取最新最多15条；采集索引保留完整观察证据及来源状态。见[采集扩展](platform.md)。
 
@@ -77,6 +81,8 @@ signaltrail --data-dir DATA_DIR extract-content --index INDEX.json --item-id ITE
 
 提取生成新的增强索引修订，后续步骤使用返回路径。采集保留登录、验证、限流和失败状态；交互验证用 `verify-pending`。来源选择与证据处理见[编辑策略](../../references/editorial-policy.md)。
 
+整期生成使用 `enrich-edition --run RUN.json --all-slide-candidates`，程序每批处理最多 100 条，依据更新后的索引继续补齐候选，跳过已处理条目。可用 `--max-items` 指定批大小，最终回执列出末批及剩余候选数，已到截止时刻的运行保留剩余数量。
+
 ## 采集监控
 
 ```sh
@@ -88,7 +94,9 @@ signaltrail --data-dir DATA_DIR serve --open
 
 ## 宿主用量与可选评分
 
-整期推进程序在专用 `author-inputs/` 中生成完整输入，保留证据、顺序、写作风格和 Schema。简报、分析、图文任务均提供 `input_parts_dir` 和有序 `input_parts` 文件名，每块至多 7500 个 `o200k_base` token，按序拼接 UTF-8 字节可还原完整输入。作者逐块读取，每个工具结果只放一块，读完所有材料后写作。每项任务使用没有前批历史的新上下文；完整输入文件留作程序使用和审计。
+本地 Codex 调度器直接读取完整作者文件。同一次调用的多个任务共用内容完全相同的指令和 Schema。通过工具读取材料的宿主按下述顺序读取分块。
+
+整期推进程序在专用 `author-inputs/` 中生成完整输入，保留证据、顺序、写作风格和 Schema。通过工具读取的简报、分析、图文任务均提供 `input_parts_dir` 和有序 `input_parts` 文件名，每块至多 7500 个 `o200k_base` token，按序拼接 UTF-8 字节可还原完整输入。作者逐块读取，每个工具结果只放一块，读完所有材料后写作。每项任务使用没有前批历史的新上下文；完整输入文件留作程序使用和审计。
 
 程序完成日期、证据检查、富化与输入冻结后，图文事件审阅可与简报作者并行。审阅仍覆盖每源限额内的全部合格候选，并在定稿前保存合并、排序决定；简报收录范围独立依据来源索引，不依赖图文前五十条的选题。
 
@@ -143,7 +151,7 @@ signaltrail --data-dir DATA_DIR cleanup --days 7 --apply
 
 `slides review --index INDEX.json --max-news 50 --model-input --parts-dir REVIEW_INPUT_DIR` 将每源限额内的全部合格候选按相同格式分块；审阅者读完所有块后合并、排序。
 
-图文作者阶段返回图片预取及未完成 tail/PDF 的 `background_commands`。与作者并行各启动一次，保留进程句柄，运行期间分别传 `--in-flight slides-images`、`--in-flight edition-tail`；渲染前等待全部结束，避免共同更新日报投影。`slides prefetch-images --plan PLAN.json` 将完整新闻图片和计量原子写入计划旁的 `images-slides-plan-rN.json`，渲染直接复用。`--refresh` 可重抓图片；未预取时保持原有渲染采图行为。
+图文作者阶段返回图片预取及未完成 tail/PDF 的 `background_commands`。与作者并行各启动一次，保留进程句柄，运行期间分别传 `--in-flight slides-images`、`--in-flight edition-tail`；渲染前等待全部结束，避免共同更新日报投影。`slides prefetch-images --plan PLAN.json` 将逐事件配图和计量原子写入计划旁的 `images-slides-plan-rN.json`，渲染直接复用。`--refresh` 可重抓图片；未预取时保持原有渲染采图行为。
 
 HTTP 索引预取最多读取 `browser.http_prefetch_max_bytes` 字节的解压内容（默认 8 MiB）。截断页面保留已有候选并补采一次浏览器页面；页面诊断记录两次尝试。
 

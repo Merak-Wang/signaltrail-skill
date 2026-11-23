@@ -35,10 +35,8 @@ def handle_cleanup(args: argparse.Namespace, context: CommandContext) -> int:
 
 def handle_source_page(args: argparse.Namespace, context: CommandContext) -> int:
     """处理：读取或修改已批准的来源索引页。
-    输入：
-    - ``args``：解析器校验过的 source-page 参数；指定本次操作的选项与文件。
-    - ``context``：入口解析的 config、data_dir、parser；提供运行配置和路径约束。
-    输出：向标准输出报告操作结果，并返回供终端或宿主判断成败的退出码。
+    输入：已解析的命令选项、当前命令的运行上下文。
+    输出：终端结果及供宿主判断成败的退出码。
     """
     config = context.config
     data_dir = context.data_dir
@@ -59,10 +57,8 @@ def handle_source_page(args: argparse.Namespace, context: CommandContext) -> int
 
 def handle_collect(args: argparse.Namespace, context: CommandContext) -> int:
     """处理：按配置采集一次来源索引。
-    输入：
-    - ``args``：解析器校验过的 collect 参数；指定本次操作的选项与文件。
-    - ``context``：入口解析的 config、data_dir；提供运行配置和路径约束。
-    输出：向标准输出报告操作结果，并返回供终端或宿主判断成败的退出码。
+    输入：已解析的命令选项、当前命令的运行上下文。
+    输出：终端结果及供宿主判断成败的退出码。
     """
     config = context.config
     data_dir = context.data_dir
@@ -81,10 +77,8 @@ def handle_collect(args: argparse.Namespace, context: CommandContext) -> int:
 
 def handle_import_legacy(args: argparse.Namespace, context: CommandContext) -> int:
     """处理：把旧链接文件导入当前索引格式。
-    输入：
-    - ``args``：解析器校验过的 import-legacy 参数；指定本次操作的选项与文件。
-    - ``context``：入口解析的 config、data_dir；提供运行配置和路径约束。
-    输出：向标准输出报告操作结果，并返回供终端或宿主判断成败的退出码。
+    输入：已解析的命令选项、当前命令的运行上下文。
+    输出：终端结果及供宿主判断成败的退出码。
     """
     config = context.config
     data_dir = context.data_dir
@@ -95,10 +89,8 @@ def handle_import_legacy(args: argparse.Namespace, context: CommandContext) -> i
 
 def handle_build_context(args: argparse.Namespace, context: CommandContext) -> int:
     """处理：从索引构建本轮写作上下文。
-    输入：
-    - ``args``：解析器校验过的 build-context 参数；指定本次操作的选项与文件。
-    - ``context``：入口解析的 config、data_dir；提供运行配置和路径约束。
-    输出：向标准输出报告操作结果，并返回供终端或宿主判断成败的退出码。
+    输入：已解析的命令选项、当前命令的运行上下文。
+    输出：终端结果及供宿主判断成败的退出码。
     """
     config = context.config
     data_dir = context.data_dir
@@ -110,10 +102,8 @@ def handle_build_context(args: argparse.Namespace, context: CommandContext) -> i
 
 def handle_extract_content(args: argparse.Namespace, context: CommandContext) -> int:
     """处理：为指定候选补充正文证据。
-    输入：
-    - ``args``：解析器校验过的 extract-content 参数；指定本次操作的选项与文件。
-    - ``context``：入口解析的 config、data_dir；提供运行配置和路径约束。
-    输出：向标准输出报告操作结果，并返回供终端或宿主判断成败的退出码。
+    输入：已解析的命令选项、当前命令的运行上下文。
+    输出：终端结果及供宿主判断成败的退出码。
     """
     config = context.config
     data_dir = context.data_dir
@@ -134,10 +124,8 @@ def handle_extract_content(args: argparse.Namespace, context: CommandContext) ->
 
 def handle_resume(args: argparse.Namespace, context: CommandContext) -> int:
     """处理：重试失败来源并将新索引关联到运行。
-    输入：
-    - ``args``：解析器校验过的 resume 参数；指定本次操作的选项与文件。
-    - ``context``：入口解析的 config、data_dir；提供运行配置和路径约束。
-    输出：向标准输出报告操作结果，并返回供终端或宿主判断成败的退出码。
+    输入：已解析的命令选项、当前命令的运行上下文。
+    输出：终端结果及供宿主判断成败的退出码。
     """
     config = context.config
     data_dir = context.data_dir

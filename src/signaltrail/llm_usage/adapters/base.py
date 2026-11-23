@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from ..models import (
+    TOKEN_FIELDS,
     AdapterRecord,
     CostMeasurement,
     Measurement,
@@ -114,6 +115,19 @@ def parse_jsonl_bytes(content: bytes, label: str) -> list[tuple[int, dict[str, A
     return rows
 
 
+def _at_path(payload: Mapping[str, Any], path: tuple[str, ...]) -> object:
+    """处理：沿一条固定元数据路径取值。
+    输入：适配器声明的键路径和宿主记录。
+    输出：路径值，缺失时返回空。
+    """
+    value: object = payload
+    for key in path:
+        value = value.get(key) if isinstance(value, Mapping) else None
+        if value is None:
+            break
+    return value
+
+
 def nested_mapping(payload: Mapping[str, Any], *paths: tuple[str, ...]) -> Mapping[str, Any] | None:
     """处理：只沿适配器声明的固定键路径查找映射。
     输入：宿主 payload 和安全 allowlist 路径集合。
@@ -121,12 +135,7 @@ def nested_mapping(payload: Mapping[str, Any], *paths: tuple[str, ...]) -> Mappi
     """
 
     for path in paths:
-        current: object = payload
-        for key in path:
-            if not isinstance(current, Mapping):
-                current = None
-                break
-            current = current.get(key)
+        current = _at_path(payload, path)
         if isinstance(current, Mapping):
             return current
     return None
@@ -139,12 +148,7 @@ def nested_value(payload: Mapping[str, Any], *paths: tuple[str, ...]) -> object:
     """
 
     for path in paths:
-        current: object = payload
-        for key in path:
-            if not isinstance(current, Mapping):
-                current = None
-                break
-            current = current.get(key)
+        current = _at_path(payload, path)
         if current is not None:
             return current
     return None
@@ -192,6 +196,19 @@ def hash_identifier(namespace: str, value: object) -> str:
 
     digest = hashlib.sha256(f"{namespace}\0{value}".encode()).hexdigest()
     return f"sha256:{digest}"
+
+
+def optional_identifier_hash(namespace: str, value: object, max_length: int = 512) -> str | None:
+    """处理：仅哈希短单行标量宿主 ID。
+    输入：固定命名空间、宿主原始 ID 及适配器约定的长度上限。
+    输出：SHA-256 标签，缺失或非法 ID 返回空。
+    """
+    if isinstance(value, bool) or not isinstance(value, (str, int)):
+        return None
+    text = str(value)
+    if not 1 <= len(text) <= max_length or "\n" in text or "\r" in text:
+        return None
+    return hash_identifier(namespace, text)
 
 
 def lineage_hashes(
@@ -302,6 +319,16 @@ def canonical_digest(payload: object) -> str:
     return hashlib.sha256(serialized).hexdigest()
 
 
+def scoped_event_identity(host: str, event_id: object, **scope: str | None) -> str:
+    """处理：把宿主事件标识和已哈希的会话范围合成去重键。
+    输入：宿主名、事件标识及对应的会话或 agent 哈希。
+    输出：沿用各宿主命名空间的稳定十六进制摘要。
+    """
+    return canonical_digest({
+        **scope, "source_event_id_hash": hash_identifier(f"{host}-source-event", event_id),
+    })
+
+
 def token_measurement(
     usage: Mapping[str, Any],
     aliases: Iterable[tuple[str, ...]],
@@ -321,6 +348,43 @@ def token_measurement(
     return exact(parsed, source, "reported_usage_v1")
 
 
+# 按提供商别名优先级查找每种 token 计数，固定保留缺失原因。
+_TOKEN_ALIASES = (
+    ("input", "input_tokens", (
+        "input_tokens", "prompt_tokens", "input", "prompt", "inputTokens", "inputTokenCount",
+        "promptTokenCount",
+    )),
+    ("cached_input", "cached_input_tokens", (
+        "cached_input_tokens", "cache_read_input_tokens", "cache_read_tokens", "cached_tokens",
+        "cacheRead", "cacheReadTokens", "prompt_tokens_details.cached_tokens",
+        "input_tokens_details.cached_tokens",
+    )),
+    ("cache_write_input", "cache_write_tokens", (
+        "cache_write_input_tokens", "cache_creation_input_tokens", "cache_write_tokens",
+        "cache_creation_tokens", "cacheWrite", "cacheWriteTokens",
+    )),
+    ("output", "output_tokens", (
+        "output_tokens", "completion_tokens", "output", "completion", "outputTokens",
+        "outputTokenCount", "candidatesTokenCount",
+    )),
+    ("reasoning_output", "reasoning_tokens", (
+        "reasoning_output_tokens", "reasoning_tokens", "reasoningTokens",
+        "output_tokens_details.reasoning_tokens", "completion_tokens_details.reasoning_tokens",
+    )),
+    ("tool_call_output", "tool_call_tokens", (
+        "tool_call_output_tokens", "tool_call_tokens", "toolCallTokens",
+        "output_tokens_details.tool_call_tokens", "completion_tokens_details.tool_call_tokens",
+    )),
+    ("reported_total", "provider_total_tokens", (
+        "total_tokens", "totalTokens", "totalTokenCount", "total",
+    )),
+)
+_TOKEN_PATHS = {
+    field: (tuple(tuple(path.split(".")) for path in paths), missing + "_not_exposed")
+    for field, missing, paths in _TOKEN_ALIASES
+}
+
+
 def tokens_from_usage(
     usage: Mapping[str, Any],
     *,
@@ -333,112 +397,12 @@ def tokens_from_usage(
     输出：缺字段保持 unobservable、reasoning/tool-call 固定为 output 子集的 TokenUsage。
     """
 
-    input_measure = token_measurement(
-        usage,
-        (
-            ("input_tokens",),
-            ("prompt_tokens",),
-            ("input",),
-            ("prompt",),
-            ("inputTokens",),
-            ("inputTokenCount",),
-            ("promptTokenCount",),
-        ),
-        source=source,
-        missing_reason="input_tokens_not_exposed",
-    )
-    cached = token_measurement(
-        usage,
-        (
-            ("cached_input_tokens",),
-            ("cache_read_input_tokens",),
-            ("cache_read_tokens",),
-            ("cached_tokens",),
-            ("cacheRead",),
-            ("cacheReadTokens",),
-            ("prompt_tokens_details", "cached_tokens"),
-            ("input_tokens_details", "cached_tokens"),
-        ),
-        source=source,
-        missing_reason="cached_input_tokens_not_exposed",
-    )
-    cache_write = token_measurement(
-        usage,
-        (
-            ("cache_write_input_tokens",),
-            ("cache_creation_input_tokens",),
-            ("cache_write_tokens",),
-            ("cache_creation_tokens",),
-            ("cacheWrite",),
-            ("cacheWriteTokens",),
-        ),
-        source=source,
-        missing_reason="cache_write_tokens_not_exposed",
-    )
-    output = token_measurement(
-        usage,
-        (
-            ("output_tokens",),
-            ("completion_tokens",),
-            ("output",),
-            ("completion",),
-            ("outputTokens",),
-            ("outputTokenCount",),
-            ("candidatesTokenCount",),
-        ),
-        source=source,
-        missing_reason="output_tokens_not_exposed",
-    )
-    reasoning = token_measurement(
-        usage,
-        (
-            ("reasoning_output_tokens",),
-            ("reasoning_tokens",),
-            ("reasoningTokens",),
-            ("output_tokens_details", "reasoning_tokens"),
-            ("completion_tokens_details", "reasoning_tokens"),
-        ),
-        source=source,
-        missing_reason="reasoning_tokens_not_exposed",
-    )
-    tool_call = token_measurement(
-        usage,
-        (
-            ("tool_call_output_tokens",),
-            ("tool_call_tokens",),
-            ("toolCallTokens",),
-            ("output_tokens_details", "tool_call_tokens"),
-            ("completion_tokens_details", "tool_call_tokens"),
-        ),
-        source=source,
-        missing_reason="tool_call_tokens_not_exposed",
-    )
-    reported_total = token_measurement(
-        usage,
-        (
-            ("total_tokens",),
-            ("totalTokens",),
-            ("totalTokenCount",),
-            ("total",),
-        ),
-        source=source,
-        missing_reason="provider_total_tokens_not_exposed",
-    )
-
-    resolved_cached = cached_relation or _detect_cached_relation(usage)
-    resolved_write = cache_write_relation or _detect_cache_write_relation(usage)
     return TokenUsage(
-        input=input_measure,
-        cached_input=cached,
-        cache_write_input=cache_write,
-        output=output,
-        reasoning_output=reasoning,
-        tool_call_output=tool_call,
-        reported_total=reported_total,
-        cached_input_relation=resolved_cached,
-        cache_write_input_relation=resolved_write,
+        **{name: token_measurement(usage, paths, source=source, missing_reason=reason)
+           for name, (paths, reason) in _TOKEN_PATHS.items()},
+        cached_input_relation=cached_relation or _detect_cached_relation(usage),
+        cache_write_input_relation=cache_write_relation or _detect_cache_write_relation(usage),
     )
-
 
 def delta_tokens(current: TokenUsage, previous: TokenUsage | None) -> TokenUsage:
     """处理：把 Codex 累计 token 快照转换为本次增量。
@@ -477,15 +441,7 @@ def delta_tokens(current: TokenUsage, previous: TokenUsage | None) -> TokenUsage
         )
 
     return TokenUsage(
-        **{name: delta(name) for name in (
-            "input",
-            "cached_input",
-            "cache_write_input",
-            "output",
-            "reasoning_output",
-            "tool_call_output",
-            "reported_total",
-        )},
+        **{name: delta(name) for name in TOKEN_FIELDS},
         cached_input_relation=current.cached_input_relation,
         cache_write_input_relation=current.cache_write_input_relation,
     )

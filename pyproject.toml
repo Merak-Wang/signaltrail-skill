@@ -27,7 +27,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["ruff>=0.9,<1"]
+dev = ["ruff>=0.9,<1", "psutil>=5.9,<8"]
 crawl4ai = ["crawl4ai>=0.9,<1"]
 
 [project.scripts]

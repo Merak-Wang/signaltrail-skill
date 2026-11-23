@@ -10,18 +10,14 @@ from urllib.parse import urlsplit
 
 from playwright.async_api import BrowserContext, Page, async_playwright
 
-from .access import classify_access_text
+from .access import classify_access_text, classify_source_status
 from .adapters import (
-    ARXIV_ROWS_JS,
-    BROWSER_ROWS_JS,
-    TWZ_ROWS_JS,
+    DOM_INDEX_ROWS,
     YEAR_ROWS_JS,
     _clear_misattributed_descriptions,
-    arxiv_items_from_rows,
-    browser_items_from_rows,
+    dom_index_items,
     latest_year_url,
     seed_items_from_payload,
-    twz_items_from_rows,
     weibo_items_from_payload,
 )
 from .config import AppConfig, SourceConfig
@@ -88,18 +84,13 @@ async def _candidates(page: Page, source: SourceConfig, result: SourceResult) ->
                 f"Latest year index returned HTTP {response.status if response else None}"
             )
         mode = "browser_index"
-    if mode == "browser_index":
-        rows = await page.locator("a[href]").evaluate_all(BROWSER_ROWS_JS)
-        items = browser_items_from_rows(rows, source, observed, page.url)
-    elif mode == "arxiv_index":
-        rows = await page.locator("dl#articles dt, dl dt").evaluate_all(ARXIV_ROWS_JS)
-        items = arxiv_items_from_rows(rows, source, observed)
-    elif mode == "twz_index":
-        rows = await page.locator("h3").evaluate_all(TWZ_ROWS_JS)
-        items = twz_items_from_rows(rows, source, observed)
-    else:
+    if mode not in DOM_INDEX_ROWS:
         raise ValueError(f"Unknown async source adapter {mode!r}")
-    return _clear_misattributed_descriptions(items)
+    selector, script = DOM_INDEX_ROWS[mode]
+    rows = await page.locator(selector).evaluate_all(script)
+    items = dom_index_items(mode, rows, source, observed, page.url)
+    return items if mode == "twz_index" else _clear_misattributed_descriptions(items)
+
 
 
 async def collect_browser_page(
@@ -168,13 +159,11 @@ async def collect_browser_page(
             body[:30000],
             iframe_detected=iframe_count > 0,
         )
-        if result.challenge["rate_limited"]:
-            result.status = SourceStatus.RATE_LIMITED
-        elif result.challenge["required"]:
-            result.status = SourceStatus.VERIFICATION_REQUIRED
-        elif result.http_status is not None and result.http_status >= 400:
-            result.status = SourceStatus.FAILED
-        else:
+        result.status = classify_source_status(
+            result.http_status, result.challenge["required"], False,
+            result.challenge["rate_limited"],
+        )
+        if result.status == SourceStatus.NO_ITEMS:
             if seed_response_future is not None:
                 response_task = await asyncio.wait_for(seed_response_future, timeout=30)
                 result.http_status, ok, payload = await response_task

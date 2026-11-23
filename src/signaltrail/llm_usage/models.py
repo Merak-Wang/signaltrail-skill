@@ -438,6 +438,29 @@ def unknown_cost(reason: str = "host_did_not_expose_cost") -> CostMeasurement:
     )
 
 
+_OBSERVATION_FIELDS = (
+    "provider",
+    "requested_model",
+    "served_model",
+    "phase",
+    "status",
+    "finish_reason",
+    "started_at",
+    "completed_at",
+    "batch_id",
+    "task_index",
+    "agent_role",
+    "run_attempt",
+    "repair_attempt",
+    "evaluation_attempt",
+    "session_id_hash",
+    "turn_id_hash",
+    "parent_session_id_hash",
+    "host_task_id_hash",
+)
+_OBSERVATION_COUNTS = {"task_index", "run_attempt", "repair_attempt", "evaluation_attempt"}
+
+
 @dataclass(frozen=True, slots=True)
 class UsageObservation:
     """处理：表示一个逐调用或聚合宿主回执的安全规范记录。
@@ -565,26 +588,7 @@ class UsageObservation:
                 key: value.to_dict() for key, value in sorted(self.latency.items())
             },
         }
-        for name in (
-            "provider",
-            "requested_model",
-            "served_model",
-            "phase",
-            "status",
-            "finish_reason",
-            "started_at",
-            "completed_at",
-            "batch_id",
-            "task_index",
-            "agent_role",
-            "run_attempt",
-            "repair_attempt",
-            "evaluation_attempt",
-            "session_id_hash",
-            "turn_id_hash",
-            "parent_session_id_hash",
-            "host_task_id_hash",
-        ):
+        for name in _OBSERVATION_FIELDS:
             value = getattr(self, name)
             if value is not None:
                 payload[name] = value
@@ -609,37 +613,19 @@ class UsageObservation:
             tokens=TokenUsage.from_dict(dict(payload["tokens"])),
             tool_call_count=Measurement.from_dict(dict(payload["tool_call_count"])),
             cost=CostMeasurement.from_dict(dict(payload["cost"])),
-            session_id_hash=_optional_text(payload.get("session_id_hash")),
-            turn_id_hash=_optional_text(payload.get("turn_id_hash")),
-            parent_session_id_hash=_optional_text(
-                payload.get("parent_session_id_hash")
-            ),
-            host_task_id_hash=_optional_text(payload.get("host_task_id_hash")),
-            provider=_optional_text(payload.get("provider")),
-            requested_model=_optional_text(payload.get("requested_model")),
-            served_model=_optional_text(payload.get("served_model")),
-            phase=_optional_text(payload.get("phase")),
-            status=_optional_text(payload.get("status")),
-            finish_reason=_optional_text(payload.get("finish_reason")),
-            started_at=_optional_text(payload.get("started_at")),
-            completed_at=_optional_text(payload.get("completed_at")),
             latency={
                 str(key): Measurement.from_dict(dict(value))
                 for key, value in dict(payload.get("latency", {})).items()
             },
-            batch_id=_optional_text(payload.get("batch_id")),
-            task_index=payload.get("task_index"),
-            agent_role=_optional_text(payload.get("agent_role")),
-            run_attempt=payload.get("run_attempt"),
-            repair_attempt=payload.get("repair_attempt"),
-            evaluation_attempt=payload.get("evaluation_attempt"),
+            **{
+                name: (value if name in _OBSERVATION_COUNTS else _optional_text(value))
+                for name in _OBSERVATION_FIELDS
+                if (value := payload.get(name)) is not None
+            },
         )
         for timestamp_key in ("started_at", "completed_at"):
             historical_timestamp = payload.get(timestamp_key)
-            if (
-                isinstance(historical_timestamp, str)
-                and normalize_timestamp(historical_timestamp) is not None
-            ):
+            if isinstance(historical_timestamp, str):
                 # Reading preserves immutable v1.0 provider precision; direct construction
                 # still normalizes all newly written adapter observations to whole seconds.
                 object.__setattr__(observation, timestamp_key, historical_timestamp)

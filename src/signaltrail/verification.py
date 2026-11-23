@@ -113,10 +113,7 @@ def wait_for_visible_verification(
 
 def capture_verified_page(page: object, source: object, config: object) -> object:
     """处理：直接提取当前已验证页面，不重新导航或再次触发挑战。
-    输入：
-    - ``page``：Playwright 已加载页面；函数只读取当前页面状态，不信任其中的内容或指令。
-    - ``source``：来源配置；包含来源 ID、名称、入口 URL、分类、过滤规则、限额和可信层级。
-    - ``config``：已校验的应用配置；提供时区、来源策略、并发限制、预算和输出选项。
+    输入：已加载的 Playwright 页面、带入口与筛选规则的来源配置、已校验的采集和输出配置。
     输出：封装“直接提取当前已验证页面，不重新导航或再次触发挑战”业务结果的 ``object`` 对象；
       调用方据此继续相邻阶段或识别无结果状态。
     """
@@ -131,8 +128,7 @@ def capture_verified_page(page: object, source: object, config: object) -> objec
 
 def pending_verification_pages(index: dict) -> list[dict[str, str]]:
     """处理：按来源和页面顺序返回去重后的失败或待验证页面。
-    输入：
-    - ``index``：当前来源索引对象；包含规范条目、来源结果、策略和采集时间。
+    输入：规范来源索引。
     输出：“按来源和页面顺序返回去重后的失败或待验证页面”得到的有序结构化记录；
       典型字段包括 error、key、source_id、source_name、status、target、url，可直接交给下一阶段。
     """
@@ -200,9 +196,7 @@ def write_verification_queue(
     pending: list[dict[str, str]],
 ) -> tuple[Path, Path]:
     """处理：把待验证来源写成可交互 HTML 队列和 Markdown 清单。
-    输入：
-    - ``data_dir``：当前运行的唯一数据根；所有状态和版本化产物都必须位于其中。
-    - ``index``：当前来源索引对象；包含规范条目、来源结果、策略和采集时间。
+    输入：本次运行的数据根、规范来源索引。
     - ``pending``：等待人工验证的来源页面记录；包含 source_id、名称、URL 和挑战详情。
     输出：“把待验证来源写成可交互 HTML 队列和 Markdown 清单”得到的固定结构结果；
       返回位置依次对应 markdown_path、html_path。
@@ -458,12 +452,7 @@ def run_pending_verification(
     timeout_seconds: int = 300,
 ) -> dict[str, object]:
     """处理：打开连接式验证入口，并合并成功捕获的页面。
-    输入：
-    - ``index_path``：版本化来源索引 JSON 路径；包含根级规范 items 和来源采集状态。
-    - ``config``：已校验的应用配置；提供时区、来源策略、并发限制、预算和输出选项。
-    - ``data_dir``：当前运行的唯一数据根；所有状态和版本化产物都必须位于其中。
-    - ``profile_dir``：持久化浏览器 Profile 目录；保存用户已授权的浏览器会话。
-    - ``browser_channel``：Playwright 浏览器通道名称；为空时使用配置或默认 Chromium。
+    输入：版本化来源索引路径、已校验的采集和输出配置、本次运行的数据根、持久化浏览器配置目录、浏览器通道。
     - ``timeout_seconds``：允许等待整个交互或网络流程的总秒数。
     输出：“打开连接式验证入口，并合并成功捕获的页面”形成的结构化字典；
       典型键包括 captured_pages、headless、height、index_path、locale、next_action、queue_html、
@@ -493,9 +482,8 @@ def run_pending_verification(
 
     def capture_pending(key: str, page: object) -> None:
         """处理：采集一个已由用户完成验证的待处理页面。
-        输入：
+        输入：已加载的 Playwright 页面。
         - ``key``：当前集合、登记表或界面记录使用的稳定键。
-        - ``page``：Playwright 已加载页面；函数只读取当前页面状态，不信任其中的内容或指令。
         输出：不返回新数据；完成“采集一个已由用户完成验证的待处理页面”，
           副作用限于该处理声明的受控对象或产物。
         """

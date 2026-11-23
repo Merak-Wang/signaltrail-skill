@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+from collections.abc import Iterator
 from copy import deepcopy
 from datetime import datetime
 from pathlib import Path
@@ -8,13 +9,30 @@ from typing import Any
 
 from .config import MediaConfig, OutputConfig
 from .local_output import write_local_outputs
-from .localization import is_chinese_output, localized, translated_title
+from .localization import (
+    ANALYSIS_SECTION_LABELS,
+    ANALYSIS_SECTION_LABELS_EN,
+    EVALUATION_LABELS,
+    EVALUATION_LABELS_EN,
+    GROUP_LABELS,
+    GROUP_LABELS_EN,
+    STATUS_LABELS,
+    STATUS_LABELS_EN,
+    is_chinese_output,
+    localized,
+    translated_title,
+)
 from .media import materialize_report_images
 from .reporting import (
+    BRIEF_REPORT_SCHEMAS,
     compile_report_data,
+    group_items_by_source,
     normalize_report_data,
+    optional_analysis_prose,
+    ordered_sections,
     reference_time_label,
     report_content_hash,
+    report_followups,
     split_narrative_paragraphs,
     validate_evaluation_data,
     validate_report_data,
@@ -26,27 +44,10 @@ from .semantics import (
 )
 from .state import update_continuity_state
 from .storage import exclusive_lock, next_revision, write_immutable_json, write_text_atomic
-from .taxonomy import SECTION_GROUPS_V13
 from .utils import read_json, write_json
 
 EDITION_LABELS = {"daily": "日报", "morning": "早报", "evening": "晚报"}
 EDITION_LABELS_EN = {"daily": "Daily Brief", "morning": "Morning Brief", "evening": "Evening Brief"}
-STATUS_LABELS = {
-    "NEW": "新增",
-    "UPD": "更新",
-    "CONF": "确认",
-    "REV": "修正",
-    "WATCH": "观察",
-    "CLOSED": "关闭",
-}
-STATUS_LABELS_EN = {
-    "NEW": "New",
-    "UPD": "Updated",
-    "CONF": "Confirmed",
-    "REV": "Revised",
-    "WATCH": "Watch",
-    "CLOSED": "Closed",
-}
 DOMAIN_LABELS = {
     "geopolitics": "地缘政治",
     "markets": "市场与经济",
@@ -88,8 +89,6 @@ ACCESS_LABELS_EN = {
     "verification_required": "Manual verification required",
 }
 
-GROUP_LABELS = {"information": "资讯", "technology": "技术"}
-GROUP_LABELS_EN = {"information": "News", "technology": "Technology"}
 ASSESSMENT_LABELS = {
     "trend": "趋势判断",
     "risk": "风险分析",
@@ -114,89 +113,12 @@ PERSPECTIVE_LABELS_EN = {
     "china_standpoint": "Chinese Perspective",
     "western_standpoint": "Western Perspective",
 }
-ANALYSIS_SECTION_LABELS = {
-    "geopolitics": "从地缘政治专家的角度",
-    "ai_technology": "从 AI 研究/开发工程师的角度",
-    "markets": "从股票分析师的角度",
-}
-ANALYSIS_SECTION_LABELS_EN = {
-    "geopolitics": "Geopolitical Perspective",
-    "ai_technology": "AI Research and Engineering Perspective",
-    "markets": "Equity-Market Perspective",
-}
-BRIEF_REPORT_SCHEMAS = {"1.5", "2.0"}
-EVALUATION_LABELS = {
-    "coverage": "信息覆盖度",
-    "importance_ordering": "重要性排序",
-    "factual_reliability": "事实可靠性",
-    "summary_accuracy": "摘要准确性",
-    "analysis_traceability": "分析可追溯性",
-    "historical_continuity": "历史连续性",
-    "readability": "可读性",
-    "timeliness": "时效性",
-    "compliance_boundaries": "合规与边界",
-}
-EVALUATION_LABELS_EN = {
-    "coverage": "Coverage",
-    "importance_ordering": "Importance Ordering",
-    "factual_reliability": "Factual Reliability",
-    "summary_accuracy": "Summary Accuracy",
-    "analysis_traceability": "Analysis Traceability",
-    "historical_continuity": "Historical Continuity",
-    "readability": "Readability",
-    "timeliness": "Timeliness",
-    "compliance_boundaries": "Compliance and Boundaries",
-}
-
-
-def ordered_sections(report: dict[str, Any], module: str) -> list[dict[str, Any]]:
-    """处理：按报告契约顺序返回现有栏目。
-    输入：
-    - ``report``：当前报告结构；包含栏目、简报或事件、来源引用及质量元数据。
-    - ``module``：报告顶层领域 ID，例如 information 或 technology。
-    输出：“按报告契约顺序返回现有栏目”得到的有序结构化记录；
-      每项承载处理说明所定义的身份、证据或状态字段，可直接交给下一阶段。
-    """
-    sections = [section for section in report["sections"] if section.get("module") == module]
-    if report.get("schema_version") not in {"1.3", "1.4", "1.5", "2.0"}:
-        return sections
-    by_id = {section["id"]: section for section in sections}
-    return [by_id[section_id] for section_id in SECTION_GROUPS_V13[module] if section_id in by_id]
-
-
-def group_items_by_source(
-    section: dict[str, Any],
-    language: object = "zh-CN",
-) -> list[tuple[dict[str, str], list[dict]]]:
-    """处理：按来源 ID 组织报告条目，供 Markdown 分区渲染。
-    输入：
-    - ``section``：报告中的栏目对象；包含栏目 ID、标题、简报或事件列表。
-    - ``language``：规范语言标识；用于本地化选择或语言一致性判断。
-    输出：按“按来源 ID 组织报告条目，
-      供 Markdown 分区渲染”规则得到的 ``tuple[dict[str, str`` 列表；
-      列表顺序表达配置优先级、业务排名或稳定扫描顺序。
-    """
-    groups: dict[str, tuple[dict[str, str], list[dict]]] = {}
-    values = section.get("briefs") if "briefs" in section else section.get("items", [])
-    for item in values or []:
-        source = item.get("primary_source") or {
-            "id": "unknown",
-            "name": localized(language, "未知来源", "Unknown source"),
-            "url": (item.get("source_refs") or [item.get("source_ref", {})])[0]["url"],
-        }
-        key = str(source["id"])
-        groups.setdefault(key, (source, []))[1].append(item)
-    ordered = list(groups.values())
-    # 编译器已经按 context/index 的确定性选择顺序排列；Markdown 与 Notion 只投影，
-    # 不得再用 importance 改写来源 Top 或 published_at 顺序。
-    return ordered
 
 
 def _image_markdown_url(image: dict[str, Any], media_path_prefix: str | None) -> str:
     """处理：把本地图片路径或安全公网地址转换为 Markdown URL。
-    输入：
+    输入：本地媒体相对路径前缀。
     - ``image``：报告或索引中的图片元数据；包含 URL、本地路径、哈希、尺寸和说明。
-    - ``media_path_prefix``：HTML 或 Markdown 相对引用本地媒体文件时添加的路径前缀。
     输出：经过选择、规范化或安全处理的 URL 字符串，供后续访问或渲染使用。
     """
     local_path = str(image.get("local_path") or "").replace("\\", "/")
@@ -218,11 +140,8 @@ def _brief_markdown(
     language: object = "zh-CN",
 ) -> list[str]:
     """处理：把单条简报渲染为含来源和图片的 Markdown。
-    输入：
-    - ``item``：单个规范条目对象；通常包含 item_id、来源、标题、URL、时间和元数据。
+    输入：带稳定 ID 的索引条目、本地媒体相对路径前缀、输出语言。
     - ``rank``：简报或来源在当前栏目中的一基排序号。
-    - ``media_path_prefix``：HTML 或 Markdown 相对引用本地媒体文件时添加的路径前缀。
-    - ``language``：规范语言标识；用于本地化选择或语言一致性判断。
     输出：“把单条简报渲染为含来源和图片的 Markdown”得到的字符串列表；
       顺序保持确定并可供下一步骤逐项处理。
     """
@@ -231,13 +150,23 @@ def _brief_markdown(
     status_labels = STATUS_LABELS if is_chinese_output(language) else STATUS_LABELS_EN
     status = status_labels.get(item["status"], item["status"])
     source_rank = f" `{item['source_rank_label']}`" if item.get("source_rank_label") else ""
-    lines: list[str] = []
+    localized_title = translated_title(item, language)
+    lines = [f"**{rank}. [{localized_title or item['title']}]({ref['url']})** "
+             f"`[{status}]`{source_rank}"]
+    if localized_title:
+        lines.extend(["", f"**{localized(language, '原题', 'Original headline')}{colon}** "
+                          f"{item['title']}"])
+    if time_info := reference_time_label(ref, language):
+        label, value = time_info
+        lines.extend(["", f"**{label}{colon}** {value}"])
+    lines.extend(["", f"**TL;DR{colon}** {item['tldr']}"])
     image = item.get("image")
     if isinstance(image, dict):
         image_url = _image_markdown_url(image, media_path_prefix)
         if image_url:
             lines.extend(
                 [
+                    "",
                     f"![{image.get('caption', '')}]({image_url})",
                     "",
                     f"*{localized(language, '图片来源', 'Image source')}{colon} "
@@ -245,21 +174,6 @@ def _brief_markdown(
                     "",
                 ]
             )
-    lines.append(
-        f"**{rank}. [{item['title']}]({ref['url']})** `[{status}]`{source_rank}"
-    )
-    if localized_title := translated_title(item, language):
-        lines.extend(
-            [
-                "",
-                f"**{localized(language, '中文标题', 'English title')}{colon}** "
-                f"{localized_title}",
-            ]
-        )
-    if time_info := reference_time_label(ref, language):
-        label, value = time_info
-        lines.extend(["", f"**{label}{colon}** {value}"])
-    lines.extend(["", f"**TL;DR{colon}** {item['tldr']}"])
     lines.append("")
     return lines
 
@@ -270,10 +184,8 @@ def _event_markdown(
     language: object = "zh-CN",
 ) -> list[str]:
     """处理：把单个事件渲染为兼容旧 schema 的 Markdown。
-    输入：
-    - ``item``：单个规范条目对象；通常包含 item_id、来源、标题、URL、时间和元数据。
+    输入：带稳定 ID 的索引条目、输出语言。
     - ``title``：来源提供的标题文本；会清理空白，并用于过滤、身份或展示。
-    - ``language``：规范语言标识；用于本地化选择或语言一致性判断。
     输出：“把单个事件渲染为兼容旧 schema 的 Markdown”得到的字符串列表；
       顺序保持确定并可供下一步骤逐项处理。
     """
@@ -335,14 +247,29 @@ def _event_markdown(
     return lines
 
 
+def evaluation_findings(
+    evaluation: dict[str, Any], language: object,
+) -> Iterator[tuple[str, list[str]]]:
+    """处理：按固定顺序取出评估发现及其栏目名。
+    输入：已接受的质量评估和报告语言。
+    输出：供发布视图逐组渲染的标签与条目。
+    """
+    for key, chinese, english in (
+        ("main_defects", "主要缺陷", "Main Defects"),
+        ("insufficient_evidence", "证据不足项", "Insufficient Evidence"),
+        ("improvements", "改进建议", "Recommended Improvements"),
+    ):
+        yield localized(language, chinese, english), (
+            evaluation.get(key) or [localized(language, "无", "None")]
+        )
+
+
 def render_report_markdown(
     report: dict[str, Any],
     media_path_prefix: str | None = None,
 ) -> str:
     """处理：把已验证报告栏目、来源引用和本地图片投影为可追踪的 Markdown。
-    输入：
-    - ``report``：当前报告结构；包含栏目、简报或事件、来源引用及质量元数据。
-    - ``media_path_prefix``：HTML 或 Markdown 相对引用本地媒体文件时添加的路径前缀。
+    输入：含栏目和来源引用的报告、本地媒体相对路径前缀。
     输出：“把已验证报告栏目、来源引用和本地图片投影为可追踪的 Markdown”得到的规范字符串，
       供调用方存储、比较或展示。
     """
@@ -371,16 +298,6 @@ def render_report_markdown(
         "不同立场与利益",
         "Stakeholder positions and interests",
     )
-    counterevidence_label = localized(
-        language,
-        "反证与不确定性",
-        "Counterevidence and uncertainty",
-    )
-    changes_heading = localized(
-        language,
-        "日间新增、确认与修正",
-        "New, Confirmed, and Revised Since Morning",
-    )
     quality_heading = localized(
         language,
         "质量评估与用户反馈",
@@ -400,37 +317,26 @@ def render_report_markdown(
     ]
     lines.extend(f"- {item}" for item in report["executive_summary"])
 
+    schema = report.get("schema_version")
+    brief_schema = schema in BRIEF_REPORT_SCHEMAS
+    grouped = brief_schema or schema == "1.4"
     for module in ("information", "technology"):
         lines.extend(["", f"## {group_labels[module]}", ""])
         for section in ordered_sections(report, module):
             lines.extend([f"### {section['title']}", ""])
             if section.get("coverage_note"):
                 lines.extend([section["coverage_note"], ""])
-            if report.get("schema_version") in BRIEF_REPORT_SCHEMAS:
+            if grouped:
                 for source, items in group_items_by_source(section, language):
                     lines.extend([f"#### [{source['name']}]({source['url']})", ""])
                     for rank, item in enumerate(items, start=1):
-                        lines.extend(
-                            _brief_markdown(
-                                item,
-                                rank,
-                                media_path_prefix,
-                                language,
-                            )
-                        )
-            elif report.get("schema_version") == "1.4":
-                for source, items in group_items_by_source(section, language):
-                    lines.extend([f"#### [{source['name']}]({source['url']})", ""])
-                    for rank, item in enumerate(items, start=1):
-                        link = item["source_refs"][0]["url"]
-                        status = status_labels.get(item["status"], item["status"])
-                        lines.extend(
-                            _event_markdown(
-                                item,
-                                f"**{rank}. [{item['title']}]({link})** `[{status}]`",
-                                language,
-                            )
-                        )
+                        if brief_schema:
+                            lines.extend(_brief_markdown(item, rank, media_path_prefix, language))
+                        else:
+                            link = item["source_refs"][0]["url"]
+                            status = status_labels.get(item["status"], item["status"])
+                            heading = f"**{rank}. [{item['title']}]({link})** `[{status}]`"
+                            lines.extend(_event_markdown(item, heading, language))
             else:
                 for item in sorted(
                     section["items"],
@@ -522,22 +428,13 @@ def render_report_markdown(
                 ]
             )
             lines.extend(f"- {item}" for item in analysis.get("facts", []))
-            if analysis.get("historical_context"):
-                lines.extend(
-                    [
-                        f"**{localized(language, '历史脉络', 'Historical context')}{colon}** "
-                        f"{analysis['historical_context']}",
-                        "",
-                    ]
-                )
-            if analysis.get("dialectical_analysis"):
-                lines.extend(
-                    [
-                        f"**{localized(language, '辩证分析', 'Dialectical analysis')}{colon}** "
-                        f"{analysis['dialectical_analysis']}",
-                        "",
-                    ]
-                )
+            for key, chinese_label, english_label in (
+                ("historical_context", "历史脉络", "Historical context"),
+                ("dialectical_analysis", "辩证分析", "Dialectical analysis"),
+            ):
+                if value := analysis.get(key):
+                    label = localized(language, chinese_label, english_label)
+                    lines.extend([f"**{label}{colon}** {value}", ""])
             if analysis.get("stakeholder_positions"):
                 lines.extend(
                     [
@@ -559,79 +456,27 @@ def render_report_markdown(
                     "",
                 ]
             )
-            lines.extend(
-                [
-                    f"**{counterevidence_label}{colon}**",
-                    "",
-                ]
-            )
-            lines.extend(f"- {item}" for item in analysis["counter_evidence"])
-            lines.extend(
-                [
-                    "",
-                    f"**{localized(language, '可能情景', 'Scenarios')}{colon}**",
-                    "",
-                ]
-            )
-            lines.extend(f"- {item}" for item in analysis.get("scenarios", []))
-            lines.extend(
-                [
-                    "",
-                    f"**{localized(language, '影响与启示', 'Implications')}{colon}**",
-                    "",
-                ]
-            )
-            lines.extend(f"- {item}" for item in analysis["implications"])
-            lines.extend(
-                [
-                    "",
-                    f"**{localized(language, '建议行动', 'Recommended actions')}{colon}**",
-                    "",
-                ]
-            )
-            lines.extend(f"- {item}" for item in analysis.get("actions", []))
-            lines.extend(
-                [
-                    "",
-                    f"**{localized(language, '后续观察信号', 'Watch signals')}{colon}**",
-                    "",
-                ]
-            )
-            lines.extend(f"- {item}" for item in analysis["watch_signals"])
-            lines.extend(
-                [
-                    "",
-                    f"**{localized(language, '观点失效信号', 'Invalidation signals')}{colon}**",
-                    "",
-                ]
-            )
-            lines.extend(f"- {item}" for item in analysis.get("invalidation_signals", []))
-            for title, key in (
-                (localized(language, "因果传导链", "Causal chain"), "causal_chain"),
-                (localized(language, "关键假设", "Key assumptions"), "assumptions"),
-                (localized(language, "证据缺口", "Evidence gaps"), "evidence_gaps"),
+            for key, chinese_label, english_label, optional in (
+                ("counter_evidence", "反证与不确定性", "Counterevidence and uncertainty", False),
+                ("scenarios", "可能情景", "Scenarios", False),
+                ("implications", "影响与启示", "Implications", False),
+                ("actions", "建议行动", "Recommended actions", False),
+                ("watch_signals", "后续观察信号", "Watch signals", False),
+                ("invalidation_signals", "观点失效信号", "Invalidation signals", False),
+                ("causal_chain", "因果传导链", "Causal chain", True),
+                ("assumptions", "关键假设", "Key assumptions", True),
+                ("evidence_gaps", "证据缺口", "Evidence gaps", True),
             ):
                 values = analysis.get(key, [])
-                if values:
-                    lines.extend(["", f"**{title}{colon}**", ""])
-                    lines.extend(f"- {item}" for item in values)
-            for title, key in (
-                (localized(language, "时间跨度", "Time horizon"), "time_horizon"),
-                (
-                    localized(language, "置信度依据", "Confidence rationale"),
-                    "confidence_rationale",
-                ),
-                (
-                    localized(language, "相对上一版", "Change from prior"),
-                    "change_from_prior",
-                ),
-                (
-                    localized(language, "决策相关性", "Decision relevance"),
-                    "decision_relevance",
-                ),
-            ):
-                if analysis.get(key):
-                    lines.extend(["", f"**{title}{colon}** {analysis[key]}"])
+                if optional and not values:
+                    continue
+                if key != "counter_evidence":
+                    lines.append("")
+                label = localized(language, chinese_label, english_label)
+                lines.extend([f"**{label}{colon}**", ""])
+                lines.extend(f"- {value}" for value in values)
+            for label, value in optional_analysis_prose(analysis, language):
+                lines.extend(["", f"**{label}{colon}** {value}"])
             lines.extend(["", "</details>"])
     else:
         lines.append(
@@ -699,33 +544,17 @@ def render_report_markdown(
             ]
         )
 
-    if report["changes"]:
-        lines.extend(
-            [
-                "",
-                f"### {changes_heading}",
-                "",
-            ]
-        )
-        lines.extend(f"- {item}" for item in report["changes"])
-
-    if report.get("tomorrow_watch_items"):
-        lines.extend(
-            [
-                "",
-                f"### {localized(language, '次日观察项', 'Next-Day Watch List')}",
-                "",
-            ]
-        )
-        lines.extend(f"- {item}" for item in report["tomorrow_watch_items"])
+    for label, values in report_followups(report, language):
+        lines.extend(["", f"### {label}", ""])
+        lines.extend(f"- {value}" for value in values)
 
     evaluation = report.get("quality_evaluation")
+    show_feedback = evaluation or report.get("schema_version") in BRIEF_REPORT_SCHEMAS
+    if show_feedback:
+        lines.extend(["", f"## {quality_heading}", ""])
     if evaluation:
         lines.extend(
             [
-                "",
-                f"## {quality_heading}",
-                "",
                 f"**{localized(language, '独立评估总分', 'Independent evaluation score')}"
                 f"{colon}{evaluation['total_score']}/45**",
                 "",
@@ -742,48 +571,19 @@ def render_report_markdown(
             f"{item['finding']} |"
             for item in evaluation["dimensions"]
         )
-        for title, key in (
-            (localized(language, "主要缺陷", "Main Defects"), "main_defects"),
-            (
-                localized(language, "证据不足项", "Insufficient Evidence"),
-                "insufficient_evidence",
-            ),
-            (
-                localized(language, "改进建议", "Recommended Improvements"),
-                "improvements",
-            ),
-        ):
+        for title, values in evaluation_findings(evaluation, language):
             lines.extend(["", f"### {title}", ""])
-            values = evaluation.get(key, [])
-            lines.extend(
-                f"- {value}"
-                for value in values
-                or [localized(language, "无", "None")]
-            )
+            lines.extend(f"- {value}" for value in values)
+    elif show_feedback:
+        lines.append(localized(
+            language,
+            "尚未评分。质量评分默认关闭，仅在用户明确要求时补充。",
+            "Not scored. Quality scoring is off by default and runs only "
+            "when explicitly requested.",
+        ))
+    if show_feedback:
         lines.extend(
             [
-                "",
-                f"### {localized(language, '用户反馈', 'Reader Feedback')}",
-                "",
-                f"- {localized(language, '相关性', 'Relevance')}{colon}__/5",
-                f"- {localized(language, '准确性', 'Accuracy')}{colon}__/5",
-                f"- {localized(language, '分析价值', 'Analysis value')}{colon}__/5",
-                f"- {localized(language, '整体满意度', 'Overall satisfaction')}{colon}__/5",
-                f"- {localized(language, '补充意见', 'Additional comments')}{colon}",
-            ]
-        )
-    elif report.get("schema_version") in BRIEF_REPORT_SCHEMAS:
-        lines.extend(
-            [
-                "",
-                f"## {quality_heading}",
-                "",
-                localized(
-                    language,
-                    "尚未评分。质量评分默认关闭，仅在用户明确要求时补充。",
-                    "Not scored. Quality scoring is off by default and runs only "
-                    "when explicitly requested.",
-                ),
                 "",
                 f"### {localized(language, '用户反馈', 'Reader Feedback')}",
                 "",
@@ -809,10 +609,9 @@ def save_report(
     refresh_images: bool = False,
 ) -> dict[str, Any]:
     """处理：编译模型报告草稿、绑定权威索引、执行校验并创建不可变报告修订。
-    输入：
+    输入：本次运行的数据根。
     - ``input_path``：待编译的模型报告草稿 JSON 路径；其日期、版本和条目必须与索引一致。
     - ``index_path``：草稿所引用的不可变来源索引路径；用于恢复权威身份并验证证据。
-    - ``data_dir``：当前运行的唯一数据根；所有状态和版本化产物都必须位于其中。
     - ``output_config``：本地 HTML、PDF、桌面交付和打开行为配置。
     - ``media_config``：图片下载、格式、安全、缓存和报告预算配置。
     - ``coverage_targets``：按来源 ID 指定的最小报告覆盖数；由运行情境拥有。
@@ -1150,10 +949,8 @@ def save_evaluation(
     output_config: OutputConfig | None = None,
 ) -> dict[str, Any]:
     """处理：校验独立评估与报告身份和内容哈希一致后，创建不可变评估修订。
-    输入：
+    输入：版本化报告路径、本次运行的数据根。
     - ``input_path``：上游阶段生成的输入文件路径；读取前会执行存在性或数据根校验。
-    - ``report_path``：版本化报告 JSON 路径；本地报告是 HTML、PDF 和 Notion 的事实源。
-    - ``data_dir``：当前运行的唯一数据根；所有状态和版本化产物都必须位于其中。
     - ``output_config``：本地 HTML、PDF、桌面交付和打开行为配置。
     输出：“校验独立评估与报告身份和内容哈希一致后，创建不可变评估修订”形成的结构化字典；
       典型键包括 content_hash、evaluation_id、evaluation_path、local_outputs、semantic_cache_pat

@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from datetime import UTC, datetime, timedelta
+from functools import partial
 from typing import Any
 from urllib.parse import urljoin, urlsplit
 
@@ -69,6 +70,13 @@ BROWSER_ROWS_JS = """anchors => anchors.map(a => ({
                 a.innerText || ''
             ).trim(),
             href: a.href || '',
+            table_date: a.closest('td')?.previousElementSibling?.textContent || '',
+            reuters_syndication: (() => {
+                const paragraphs = Array.from(a.querySelectorAll('p'));
+                return a.querySelector('img[alt="Reuters"]') &&
+                    paragraphs.some(p => p.textContent.trim() === 'Reuters')
+                    ? paragraphs.at(-1).textContent.trim() : '';
+            })(),
             image_sources: (() => {
                 const card = a.closest('article, li, [class*="card"], [class*="story"]');
                 const root = card || a;
@@ -142,10 +150,8 @@ TWZ_ROWS_JS = """headings => headings.map(heading => {
 
 def is_eligible(source: SourceConfig, title: str, url: str) -> bool:
     """处理：按来源的域名、文章路径和排除规则判断候选是否可采集。
-    输入：
-    - ``source``：来源配置；包含来源 ID、名称、入口 URL、分类、过滤规则、限额和可信层级。
+    输入：带入口与筛选规则的来源配置、待处理的 URL。
     - ``title``：来源提供的标题文本；会清理空白，并用于过滤、身份或展示。
-    - ``url``：调用方提供的 URL；当前函数按处理说明进行规范化、过滤或访问。
     输出：布尔判断；True 表示满足处理说明中的条件，False 表示不满足且不产生该结果。
     """
     title = clean_title(title)
@@ -179,11 +185,8 @@ def is_eligible(source: SourceConfig, title: str, url: str) -> bool:
 
 def _article(source: SourceConfig, title: str, url: str, discovered_at: str) -> ArticleItem:
     """处理：根据来源、标题和 URL 构建具有稳定身份的规范文章条目。
-    输入：
-    - ``source``：来源配置；包含来源 ID、名称、入口 URL、分类、过滤规则、限额和可信层级。
+    输入：带入口与筛选规则的来源配置、待处理的 URL、本轮发现时间。
     - ``title``：来源提供的标题文本；会清理空白，并用于过滤、身份或展示。
-    - ``url``：调用方提供的 URL；当前函数按处理说明进行规范化、过滤或访问。
-    - ``discovered_at``：本轮发现时间的 ISO 字符串；在缺少发布时间时作为可追溯时间。
     输出：可进入规范来源索引的文章条目；包含稳定 ID、来源身份、规范 URL、时间和可用元数据。
     """
     canonical = canonicalize_url(url)
@@ -208,10 +211,7 @@ def _article(source: SourceConfig, title: str, url: str, discovered_at: str) -> 
 
 def _published_at(value: str, url: str, discovered_at: str | None = None) -> str | None:
     """处理：从文本、URL 或相对时间中解析文章发布日期。
-    输入：
-    - ``value``：待解析或规范化的单个输入值；非法值按函数契约返回空值或报错。
-    - ``url``：调用方提供的 URL；当前函数按处理说明进行规范化、过滤或访问。
-    - ``discovered_at``：本轮发现时间的 ISO 字符串；在缺少发布时间时作为可追溯时间。
+    输入：待解析的值、待处理的 URL、本轮发现时间。
     输出：封装“从文本、URL 或相对时间中解析文章发布日期”业务结果的 ``str | None`` 对象；
       调用方据此继续相邻阶段或识别无结果状态。
     """
@@ -276,22 +276,37 @@ def _published_at(value: str, url: str, discovered_at: str | None = None) -> str
     return None
 
 
-def collect_browser_index(
-    page: Page,
-    source: SourceConfig,
-    discovered_at: str,
-) -> list[ArticleItem]:
-    """处理：从通用来源页面读取链接卡片，并按来源过滤规则转换为规范文章条目。
-    输入：
-    - ``page``：Playwright 已加载页面；函数只读取当前页面状态，不信任其中的内容或指令。
-    - ``source``：来源配置；包含来源 ID、名称、入口 URL、分类、过滤规则、限额和可信层级。
-    - ``discovered_at``：本轮发现时间的 ISO 字符串；在缺少发布时间时作为可追溯时间。
-    输出：可写入规范来源索引的文章条目列表；
-      每项包含稳定 ID、来源身份、规范 URL、时间和可用元数据，
-      并保持当前处理定义的筛选与排序语义。
+def _distinct_index_articles(
+    rows: list[dict[str, Any]], source: SourceConfig, discovered_at: str,
+    *, mode: str, base_url: str = "",
+) -> Iterator[tuple[dict[str, Any], ArticleItem, bool]]:
+    """处理：按网页顺序筛掉无效和重复链接，执行来源上限。
+    输入：浏览器列表行、专用解析模式、来源策略和发现时间。
+    输出：原始列表行、文章条目和转载标记，供日期与摘要解析。
     """
-    rows = page.locator("a[href]").evaluate_all(BROWSER_ROWS_JS)
-    return browser_items_from_rows(rows, source, discovered_at, page.url)
+    seen: set[str] = set()
+    for row in rows:
+        title = clean_title(row.get("title", ""))
+        url = row.get("href", "")
+        reuters_reprint = False
+        if mode == "browser_index":
+            url = urljoin(base_url, url)
+            reuters_reprint = source.id == "reuters" and urlsplit(url).hostname == "www.aol.com"
+            if reuters_reprint:
+                title = clean_title(row.get("reuters_syndication", ""))
+        elif mode == "arxiv_index":
+            title = re.sub(r"^\s*Title:\s*", "", title, flags=re.I)
+            url = urljoin(source.url, url)
+        if not is_eligible(source, title, url):
+            continue
+        article = _article(source, title, url, discovered_at)
+        if article.canonical_url in seen:
+            continue
+        seen.add(article.canonical_url)
+        yield row, article, reuters_reprint
+        limit = reuters_reprint or mode != "browser_index" or source.item_order != "published_at"
+        if limit and not source.collect_all_items and len(seen) >= source.max_items:
+            break
 
 
 def browser_items_from_rows(
@@ -301,23 +316,21 @@ def browser_items_from_rows(
     base_url: str,
 ) -> list[ArticleItem]:
     """处理：规范化不可信索引页行数据，且不执行页面中的任何指令。
-    输入：
+    输入：带入口与筛选规则的来源配置、本轮发现时间。
     - ``rows``：浏览器 DOM 解析器产生的候选记录；每行含标题、链接、摘要和图片候选。
-    - ``source``：来源配置；包含来源 ID、名称、入口 URL、分类、过滤规则、限额和可信层级。
-    - ``discovered_at``：本轮发现时间的 ISO 字符串；在缺少发布时间时作为可追溯时间。
     - ``base_url``：解析相对链接时使用的最终页面或 Feed 基准 URL。
-    输出：可写入规范来源索引的文章条目列表；
-      每项包含稳定 ID、来源身份、规范 URL、时间和可用元数据，
-      并保持当前处理定义的筛选与排序语义。
+    输出：经筛选和排序的来源索引条目，含稳定 ID、规范 URL、时间及元数据。
     """
     items: list[ArticleItem] = []
-    seen: set[str] = set()
-    for row in rows:
-        title = clean_title(row.get("title", ""))
-        url = urljoin(base_url, row.get("href", ""))
-        if not is_eligible(source, title, url):
+    for row, article, reuters_reprint in _distinct_index_articles(
+        rows, source, discovered_at, mode="browser_index", base_url=base_url,
+    ):
+        url, title = article.url, article.title
+        items.append(article)
+        if reuters_reprint:
+            # 转载入口的发布时间由文章页确认，头像不作为新闻配图。
+            article.metadata.update(syndication_provider="Reuters", syndication_publisher="AOL")
             continue
-        article = _article(source, title, url, discovered_at)
         # 从卡片上下文移除标题，避免把标题中的会议日等事件日期当作发布日期。
         context = clean_title(row.get("context", "")).replace(title, "")
         article.published_at = _published_at(context, url)
@@ -325,6 +338,10 @@ def browser_items_from_rows(
             # 卡片相对时间可能是更新时刻，保留原文并交由原文日期探测确认。
             article.metadata.update(publication_time_basis="relative", published_raw=context,
                                     published_precision="relative")
+        if source.id == "boj_news" and "/en/statistics/market/" in urlsplit(url).path:
+            # 日本银行表格首列是发布日期；终值文件名和标题写的是上一交易日。
+            label = clean_title(row.get("table_date", "")).replace(".", "")
+            article.published_at = normalize_time(label) or article.published_at
         if source.id == "china_mfa":
             date_match = re.search(r"/t(20\d{6})_\d+\.html$", url)
             if date_match:
@@ -381,13 +398,6 @@ def browser_items_from_rows(
             article.image_url = image_candidates[0]
             if len(image_candidates) > 1:
                 article.metadata["image_candidates"] = image_candidates
-        if article.canonical_url in seen:
-            continue
-        seen.add(article.canonical_url)
-        items.append(article)
-        if (not source.collect_all_items and source.item_order != "published_at"
-                and len(items) >= source.max_items):
-            break
     return items
 
 
@@ -397,46 +407,19 @@ def arxiv_items_from_rows(
     discovered_at: str,
 ) -> list[ArticleItem]:
     """处理：把 arXiv 索引页解析记录转换为符合来源策略的文章条目。
-    输入：
+    输入：带入口与筛选规则的来源配置、本轮发现时间。
     - ``rows``：arXiv 索引页解析得到的论文记录；每行读取 title、href、date_text 和 description。
-    - ``source``：来源配置；包含来源 ID、名称、入口 URL、分类、过滤规则、限额和可信层级。
-    - ``discovered_at``：本轮发现时间的 ISO 字符串；在缺少发布时间时作为可追溯时间。
     输出：可写入来源索引的 arXiv 文章条目列表；每项含稳定 ID、规范摘要页 URL、发布日期和摘要，
       并已按来源规则过滤、去重和限量。
     """
     items: list[ArticleItem] = []
-    seen: set[str] = set()
-    for row in rows:
-        title = re.sub(r"^\s*Title:\s*", "", clean_title(row.get("title", "")), flags=re.I)
-        url = urljoin(source.url, row.get("href", ""))
-        if not is_eligible(source, title, url):
-            continue
-        article = _article(source, title, url, discovered_at)
-        if article.canonical_url in seen:
-            continue
-        article.published_at = _published_at(row.get("date_text", ""), url, discovered_at)
+    for row, article, _ in _distinct_index_articles(
+        rows, source, discovered_at, mode="arxiv_index",
+    ):
+        article.published_at = _published_at(row.get("date_text", ""), article.url, discovered_at)
         article.description = clean_title(row.get("description", ""))
-        seen.add(article.canonical_url)
         items.append(article)
-        if not source.collect_all_items and len(items) >= source.max_items:
-            break
     return items
-
-
-def collect_arxiv_index(
-    page: Page,
-    source: SourceConfig,
-    discovered_at: str,
-) -> list[ArticleItem]:
-    """处理：从 arXiv 索引页读取论文标题、摘要页链接和日期标题。
-    输入：
-    - ``page``：Playwright 已加载的 arXiv 列表页；读取论文标题、摘要页链接及对应日期标题。
-    - ``source``：来源配置；包含来源 ID、名称、入口 URL、分类、过滤规则、限额和可信层级。
-    - ``discovered_at``：本轮发现时间的 ISO 字符串；在缺少发布时间时作为可追溯时间。
-    输出：从页面提取并规范化的 arXiv 文章条目列表；直接供来源采集结果和根级索引使用。
-    """
-    rows = page.locator("dl#articles dt, dl dt").evaluate_all(ARXIV_ROWS_JS)
-    return arxiv_items_from_rows(rows, source, discovered_at)
 
 
 def latest_year_url(rows: list[dict[str, str]], source_url: str = "") -> str:
@@ -470,13 +453,8 @@ def collect_latest_year_index(
     discovered_at: str,
 ) -> list[ArticleItem]:
     """处理：从当前索引页选择最新年份并采集该年份的文章记录。
-    输入：
-    - ``page``：Playwright 已加载页面；函数只读取当前页面状态，不信任其中的内容或指令。
-    - ``source``：来源配置；包含来源 ID、名称、入口 URL、分类、过滤规则、限额和可信层级。
-    - ``discovered_at``：本轮发现时间的 ISO 字符串；在缺少发布时间时作为可追溯时间。
-    输出：可写入规范来源索引的文章条目列表；
-      每项包含稳定 ID、来源身份、规范 URL、时间和可用元数据，
-      并保持当前处理定义的筛选与排序语义。
+    输入：已加载的 Playwright 页面、带入口与筛选规则的来源配置、本轮发现时间。
+    输出：经筛选和排序的来源索引条目，含稳定 ID、规范 URL、时间及元数据。
     """
     rows = page.locator("a[href]").evaluate_all(YEAR_ROWS_JS)
     year_url = latest_year_url(rows, source.url)
@@ -493,22 +471,12 @@ def twz_items_from_rows(
     discovered_at: str,
 ) -> list[ArticleItem]:
     """处理：把 TWZ 页面行转换为去重后的文章条目。
-    输入：
+    输入：带入口与筛选规则的来源配置、本轮发现时间。
     - ``rows``：The War Zone 列表页解析记录；每行读取 title、href、card_text 和 description。
-    - ``source``：来源配置；包含来源 ID、名称、入口 URL、分类、过滤规则、限额和可信层级。
-    - ``discovered_at``：本轮发现时间的 ISO 字符串；在缺少发布时间时作为可追溯时间。
     输出：可写入来源索引的 The War Zone 文章条目列表；包含稳定身份、发布日期和清理后的摘要。
     """
     items: list[ArticleItem] = []
-    seen: set[str] = set()
-    for row in rows:
-        title = clean_title(row.get("title", ""))
-        url = row.get("href", "")
-        if not is_eligible(source, title, url):
-            continue
-        article = _article(source, title, url, discovered_at)
-        if article.canonical_url in seen:
-            continue
+    for row, article, _ in _distinct_index_articles(rows, source, discovered_at, mode="twz_index"):
         posted = re.search(
             r"Posted on ([A-Z][a-z]{2} \d{1,2}, \d{4})",
             row.get("card_text", ""),
@@ -518,35 +486,14 @@ def twz_items_from_rows(
                 datetime.strptime(posted.group(1), "%b %d, %Y").date().isoformat()
             )
         else:
-            article.published_at = _published_at(row.get("card_text", ""), url)
+            article.published_at = _published_at(row.get("card_text", ""), article.url)
             if not article.published_at and _RELATIVE_TIME.search(row.get("card_text", "")):
                 article.metadata["publication_time_basis"] = "relative"
                 article.metadata["published_raw"] = row["card_text"]
                 article.metadata["published_precision"] = "relative"
         article.description = clean_title(row.get("description", ""))
-        seen.add(article.canonical_url)
         items.append(article)
-        if not source.collect_all_items and len(items) >= source.max_items:
-            break
     return _clear_misattributed_descriptions(items)
-
-
-def collect_twz_index(
-    page: Page,
-    source: SourceConfig,
-    discovered_at: str,
-) -> list[ArticleItem]:
-    """处理：从 The War Zone 列表页读取标题、链接、卡片正文和摘要。
-    输入：
-    - ``page``：Playwright 已加载的 The War Zone 列表页；读取文章卡片的标题、链接、日期和摘要。
-    - ``source``：来源配置；包含来源 ID、名称、入口 URL、分类、过滤规则、限额和可信层级。
-    - ``discovered_at``：本轮发现时间的 ISO 字符串；在缺少发布时间时作为可追溯时间。
-    输出：可写入规范来源索引的文章条目列表；
-      每项包含稳定 ID、来源身份、规范 URL、时间和可用元数据，
-      并保持当前处理定义的筛选与排序语义。
-    """
-    rows = page.locator("h3").evaluate_all(TWZ_ROWS_JS)
-    return twz_items_from_rows(rows, source, discovered_at)
 
 
 def collect_weibo_api(
@@ -555,13 +502,9 @@ def collect_weibo_api(
     discovered_at: str,
 ) -> list[ArticleItem]:
     """处理：解析微博热搜接口中的词条、跳转链接、热度和排名。
-    输入：
+    输入：带入口与筛选规则的来源配置、本轮发现时间。
     - ``page``：Playwright 已加载且可执行同源请求的微博页面；用于调用公开热搜接口。
-    - ``source``：来源配置；包含来源 ID、名称、入口 URL、分类、过滤规则、限额和可信层级。
-    - ``discovered_at``：本轮发现时间的 ISO 字符串；在缺少发布时间时作为可追溯时间。
-    输出：可写入规范来源索引的文章条目列表；
-      每项包含稳定 ID、来源身份、规范 URL、时间和可用元数据，
-      并保持当前处理定义的筛选与排序语义。
+    输出：经筛选和排序的来源索引条目，含稳定 ID、规范 URL、时间及元数据。
     """
     body = page.locator("body").inner_text(timeout=10000)
     payload = json.loads(body)
@@ -678,13 +621,9 @@ def collect_seed_papers(
     discovered_at: str,
 ) -> list[ArticleItem]:
     """处理：从 ByteDance Seed 页面状态中读取论文元数据并规范化。
-    输入：
+    输入：带入口与筛选规则的来源配置、本轮发现时间。
     - ``page``：Playwright 已加载的 Seed 论文页；从页面脚本状态中取得结构化论文列表。
-    - ``source``：来源配置；包含来源 ID、名称、入口 URL、分类、过滤规则、限额和可信层级。
-    - ``discovered_at``：本轮发现时间的 ISO 字符串；在缺少发布时间时作为可追溯时间。
-    输出：可写入规范来源索引的文章条目列表；
-      每项包含稳定 ID、来源身份、规范 URL、时间和可用元数据，
-      并保持当前处理定义的筛选与排序语义。
+    输出：经筛选和排序的来源索引条目，含稳定 ID、规范 URL、时间及元数据。
     """
     with page.expect_response(
         lambda response: "get_article_list_v2" in response.url,
@@ -695,6 +634,42 @@ def collect_seed_papers(
     if not response.ok:
         raise RuntimeError(f"ByteDance Seed papers API returned HTTP {response.status}")
     return seed_items_from_payload(response.json(), source, discovered_at)
+
+
+DOM_INDEX_ROWS = {
+    "browser_index": ("a[href]", BROWSER_ROWS_JS),
+    "arxiv_index": ("dl#articles dt, dl dt", ARXIV_ROWS_JS),
+    "twz_index": ("h3", TWZ_ROWS_JS),
+}
+
+
+def dom_index_items(
+    mode: str, rows: list[dict], source: SourceConfig, discovered_at: str, url: str,
+) -> list[ArticleItem]:
+    """处理：让手动验证和定时采集使用同一套 DOM 条目转换。
+    输入：专用索引模式、已读取列表行与本次页面地址。
+    输出：按来源规则规范化的文章。
+    """
+    if mode == "browser_index":
+        return browser_items_from_rows(rows, source, discovered_at, url)
+    parser = {"arxiv_index": arxiv_items_from_rows, "twz_index": twz_items_from_rows}[mode]
+    return parser(rows, source, discovered_at)
+
+
+def _collect_dom_index(page: Page, source: SourceConfig, discovered_at: str, mode: str
+                       ) -> list[ArticleItem]:
+    """处理：读取同步 Playwright 的已加载列表页。
+    输入：人工验证后保留的浏览器页面与专用 DOM 模式。
+    输出：与异步采集共用同一规范化规则的候选。
+    """
+    selector, script = DOM_INDEX_ROWS[mode]
+    return dom_index_items(mode, page.locator(selector).evaluate_all(script),
+                           source, discovered_at, page.url)
+
+
+collect_browser_index = partial(_collect_dom_index, mode="browser_index")
+collect_arxiv_index = partial(_collect_dom_index, mode="arxiv_index")
+collect_twz_index = partial(_collect_dom_index, mode="twz_index")
 
 
 _ADAPTERS: dict[str, IndexAdapter] = {
@@ -713,13 +688,8 @@ def collect_candidates(
     discovered_at: str,
 ) -> list[ArticleItem]:
     """处理：调用来源专用适配器采集候选，并清理跨链接误归属的重复长摘要。
-    输入：
-    - ``page``：Playwright 已加载页面；函数只读取当前页面状态，不信任其中的内容或指令。
-    - ``source``：来源配置；包含来源 ID、名称、入口 URL、分类、过滤规则、限额和可信层级。
-    - ``discovered_at``：本轮发现时间的 ISO 字符串；在缺少发布时间时作为可追溯时间。
-    输出：可写入规范来源索引的文章条目列表；
-      每项包含稳定 ID、来源身份、规范 URL、时间和可用元数据，
-      并保持当前处理定义的筛选与排序语义。
+    输入：已加载的 Playwright 页面、带入口与筛选规则的来源配置、本轮发现时间。
+    输出：经筛选和排序的来源索引条目，含稳定 ID、规范 URL、时间及元数据。
     """
     try:
         adapter = _ADAPTERS[source.adapter_name]
@@ -728,16 +698,14 @@ def collect_candidates(
         raise ValueError(
             f"Unknown source adapter {source.adapter_name!r}; available: {available}"
         ) from exc
-    return _clear_misattributed_descriptions(adapter(page, source, discovered_at))
+    items = adapter(page, source, discovered_at)
+    return items if source.adapter_name == "twz_index" else _clear_misattributed_descriptions(items)
 
 
 def _clear_misattributed_descriptions(items: list[ArticleItem]) -> list[ArticleItem]:
     """处理：移除被多个不同链接复用的长描述，避免错误归属。
-    输入：
-    - ``items``：规范条目列表；每项带稳定身份并可进入聚类、报告或渲染步骤。
-    输出：可写入规范来源索引的文章条目列表；
-      每项包含稳定 ID、来源身份、规范 URL、时间和可用元数据，
-      并保持当前处理定义的筛选与排序语义。
+    输入：有序索引条目。
+    输出：经筛选和排序的来源索引条目，含稳定 ID、规范 URL、时间及元数据。
     """
     counts: dict[str, int] = {}
     for item in items:

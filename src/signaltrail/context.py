@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from collections import Counter
 from hashlib import sha256
 from math import ceil
 from pathlib import Path
@@ -19,8 +20,8 @@ from .brief_selection import select_brief_items
 from .collection_diagnostics import enrichment_plan, source_coverage
 from .config import AppConfig
 from .localization import (
+    brief_title_requires_translation,
     localized,
-    source_matches_output_language,
     translated_title_field,
     validate_output_language,
 )
@@ -28,9 +29,8 @@ from .reporting import evaluation_continuity_floor
 from .semantics import (
     SEMANTIC_CACHE_SCHEMA,
     load_semantic_cache,
-    reusable_semantic_brief,
+    semantic_brief_with_issue,
     semantic_cache_path,
-    semantic_cache_reuse_issue,
     semantic_fingerprint,
 )
 from .storage import next_revision, write_immutable_json
@@ -84,8 +84,7 @@ _BRIEF_PACKET_CANDIDATE_FIELDS = (
 
 def _read_state(path: Path) -> list[dict[str, Any]]:
     """处理：读取论点或观察状态文件，并在文件缺失或根结构非法时返回空记录。
-    输入：
-    - ``path``：当前函数要读取、校验或写入的本地文件路径。
+    输入：本地文件路径。
     输出：“读取论点或观察状态文件，并在文件缺失或根结构非法时返回空记录”得到的有序结构化记录；
       典型字段包括 items、schema_version，可直接交给下一阶段。
     """
@@ -108,11 +107,10 @@ def _load_reports(
     output_language: str = "zh-CN",
 ) -> tuple[list[dict[str, Any]], list[str], set[str]]:
     """处理：按版本顺序读取历史报告 JSON，并分离正文报告与独立评估记录。
-    输入：
+    输入：报告目标语言。
     - ``reports_dir``：历史版本化报告目录；用于寻找连续性和语义复用候选。
     - ``date``：日报日期字符串；用于选择历史记录和版本化目录。
     - ``edition``：日报版本标识，默认为 daily；morning/evening 用于历史兼容；参与窗口和产物命名。
-    - ``output_language``：目标报告语言；决定标题译文字段、校验规则和界面文本。
     输出：“按版本顺序读取历史报告 JSON，并分离正文报告与独立评估记录”得到的固定结构结果；
       返回位置依次对应 entries、warnings、reported_item_ids。
     """
@@ -160,9 +158,7 @@ def _load_reports(
 
 def _separate_evaluation(path: Path, report: dict[str, Any]) -> dict[str, Any] | None:
     """处理：从历史报告副本剥离质量评估，避免污染语义上下文。
-    输入：
-    - ``path``：当前函数要读取、校验或写入的本地文件路径。
-    - ``report``：当前报告结构；包含栏目、简报或事件、来源引用及质量元数据。
+    输入：本地文件路径、含栏目和来源引用的报告。
     输出：“从历史报告副本剥离质量评估，避免污染语义上下文”形成的结构化字典；
       键值表达该处理定义的业务记录或查找关系。
     """
@@ -184,9 +180,7 @@ def _separate_evaluation(path: Path, report: dict[str, Any]) -> dict[str, Any] |
 
 def _continuity_entry(path: Path, report: dict[str, Any]) -> dict[str, Any]:
     """处理：把历史报告压缩成跨版本连续性摘要。
-    输入：
-    - ``path``：当前函数要读取、校验或写入的本地文件路径。
-    - ``report``：当前报告结构；包含栏目、简报或事件、来源引用及质量元数据。
+    输入：本地文件路径、含栏目和来源引用的报告。
     输出：“把历史报告压缩成跨版本连续性摘要”形成的结构化字典；
       典型键包括 analyses、continuity_override、date、edition、event_id、events、excluded、impor
       tance、language、path、quality_evaluation、report_id。
@@ -252,86 +246,59 @@ def _continuity_entry(path: Path, report: dict[str, Any]) -> dict[str, Any]:
 
 def _compact_candidates(
     index: dict[str, Any],
-    per_source: int,
-    report_targets: dict[str, int],
+    selected_item_ids: set[str],
     reported_item_ids: set[str],
-    selected_item_ids: set[str] | None = None,
-) -> list[dict[str, Any]]:
-    """处理：压缩来源元数据并保留所有当日选中条目和原有排名。
-    输入：
-    - ``index``：当前来源索引对象；包含规范条目、来源结果、策略和采集时间。
-    - ``per_source``：每个来源允许进入情境包的默认候选数量。
-    - ``report_targets``：按来源 ID 记录的报告目标数；用于平衡情境候选。
-    - ``reported_item_ids``：历史报告已经使用的条目 ID；用于标记连续报道和避免重复。
-    输出：用于写作和连续性判断的有序候选；
-      典型字段包括 previously_reported、semantic_fingerprint、source_candidate_rank、source_lang
-      uage、source_rank，可直接交给下一阶段。
+) -> dict[str, dict[str, Any]]:
+    """处理：只投影入选条目，保留原索引内各来源的排名。
+    输入：规范索引、已选条目和历史报告条目 ID。
+    输出：按条目 ID 查找的写作候选。
     """
     grouped: dict[str, list[dict[str, Any]]] = {}
     for item in index.get("items", []):
         if isinstance(item, dict) and item.get("source_id"):
             grouped.setdefault(str(item["source_id"]), []).append(item)
-    compact: list[dict[str, Any]] = []
-    for source_id, source_items in grouped.items():
-        ranked_items: list[tuple[dict[str, Any], int]] = []
-        for fallback_rank, item in enumerate(source_items, start=1):
-            metadata = item.get("metadata", {})
-            ranked_items.append(
-                (
-                    item,
-                    int(
-                        metadata.get("source_rank")
-                        or metadata.get("hot_rank")
-                        or metadata.get("list_position")
-                        or fallback_rank
-                    ),
-                )
-            )
-
-        # 采集层已经按当前来源的 item_order 写好 index；这里必须保留该顺序，
-        # 否则正文状态或发布时间会把 brief_plan 从原 Top 顺序改成另一组条目。
-        base_limit = min(per_source, max(5, report_targets.get(source_id, 5) * 2))
-        for rank, (item, source_rank) in enumerate(ranked_items, start=1):
-            metadata = item.get("metadata") or {}
-            # 正文预算已经约束富化量；低排名的已取证条目也必须进入候选，Top 顺序不变。
-            if (rank > base_limit and item.get("content_status") not in {"full_text", "partial"}
-                    and str(item["item_id"]) not in (selected_item_ids or set())):
+    compact: dict[str, dict[str, Any]] = {}
+    for source_items in grouped.values():
+        for rank, item in enumerate(source_items, 1):
+            item_id = str(item["item_id"])
+            if item_id not in selected_item_ids:
                 continue
+            metadata = item.get("metadata") or {}
+            source_rank = int(metadata.get("source_rank") or metadata.get("hot_rank")
+                              or metadata.get("list_position") or rank)
             has_original_date = bool((metadata.get("content_source") or {}).get("published_at"))
             published = original_publication_time(item) if has_original_date else item.get(
                 "published_at",
             )
-            compact.append(
-                {
-                    **{
-                        key: item.get(key)
-                        for key in _CANDIDATE_FIELDS
-                        if item.get(key) is not None
-                    },
-                    "published_at": published,
-                    **{key: metadata[key] for key in (
-                        "feed_content_path", "feed_content_characters", "feed_content_sha256",
-                        "discovery_signal", "signal_at", "selection_reason", "suggested_status",
-                        "published_precision", "updated_at", "first_discovered_at",
-                    ) if metadata.get(key) is not None},
-                    **({"published_precision": "date" if len(published) == 10 else "datetime"}
-                       if has_original_date and published else {}),
-                    **({"feed_content_status": "partial"}
-                       if metadata.get("feed_content_path") else {}),
-                    "source_candidate_rank": rank,
-                    "source_rank": source_rank,
-                    "source_language": (
-                        item.get("metadata", {}).get("language")
-                        if isinstance(item.get("metadata"), dict)
-                        else None
-                    ),
-                    "previously_reported": item.get("item_id") in reported_item_ids,
-                    "semantic_fingerprint": semantic_fingerprint(item),
-                    **({"content_text_sha256": item["metadata"]["content_text_sha256"]}
-                       if (item.get("metadata") or {}).get("content_text_sha256") else {}),
-                    **_content_observations(item),
-                }
-            )
+            compact[item_id] = {
+                **{
+                    key: item.get(key)
+                    for key in _CANDIDATE_FIELDS
+                    if item.get(key) is not None
+                },
+                "published_at": published,
+                **{key: metadata[key] for key in (
+                    "feed_content_path", "feed_content_characters", "feed_content_sha256",
+                    "discovery_signal", "signal_at", "selection_reason", "suggested_status",
+                    "published_precision", "updated_at", "first_discovered_at",
+                ) if metadata.get(key) is not None},
+                **({"published_precision": "date" if len(published) == 10 else "datetime"}
+                   if has_original_date and published else {}),
+                **({"feed_content_status": "partial"}
+                   if metadata.get("feed_content_path") else {}),
+                "source_candidate_rank": rank,
+                "source_rank": source_rank,
+                "source_language": (
+                    item.get("metadata", {}).get("language")
+                    if isinstance(item.get("metadata"), dict)
+                    else None
+                ),
+                "previously_reported": item.get("item_id") in reported_item_ids,
+                "semantic_fingerprint": semantic_fingerprint(item),
+                **({"content_text_sha256": item["metadata"]["content_text_sha256"]}
+                   if (item.get("metadata") or {}).get("content_text_sha256") else {}),
+                **_content_observations(item),
+            }
     return compact
 
 
@@ -360,35 +327,22 @@ def _content_observations(item: dict[str, Any]) -> dict[str, Any]:
     }}
 
 
-def _planned_authoring_candidates(
-    candidates: list[dict[str, Any]],
-    source_configs: dict[str, Any],
-    reusable_briefs: dict[str, dict[str, Any]],
-) -> list[dict[str, Any]]:
-    """处理：保留每源地址唯一且尚无可复用语义的实际简报候选。
-    输入：
-    - ``candidates``：按当前 index 顺序压缩后的逐来源候选。
-    - ``source_configs``：来源配置映射；提供统一目标、上限和兼容默认值。
-    - ``reusable_briefs``：已通过指纹、语言和独立评估门槛的计划内缓存候选。
-    输出：需要交给模型写作的有序候选；本期已选条目保持原来源 Top 顺序。
-    """
-    return [item for item in select_brief_items(candidates, source_configs)
-            if str(item.get("item_id") or "") not in reusable_briefs]
-
-
 def _brief_aliases(
     candidates: list[dict[str, Any]],
     reusable_briefs: dict[str, dict[str, Any]],
+    output_language: str,
 ) -> dict[str, str]:
-    """处理：同一原文仅选一个写作者，优先正文完整且材料丰富的候选。
-    输入：有序计划候选和已批准缓存；按规范原文地址分组，无地址时用证据指纹。
+    """处理：为同一证据和同一译题需求选出材料最完整的候选。
+    输入：有序计划候选、已批准缓存和目标语言；按原文地址或证据指纹分组。
     输出：各来源条目到写作代表的映射，各来源展示位置继续保留。
     """
-    groups: dict[str, list[dict[str, Any]]] = {}
+    groups: dict[tuple[str, bool], list[dict[str, Any]]] = {}
     for item in candidates:
         url = canonicalize_url(str(item.get("canonical_url") or item.get("url") or ""))
         key = "url:" + url if url else "evidence:" + str(item["semantic_fingerprint"])
-        groups.setdefault(key, []).append(item)
+        groups.setdefault(
+            (key, brief_title_requires_translation(item, output_language)), [],
+        ).append(item)
     aliases = {}
     for items in groups.values():
         representative = max(items, key=lambda item: (
@@ -446,6 +400,7 @@ def _balanced_source_batches(
 
 def _build_brief_plan(
     candidates: list[dict[str, Any]],
+    planned_candidates: list[dict[str, Any]],
     source_configs: dict[str, Any],
     batches: list[dict[str, Any]],
     reusable_briefs: dict[str, dict[str, Any]] | None = None,
@@ -454,6 +409,7 @@ def _build_brief_plan(
     """处理：按每源当日实际条目、复用结果和批次分配生成写作计划。
     输入：
     - ``candidates``：情境阶段筛选出的候选记录；每项含条目身份、来源、证据、正文和语义缓存。
+    - ``planned_candidates``：已按来源去重的写作计划候选，顺序与选题阶段一致。
     - ``source_configs``：按来源 ID 索引的来源配置，用于读取配额和策略。
     - ``batches``：平衡算法生成的写作批次；每批声明来源、候选 ID 和预计规模。
     - ``reusable_briefs``：按 item_id 索引且指纹匹配的历史语义简报；可跳过重复写作。
@@ -464,7 +420,7 @@ def _build_brief_plan(
     reusable_briefs = reusable_briefs or {}
     aliases = aliases or {}
     grouped = {str(item["source_id"]): [] for item in candidates if item.get("source_id")}
-    for item in select_brief_items(candidates, source_configs):
+    for item in planned_candidates:
         grouped[str(item["source_id"])].append(item)
     batch_by_source = {
         source_id: str(batch["batch_id"])
@@ -475,13 +431,22 @@ def _build_brief_plan(
     for source_id, items in grouped.items():
         source = source_configs.get(source_id)
         target = len(items)
-        default_item_ids = [str(item["item_id"]) for item in items[:target]]
+        default_item_ids = [str(item["item_id"]) for item in items]
         reuse_item_ids = [
             item_id for item_id in default_item_ids if item_id in reusable_briefs
         ]
         first = items[0] if items else {}
         module = first.get("module") or getattr(source, "module", None) or "unknown"
         category = first.get("category") or getattr(source, "category", None) or "unknown"
+        item_signals = {
+            str(item["item_id"]): {
+                key: item[key] for key in (
+                    "discovery_signal", "signal_at", "selection_reason", "suggested_status",
+                )
+                if item.get(key) is not None
+            }
+            for item in items if item.get("selection_reason") or item.get("discovery_signal")
+        }
         plan.append(
             {
                 "source_id": source_id,
@@ -489,14 +454,7 @@ def _build_brief_plan(
                 "batch_id": batch_by_source.get(source_id),
                 "target_count": target,
                 "default_item_ids": default_item_ids,
-                **({"item_signals": {str(item["item_id"]): {
-                    key: item[key] for key in ("discovery_signal", "signal_at",
-                                              "selection_reason", "suggested_status")
-                    if item.get(key) is not None
-                } for item in items if item.get("selection_reason")
-                    or item.get("discovery_signal")}}
-                   if any(item.get("selection_reason") or item.get("discovery_signal")
-                          for item in items) else {}),
+                **({"item_signals": item_signals} if item_signals else {}),
                 "reuse_item_ids": reuse_item_ids,
                 "author_item_ids": [
                     item_id for item_id in default_item_ids
@@ -555,7 +513,7 @@ def _write_brief_authoring_packets(
     collection_window: dict[str, str] | None,
 ) -> list[dict[str, Any]]:
     """处理：为每个均衡批次写入有界候选、权限和提交命令。
-    输入：
+    输入：报告目标语言。
     - ``candidates``：情境阶段筛选出的候选记录；每项含条目身份、来源、证据、正文和语义缓存。
     - ``brief_plan``：每个候选的写作计划；标明复用、委派、批次和降级策略。
     - ``batches``：平衡算法生成的写作批次；每批声明来源、候选 ID 和预计规模。
@@ -564,7 +522,6 @@ def _write_brief_authoring_packets(
     - ``date``：索引冻结的日报日期，供作者判断本期重要性。
     - ``collection_window``：运行已有的时间窗口，原样传入作者包。
     - ``edition``：日报版本标识，默认为 daily；morning/evening 用于历史兼容；参与窗口和产物命名。
-    - ``output_language``：目标报告语言；决定标题译文字段、校验规则和界面文本。
     输出：“为每个均衡批次写入有界候选、权限和提交命令”得到的有序结构化记录；
       典型字段包括 accepted_result_path、author_item_count、author_item_ids、batch_id、brief_pla
       n、candidates、draft_result_path、edition、output_language、packet_path、repair_policy、re
@@ -575,15 +532,18 @@ def _write_brief_authoring_packets(
         for item in candidates
         if item.get("item_id")
     }
+    plans_by_batch: dict[str, list[dict[str, Any]]] = {}
+    for plan in brief_plan:
+        if batch_id := plan.get("batch_id"):
+            plans_by_batch.setdefault(batch_id, []).append(plan)
+    data_dir = context_dir.parents[1]
+    run_path = data_dir / "runs" / context_dir.name / f"{edition}.json"
     packets: list[dict[str, Any]] = []
     # 同轮各批次使用相同语言和字段契约，只构建一次只读 Schema。
     output_schema = _brief_output_schema(output_language) if batches else None
     for batch in batches:
         batch_id = str(batch["batch_id"])
-        source_ids = {str(value) for value in batch.get("source_ids", [])}
-        plans = [
-            row for row in brief_plan if str(row.get("source_id")) in source_ids
-        ]
+        plans = plans_by_batch.get(batch_id, [])
         author_item_ids = [
             str(item_id)
             for plan in plans
@@ -591,8 +551,6 @@ def _write_brief_authoring_packets(
         ]
         packet_path = context_dir / f"{context_stem}-{batch_id}.json"
         draft_result_path, accepted_result_path = batch_result_paths(packet_path)
-        data_dir = context_dir.parents[1]
-        run_path = data_dir / "runs" / context_dir.name / f"{edition}.json"
         packet_candidates = [
             {
                 key: candidates_by_id[item_id].get(key)
@@ -603,10 +561,8 @@ def _write_brief_authoring_packets(
             if item_id in candidates_by_id
         ]
         for candidate in packet_candidates:
-            candidate["translation_required"] = not source_matches_output_language(
-                candidate.get("source_language"),
-                str(candidate.get("title") or ""),
-                output_language,
+            candidate["translation_required"] = brief_title_requires_translation(
+                candidate, output_language,
             )
         submission_command = (
             f'signaltrail --compact --data-dir "{data_dir.resolve()}" '
@@ -644,7 +600,8 @@ def _write_brief_authoring_packets(
                     "Feed 仅是来源提供的部分证据，不视为文章全文；"
                     "标题或摘要明确陈述的发布事实可忠实改写，"
                     "不要补写未观察到的细节。有正文的重点条目保留关键数量、条件和状态；"
-                    "保留计划、涉嫌及来源声称等限定。译题须为自然简体中文，专名可保留原文，"
+                    "保留计划、涉嫌及来源声称等限定。译题须为自然简体中文；"
+                    "繁体标题同样改写为简体，去掉网页标题附加的媒体名和栏目名。专名可保留原文，"
                     "不要用整句英文充当译题；不要推测项目功能。直接陈述事实，避免流程状态话术。"
                     "先完成并集中检查全包，包括译题语言和格式；仅当标题、摘要及正文都无法识别"
                     "主体或动作时，在宿主回执中汇总 item_id 和所需证据。",
@@ -760,6 +717,9 @@ def build_context(
     edition: str,
     collection_window: dict[str, str] | None = None,
     output_language: str | None = None,
+    *,
+    selection_only: bool = False,
+    index: dict[str, Any] | None = None,
 ) -> Path:
     """处理：从权威索引、历史报告和语义缓存构建有界写作情境及批次任务包。
     输入：
@@ -770,13 +730,16 @@ def build_context(
     - ``collection_window``：本次 edition 的预定时段血缘；用于诊断和状态判断，但不改变
       当前 index 的候选资格或来源 Top 顺序。
     - ``output_language``：目标报告语言；决定标题译文字段、校验规则和界面文本。
+    - ``selection_only``：补证前只保存候选、覆盖与补证计划，等待补证后生成可派发批次。
+    - ``index``：调用者已读取的同一权威索引，可复用解析结果。
     输出：指向“从权威索引、历史报告和语义缓存构建有界写作情境及批次任务包”所生成、定位或确认产物
       的本地路径。
     """
     target_language = validate_output_language(
         output_language or config.output.language
     )
-    index = read_json(index_path)
+    if index is None:
+        index = read_json(index_path)
     if not isinstance(index, dict):
         raise ValueError("Index must be a JSON object")
     date = str(index.get("date", "unknown-date"))
@@ -806,20 +769,15 @@ def build_context(
     source_configs = {source.id: source for source in config.report_sources}
     selected_items = select_brief_items(
         index.get("items", []), source_configs, date_value=index["date"],
-        cutoff=(index.get("collection_window") or {}).get("end") or index.get("generated_at"),
+        cutoff=(index.get("collection_window") or collection_window or {}).get("end")
+        or index.get("generated_at"),
     )
     selected_ids = {str(item["item_id"]) for item in selected_items}
-    candidates = _compact_candidates(
-        index,
-        config.budget.context_items_per_source,
-        {source.id: source.report_target for source in source_configs.values()},
-        reported_item_ids,
-        selected_ids,
-    )
-    compact_by_id = {str(item["item_id"]): item for item in candidates}
+    compact_by_id = _compact_candidates(index, selected_ids, reported_item_ids)
     candidates = [compact_by_id[str(item["item_id"])] for item in selected_items]
     semantic_cache = load_semantic_cache(data_dir)
-    planned_ids = {str(item["item_id"]) for item in select_brief_items(candidates, source_configs)}
+    planned_candidates = select_brief_items(candidates, source_configs)
+    planned_ids = {str(item["item_id"]) for item in planned_candidates}
     cache_metrics = {
         "approved_and_reused": 0,
         "pending_evaluation": 0,
@@ -838,19 +796,11 @@ def build_context(
         if item_id not in planned_ids:
             continue
         entry = semantic_cache.get(item_id)
-        issue = semantic_cache_reuse_issue(item, entry, target_language)
-        if issue is None:
-            reusable = reusable_semantic_brief(
-                item,
-                semantic_cache,
-                target_language,
-                reference_date=date,
-            )
-            if reusable is not None:
-                reusable_briefs[item_id] = reusable
-                cache_metrics["approved_and_reused"] += 1
-                continue
-            issue = "invalidated_editorial_rule"
+        reusable, issue = semantic_brief_with_issue(item, entry, target_language, date)
+        if reusable is not None:
+            reusable_briefs[item_id] = reusable
+            cache_metrics["approved_and_reused"] += 1
+            continue
         cache_metrics.setdefault(issue, 0)
         cache_metrics[issue] += 1
         if (
@@ -868,21 +818,17 @@ def build_context(
             semantic_cache_path(data_dir),
             {"schema_version": SEMANTIC_CACHE_SCHEMA, "items": semantic_cache},
         )
-    aliases = _brief_aliases(
-        _planned_authoring_candidates(candidates, source_configs, {}), reusable_briefs
-    )
-    authoring_candidates = _planned_authoring_candidates(
-        candidates,
-        source_configs,
-        reusable_briefs,
-    )
-    authoring_candidates = [item for item in authoring_candidates
-                            if str(item["item_id"]) not in aliases]
+    aliases = _brief_aliases(planned_candidates, reusable_briefs, target_language)
+    authoring_candidates = [
+        item for item in planned_candidates
+        if str(item["item_id"]) not in reusable_briefs and str(item["item_id"]) not in aliases
+    ]
     # 只对计划内缺口按来源均衡分批；多批由默认三并发空槽补位完成，避免单个
     # 约 160 条 packet 超出模型输出边界并放大整批重试成本。
     brief_batches = _balanced_source_batches(authoring_candidates)
     brief_plan = _build_brief_plan(
         candidates,
+        planned_candidates,
         source_configs,
         brief_batches,
         reusable_briefs,
@@ -894,19 +840,22 @@ def build_context(
     while any(context_dir.glob(f"{edition}-r{revision}-*.json")):
         revision += 1
     context_stem = f"{edition}-r{revision}"
-    brief_batches = _write_brief_authoring_packets(
-        candidates,
-        brief_plan,
-        brief_batches,
-        context_dir,
-        context_stem,
-        edition,
-        target_language,
-        date,
-        collection_window,
-    )
+    packets = []
+    if not selection_only:
+        packets = _write_brief_authoring_packets(
+            candidates,
+            brief_plan,
+            brief_batches,
+            context_dir,
+            context_stem,
+            edition,
+            target_language,
+            date,
+            collection_window,
+        )
 
     candidate_ids = {candidate["item_id"] for candidate in candidates}
+    source_counts = Counter(item["source_id"] for item in candidates)
 
     bundle = {
         "schema_version": "2.0",
@@ -929,10 +878,8 @@ def build_context(
                         "page_results",
                     )
                 },
-                "report_target": sum(item["source_id"] == source.get("source_id")
-                                     for item in candidates),
-                "report_max": sum(item["source_id"] == source.get("source_id")
-                                  for item in candidates),
+                "report_target": source_counts[source.get("source_id")],
+                "report_max": source_counts[source.get("source_id")],
             }
             for source in index.get("sources", [])
         ],
@@ -945,7 +892,8 @@ def build_context(
         "reusable_briefs": list(reusable_briefs.values()),
         "brief_aliases": aliases,
         "semantic_cache_metrics": cache_metrics,
-        "brief_authoring_batches": brief_batches,
+        "brief_authoring_batches": packets,
+        **({"selection_only": True} if selection_only else {}),
         "brief_plan": brief_plan,
         "continuity_reports": recent_reports,
         "active_theses": theses,

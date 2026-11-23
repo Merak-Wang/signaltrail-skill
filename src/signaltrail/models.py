@@ -51,6 +51,29 @@ def _published_timestamp(item: object) -> float | None:
     return parsed.timestamp()
 
 
+def _source_order_key(item: object) -> tuple[bool, bool, int]:
+    """处理：从文章元数据读取来源原始名次。
+    输入：当前条目或监控快照字典。
+    输出：历史、缺失名次、有效名次的升序键；并列保留输入顺序。
+    """
+    metadata = _metadata(item)
+    raw_rank = metadata.get("source_rank")
+    try:
+        rank = int(raw_rank) if raw_rank is not None else 0
+    except (TypeError, ValueError):
+        rank = 0
+    return bool(metadata.get("retained_from_previous_snapshot")), rank <= 0, max(0, rank)
+
+
+def _publication_order_key(item: object) -> tuple[bool, float]:
+    """处理：把发布时间换成从新到旧的排序键。
+    输入：已采集的条目或监控快照字典。
+    输出：可计算的实际发布时间优先，缺失时间的条目保留原来相对顺序。
+    """
+    timestamp = _published_timestamp(item)
+    return timestamp is None, -(timestamp or 0.0)
+
+
 def order_source_items(items: list[T], item_order: str | None) -> list[T]:
     """处理：在不改写原始 Top 名次的前提下选择来源顺序或发布时间顺序。
     输入：
@@ -63,46 +86,9 @@ def order_source_items(items: list[T], item_order: str | None) -> list[T]:
     if resolved not in ITEM_ORDER_VALUES:
         raise ValueError(f"Unsupported item_order: {resolved!r}")
 
-    indexed = list(enumerate(items))
-    if resolved == "source":
+    key = _source_order_key if resolved == "source" else _publication_order_key
+    return sorted(items, key=key)
 
-        def source_key(row: tuple[int, T]) -> tuple[bool, bool, int, int]:
-            """处理：构造保留当前来源 Top 语义的稳定升序键。
-            输入：
-            - ``row``：包含输入位置与文章记录的二元组，位置用于缺失名次和并列回退。
-            输出：历史标记、名次缺失标记、原始名次和输入位置组成的稳定排序键。
-            """
-            index, item = row
-            metadata = _metadata(item)
-            raw_rank = metadata.get("source_rank")
-            try:
-                rank = int(raw_rank)
-                missing_rank = rank <= 0
-            except (TypeError, ValueError):
-                rank = index + 1
-                missing_rank = True
-            if missing_rank:
-                rank = index + 1
-            return (
-                bool(metadata.get("retained_from_previous_snapshot")),
-                missing_rank,
-                rank,
-                index,
-            )
-
-        return [item for _, item in sorted(indexed, key=source_key)]
-
-    def published_key(row: tuple[int, T]) -> tuple[bool, float, int]:
-        """处理：构造有效发布时间优先且从新到旧的稳定排序键。
-        输入：
-        - ``row``：包含输入位置与文章记录的二元组，位置用于时间并列时稳定回退。
-        输出：时间缺失标记、负时间戳和输入位置组成的升序排序键。
-        """
-        index, item = row
-        timestamp = _published_timestamp(item)
-        return (timestamp is None, -(timestamp or 0.0), index)
-
-    return [item for _, item in sorted(indexed, key=published_key)]
 
 
 class SourceStatus(StrEnum):

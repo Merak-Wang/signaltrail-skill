@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 from datetime import datetime, timedelta, tzinfo
 from email.utils import parsedate_to_datetime
+from urllib.parse import parse_qs, urlsplit
 from zoneinfo import ZoneInfo
 
 from .utils import canonicalize_url
@@ -13,6 +14,20 @@ PLATFORM_PUBLICATION_SOURCES = frozenset({
     "weibo_hot", "hacker_news", "lobsters", "huggingface_papers",
     "papers_with_code", "github_trending", "google_news_china",
 })
+
+
+def abc_live_entry_id(url: str) -> str | None:
+    """处理：识别 ABC 直播更新的独立地址。
+    输入：原文地址，常规报道与直播母页无 entryId。
+    输出：独立更新的数字编号或空值。
+    """
+    parts = urlsplit(url)
+    if parts.hostname not in {"abcnews.com", "www.abcnews.com"}:
+        return None
+    if "/live-updates/" not in parts.path.lower():
+        return None
+    entry, *ambiguous = parse_qs(parts.query).get("entryId", [""])
+    return entry if entry.isascii() and entry.isdigit() and not ambiguous else None
 
 
 def normalize_time(value: str, timezone: str | tzinfo = "UTC") -> str | None:
@@ -71,12 +86,49 @@ def uses_platform_publication_time(item: dict) -> bool:
             or (item.get("metadata") or {}).get("publication_time_kind") == "platform")
 
 
+def paper_publication_evidence(item: dict) -> tuple[str, str] | None:
+    """处理：为论文原文和收录页复用同编号 arXiv 的首次提交时刻。
+    输入：索引条目及日期探测、正文来源记录；输出：原始时刻及其发布者地址。
+    """
+    source_id = item.get("source_id")
+    if source_id not in {"arxiv_ai", "huggingface_papers", "papers_with_code"}:
+        return None
+    link = urlsplit(item.get("canonical_url") or item.get("url") or "")
+    if source_id == "arxiv_ai" and link.hostname in {"arxiv.org", "www.arxiv.org"}:
+        paper = re.fullmatch(r"/abs/(\d{4}\.\d{4,6})(?:v\d+)?/?", link.path)
+    elif source_id != "arxiv_ai" and link.hostname == "huggingface.co":
+        paper = re.fullmatch(r"/papers/(\d{4}\.\d{4,6})/?", link.path)
+    else:
+        return None
+    if not paper:
+        return None
+    metadata = item.get("metadata") or {}
+    probe = metadata.get("publication_time_probe") or {}
+    source = metadata.get("content_source") or {}
+    evidence = [(source.get("published_at"), source.get("url"))]
+    if probe.get("status") == "success":
+        evidence.insert(0, (probe.get("published_at"), probe.get("final_url")))
+    for stamp, url in evidence:
+        publisher = urlsplit(url or "")
+        if (publisher.hostname in {"arxiv.org", "www.arxiv.org"}
+                and publisher.path.rstrip("/") in {
+                    f"/abs/{paper[1]}", f"/abs/{paper[1]}v1",
+                }):
+            parsed = _declared_datetime(stamp or "")
+            if parsed and parsed.tzinfo is not None:
+                return stamp, url
+    return None
+
+
 def original_publication_time(item: dict, timezone: str = "Asia/Shanghai") -> str | None:
     """处理：取得原文时间并保留日精度，发现平台时间不替代原文。
     输入：规范条目与目标时区，原文日期来自已有来源元数据。
     输出：规范发表时间或日期，原文日期未知时为空。
     """
     metadata = item.get("metadata") or {}
+    paper = paper_publication_evidence(item)
+    if paper:
+        return normalize_time(paper[0], timezone)
     original = str((metadata.get("content_source") or {}).get("published_at") or "")
     if item.get("source_id") == "bbc_world" and metadata.get("publication_time_missing"):
         return normalize_time(original, timezone)
@@ -89,6 +141,20 @@ def original_publication_time(item: dict, timezone: str = "Asia/Shanghai") -> st
     feed = (normalize_time(feed_raw, timezone) if feed_time and feed_time.tzinfo else
             normalize_time(str(item.get("published_at") or ""), timezone))
     page_time = _declared_datetime(original)
+    if (item.get("source_id") == "nature_news" and metadata.get("published_precision") == "date"
+            and page_time and page_time.utcoffset() == timedelta(0)
+            and page_time.time().isoformat() == "00:00:00"
+            and page_time.date().isoformat() == feed_raw):
+        # Nature 原文的 UTC 午夜与官方 RSS 的同一日一致时，沿用明确的日精度。
+        return feed_raw
+    if item.get("source_id") == "un_press":
+        # 联合国稿页以纽约午夜占位；官方 RSS 的逐稿 pubDate 保留实际发布时分秒。
+        if (metadata.get("feed_url") == "https://press.un.org/en/rss.xml"
+                and feed_time and feed_time.tzinfo):
+            return feed
+        if (page_time is None or page_time.tzinfo is None
+                or not any((page_time.hour, page_time.minute, page_time.second))):
+            return None
     if page_time is None:
         return feed
     page_date = normalize_time(original, timezone)
@@ -108,11 +174,20 @@ def published_on_date(item: dict, day: str, cutoff: str | None = None) -> bool:
     输入：规范文章、本版日期及可选截止时间。
     输出：原文属于当日且未晚于冻结时刻时为真，未知日期排除。
     """
-    stamp = original_publication_time(item)
-    end = normalize_time(cutoff or "", "Asia/Shanghai")
+    return publication_on_date(
+        original_publication_time(item), day, normalize_time(cutoff or "", "Asia/Shanghai")
+    )
+
+
+def publication_on_date(stamp: str | None, day: str, cutoff: str | None) -> bool:
+    """处理：判断来源声明的原发时间是否属于本版。
+    输入：上海时区的原发时间、本版日期与冻结截止时间。
+    输出：按来源的日或时刻精度判断是否入选。
+    """
     return bool(stamp and stamp[:10] == day and (
-        len(stamp) == 10 or not end or len(end) == 10
-        or datetime.fromisoformat(stamp) <= datetime.fromisoformat(end)))
+        len(stamp) == 10 or not cutoff or len(cutoff) == 10
+        or datetime.fromisoformat(stamp) <= datetime.fromisoformat(cutoff)
+    ))
 
 
 def in_window(value: str | None, start: datetime, end: datetime) -> bool:

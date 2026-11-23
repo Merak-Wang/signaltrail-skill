@@ -111,82 +111,16 @@
                   "type": "string",
                   "minLength": 10
                 },
-                "importance": {
-                  "type": "integer",
-                  "minimum": 0,
-                  "maximum": 100
-                },
-                "confidence": {
-                  "type": "number",
-                  "minimum": 0,
-                  "maximum": 1
-                },
-                "status": {
-                  "enum": [
-                    "NEW",
-                    "UPD",
-                    "CONF",
-                    "REV",
-                    "WATCH",
-                    "CLOSED"
-                  ]
-                },
+                "importance": {"$ref": "#/$defs/importanceScore"},
+                "confidence": {"$ref": "#/$defs/confidence"},
+                "status": {"$ref": "#/$defs/eventStatus"},
                 "source_refs": {
                   "type": "array",
                   "minItems": 1,
-                  "items": {
-                    "type": "object",
-                    "required": [
-                      "item_id",
-                      "title",
-                      "url",
-                      "access",
-                      "role"
-                    ],
-                    "properties": {
-                      "item_id": {
-                        "type": "string"
-                      },
-                      "title": {
-                        "type": "string"
-                      },
-                      "url": {
-                        "type": "string",
-                        "format": "uri"
-                      },
-                      "access": {
-                        "enum": [
-                          "full_text",
-                          "partial",
-                          "metadata_only",
-                          "verification_required"
-                        ]
-                      },
-                      "role": {
-                        "type": "string"
-                      },
-                      "published_at": {
-                        "type": "string"
-                      },
-                      "collected_at": {
-                        "type": "string"
-                      }
-                    },
-                    "additionalProperties": true
-                  }
+                  "items": {"$ref": "#/$defs/sourceReference"}
                 },
-                "evidence_notes": {
-                  "type": "array",
-                  "items": {
-                    "type": "string"
-                  }
-                },
-                "tags": {
-                  "type": "array",
-                  "items": {
-                    "type": "string"
-                  }
-                },
+                "evidence_notes": {"$ref": "#/$defs/textList"},
+                "tags": {"$ref": "#/$defs/textList"},
                 "importance_breakdown": {
                   "type": "object",
                   "required": [
@@ -241,16 +175,7 @@
                   "type": "string",
                   "minLength": 10
                 },
-                "primary_source": {
-                  "type": "object",
-                  "required": ["id", "name", "url"],
-                  "properties": {
-                    "id": {"type": "string", "minLength": 1},
-                    "name": {"type": "string", "minLength": 1},
-                    "url": {"type": "string", "format": "uri"}
-                  },
-                  "additionalProperties": false
-                },
+                "primary_source": {"$ref": "#/$defs/primarySource"},
                 "image": {
                   "type": "object",
                   "required": ["url", "caption", "credit"],
@@ -409,71 +334,23 @@
           "claim": {
             "type": "string"
           },
-          "facts": {
-            "type": "array",
-            "minItems": 1,
-            "items": {
-              "type": "string"
-            }
-          },
+          "facts": {"$ref": "#/$defs/requiredTextList"},
           "reasoning": {
             "type": "string",
             "minLength": 10
           },
-          "confidence": {
-            "type": "number",
-            "minimum": 0,
-            "maximum": 1
-          },
-          "evidence_event_ids": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            }
-          },
-          "counter_evidence": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            }
-          },
-          "scenarios": {
-            "type": "array",
-            "minItems": 1,
-            "items": {
-              "type": "string"
-            }
-          },
+          "confidence": {"$ref": "#/$defs/confidence"},
+          "evidence_event_ids": {"$ref": "#/$defs/textList"},
+          "counter_evidence": {"$ref": "#/$defs/textList"},
+          "scenarios": {"$ref": "#/$defs/requiredTextList"},
           "scenario_basis": {
             "type": "string",
             "minLength": 10
           },
-          "implications": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            }
-          },
-          "actions": {
-            "type": "array",
-            "minItems": 1,
-            "items": {
-              "type": "string"
-            }
-          },
-          "watch_signals": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            }
-          },
-          "invalidation_signals": {
-            "type": "array",
-            "minItems": 1,
-            "items": {
-              "type": "string"
-            }
-          },
+          "implications": {"$ref": "#/$defs/textList"},
+          "actions": {"$ref": "#/$defs/requiredTextList"},
+          "watch_signals": {"$ref": "#/$defs/textList"},
+          "invalidation_signals": {"$ref": "#/$defs/requiredTextList"},
           "state_change": {
             "enum": [
               "new",
@@ -545,30 +422,9 @@
             "type": "string",
             "minLength": 1
           },
-          "causal_chain": {
-            "type": "array",
-            "minItems": 2,
-            "items": {
-              "type": "string",
-              "minLength": 1
-            }
-          },
-          "assumptions": {
-            "type": "array",
-            "minItems": 1,
-            "items": {
-              "type": "string",
-              "minLength": 1
-            }
-          },
-          "evidence_gaps": {
-            "type": "array",
-            "minItems": 1,
-            "items": {
-              "type": "string",
-              "minLength": 1
-            }
-          },
+          "causal_chain": {"$ref": "#/$defs/multiEntryTextList"},
+          "assumptions": {"$ref": "#/$defs/nonemptyTextList"},
+          "evidence_gaps": {"$ref": "#/$defs/nonemptyTextList"},
           "confidence_rationale": {
             "type": "string",
             "minLength": 10
@@ -604,14 +460,7 @@
           "type": "string",
           "minLength": 20
         },
-        "consensus": {
-          "type": "array",
-          "minItems": 1,
-          "items": {
-            "type": "string",
-            "minLength": 1
-          }
-        },
+        "consensus": {"$ref": "#/$defs/nonemptyTextList"},
         "tensions": {
           "type": "array",
           "minItems": 1,
@@ -620,24 +469,13 @@
             "required": ["issue", "perspectives", "source_of_difference"],
             "properties": {
               "issue": {"type": "string", "minLength": 1},
-              "perspectives": {
-                "type": "array",
-                "minItems": 2,
-                "items": {"type": "string", "minLength": 1}
-              },
+              "perspectives": {"$ref": "#/$defs/multiEntryTextList"},
               "source_of_difference": {"type": "string", "minLength": 1}
             },
             "additionalProperties": false
           }
         },
-        "transmission_chain": {
-          "type": "array",
-          "minItems": 2,
-          "items": {
-            "type": "string",
-            "minLength": 1
-          }
-        },
+        "transmission_chain": {"$ref": "#/$defs/multiEntryTextList"},
         "shared_watch_signals": {
           "type": "array",
           "minItems": 3,
@@ -647,31 +485,12 @@
             "minLength": 1
           }
         },
-        "revision_triggers": {
-          "type": "array",
-          "minItems": 1,
-          "items": {
-            "type": "string",
-            "minLength": 1
-          }
-        },
-        "evidence_event_ids": {
-          "type": "array",
-          "minItems": 1,
-          "items": {
-            "type": "string",
-            "minLength": 1
-          }
-        }
+        "revision_triggers": {"$ref": "#/$defs/nonemptyTextList"},
+        "evidence_event_ids": {"$ref": "#/$defs/nonemptyTextList"}
       },
       "additionalProperties": false
     },
-    "changes": {
-      "type": "array",
-      "items": {
-        "type": "string"
-      }
-    },
+    "changes": {"$ref": "#/$defs/textList"},
     "tomorrow_watch_items": {
       "type": "array",
       "items": {
@@ -709,25 +528,16 @@
         "additionalProperties": true
       }
     },
-    "source_count": {
-      "type": "integer",
-      "minimum": 0
-    },
-    "event_count": {
-      "type": "integer",
-      "minimum": 0
-    },
-    "brief_count": {
-      "type": "integer",
-      "minimum": 0
-    },
+    "source_count": {"$ref": "#/$defs/nonnegativeInteger"},
+    "event_count": {"$ref": "#/$defs/nonnegativeInteger"},
+    "brief_count": {"$ref": "#/$defs/nonnegativeInteger"},
     "source_metrics": {
       "type": "object",
       "properties": {
-        "configured": {"type": "integer", "minimum": 0},
-        "successful": {"type": "integer", "minimum": 0},
-        "represented": {"type": "integer", "minimum": 0},
-        "pending": {"type": "integer", "minimum": 0}
+        "configured": {"$ref": "#/$defs/nonnegativeInteger"},
+        "successful": {"$ref": "#/$defs/nonnegativeInteger"},
+        "represented": {"$ref": "#/$defs/nonnegativeInteger"},
+        "pending": {"$ref": "#/$defs/nonnegativeInteger"}
       },
       "additionalProperties": false
     },
@@ -776,9 +586,9 @@
           }
         },
         "total_score": {"type": "integer", "minimum": 9, "maximum": 45},
-        "main_defects": {"type": "array", "items": {"type": "string"}},
-        "insufficient_evidence": {"type": "array", "items": {"type": "string"}},
-        "improvements": {"type": "array", "items": {"type": "string"}},
+        "main_defects": {"$ref": "#/$defs/textList"},
+        "insufficient_evidence": {"$ref": "#/$defs/textList"},
+        "improvements": {"$ref": "#/$defs/textList"},
         "continuity_decision": {"enum": ["accept", "selective", "reject"]},
         "exclude_from_continuity": {
           "type": "array",
@@ -802,17 +612,114 @@
         "total_bytes"
       ],
       "properties": {
-        "candidates": {"type": "integer", "minimum": 0},
-        "attached": {"type": "integer", "minimum": 0},
-        "unique_files": {"type": "integer", "minimum": 0},
-        "reused_files": {"type": "integer", "minimum": 0},
-        "preserved_without_image": {"type": "integer", "minimum": 0},
-        "failed": {"type": "integer", "minimum": 0},
-        "skipped_budget": {"type": "integer", "minimum": 0},
-        "total_bytes": {"type": "integer", "minimum": 0}
+        "candidates": {"$ref": "#/$defs/nonnegativeInteger"},
+        "attached": {"$ref": "#/$defs/nonnegativeInteger"},
+        "unique_files": {"$ref": "#/$defs/nonnegativeInteger"},
+        "reused_files": {"$ref": "#/$defs/nonnegativeInteger"},
+        "preserved_without_image": {"$ref": "#/$defs/nonnegativeInteger"},
+        "failed": {"$ref": "#/$defs/nonnegativeInteger"},
+        "skipped_budget": {"$ref": "#/$defs/nonnegativeInteger"},
+        "total_bytes": {"$ref": "#/$defs/nonnegativeInteger"}
       },
       "additionalProperties": false
     }
   },
-  "additionalProperties": true
+  "additionalProperties": true,
+  "$defs": {
+    "primarySource": {
+      "type": "object",
+      "required": [
+        "id",
+        "name",
+        "url"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "url": {
+          "type": "string",
+          "format": "uri"
+        }
+      },
+      "additionalProperties": false
+    },
+    "sourceReference": {
+      "type": "object",
+      "required": [
+        "item_id",
+        "title",
+        "url",
+        "access",
+        "role"
+      ],
+      "properties": {
+        "item_id": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        },
+        "url": {
+          "type": "string",
+          "format": "uri"
+        },
+        "access": {
+          "$ref": "#/$defs/sourceAccess"
+        },
+        "role": {
+          "type": "string"
+        },
+        "published_at": {
+          "type": "string"
+        },
+        "collected_at": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": true
+    },
+    "eventStatus": {
+      "enum": [
+        "NEW",
+        "UPD",
+        "CONF",
+        "REV",
+        "WATCH",
+        "CLOSED"
+      ]
+    },
+    "sourceAccess": {
+      "enum": [
+        "full_text",
+        "partial",
+        "metadata_only",
+        "verification_required"
+      ]
+    },
+    "importanceScore": {"type": "integer", "minimum": 0, "maximum": 100},
+    "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+    "textList": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "requiredTextList": {"$ref": "#/$defs/textList", "minItems": 1},
+    "nonemptyStrings": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "nonemptyTextList": {"$ref": "#/$defs/nonemptyStrings", "minItems": 1},
+    "multiEntryTextList": {"$ref": "#/$defs/nonemptyStrings", "minItems": 2},
+    "nonnegativeInteger": {"type": "integer", "minimum": 0}
+  }
 }

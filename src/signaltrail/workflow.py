@@ -6,6 +6,8 @@ import json
 import os
 import re
 import subprocess
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import replace
 from datetime import datetime, time, timedelta
 from enum import StrEnum
@@ -16,6 +18,7 @@ from uuid import uuid4
 from zoneinfo import ZoneInfo
 
 from .authoring import (
+    CheckedAuthoringDraft,
     assemble_report_draft,
     begin_authoring_session,
     prepare_analysis_packet,
@@ -36,8 +39,10 @@ from .llm_usage.models import safe_label
 from .local_output import write_local_outputs
 from .localization import localized
 from .media import prefetch_index_images
+from .models import SourceResult
 from .monitor import _parse_time as _monitor_time
 from .monitor import fresh_monitor_snapshot_path, refresh_monitor
+from .narrative_store import ArtifactReader
 from .notion import publish_report, sync_user_feedback
 from .reports import save_report
 from .runtime import require_data_root_path, validate_run_data_root
@@ -65,11 +70,8 @@ class RunStatus(StrEnum):
     FAILED = "failed"
 
 
-TERMINAL_STATUSES = {
-    RunStatus.COMPLETED,
-    RunStatus.COMPLETED_PARTIAL,
-    RunStatus.FAILED,
-}
+COMPLETED_STATUSES = {RunStatus.COMPLETED, RunStatus.COMPLETED_PARTIAL}
+TERMINAL_STATUSES = COMPLETED_STATUSES | {RunStatus.FAILED}
 MAX_EVALUATION_ATTEMPTS = 2
 EVALUATION_STALL_SECONDS = 2 * 60 * 60
 
@@ -146,8 +148,7 @@ def _attach_usage_binding(
 
 def _completion_status(run: dict[str, Any]) -> RunStatus:
     """处理：根据待处理来源和预算状态确定运行的最终状态。
-    输入：
-    - ``run``：当前运行清单对象；包含状态、尝试次数、截止时间和产物路径。
+    输入：记录阶段与产物的运行清单。
     输出：封装“根据待处理来源和预算状态确定运行的最终状态”业务结果的 ``RunStatus`` 对象；
       调用方据此继续相邻阶段或识别无结果状态。
     """
@@ -156,160 +157,132 @@ def _completion_status(run: dict[str, Any]) -> RunStatus:
     return RunStatus.COMPLETED
 
 
-def get_edition_status(run_path: Path, data_dir: Path) -> dict[str, Any]:
-    """处理：从运行清单、投影与图文流状态推导整期门禁。
-    输入：运行清单路径和已绑定的数据根目录。
-    输出：报告状态、缺失交付步骤、图文流状态与恢复动作。
+def _edition_slide_delivery(
+    run: dict, run_path: Path, data_dir: Path, report: Path | None, *,
+    local_report_ready: bool, reader: ArtifactReader | None,
+) -> tuple[dict, str | None]:
+    """处理：根据选题、已接受批次和放映页确定图文的下一步。
+    输入：版次清单、实际存在的报告和本次只读操作可复用的产物读取器。
+    输出：图文交付回执及待办步骤；已渲染时仅返回回执。
     """
-    run_path = require_data_root_path(run_path, data_dir, "Run manifest")
-    run = read_json_object(run_path, "Run manifest")
-    validate_run_data_root(run, run_path, data_dir)
+    saved = run.get("artifacts", {}).get("slides", {})
+    state = saved.get("status")
+    receipt = {"status": "missing_plan", "pending_batches": [], "news_count": None,
+               "html_path": None, "packet_paths": [], "next_action": None}
+    if saved.get("no_current_news"):
+        receipt.update(status="prepare_failed", error=saved["error"],
+                       next_action=saved["next_action"])
+        return receipt, "slides_prepare"
+    if state == "review_required":
+        receipt.update(status=state, review=saved["review"],
+                       next_action=saved["next_action"])
+        return receipt, "slides_review"
+
+    plan = Path(str(saved["plan_path"])) if saved.get("plan_path") else None
+    excluded = saved.get("exclude_event_ids", [])
+    gaps = saved.get("evidence_gaps") if state == "failed" else None
+    if gaps or plan is None or not plan.is_file():
+        receipt["error"] = saved.get("error")
+        if gaps:
+            receipt.update(status="evidence_required", evidence_gaps=gaps,
+                           index_path=saved["index_path"])
+            excluded = sorted(set(excluded) | {row["event_id"] for row in gaps})
+        elif state == "failed":
+            receipt["status"] = "prepare_failed"
+        if report is None and state == "failed":
+            return receipt, "slides_prepare"
+        max_news = int(saved.get("max_news", 50))
+        if report:
+            receipt["next_action"] = _slides_finalize_retry(
+                run_path, report, data_dir, max_news, excluded,
+            )
+        return receipt, "slides_prepare"
+    if report is None:
+        receipt["status"] = "unavailable"
+        return receipt, None
+
+    try:
+        from .news_slides import slides_status
+
+        reader = reader or ArtifactReader(data_dir)
+        status = slides_status(plan, data_dir, reader=reader)
+        payload = reader.load(plan, kind="slides-plan")["payload"]
+        revision = read_json_object(report, "Saved report")["revision"]
+        html = report.with_name(f"{run['edition']}-r{revision}-slides.html")
+        max_news = int(saved.get("max_news", 50))
+        if not _slides_plan_matches_selection(payload, max_news, excluded):
+            return {**receipt, "status": "stale_plan", "news_count": status["news_count"],
+                    "html_path": str(html), "next_action": _slides_finalize_retry(
+                        run_path, report, data_dir, max_news, excluded)}, "slides_prepare"
+        pending = status["pending_batches"]
+        rendered = (local_report_ready and not pending
+                    and rendered_slide_deck(plan, html, reader) is not None)
+        packets = saved.get("packet_paths", [])
+        receipt.update(status="rendered" if rendered else status["status"], pending_batches=pending,
+                       news_count=status["news_count"], html_path=str(html),
+                       packet_paths=[packets[i - 1] for i in pending if i <= len(packets)])
+        if rendered:
+            return receipt, None
+        receipt["next_action"] = ("Complete each path in slides.packet_paths, then run "
+                                  f'signaltrail --data-dir "{data_dir}" slides render '
+                                  f'--plan "{plan}"')
+        return receipt, "slides_authoring" if pending else "slides_render"
+    except (ValueError, KeyError, OSError, RuntimeError) as exc:
+        receipt.update(status="unavailable", error=str(exc),
+                       next_action="Inspect or recreate the slide plan.")
+        return receipt, "slides_authoring"
+
+
+def get_edition_status(
+    run_path: Path, data_dir: Path, *, reader: ArtifactReader | None = None,
+) -> dict[str, Any]:
+    """处理：按日报、尾任务、评估和图文的顺序列出未完成的交付。
+    输入：运行清单、数据根和同次操作可共享的图文读取器。
+    输出：整期交付回执，包含待办步骤、文件位置和恢复命令。
+    """
+    run_path, run = _load_run_manifest(run_path, data_dir)
     artifacts = run.get("artifacts", {})
-    report_path = Path(str(artifacts.get("json_path", ""))) if artifacts.get("json_path") else None
-    report_exists = bool(report_path and report_path.is_file())
-    slides_artifact = artifacts.get("slides", {})
-    exclude_event_ids = slides_artifact.get("exclude_event_ids", [])
-    plan_value = slides_artifact.get("plan_path")
-    plan_path = Path(str(plan_value)) if plan_value else None
-    slides: dict[str, Any] = {
-        "status": "missing_plan", "pending_batches": [], "news_count": None,
-        "html_path": None, "packet_paths": [], "next_action": None,
-    }
-    pending_steps: list[str] = []
-    report_ready = (
-        run.get("status") in {RunStatus.COMPLETED, RunStatus.COMPLETED_PARTIAL}
-        and report_exists
-    )
-    if not report_ready:
-        pending_steps.append("report")
-    if report_ready and any(not artifacts.get(key) or not Path(str(artifacts[key])).is_file()
-                            for key in ("markdown_path", "html_path")):
+    report_path = Path(str(artifacts["json_path"])) if artifacts.get("json_path") else None
+    report = report_path if report_path and report_path.is_file() else None
+    local_report_ready = report is not None and run.get("status") in COMPLETED_STATUSES
+
+    def missing_format(fmt: str) -> bool:
+        """处理：核对清单中指定格式的实际文件。
+        输入：日报或尾任务要求的格式名。
+        输出：文件尚未登记或已经不在磁盘上时为真。
+        """
+        value = artifacts.get(f"{fmt}_path")
+        return not value or not Path(str(value)).is_file()
+
+    pending_steps = []
+    if not local_report_ready or any(missing_format(fmt) for fmt in ("markdown", "html")):
         pending_steps.append("report")
     tail = run.get("tail", {})
-    if tail and tail.get("status") != "completed":
+    formats = set(tail.get("requested_formats", [])) & {"html", "pdf"}
+    if "pdf" in set(artifacts.get("requested_formats", [])):
+        formats.add("pdf")
+    if (tail and tail.get("status") != "completed") or any(missing_format(fmt) for fmt in formats):
         pending_steps.append("tail")
-    if tail and tail.get("status") == "completed":
-        for fmt in tail.get("requested_formats", []):
-            path = artifacts.get(f"{fmt}_path")
-            if (fmt in {"html", "pdf"} and (not path or not Path(str(path)).is_file())
-                    and "tail" not in pending_steps):
-                pending_steps.append("tail")
-    requested_formats = set(artifacts.get("requested_formats", []))
-    if tail:
-        requested_formats.update(tail.get("requested_formats", []))
-    if "pdf" in requested_formats:
-        pdf_path = artifacts.get("pdf_path")
-        if (not pdf_path or not Path(str(pdf_path)).is_file()) and "tail" not in pending_steps:
-            pending_steps.append("tail")
-    if run.get("evaluation_requested") and run.get("evaluation", {}).get("status") != "completed":
-        pending_steps.append("evaluation")
+
     evaluation = run.get("evaluation", {})
-    scheduler = evaluation.get("scheduler", {}) if isinstance(evaluation, dict) else {}
-    if (
-        evaluation.get("status") != "completed"
-        and scheduler.get("backend") == "external"
-        and scheduler.get("status") == "awaiting_external"
-    ):
-        evaluation_action = {
-            "backend": "external",
-            "status": "awaiting_external",
-            "dossier_path": scheduler["dossier_path"],
-            "draft_path": scheduler["draft_path"],
-            "finalize_command": scheduler["finalize_command"],
-        }
-    else:
-        evaluation_action = None
-    if slides_artifact.get("no_current_news"):
-        slides.update(status="prepare_failed", error=slides_artifact["error"],
-                      next_action=slides_artifact["next_action"])
-        pending_steps.append("slides_prepare")
-    elif slides_artifact.get("status") == "review_required":
-        slides.update(status="review_required", next_action=slides_artifact["next_action"],
-                      review=slides_artifact["review"])
-        pending_steps.append("slides_review")
-    elif slides_artifact.get("status") == "failed" and slides_artifact.get("evidence_gaps"):
-        replacement_ids = sorted(set(exclude_event_ids) | {
-            row["event_id"] for row in slides_artifact["evidence_gaps"]
-        })
-        slides.update(
-            status="evidence_required", error=slides_artifact.get("error"),
-            evidence_gaps=slides_artifact["evidence_gaps"],
-            index_path=slides_artifact["index_path"],
-            next_action=_slides_finalize_retry(
-                run_path, report_path, data_dir, int(slides_artifact.get("max_news", 50)),
-                replacement_ids,
-            ) if report_exists else None,
-        )
-        pending_steps.append("slides_prepare")
-    elif slides_artifact.get("status") == "failed" and not (
-        plan_path and plan_path.is_file()
-    ):
-        slides["status"] = "prepare_failed"
-        slides["error"] = slides_artifact.get("error")
-        slides["next_action"] = (_slides_finalize_retry(
-            run_path, report_path, data_dir, int(slides_artifact.get("max_news", 50)),
-            exclude_event_ids
-        ) if report_exists else None)
-        pending_steps.append("slides_prepare")
-    elif plan_path and plan_path.is_file() and report_exists:
-        try:
-            from .news_slides import slides_status
-            slide_status = slides_status(plan_path, data_dir)
-            revision = read_json_object(report_path, "Saved report")["revision"]
-            html_path = report_path.with_name(
-                f"{run['edition']}-r{revision}-slides.html"
-            )
-            max_news = int(slides_artifact.get("max_news", 50))
-            if not _slides_plan_matches_selection(plan_path, max_news, data_dir, exclude_event_ids):
-                slides = {"status": "stale_plan", "pending_batches": [],
-                          "news_count": slide_status["news_count"],
-                          "html_path": str(html_path), "packet_paths": [],
-                          "next_action": _slides_finalize_retry(
-                              run_path, report_path, data_dir, max_news, exclude_event_ids)}
-                pending_steps.append("slides_prepare")
-            else:
-                rendered = (
-                    report_ready and not slide_status["pending_batches"]
-                    and _slides_sidecar_matches_plan(plan_path, html_path, data_dir)
-                )
-                slides = {"status": "rendered" if rendered else slide_status["status"],
-                          "pending_batches": slide_status["pending_batches"],
-                          "news_count": slide_status["news_count"], "html_path": str(html_path),
-                          "packet_paths": [slides_artifact.get("packet_paths", [])[i - 1]
-                                           for i in slide_status["pending_batches"]
-                                           if i <= len(slides_artifact.get("packet_paths", []))],
-                          "next_action": (
-                              "Complete each path in slides.packet_paths, then run "
-                              f'signaltrail --data-dir "{data_dir}" slides render '
-                              f'--plan "{plan_path}"'
-                          ) if not rendered else None}
-                if not rendered:
-                    step = ("slides_authoring" if slide_status["pending_batches"]
-                            else "slides_render")
-                    pending_steps.append(step)
-        except (ValueError, KeyError, OSError, RuntimeError) as exc:
-            slides = {"status": "unavailable", "pending_batches": [], "news_count": None,
-                      "html_path": None, "packet_paths": [], "error": str(exc),
-                      "next_action": "Inspect or recreate the slide plan."}
-            pending_steps.append("slides_authoring")
-    elif plan_path and plan_path.is_file():
-        slides["status"] = "unavailable"
-    else:
-        max_news = int(slides_artifact.get("max_news", 50))
-        slides["status"] = (
-            "prepare_failed" if slides_artifact.get("status") == "failed" else "missing_plan"
-        )
-        slides["error"] = slides_artifact.get("error")
-        pending_steps.append("slides_prepare")
-        slides["next_action"] = (_slides_finalize_retry(
-            run_path, report_path, data_dir, max_news, exclude_event_ids
-        ) if report_exists else None)
-    if not report_exists:
+    scheduler = evaluation.get("scheduler", {})
+    assessment = {}
+    if evaluation.get("status") != "completed":
+        if run.get("evaluation_requested"):
+            pending_steps.append("evaluation")
+        if (scheduler.get("backend") == "external"
+                and scheduler.get("status") == "awaiting_external"):
+            assessment["evaluation"] = {key: scheduler[key] for key in (
+                "backend", "status", "dossier_path", "draft_path", "finalize_command")}
+
+    slides, step = _edition_slide_delivery(run, run_path, data_dir, report,
+                                          local_report_ready=local_report_ready, reader=reader)
+    if report is None:
         slides["next_action"] = None
-    report_status = run.get("status")
-    return {"report_status": report_status, "delivery_complete": not pending_steps,
-            "pending_steps": pending_steps, "slides": slides,
-            **({"evaluation": evaluation_action} if evaluation_action else {}),
+    if step:
+        pending_steps.append(step)
+    return {"report_status": run.get("status"), "delivery_complete": not pending_steps,
+            "pending_steps": pending_steps, "slides": slides, **assessment,
             "tail_status": tail.get("status", "missing"),
             "report_path": str(report_path) if report_path else None}
 
@@ -435,27 +408,27 @@ def reconcile_evaluation_scheduler(
 
     job_id = str(scheduler.get("job_id") or "")
     timestamp = checked_at or now_iso("Asia/Shanghai")
+
+    def outcome(status: str, reason: str, **host: Any) -> dict[str, Any]:
+        """处理：合并本次对账结论与原始任务身份。
+        输入：状态、判定依据和宿主可用的任务信息。
+        输出：携带本轮检查时间的调度回执。
+        """
+        return {**scheduler, "status": status, **host, "checked_at": timestamp, "reason": reason}
+
     if scheduler.get("backend") == "metered-local":
         receipt_path = Path(str(scheduler["runner_receipt_path"]))
         if not receipt_path.is_file():
-            return {**scheduler, "status": "unknown", "checked_at": timestamp,
-                    "reason": "metered_process_not_sealed"}
+            return outcome("unknown", "metered_process_not_sealed")
         try:
             receipt = read_json(receipt_path)
             matches = receipt.get("task_id") == scheduler.get("usage_task_id")
             complete = matches and receipt.get("status") == "completed"
         except (OSError, ValueError, AttributeError):
-            return {**scheduler, "status": "reconciliation_failed", "checked_at": timestamp,
-                    "reason": "invalid_metered_receipt"}
-        return {**scheduler, "status": "completed" if complete else "failed",
-                "checked_at": timestamp, "reason": "metered_process_sealed"}
+            return outcome("reconciliation_failed", "invalid_metered_receipt")
+        return outcome("completed" if complete else "failed", "metered_process_sealed")
     if not job_id:
-        return {
-            **scheduler,
-            "status": "unknown",
-            "checked_at": timestamp,
-            "reason": "missing_job_id",
-        }
+        return outcome("unknown", "missing_job_id")
     try:
         completed = subprocess.run(
             ["hermes", "cron", "list", "--all"],
@@ -465,31 +438,16 @@ def reconcile_evaluation_scheduler(
             check=False,
         )
     except (FileNotFoundError, subprocess.SubprocessError):
-        return {
-            **scheduler,
-            "status": "reconciliation_failed",
-            "checked_at": timestamp,
-            "reason": "hermes_cron_unavailable",
-        }
+        return outcome("reconciliation_failed", "hermes_cron_unavailable")
     if completed.returncode:
-        return {
-            **scheduler,
-            "status": "reconciliation_failed",
-            "checked_at": timestamp,
-            "reason": "hermes_cron_list_failed",
-        }
+        return outcome("reconciliation_failed", "hermes_cron_list_failed")
     pattern = re.compile(
         rf"(?ms)^\s*{re.escape(job_id)}\s+\[(?P<status>[^\]]+)\]\s*$"
         rf"(?P<body>.*?)(?=^\s{{2}}[A-Za-z0-9_-]+\s+\[|\Z)"
     )
     match = pattern.search(completed.stdout)
     if match is None:
-        return {
-            **scheduler,
-            "status": "unknown",
-            "checked_at": timestamp,
-            "reason": "job_not_listed",
-        }
+        return outcome("unknown", "job_not_listed")
     host_status = str(match.group("status")).strip().casefold()
     body = match.group("body")
     last_result = None
@@ -516,14 +474,7 @@ def reconcile_evaluation_scheduler(
         if elapsed.total_seconds() > EVALUATION_STALL_SECONDS:
             status = "stale"
             reason = "host_job_stalled"
-    return {
-        **scheduler,
-        "status": status,
-        "host_status": host_status,
-        "last_result": last_result,
-        "checked_at": timestamp,
-        "reason": reason,
-    }
+    return outcome(status, reason, host_status=host_status, last_result=last_result)
 
 
 def schedule_independent_evaluation(
@@ -540,10 +491,7 @@ def schedule_independent_evaluation(
     coverage_targets: dict[str, int] | None = None,
 ) -> dict[str, Any]:
     """处理：在本地交付后创建有界独立评估任务，远程发布保持可选。
-    输入：
-    - ``report_path``：版本化报告 JSON 路径；本地报告是 HTML、PDF 和 Notion 的事实源。
-    - ``index_path``：版本化来源索引 JSON 路径；包含根级规范 items 和来源采集状态。
-    - ``data_dir``：当前运行的唯一数据根；所有状态和版本化产物都必须位于其中。
+    输入：版本化报告路径、版本化来源索引路径、本次运行的数据根。
     - ``report_id``：报告或报告系列的稳定 ID；用于推导跨修订关联键。
     - ``content_hash``：权威报告 JSON 的内容哈希；用于评估调度幂等键。
     - ``publish_notion``：独立评估完成后是否允许追加到已发布 Notion 页面。
@@ -1001,9 +949,7 @@ def edition_window(date_value: str, edition: str, timezone: str) -> dict[str, st
 
 def _update_run(path: Path, run: dict[str, Any], status: RunStatus, **fields: Any) -> None:
     """处理：原子更新运行清单、状态时间戳和迁移历史。
-    输入：
-    - ``path``：当前函数要读取、校验或写入的本地文件路径。
-    - ``run``：当前运行清单对象；包含状态、尝试次数、截止时间和产物路径。
+    输入：本地文件路径、记录阶段与产物的运行清单。
     - ``status``：当前操作或来源状态；值必须属于对应的显式状态模型。
     - ``**fields``：需要原子写入运行清单的字段更新；键受调用阶段控制。
     输出：不返回新数据；完成“原子更新运行清单、状态时间戳和迁移历史”，
@@ -1066,8 +1012,7 @@ def _lock_payload(edition: str, timestamp: str) -> dict[str, Any]:
 
 def _deadline_exceeded(run: dict[str, Any], timestamp: str | None = None) -> bool:
     """处理：判断当前运行是否已经超过确定性截止时间。
-    输入：
-    - ``run``：当前运行清单对象；包含状态、尝试次数、截止时间和产物路径。
+    输入：记录阶段与产物的运行清单。
     - ``timestamp``：用于锁、截止时间或状态迁移的 ISO 时间字符串。
     输出：布尔判断；True 表示满足处理说明中的条件，False 表示不满足且不产生该结果。
     """
@@ -1080,8 +1025,7 @@ def _deadline_exceeded(run: dict[str, Any], timestamp: str | None = None) -> boo
 
 def _runtime_metrics(run: dict[str, Any], completed_at: str) -> dict[str, Any]:
     """处理：根据状态历史计算运行阶段耗时和汇总指标。
-    输入：
-    - ``run``：当前运行清单对象；包含状态、尝试次数、截止时间和产物路径。
+    输入：记录阶段与产物的运行清单。
     - ``completed_at``：运行完成时间；用于计算总耗时和截止状态。
     输出：“根据状态历史计算运行阶段耗时和汇总指标”形成的结构化字典；
       典型键包括 agent_authoring_wait、attempt、authoring、collection、content_enrichment、conte
@@ -1155,16 +1099,15 @@ def _runtime_metrics(run: dict[str, Any], completed_at: str) -> dict[str, Any]:
     }
 
 
-def _enrichment_evidence(index_path: Path, selected_ids: list[str]) -> dict[str, Any]:
+def _enrichment_evidence(index: dict, selected_ids: list[str]) -> dict[str, Any]:
     """处理：从富化索引提取成功条目及其正文证据统计。
     输入：
-    - ``index_path``：版本化来源索引 JSON 路径；包含根级规范 items 和来源采集状态。
+    - ``index``：已加载的版本化来源索引；包含根级规范 items 和来源采集状态。
     - ``selected_ids``：调用方按重要性排序选中的条目 ID；正文阶段只处理这些授权条目。
     输出：“从富化索引提取成功条目及其正文证据统计”形成的结构化字典；
       典型键包括 full_text_item_ids、partial_item_ids、successful_item_ids、unsuccessful_item_id
       s。
     """
-    index = read_json_object(index_path, "Enriched index")
     items = {
         str(item.get("item_id")): item
         for item in index.get("items", [])
@@ -1181,20 +1124,22 @@ def _enrichment_evidence(index_path: Path, selected_ids: list[str]) -> dict[str,
         for item_id in successful
         if items[item_id].get("content_status") == "full_text"
     ]
-    partial = [item_id for item_id in successful if item_id not in set(full_text)]
+    full_text_set = set(full_text)
+    successful_set = set(successful)
+    partial = [item_id for item_id in successful if item_id not in full_text_set]
     return {
         "successful_item_ids": successful,
         "full_text_item_ids": full_text,
         "partial_item_ids": partial,
-        "unsuccessful_item_ids": [item_id for item_id in selected_ids if item_id not in successful],
+        "unsuccessful_item_ids": [
+            item_id for item_id in selected_ids if item_id not in successful_set
+        ],
     }
 
 
 def _validate_enrichment_lineage(run: dict[str, Any], index_path: Path) -> None:
     """处理：确认富化索引直接派生自当前运行登记的原索引。
-    输入：
-    - ``run``：当前运行清单对象；包含状态、尝试次数、截止时间和产物路径。
-    - ``index_path``：版本化来源索引 JSON 路径；包含根级规范 items 和来源采集状态。
+    输入：记录阶段与产物的运行清单、版本化来源索引路径。
     输出：不返回新数据；完成“确认富化索引直接派生自当前运行登记的原索引”，
       副作用限于该处理声明的受控对象或产物。
     """
@@ -1204,7 +1149,8 @@ def _validate_enrichment_lineage(run: dict[str, Any], index_path: Path) -> None:
     expected = [str(item_id) for item_id in enrichment.get("successful_item_ids", [])]
     if not expected:
         return
-    actual = _enrichment_evidence(index_path, expected)["successful_item_ids"]
+    index = read_json_object(index_path, "Enriched index")
+    actual = _enrichment_evidence(index, expected)["successful_item_ids"]
     lost = sorted(set(expected) - set(actual))
     if lost:
         raise ValueError(
@@ -1216,10 +1162,7 @@ def _validate_enrichment_lineage(run: dict[str, Any], index_path: Path) -> None:
 
 def adopt_index_for_run(config: AppConfig, data_dir: Path, index_path: Path) -> Path | None:
     """处理：校验新索引的血缘后把它登记为当前运行产物。
-    输入：
-    - ``config``：已校验的应用配置；提供时区、来源策略、并发限制、预算和输出选项。
-    - ``data_dir``：当前运行的唯一数据根；所有状态和版本化产物都必须位于其中。
-    - ``index_path``：版本化来源索引 JSON 路径；包含根级规范 items 和来源采集状态。
+    输入：已校验的采集和输出配置、本次运行的数据根、版本化来源索引路径。
     输出：指向“校验新索引的血缘后把它登记为当前运行产物”所生成、定位或确认产物的本地路径；
       条件不满足时返回 None。
     """
@@ -1262,6 +1205,7 @@ def _adopt_locked_index(
         data_dir,
         str(index["edition"]),
         collection_window=run.get("collection_window"),
+        selection_only=True,
     )
     collection_metrics = dict(run.get("artifacts", {}).get("collection_metrics", {}))
     was_published = run.get("status") in {
@@ -1322,29 +1266,42 @@ def _adopt_locked_index(
     return run_path
 
 
-def begin_authoring(run_path: Path, data_dir: Path, *, config: AppConfig | None = None,
-                    refresh_context: bool = False) -> Path:
-    """处理：为当前运行创建写作会话并登记全部批次产物路径。
-    输入：
-    - ``run_path``：运行清单 JSON 路径；记录当前阶段、产物血缘、截止时间和恢复动作。
-    - ``data_dir``：当前运行的唯一数据根；所有状态和版本化产物都必须位于其中。
-    输出：指向“为当前运行创建写作会话并登记全部批次产物路径”所生成、定位或确认产物的本地路径。
+def _load_run_manifest(run_path: Path, data_dir: Path) -> tuple[Path, dict[str, Any]]:
+    """处理：确认版次位于其所属的数据根内。
+    输入：运行清单路径和当前数据根。
+    输出：解析后的清单路径及阶段、产物等数据。
     """
     run_path = require_data_root_path(run_path, data_dir, "Run manifest")
     run = read_json_object(run_path, "Run manifest")
     validate_run_data_root(run, run_path, data_dir)
+    return run_path, run
+
+
+@contextmanager
+def _locked_authoring_run(
+    run_path: Path, data_dir: Path, *, timezone: str | None = None,
+) -> Iterator[tuple[Path, dict[str, Any]]]:
+    """处理：取得版次锁后重读清单以核对并发状态。
+    输入：写作中的运行清单、数据根与可选锁时间时区。
+    输出：锁持有期间使用的清单路径和最新状态。
+    """
+    run_path, run = _load_run_manifest(run_path, data_dir)
     if run.get("status") != RunStatus.AWAITING_AUTHORING:
-        raise RuntimeError(
-            f"Run must be awaiting authoring, got {run.get('status')!r}"
-        )
-    date = str(run["date"])
+        raise RuntimeError(f"Run must be awaiting authoring, got {run.get('status')!r}")
     edition = str(run["edition"])
-    lock_path = data_dir / "locks" / f"{date}-{edition}.lock"
-    with exclusive_lock(
-        lock_path,
-        _lock_payload(edition, now_iso(str(run.get("timezone", "Asia/Shanghai")))),
-    ):
-        run = _reload_locked_run(run_path, run, data_dir)
+    lock_path = data_dir / "locks" / f"{run['date']}-{edition}.lock"
+    timezone = str(run.get("timezone", "Asia/Shanghai")) if timezone is None else timezone
+    with exclusive_lock(lock_path, _lock_payload(edition, now_iso(timezone))):
+        yield run_path, _reload_locked_run(run_path, run, data_dir)
+
+
+def begin_authoring(run_path: Path, data_dir: Path, *, config: AppConfig | None = None,
+                    refresh_context: bool = False) -> Path:
+    """处理：为当前运行创建写作会话并登记全部批次产物路径。
+    输入：运行清单路径、本次运行的数据根。
+    输出：指向“为当前运行创建写作会话并登记全部批次产物路径”所生成、定位或确认产物的本地路径。
+    """
+    with _locked_authoring_run(run_path, data_dir) as (run_path, run):
         _require_llm_budget(run, run_path, data_dir, "brief_wave")
         if refresh_context:
             if config is None:
@@ -1355,7 +1312,7 @@ def begin_authoring(run_path: Path, data_dir: Path, *, config: AppConfig | None 
             context_config = replace(config, output=replace(
                 config.output, language=str(run.get("output_language") or "zh-CN")
             ))
-            refreshed = build_context(index_path, context_config, data_dir, edition,
+            refreshed = build_context(index_path, context_config, data_dir, str(run["edition"]),
                                       collection_window=run.get("collection_window"))
             run["artifacts"]["context_path"] = str(refreshed)
         context_path = require_data_root_path(
@@ -1386,28 +1343,21 @@ def accept_authoring_batch(
     batch_id: str,
     result_path: Path,
     data_dir: Path,
-    *, _validated_session: dict[str, Any] | None = None,
+    *,
+    _validated_session: dict[str, Any] | None = None,
+    checked_draft: CheckedAuthoringDraft | None = None,
 ) -> Path:
     """处理：校验并持久化一个模型写作批次的不可变回执。
-    输入：
-    - ``run_path``：运行清单 JSON 路径；记录当前阶段、产物血缘、截止时间和恢复动作。
+    输入：运行清单路径、本次运行的数据根。
     - ``batch_id``：情境计划分配的写作批次 ID；连接授权包、模型结果和接收回执。
     - ``result_path``：模型批次结果 JSON 路径；必须对应当前情境哈希和批次 ID。
-    - ``data_dir``：当前运行的唯一数据根；所有状态和版本化产物都必须位于其中。
+    - ``checked_draft``：同次命令内通过预检的草稿，锁内按实际内容核对后复用。
     输出：指向“校验并持久化一个模型写作批次的不可变回执”所生成、定位或确认产物的本地路径。
     """
-    run_path = require_data_root_path(run_path, data_dir, "Run manifest")
-    run = read_json_object(run_path, "Run manifest")
-    validate_run_data_root(run, run_path, data_dir)
-    if run.get("status") != RunStatus.AWAITING_AUTHORING:
-        raise RuntimeError(
-            f"Run must be awaiting authoring, got {run.get('status')!r}"
-        )
-    lock_path = data_dir / "locks" / f"{run['date']}-{run['edition']}.lock"
-    with exclusive_lock(lock_path, _lock_payload(str(run["edition"]), now_iso("Asia/Shanghai"))):
-        run = _reload_locked_run(run_path, run, data_dir)
+    with _locked_authoring_run(run_path, data_dir, timezone="Asia/Shanghai") as (_, run):
         return submit_authoring_batch(
             run, batch_id, result_path, data_dir, _validated_session=_validated_session,
+            checked_draft=checked_draft,
         )
 
 
@@ -1417,36 +1367,21 @@ def accept_authoring_metrics(
     data_dir: Path,
 ) -> Path:
     """处理：校验并持久化 Hermes 委派任务的批次遥测。
-    输入：
-    - ``run_path``：运行清单 JSON 路径；记录当前阶段、产物血缘、截止时间和恢复动作。
+    输入：运行清单路径、本次运行的数据根。
     - ``metrics_path``：模型委派遥测 JSON 路径；记录 Token、耗时和批次状态。
-    - ``data_dir``：当前运行的唯一数据根；所有状态和版本化产物都必须位于其中。
     输出：指向“校验并持久化 Hermes 委派任务的批次遥测”所生成、定位或确认产物的本地路径。
     """
-    run_path = require_data_root_path(run_path, data_dir, "Run manifest")
-    run = read_json_object(run_path, "Run manifest")
-    validate_run_data_root(run, run_path, data_dir)
-    if run.get("status") != RunStatus.AWAITING_AUTHORING:
-        raise RuntimeError(
-            f"Run must be awaiting authoring, got {run.get('status')!r}"
-        )
-    lock_path = data_dir / "locks" / f"{run['date']}-{run['edition']}.lock"
-    with exclusive_lock(lock_path, _lock_payload(str(run["edition"]), now_iso("Asia/Shanghai"))):
-        run = _reload_locked_run(run_path, run, data_dir)
+    with _locked_authoring_run(run_path, data_dir, timezone="Asia/Shanghai") as (_, run):
         return record_authoring_metrics(run, metrics_path, data_dir)
 
 
 def get_authoring_status(run_path: Path, data_dir: Path) -> dict[str, Any]:
     """处理：读取会话回执和截止时间，返回当前写作进度。
-    输入：
-    - ``run_path``：运行清单 JSON 路径；记录当前阶段、产物血缘、截止时间和恢复动作。
-    - ``data_dir``：当前运行的唯一数据根；所有状态和版本化产物都必须位于其中。
+    输入：运行清单路径、本次运行的数据根。
     输出：“读取会话回执和截止时间，返回当前写作进度”形成的结构化字典；
       键值表达该处理定义的业务记录或查找关系。
     """
-    run_path = require_data_root_path(run_path, data_dir, "Run manifest")
-    run = read_json_object(run_path, "Run manifest")
-    validate_run_data_root(run, run_path, data_dir)
+    _, run = _load_run_manifest(run_path, data_dir)
     return inspect_authoring_status(run, data_dir)
 
 
@@ -1456,16 +1391,12 @@ def prefetch_authoring_media(
     media_config: MediaConfig | None = None,
 ) -> dict[str, Any]:
     """处理：根据当前情境候选预热安全图片缓存，并把警告和统计写回运行清单。
-    输入：
-    - ``run_path``：运行清单 JSON 路径；记录当前阶段、产物血缘、截止时间和恢复动作。
-    - ``data_dir``：当前运行的唯一数据根；所有状态和版本化产物都必须位于其中。
+    输入：运行清单路径、本次运行的数据根。
     - ``media_config``：图片下载、格式、安全、缓存和报告预算配置。
     输出：“根据当前情境候选预热安全图片缓存，并把警告和统计写回运行清单”形成的结构化字典；
       典型键包括 completed_at、receipt_path、schema_version。
     """
-    run_path = require_data_root_path(run_path, data_dir, "Run manifest")
-    run = read_json_object(run_path, "Run manifest")
-    validate_run_data_root(run, run_path, data_dir)
+    _, run = _load_run_manifest(run_path, data_dir)
     authoring = run.get("artifacts", {}).get("authoring", {})
     session_path = require_data_root_path(
         Path(str(authoring.get("session_path") or "")),
@@ -1520,28 +1451,12 @@ def prepare_authoring_analysis(
     allow_degraded: bool = False,
 ) -> Path:
     """处理：汇总已接收写作批次并创建受情境哈希约束的跨栏目分析任务包。
-    输入：
-    - ``run_path``：运行清单 JSON 路径；记录当前阶段、产物血缘、截止时间和恢复动作。
-    - ``data_dir``：当前运行的唯一数据根；所有状态和版本化产物都必须位于其中。
+    输入：运行清单路径、本次运行的数据根。
     - ``allow_degraded``：达到截止条件后是否允许使用明确标记的降级内容继续组装。
     输出：指向“汇总已接收写作批次并创建受情境哈希约束的跨栏目分析任务包”所生成、定位或确认产物的
       本地路径。
     """
-    run_path = require_data_root_path(run_path, data_dir, "Run manifest")
-    run = read_json_object(run_path, "Run manifest")
-    validate_run_data_root(run, run_path, data_dir)
-    if run.get("status") != RunStatus.AWAITING_AUTHORING:
-        raise RuntimeError(
-            f"Run must be awaiting authoring, got {run.get('status')!r}"
-        )
-    date = str(run["date"])
-    edition = str(run["edition"])
-    lock_path = data_dir / "locks" / f"{date}-{edition}.lock"
-    with exclusive_lock(
-        lock_path,
-        _lock_payload(edition, now_iso(str(run.get("timezone", "Asia/Shanghai")))),
-    ):
-        run = _reload_locked_run(run_path, run, data_dir)
+    with _locked_authoring_run(run_path, data_dir) as (run_path, run):
         _require_llm_budget(run, run_path, data_dir, "analysis")
         prepared = prepare_analysis_packet(
             run,
@@ -1585,28 +1500,12 @@ def assemble_authoring(
     data_dir: Path,
 ) -> Path:
     """处理：合并已验证简报与分析结果，生成可交给确定性报告编译器的草稿。
-    输入：
-    - ``run_path``：运行清单 JSON 路径；记录当前阶段、产物血缘、截止时间和恢复动作。
+    输入：运行清单路径、本次运行的数据根。
     - ``analysis_path``：上游模型生成并已通过契约校验的跨栏目分析 JSON 路径。
-    - ``data_dir``：当前运行的唯一数据根；所有状态和版本化产物都必须位于其中。
     输出：指向“合并已验证简报与分析结果，
       生成可交给确定性报告编译器的草稿”所生成、定位或确认产物的本地路径。
     """
-    run_path = require_data_root_path(run_path, data_dir, "Run manifest")
-    run = read_json_object(run_path, "Run manifest")
-    validate_run_data_root(run, run_path, data_dir)
-    if run.get("status") != RunStatus.AWAITING_AUTHORING:
-        raise RuntimeError(
-            f"Run must be awaiting authoring, got {run.get('status')!r}"
-        )
-    date = str(run["date"])
-    edition = str(run["edition"])
-    lock_path = data_dir / "locks" / f"{date}-{edition}.lock"
-    with exclusive_lock(
-        lock_path,
-        _lock_payload(edition, now_iso(str(run.get("timezone", "Asia/Shanghai")))),
-    ):
-        run = _reload_locked_run(run_path, run, data_dir)
+    with _locked_authoring_run(run_path, data_dir) as (run_path, run):
         assembled = assemble_report_draft(run, analysis_path, data_dir)
         authoring = run["artifacts"]["authoring"]
         authoring.update(
@@ -1640,13 +1539,8 @@ def prepare_edition(
     restart: bool = False,
 ) -> Path:
     """处理：创建或恢复日报运行，确定采集窗口并生成权威来源索引与写作情境。
-    输入：
-    - ``config``：已校验的应用配置；提供时区、来源策略、并发限制、预算和输出选项。
-    - ``data_dir``：当前运行的唯一数据根；所有状态和版本化产物都必须位于其中。
+    输入：已校验的采集和输出配置、本次运行的数据根、浏览器窗口显示选项、持久化浏览器配置目录、浏览器通道。
     - ``edition``：日报版本标识，默认为 daily；morning/evening 用于历史兼容；参与窗口和产物命名。
-    - ``headed``：是否显示真实浏览器窗口；人工登录或验证场景需要开启。
-    - ``profile_dir``：持久化浏览器 Profile 目录；保存用户已授权的浏览器会话。
-    - ``browser_channel``：Playwright 浏览器通道名称；为空时使用配置或默认 Chromium。
     - ``restart``：是否放弃可恢复的未完成运行并显式创建新运行。
     输出：指向“创建或恢复日报运行，
       确定采集窗口并生成权威来源索引与写作情境”所生成、定位或确认产物的本地路径。
@@ -1745,6 +1639,7 @@ def prepare_edition(
             monitor_warning = None
             monitor_refreshed = False
             monitor_reused = False
+            shared_listing_pages: dict[tuple[str, str], SourceResult] = {}
             if config.monitor.enabled:
                 if config.monitor.reuse_fresh_snapshot_before_edition:
                     monitor_path = fresh_monitor_snapshot_path(
@@ -1774,9 +1669,10 @@ def prepare_edition(
                     monitor_path is None or missing_sources
                 ):
                     try:
-                        monitor_path = (
-                            refresh_monitor(config, data_dir, only_source_ids=missing_sources)
-                            if monitor_path is not None else refresh_monitor(config, data_dir)
+                        monitor_path = refresh_monitor(
+                            config, data_dir,
+                            only_source_ids=missing_sources if monitor_path is not None else None,
+                            shared_listing_pages=None if headed else shared_listing_pages,
                         )
                         monitor_refreshed = True
                     except Exception as exc:
@@ -1790,6 +1686,7 @@ def prepare_edition(
                 profile_dir=profile_dir,
                 browser_channel=browser_channel,
                 collection_window=run["collection_window"],
+                shared_listing_pages=shared_listing_pages,
             )
             index = read_json_object(index_path, "Collected index")
             source_rows = [
@@ -1851,6 +1748,7 @@ def prepare_edition(
                 data_dir,
                 edition,
                 collection_window=run["collection_window"],
+                selection_only=True,
             )
             run["artifacts"]["context_path"] = str(context_path)
             _update_run(
@@ -1877,6 +1775,34 @@ def prepare_edition(
             raise
 
 
+def _slide_enrichment_queue(
+    index: dict, config: AppConfig, data_dir: Path, priorities: list[str], handled: set[str],
+) -> tuple[int, list[str]]:
+    """处理：按当期图文选题与证据缺口排列待补证的条目。
+    输入：本批索引、来源配置、已处理条目与用户指定的优先项。
+    输出：候选总数和待取正文的有序 ID；原发日期订正后可从新索引重算。
+    """
+    from .collection_diagnostics import content_gaps
+    from .news_slides import review_candidates
+
+    indexed = {item["item_id"]: item for item in index["items"]}
+    unknown = set(priorities) - indexed.keys()
+    if unknown:
+        raise ValueError("Items missing from canonical index: " + ", ".join(sorted(unknown)))
+    candidates = review_candidates(None, index, 50)["candidates"]
+    candidate_ids = (ref["item_id"] for row in candidates for ref in row["sources"])
+    queue = dict.fromkeys([*priorities, *candidate_ids])
+    sources = {source.id for source in [*config.sources, *config.monitor_sources]}
+    remaining = []
+    for key in queue:
+        item = indexed[key]
+        completion = (item.get("metadata") or {}).get("content_completion") or {}
+        if (key not in handled and item.get("source_id") in sources
+                and completion.get("status") != "with_gaps" and content_gaps(item, data_dir)):
+            remaining.append(key)
+    return len(queue), remaining
+
+
 def enrich_edition(
     run_path: Path,
     config: AppConfig,
@@ -1889,15 +1815,8 @@ def enrich_edition(
     slides_candidates: bool = False,
 ) -> Path:
     """处理：按预算提取正文，并生成新的不可变富化索引修订。
-    输入：
-    - ``run_path``：运行清单 JSON 路径；记录当前阶段、产物血缘、截止时间和恢复动作。
-    - ``config``：已校验的应用配置；提供时区、来源策略、并发限制、预算和输出选项。
-    - ``data_dir``：当前运行的唯一数据根；所有状态和版本化产物都必须位于其中。
+    输入：运行清单路径、已校验的采集和输出配置、本次运行的数据根、本阶段条目上限、浏览器窗口显示选项、持久化浏览器配置目录、浏览器通道。
     - ``selected_ids``：调用方按重要性排序选中的条目 ID；正文阶段只处理这些授权条目。
-    - ``max_items``：本步骤允许处理或返回的最大条目数；同时受全局预算限制。
-    - ``headed``：是否显示真实浏览器窗口；人工登录或验证场景需要开启。
-    - ``profile_dir``：持久化浏览器 Profile 目录；保存用户已授权的浏览器会话。
-    - ``browser_channel``：Playwright 浏览器通道名称；为空时使用配置或默认 Chromium。
     输出：指向“按预算提取正文，并生成新的不可变富化索引修订”所生成、定位或确认产物的本地路径。
     """
     run_path = require_data_root_path(run_path, data_dir, "Run manifest")
@@ -1929,38 +1848,16 @@ def enrich_edition(
         if isinstance(pending, dict) and pending.get("slides_candidates"):
             slides_candidates = True
         candidate_receipt = None
-        if slides_candidates and run.get("status") != RunStatus.EXTRACTING_CONTENT:
-            from .collection_diagnostics import content_gaps
-            from .news_slides import review_candidates
-
-            index = read_json_object(index_path, "Run index")
-            indexed = {item["item_id"]: item for item in index["items"]}
-            review = review_candidates(None, index, 50)
-            candidate_ids = list(dict.fromkeys(
-                source["item_id"] for row in review["candidates"]
-                for source in row["sources"]
-            ))
-            unknown = set(selected_ids) - indexed.keys()
-            if unknown:
-                raise ValueError("Items missing from canonical index: "
-                                 + ", ".join(sorted(unknown)))
-            queue = list(dict.fromkeys([*selected_ids, *candidate_ids]))
-            source_ids = {source.id for source in [*config.sources, *config.monitor_sources]}
-            selected_ids = [item_id for item_id in queue
-                            if indexed[item_id].get("source_id") in source_ids
-                            and content_gaps(indexed[item_id], data_dir)
-                            and ((indexed[item_id].get("metadata") or {}).get(
-                                "content_completion") or {}).get("status") != "with_gaps"]
-            candidate_receipt = {"candidate_count": len(queue),
-                                 "skipped_count": len(queue) - len(selected_ids)}
         previous_ids = list(run.get("artifacts", {}).get("selected_item_ids", []))
-        requested_ids = [
-            item_id
-            for item_id in dict.fromkeys(selected_ids)
-            if item_id not in previous_ids
-        ]
-        if candidate_receipt is not None:
-            candidate_receipt["skipped_count"] += len(selected_ids) - len(requested_ids)
+        handled = set(previous_ids)
+        priorities = selected_ids
+        if slides_candidates and run.get("status") != RunStatus.EXTRACTING_CONTENT:
+            count, selected_ids = _slide_enrichment_queue(
+                read_json_object(index_path, "Run index"), config, data_dir, priorities, handled,
+            )
+            candidate_receipt = {"candidate_count": count,
+                                 "skipped_count": count - len(selected_ids)}
+        requested_ids = [key for key in dict.fromkeys(selected_ids) if key not in handled]
         requested_limit = (100 if slides_candidates else config.budget.max_fulltext_per_run
                            ) if max_items is None else max_items
         remaining_budget = (requested_limit if slides_candidates else max(
@@ -2042,21 +1939,17 @@ def enrich_edition(
                 ),
             ),
         )
+        enriched_index = read_json_object(index_path, "Enriched index")
         context_path = build_context(
             index_path,
             context_config,
             data_dir,
             edition,
             collection_window=run["collection_window"],
+            index=enriched_index,
         )
-        evidence = _enrichment_evidence(index_path, cumulative_ids)
-        enriched_index = read_json_object(index_path, "Enriched index")
-        content_metrics = (
-            enriched_index.get("content_metrics", {})
-            if isinstance(enriched_index, dict)
-            and isinstance(enriched_index.get("content_metrics"), dict)
-            else {}
-        )
+        evidence = _enrichment_evidence(enriched_index, cumulative_ids)
+        content_metrics = enriched_index.get("content_metrics")
         enrichment = {
             "requested": len(requested_ids),
             "accepted": len(accepted_ids),
@@ -2066,12 +1959,16 @@ def enrich_edition(
             "per_domain_concurrency": config.browser.per_domain_concurrency,
             **evidence,
         }
-        if content_metrics:
+        if isinstance(content_metrics, dict) and content_metrics:
             enrichment["pipeline"] = content_metrics
         if candidate_receipt is not None:
+            # 原发日期订正可能让储备报道递补，剩余工作以输出索引为准。
+            _, remaining_ids = _slide_enrichment_queue(
+                enriched_index, config, data_dir, priorities, set(cumulative_ids),
+            )
             enrichment["slides_candidates"] = {
                 **candidate_receipt, "supplemented_count": len(accepted_ids),
-                "remaining_count": len(requested_ids) - len(accepted_ids),
+                "remaining_count": len(remaining_ids),
             }
         run["artifacts"].update(
             {
@@ -2103,9 +2000,7 @@ def _coverage_targets_for_run(
     data_dir: Path,
 ) -> dict[str, int] | None:
     """处理：从当前情境或降级状态读取来源覆盖目标。
-    输入：
-    - ``run``：当前运行清单对象；包含状态、尝试次数、截止时间和产物路径。
-    - ``data_dir``：当前运行的唯一数据根；所有状态和版本化产物都必须位于其中。
+    输入：记录阶段与产物的运行清单、本次运行的数据根。
     输出：“从当前情境或降级状态读取来源覆盖目标”形成的结构化字典；
       键值表达该处理定义的业务记录或查找关系。
     """
@@ -2166,10 +2061,8 @@ def _require_current_context_schema(
     data_dir: Path,
 ) -> None:
     """处理：确认草稿声明当前情境 schema 版本，防止旧任务包进入报告编译。
-    输入：
+    输入：记录阶段与产物的运行清单、本次运行的数据根。
     - ``draft``：待完成的报告草稿对象；必须带当前情境 schema 和血缘字段。
-    - ``run``：当前运行清单对象；包含状态、尝试次数、截止时间和产物路径。
-    - ``data_dir``：当前运行的唯一数据根；所有状态和版本化产物都必须位于其中。
     输出：不返回新数据；完成“确认草稿声明当前情境 schema 版本，防止旧任务包进入报告编译”，
       副作用限于该处理声明的受控对象或产物。
     """
@@ -2193,6 +2086,47 @@ def _require_current_context_schema(
         )
 
 
+def _delivered_slide_plan(
+    plan_path: Path, report_path: Path, index_path: Path, review_path: Path,
+    max_news: int, excludes: list[str], data_dir: Path,
+) -> dict | None:
+    """处理：在正式图文已发布时沿用当时冻结的计划。
+    输入：显式选定的计划及本期日报、索引、选题审核和数量设置。
+    输出：完全匹配现有投影的计划信息，其他情况交给正常准备流程。
+    """
+    from .narrative_store import file_ref
+    from .news_slides import slides_status
+
+    reader = ArtifactReader(data_dir)
+    plan = reader.load(plan_path, kind="slides-plan")
+    payload = plan["payload"]
+    sidecar = report_path.with_name(report_path.stem + "-slides.html")
+    if not (
+        plan["parents"].get("report") == file_ref(report_path, data_dir)
+        and plan["parents"].get("index") == file_ref(index_path, data_dir)
+        and payload.get("candidate_review") == read_json_object(review_path, "Candidate review")
+        and _slides_plan_matches_selection(payload, max_news, excludes)
+        and rendered_slide_deck(plan_path, sidecar, reader)
+    ):
+        return None
+    status = slides_status(plan_path, data_dir, reader=reader)
+    if status["pending_batches"]:
+        return None
+    return {
+        **status, "status": "rendered", "plan_path": str(plan_path.resolve()),
+        "report_path": str(report_path), "index_path": str(index_path),
+        "source_index_path": str(index_path), "review_path": str(review_path),
+        "max_news": max_news, "exclude_event_ids": excludes, "html_path": str(sidecar),
+        "batch_count": len(payload["batches"]), "budget": payload["budget"],
+        "reserved_output_tokens": 0,
+        "packet_paths": [
+            str(path.resolve())
+            for number in range(1, len(payload["batches"]) + 1)
+            for path in sorted(plan_path.parent.glob(f"slides-packet-{number}-r*.json"))[:1]
+        ],
+    }
+
+
 def _prepare_edition_slides(run: dict, run_path: Path, data_dir: Path,
                             config: AppConfig | None = None, *,
                             review_explicit: bool = False,
@@ -2212,6 +2146,15 @@ def _prepare_edition_slides(run: dict, run_path: Path, data_dir: Path,
     index_path = Path(str(artifacts["index_path"]))
     previous_slides = artifacts.get("slides", {})
     review_path = previous_slides.get("review_path")
+    if review_explicit and review_path and slides_reuse_plan is not None:
+        delivered = _delivered_slide_plan(
+            slides_reuse_plan, Path(artifacts["json_path"]), index_path, Path(review_path),
+            slides_max_news, exclude_event_ids, data_dir,
+        )
+        if delivered is not None:
+            artifacts["slides"] = delivered
+            _update_run(run_path, run, RunStatus(run["status"]), artifacts=artifacts)
+            return
     if plan_path and Path(str(plan_path)).is_file():
         from .narrative_store import file_ref, load_artifact
 
@@ -2219,15 +2162,17 @@ def _prepare_edition_slides(run: dict, run_path: Path, data_dir: Path,
             old = load_artifact(Path(plan_path), data_dir, kind="slides-plan")
             bound_index = Path(previous_slides.get("index_path") or artifacts["index_path"])
             matches = (
-                _slides_plan_matches_selection(Path(plan_path), slides_max_news, data_dir,
-                                               exclude_event_ids)
+                _slides_plan_matches_selection(old["payload"], slides_max_news, exclude_event_ids)
                 and old["parents"].get("report") == file_ref(Path(artifacts["json_path"]), data_dir)
                 and old["parents"].get("index") == file_ref(bound_index, data_dir)
                 and previous_slides.get("source_index_path", str(index_path)) == str(index_path)
             )
         except (ValueError, OSError):
             matches = False
-        if matches and not review_path and slides_reuse_plan is None:
+        if (
+            matches and not review_explicit and slides_reuse_plan is None
+            and (not review_path or previous_slides.get("status") == "rendered")
+        ):
             return
         if not matches and not review_explicit:
             review_path = None
@@ -2341,43 +2286,39 @@ def _slides_next_action(run: dict, run_path: Path, data_dir: Path) -> str:
     rendered = Path(str(run["artifacts"]["json_path"])).with_name(
         f"{report['edition']}-r{report['revision']}-slides.html"
     )
-    if _slides_sidecar_matches_plan(Path(str(plan)), rendered, data_dir):
+    if rendered_slide_deck(Path(str(plan)), rendered, ArtifactReader(data_dir)):
         return "News slides are rendered."
     return "Complete all artifacts.slides.packet_paths with the host, then run " \
         "slides render --plan artifacts.slides.plan_path."
 
 
-def _slides_sidecar_matches_plan(plan_path: Path, sidecar: Path, data_dir: Path) -> bool:
+def rendered_slide_deck(plan_path: Path, sidecar: Path, reader: ArtifactReader) -> Path | None:
     """处理：确认报告侧边栏放映文件来自当前图文计划。
-    输入：当前不可变计划、报告旁的HTML投影和数据根目录。
-    输出：仅当计划子级deck及其HTML与侧边栏逐字节相同时返回真。
+    输入：当前不可变计划、报告旁的 HTML 投影与本次读取器。
+    输出：对应当前报告放映页的 deck 修订路径，尚未渲染时返回空值。
     """
-    from .narrative_store import load_artifact, parent_path
-
     decks = sorted(
         plan_path.parent.glob("slides-deck-r*.json"),
         key=lambda path: int(path.stem.rsplit("-r", 1)[1]), reverse=True,
     )
     for deck_path in decks:
-        deck = load_artifact(deck_path, data_dir, kind="slides-deck")
-        if parent_path(deck, "plan", data_dir).resolve() != plan_path.resolve():
+        deck = reader.load(deck_path, kind="slides-deck")
+        if reader.parent_path(deck, "plan") != plan_path.resolve():
             continue
         deck_html = deck_path.with_suffix(".html")
-        return deck_html.is_file() and sidecar.is_file() and (
-            deck_html.read_bytes() == sidecar.read_bytes()
-        )
-    return False
+        if (deck_html.is_file() and sidecar.is_file()
+                and deck_html.read_bytes() == sidecar.read_bytes()):
+            return deck_path
+        break
+    return None
 
 
-def _slides_plan_matches_selection(plan_path: Path, max_news: int, data_dir: Path,
+def _slides_plan_matches_selection(payload: dict, max_news: int,
                                    exclude_event_ids: list[str] | None = None) -> bool:
     """处理：检查计划预算与本期要求的候选范围和选择规则一致。
-    输入：图文计划路径、当前数量上限和数据根目录。
+    输入：已读取的计划内容、当前数量上限和排除的事件。
     输出：旧日期过滤计划或不同数量的计划返回假，防止误复用。
     """
-    from .narrative_store import load_artifact
-
-    payload = load_artifact(plan_path, data_dir, kind="slides-plan")["payload"]
     return (payload.get("selection_policy") in {
                 "report-admitted-importance-v1", "edition-day-reviewed-v1"}
             and payload.get("budget", {}).get("max_news") == max_news
@@ -2395,6 +2336,171 @@ def _slides_finalize_retry(run_path: Path, report_path: Path, data_dir: Path,
         f'--report "{report_path}" --slides-max-news {max_news} --defer-tail'
         + "".join(f' --slides-exclude-event-id "{event_id}"'
                   for event_id in (exclude_event_ids or []))
+    )
+
+
+def _apply_evaluation_request(run: dict, run_path: Path, evaluate: bool,
+                              backend: str | None) -> bool:
+    """处理：合并本次评分请求与清单中记录的选择，并保存后端。
+    输入：锁内清单、是否显式评分及可选后端。
+    输出：本期是否需要独立评分。
+    """
+    requested = bool(evaluate or run.get("evaluation_requested", False))
+    if evaluate or backend:
+        _update_run(run_path, run, RunStatus(run["status"]), evaluation_requested=requested,
+                    evaluation_backend=_evaluation_backend(run, backend))
+    return requested
+
+
+def _publish_edition_report(run: dict, report_path: Path, data_dir: Path,
+                            config_path: Path | None, *, force: bool = False) -> dict:
+    """处理：发布已保存的日报并登记页面与就绪时间。
+    输入：运行清单、报告修订、数据根和本次 Notion 发布选项。
+    输出：页面 ID 和发布状态，由调用阶段保存到运行清单。
+    """
+    page_id, status = publish_report(report_path, data_dir, force=force, config_path=config_path)
+    publication = {"page_id": page_id, "status": status}
+    run["artifacts"]["notion"] = publication
+    timezone = str(run.get("timezone", "Asia/Shanghai"))
+    run.setdefault("milestones", {})["notion_ready_at"] = now_iso(timezone)
+    return publication
+
+
+def _resume_completed_edition(run: dict, run_path: Path, data_dir: Path,
+                              evaluation_requested: bool) -> None:
+    """处理：恢复已定稿版次的尾任务或独立评分。
+    输入：已取得版次锁的清单及其评分选择。
+    输出：清单中的下一步命令；待执行的尾任务保留原进度。
+    """
+    tail = run.get("tail", {})
+    if isinstance(tail, dict) and tail.get("status") in {
+        "pending",
+        "running",
+        "partial",
+    }:
+        return
+    evaluation = run.get("evaluation", {})
+    if (
+        evaluation_requested
+        and isinstance(evaluation, dict)
+        and evaluation.get("status") != "completed"
+    ):
+        evaluation = _schedule_evaluation_attempt(
+            run,
+            run_path,
+            data_dir,
+            publish_notion=bool(run.get("publication")),
+        )
+        _update_run(
+            run_path,
+            run,
+            RunStatus(run["status"]),
+            evaluation=evaluation,
+            next_action=(
+                "Independent evaluation is pending and will run asynchronously."
+                if evaluation["scheduler"]["status"]
+                in {"scheduled", "unknown", "reconciliation_failed"}
+                else "Automatic evaluator scheduling failed; retry finalize-edition."
+            ) + " Then " + _slides_next_action(run, run_path, data_dir),
+        )
+    else:
+        _update_run(
+            run_path, run, RunStatus(run["status"]),
+            next_action=_slides_next_action(run, run_path, data_dir),
+        )
+
+
+def _save_local_edition(run: dict, run_path: Path, report_path: Path, data_dir: Path,
+                        requested_output: OutputConfig, media_config: MediaConfig | None,
+                        *, defer_tail: bool) -> None:
+    """处理：校验草稿和冻结索引，保存当前版次的报告及证据统计。
+    输入：锁内清单、报告草稿、数据根及前台输出配置。
+    输出：清单中的本地文件和完成时间；可恢复阶段复用已保存的修订。
+    """
+    recoverable = {
+        RunStatus.AWAITING_AUTHORING,
+        RunStatus.FINALIZING,
+        RunStatus.PUBLISHING,
+    }
+    if run.get("status") not in recoverable:
+        # 终态和前置阶段都不能隐式跳转，恢复入口只接受明确列出的阶段。
+        raise RuntimeError(f"Run is not ready to finalize, got {run.get('status')!r}")
+
+    date, edition = str(run["date"]), str(run["edition"])
+    timezone = str(run.get("timezone", "Asia/Shanghai"))
+    draft = read_json_object(report_path, "Report draft")
+    draft.setdefault("date", date)
+    draft.setdefault("edition", edition)
+    if draft.get("date") != date or draft.get("edition") != edition:
+        raise ValueError("Report draft date and edition must match the run manifest")
+    _require_current_context_schema(draft, run, data_dir)
+
+    artifacts = run["artifacts"]
+    index_path = require_data_root_path(
+        Path(artifacts["index_path"]), data_dir, "Final report index"
+    )
+    _validate_enrichment_lineage(run, index_path)
+    if artifacts.get("json_path"):
+        return
+    # 本地权威报告尚未产生时才执行编译；重试会复用已保存的不可变报告。
+    _update_run(run_path, run, RunStatus.FINALIZING)
+    try:
+        if defer_tail and "html" not in requested_output.formats:
+            raise ValueError(
+                "--defer-tail requires HTML in output.formats because HTML "
+                "is the foreground deliverable"
+            )
+        local_output = (
+            replace(
+                requested_output,
+                formats=[
+                    value
+                    for value in requested_output.formats
+                    if value != "pdf"
+                ],
+            )
+            if defer_tail
+            else requested_output
+        )
+        saved = save_report(
+            report_path,
+            index_path,
+            data_dir,
+            output_config=local_output,
+            media_config=media_config,
+            coverage_targets=_coverage_targets_for_run(run, data_dir),
+            brief_plan_item_ids=brief_plan_item_ids_for_run(run, data_dir),
+        )
+    except Exception as exc:
+        _update_run(
+            run_path,
+            run,
+            RunStatus.AWAITING_AUTHORING,
+            updated_at=now_iso(timezone),
+            error=f"{type(exc).__name__}: {exc}",
+            next_action="Fix the report draft and retry finalize-edition.",
+        )
+        raise
+    artifacts.update(saved)
+    milestones = dict(run.get("milestones", {}))
+    milestones["local_html_ready_at"] = now_iso(timezone)
+    saved_report = read_json_object(
+        Path(artifacts["json_path"]), "Saved report"
+    )
+    full_text = artifacts.get("enrichment", {}).get("full_text_item_ids", [])
+    artifacts["evidence_metrics"] = {
+        "featured_events": int(saved_report.get("event_count", 0)),
+        "successful_fulltext_items": len(full_text),
+        "analysis_without_fulltext": bool(
+            saved_report.get("analyses") and not full_text
+        ),
+    }
+    _update_run(
+        run_path,
+        run,
+        RunStatus.FINALIZING,
+        artifacts=artifacts,
+        milestones=milestones,
     )
 
 
@@ -2417,10 +2523,7 @@ def finalize_edition(
     app_config: AppConfig | None = None,
 ) -> Path:
     """处理：编译并校验写作草稿，创建不可变报告及本地投影，再登记可恢复发布状态。
-    输入：
-    - ``run_path``：运行清单 JSON 路径；记录当前阶段、产物血缘、截止时间和恢复动作。
-    - ``report_path``：版本化报告 JSON 路径；本地报告是 HTML、PDF 和 Notion 的事实源。
-    - ``data_dir``：当前运行的唯一数据根；所有状态和版本化产物都必须位于其中。
+    输入：运行清单路径、版本化报告路径、本次运行的数据根。
     - ``publish``：本地定稿后是否执行已配置的远程发布。
     - ``force_publish``：是否绕过相同内容哈希的远程发布幂等跳过。
     - ``notion_config``：可选 Notion 映射配置路径；提供时覆盖默认 configs/notion.yaml。
@@ -2459,168 +2562,31 @@ def finalize_edition(
         if slides_review is not None:
             run.setdefault("artifacts", {}).setdefault("slides", {})["review_path"] = str(
                 slides_review.resolve())
-        if evaluate or evaluation_backend:
-            _update_run(
-                run_path, run, RunStatus(run["status"]),
-                evaluation_requested=(
-                    True if evaluate else bool(run.get("evaluation_requested", False))
-                ),
-                evaluation_backend=_evaluation_backend(run, evaluation_backend),
-            )
-        evaluation_requested = bool(run.get("evaluation_requested", False))
-        if run.get("status") in {
-            RunStatus.COMPLETED,
-            RunStatus.COMPLETED_PARTIAL,
-        }:
-            if run.get("artifacts", {}).get("json_path"):
-                run.setdefault("artifacts", {}).setdefault("slides", {})[
-                    "max_news"
-                ] = slides_max_news
-                run["artifacts"]["slides"]["exclude_event_ids"] = slides_exclude_event_ids
-                _prepare_edition_slides(run, run_path, data_dir, app_config,
-                                        review_explicit=slides_review is not None,
-                                        slides_reuse_plan=slides_reuse_plan)
-            tail = run.get("tail", {})
-            if isinstance(tail, dict) and tail.get("status") in {
-                "pending",
-                "running",
-                "partial",
-            }:
-                return run_path
-            evaluation = run.get("evaluation", {})
-            if (
-                evaluation_requested
-                and isinstance(evaluation, dict)
-                and evaluation.get("status") != "completed"
-            ):
-                evaluation = _schedule_evaluation_attempt(
-                    run,
-                    run_path,
-                    data_dir,
-                    publish_notion=bool(run.get("publication")),
-                )
-                _update_run(
-                    run_path,
-                    run,
-                    RunStatus(run["status"]),
-                    evaluation=evaluation,
-                    next_action=(
-                        "Independent evaluation is pending and will run asynchronously."
-                        if evaluation["scheduler"]["status"]
-                        in {"scheduled", "unknown", "reconciliation_failed"}
-                        else "Automatic evaluator scheduling failed; retry finalize-edition."
-                    ) + " Then " + _slides_next_action(run, run_path, data_dir),
-                )
-            elif not (isinstance(tail, dict) and tail.get("status") in {
-                "pending", "running", "partial",
-            }):
-                _update_run(
-                    run_path, run, RunStatus(run["status"]),
-                    next_action=_slides_next_action(run, run_path, data_dir),
-                )
-            return run_path
-        recoverable = {
-            RunStatus.AWAITING_AUTHORING,
-            RunStatus.FINALIZING,
-            RunStatus.PUBLISHING,
-        }
-        if run.get("status") not in recoverable:
-            # 终态和前置阶段都不能隐式跳转，恢复入口只接受明确列出的阶段。
-            raise RuntimeError(f"Run is not ready to finalize, got {run.get('status')!r}")
-
-        draft = read_json_object(report_path, "Report draft")
-        draft.setdefault("date", date)
-        draft.setdefault("edition", edition)
-        if draft.get("date") != date or draft.get("edition") != edition:
-            raise ValueError("Report draft date and edition must match the run manifest")
-        _require_current_context_schema(draft, run, data_dir)
-
-        artifacts = run["artifacts"]
-        index_path = require_data_root_path(
-            Path(artifacts["index_path"]), data_dir, "Final report index"
+        evaluation_requested = _apply_evaluation_request(
+            run, run_path, evaluate, evaluation_backend,
         )
-        _validate_enrichment_lineage(run, index_path)
-        if not artifacts.get("json_path"):
-            # 本地权威报告尚未产生时才执行编译；重试会复用已保存的不可变报告。
-            _update_run(run_path, run, RunStatus.FINALIZING)
-            try:
-                requested_output = output_config or OutputConfig()
-                if defer_tail and "html" not in requested_output.formats:
-                    raise ValueError(
-                        "--defer-tail requires HTML in output.formats because HTML "
-                        "is the foreground deliverable"
-                    )
-                local_output = (
-                    replace(
-                        requested_output,
-                        formats=[
-                            value
-                            for value in requested_output.formats
-                            if value != "pdf"
-                        ],
-                    )
-                    if defer_tail
-                    else requested_output
-                )
-                saved = save_report(
-                    report_path,
-                    index_path,
-                    data_dir,
-                    output_config=local_output,
-                    media_config=media_config,
-                    coverage_targets=_coverage_targets_for_run(run, data_dir),
-                    brief_plan_item_ids=brief_plan_item_ids_for_run(run, data_dir),
-                )
-            except Exception as exc:
-                _update_run(
-                    run_path,
-                    run,
-                    RunStatus.AWAITING_AUTHORING,
-                    updated_at=now_iso(timezone),
-                    error=f"{type(exc).__name__}: {exc}",
-                    next_action="Fix the report draft and retry finalize-edition.",
-                )
-                raise
-            run["artifacts"].update(saved)
-            artifacts = run["artifacts"]
-            milestones = dict(run.get("milestones", {}))
-            milestones["local_html_ready_at"] = now_iso(timezone)
-            saved_report = read_json_object(
-                Path(artifacts["json_path"]), "Saved report"
-            )
-            full_text = artifacts.get("enrichment", {}).get(
-                "full_text_item_ids", []
-            )
-            artifacts["evidence_metrics"] = {
-                "featured_events": int(saved_report.get("event_count", 0)),
-                "successful_fulltext_items": len(full_text),
-                "analysis_without_fulltext": bool(
-                    saved_report.get("analyses") and not full_text
-                ),
-            }
-            _update_run(
-                run_path,
-                run,
-                RunStatus.FINALIZING,
-                artifacts=artifacts,
-                milestones=milestones,
-            )
+        already_completed = run.get("status") in COMPLETED_STATUSES
+        requested_output = output_config or OutputConfig()
+        if not already_completed:
+            _save_local_edition(run, run_path, report_path, data_dir, requested_output,
+                                media_config, defer_tail=defer_tail)
+
+        artifacts = run.get("artifacts", {})
         if artifacts.get("json_path"):
-            run.setdefault("artifacts", {}).setdefault("slides", {})[
-                "max_news"
-            ] = slides_max_news
-            run["artifacts"]["slides"]["exclude_event_ids"] = slides_exclude_event_ids
+            artifacts.setdefault("slides", {}).update(max_news=slides_max_news,
+                                                      exclude_event_ids=slides_exclude_event_ids)
             _prepare_edition_slides(run, run_path, data_dir, app_config,
-                                        review_explicit=slides_review is not None,
-                                        slides_reuse_plan=slides_reuse_plan)
-            artifacts = run["artifacts"]
+                                    review_explicit=slides_review is not None,
+                                    slides_reuse_plan=slides_reuse_plan)
+        if already_completed:
+            _resume_completed_edition(run, run_path, data_dir, evaluation_requested)
+            return run_path
         if defer_tail:
             # HTML 是前台交付物；PDF、Notion 与独立评估作为可重试尾部工作延后。
             local_ready_at = str(
                 run.get("milestones", {}).get("local_html_ready_at")
                 or now_iso(timezone)
             )
-            requested_output = output_config or OutputConfig()
             final_status = _completion_status(run)
             tail_command = (
                 f'signaltrail --data-dir "{data_dir}" complete-edition-tail '
@@ -2678,12 +2644,8 @@ def finalize_edition(
         if publish and not publication:
             _update_run(run_path, run, RunStatus.PUBLISHING)
             try:
-                page_id, publication_status = publish_report(
-                    Path(artifacts["json_path"]),
-                    data_dir,
-                    force=force_publish,
-                    config_path=notion_config,
-                )
+                publication = _publish_edition_report(run, Path(artifacts["json_path"]), data_dir,
+                                                      notion_config, force=force_publish)
             except Exception as exc:
                 _update_run(
                     run_path,
@@ -2692,12 +2654,6 @@ def finalize_edition(
                     error=f"{type(exc).__name__}: {exc}",
                 )
                 raise
-            publication = {
-                "page_id": page_id,
-                "status": publication_status,
-            }
-            run["artifacts"]["notion"] = publication
-            run.setdefault("milestones", {})["notion_ready_at"] = now_iso(timezone)
 
         final_status = _completion_status(run)
         evaluation_state = _pending_evaluation(
@@ -2760,9 +2716,7 @@ def complete_edition_tail(
     evaluation_backend: str | None = None,
 ) -> Path:
     """处理：在本地报告完成后补做 PDF、Notion 和独立评估调度。
-    输入：
-    - ``run_path``：运行清单 JSON 路径；记录当前阶段、产物血缘、截止时间和恢复动作。
-    - ``data_dir``：当前运行的唯一数据根；所有状态和版本化产物都必须位于其中。
+    输入：运行清单路径、本次运行的数据根。
     - ``publish``：本地定稿后是否执行已配置的远程发布。
     - ``notion_config``：可选 Notion 映射配置路径；提供时覆盖默认 configs/notion.yaml。
     - ``output_config``：本地 HTML、PDF、桌面交付和打开行为配置。
@@ -2771,13 +2725,8 @@ def complete_edition_tail(
     输出：指向“在本地报告完成后补做 PDF、Notion 和独立评估调度”所生成、定位或确认产物的本地路径
       。
     """
-    run_path = require_data_root_path(run_path, data_dir, "Run manifest")
-    run = read_json_object(run_path, "Run manifest")
-    validate_run_data_root(run, run_path, data_dir)
-    if run.get("status") not in {
-        RunStatus.COMPLETED,
-        RunStatus.COMPLETED_PARTIAL,
-    }:
+    run_path, run = _load_run_manifest(run_path, data_dir)
+    if run.get("status") not in COMPLETED_STATUSES:
         raise RuntimeError(
             f"Tail work requires a locally completed run, got {run.get('status')!r}"
         )
@@ -2787,15 +2736,9 @@ def complete_edition_tail(
     lock_path = data_dir / "locks" / f"{date}-{edition}.lock"
     with exclusive_lock(lock_path, _lock_payload(edition, now_iso(timezone))):
         run = _reload_locked_run(run_path, run, data_dir)
-        if evaluate or evaluation_backend:
-            _update_run(
-                run_path, run, RunStatus(run["status"]),
-                evaluation_requested=(
-                    True if evaluate else bool(run.get("evaluation_requested", False))
-                ),
-                evaluation_backend=_evaluation_backend(run, evaluation_backend),
-            )
-        evaluation_requested = bool(run.get("evaluation_requested", False))
+        evaluation_requested = _apply_evaluation_request(
+            run, run_path, evaluate, evaluation_backend,
+        )
         tail = dict(run.get("tail") or {})
         if tail.get("status") == "completed" and not (
             evaluation_requested and run.get("evaluation", {}).get("status") != "completed"
@@ -2867,17 +2810,8 @@ def complete_edition_tail(
         if publish_requested and not publication:
             # 已存在发布回执时保持幂等；只有缺失时才触发远程写入。
             try:
-                page_id, publication_status = publish_report(
-                    report_path,
-                    data_dir,
-                    config_path=configured_notion_path,
-                )
-                publication = {
-                    "page_id": page_id,
-                    "status": publication_status,
-                }
-                artifacts["notion"] = publication
-                run.setdefault("milestones", {})["notion_ready_at"] = now_iso(timezone)
+                publication = _publish_edition_report(run, report_path, data_dir,
+                                                      configured_notion_path)
             except Exception as exc:
                 errors.append(f"Notion publish failed: {type(exc).__name__}: {exc}")
 
@@ -2915,6 +2849,12 @@ def complete_edition_tail(
         completed_at = now_iso(timezone)
         started = datetime.fromisoformat(tail_started_at)
         completed = datetime.fromisoformat(completed_at)
+        if errors:
+            next_action = "Retry complete-edition-tail; local HTML remains authoritative. Then "
+        elif evaluation_requested and evaluation.get("status") != "completed":
+            next_action = "Wait for the isolated evaluator, then "
+        else:
+            next_action = "Report projections are complete. "
         tail.update(
             {
                 "status": "partial" if errors else "completed",
@@ -2925,18 +2865,7 @@ def complete_edition_tail(
                 ),
                 "warnings": warnings,
                 "errors": errors,
-                "next_action": (
-                    "Retry complete-edition-tail; local HTML remains authoritative. Then "
-                    + _slides_next_action(run, run_path, data_dir)
-                    if errors
-                    else (
-                        "Wait for the isolated evaluator, then "
-                        + _slides_next_action(run, run_path, data_dir)
-                        if evaluation_requested and evaluation.get("status") != "completed"
-                        else "Report projections are complete. "
-                        + _slides_next_action(run, run_path, data_dir)
-                    )
-                ),
+                "next_action": next_action + _slides_next_action(run, run_path, data_dir),
             }
         )
         metrics = dict(run.get("metrics", {}))

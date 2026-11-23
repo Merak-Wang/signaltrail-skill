@@ -12,18 +12,8 @@ from .config import (
     validate_output_config,
 )
 from .runtime import bind_data_root, load_bound_data_root
-from .verification import (
-    capture_verified_page,
-    pending_verification_pages,
-    run_pending_verification,
-    update_verification_portal,
-    wait_for_clicked_verifications,
-    wait_for_visible_verification,
-    write_verification_queue,
-)
 
-__all__ = [
-    "build_parser",
+_VERIFICATION_EXPORTS = (
     "capture_verified_page",
     "pending_verification_pages",
     "run_pending_verification",
@@ -31,7 +21,20 @@ __all__ = [
     "wait_for_clicked_verifications",
     "wait_for_visible_verification",
     "write_verification_queue",
-]
+)
+__all__ = ["build_parser", *_VERIFICATION_EXPORTS]
+
+
+def __getattr__(name: str):
+    """处理：首次导入旧版人工验证入口时才加载浏览器依赖。
+    输入：外部调用者从 CLI 模块请求的导出名。
+    输出：原验证函数，未知属性遵循 Python 模块访问语义。
+    """
+    if name in _VERIFICATION_EXPORTS:
+        from . import verification
+
+        return getattr(verification, name)
+    raise AttributeError(name)
 
 
 def main(argv: list[str] | None = None) -> int:

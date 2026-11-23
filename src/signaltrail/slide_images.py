@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import re
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import ExitStack
+from functools import partial
 from pathlib import Path
 from typing import Any
 from urllib.parse import urljoin, urlsplit
@@ -27,6 +28,7 @@ from .media import (
     _cache_failure,
     _cache_success,
     _cached_download,
+    _domain_tasks,
     _download_image_batch,
     _load_image_cache,
     _write_image_cache,
@@ -36,6 +38,8 @@ from .media import (
 
 _MAX_PAGE_BYTES = 2 * 1024 * 1024
 _ARXIV_HOSTS = {"arxiv.org", "www.arxiv.org"}
+_IMAGE_FILE_FIELDS = ("url", "resolved_url", "local_path", "sha256", "width", "height",
+                      "content_type", "byte_size")
 
 
 class _ArxivFullTextFetchError(ImageDownloadError):
@@ -138,7 +142,8 @@ def _read_page(
     """
     soup, current = fetch_article_page(url, config, client)
     # 正文抽取器负责选取具体正文区域并清理相关推荐等噪声；只取图片，不保存正文。
-    document = extract_document(soup, [], expected_title=title)
+    selectors = ["#detailContent"] if urlsplit(current).hostname == "english.news.cn" else []
+    document = extract_document(soup, selectors, expected_title=title)
     candidates = article_image_candidates(document, title, current)
     candidates.extend({
         "url": image_url, "provenance": "page_metadata", "purpose": "publisher_selected",
@@ -178,11 +183,9 @@ def enrich_slide_images(
     输入：候选新闻、正文阶段的发布页图片、数据根和媒体配置；显式刷新重新读取网页。
     输出：图片候选合并后的新闻列表，以及抓取、复用、下载计数和失败摘要。
     """
-    from copy import deepcopy
+    from .news_slides import _source_image_candidates
 
-    from .news_slides import _news_images
-
-    enriched = deepcopy(news)
+    enriched = [item.copy() for item in news]
     if not config.enabled:
         deduplicated = 0
         for item in enriched:
@@ -214,52 +217,17 @@ def enrich_slide_images(
     source_pages_reused = len(page_results)
     source_failures: list[dict[str, str]] = []
     if len(source_rows) > source_pages_reused:
-        domain_queues: dict[str, list[tuple[str, str]]] = {}
-        for url, (item, source) in source_rows.items():
-            if url in page_results:
-                continue
-            domain = (urlsplit(url).hostname or "unknown").casefold()
-            title = str(source.get("title") or item.get("title") or "")
-            domain_queues.setdefault(domain, []).append((url, title))
-        domains = list(domain_queues)
-        domain_active = dict.fromkeys(domains, 0)
-        domain_cursor = dict.fromkeys(domains, 0)
-        domain_index = 0
+        rows = [
+            (url, str(source.get("title") or item.get("title") or ""))
+            for url, (item, source) in source_rows.items() if url not in page_results
+        ]
         with httpx.Client(
             timeout=config.request_timeout_seconds, follow_redirects=False, trust_env=True,
             headers={"User-Agent": "SignalTrail/1.0"},
         ) as client, ThreadPoolExecutor(max_workers=config.global_concurrency) as pool:
-            def submit_ready(pending: dict) -> None:
-                """处理：从有空位的域名队列提交请求，保持线程只运行可执行任务。
-                输入：未完成 Future 映射及各域待抓文章；域内活动数受媒体配置限制。
-                输出：补足全局并发槽位，不把等待同域限额的任务塞进线程池。
-                """
-                nonlocal domain_index
-                while len(pending) < config.global_concurrency:
-                    submitted = False
-                    for _ in domains:
-                        domain = domains[domain_index]
-                        domain_index = (domain_index + 1) % len(domains)
-                        cursor = domain_cursor[domain]
-                        queue = domain_queues[domain]
-                        if (cursor < len(queue)
-                                and domain_active[domain] < config.per_domain_concurrency):
-                            url, title = queue[cursor]
-                            domain_cursor[domain] = cursor + 1
-                            domain_active[domain] += 1
-                            future = pool.submit(_read_page, url, title, config, client)
-                            pending[future] = (url, domain)
-                            submitted = True
-                            break
-                    if not submitted:
-                        break
-
-            pending: dict = {}
-            submit_ready(pending)
-            while pending:
-                future = next(as_completed(tuple(pending)))
-                url, domain = pending.pop(future)
-                domain_active[domain] -= 1
+            for url, future in _domain_tasks(
+                rows, partial(_read_page, config=config, client=client), pool, config,
+            ):
                 try:
                     page_results[url] = future.result()
                 except _ArxivFullTextFetchError as exc:
@@ -267,19 +235,15 @@ def enrich_slide_images(
                     source_failures.append({"url": url, "reason": str(exc)})
                 except (httpx.HTTPError, ImageDownloadError, OSError, ValueError) as exc:
                     source_failures.append({"url": url, "reason": f"{type(exc).__name__}: {exc}"})
-                submit_ready(pending)
 
     # 用现有合并规则折叠原图、已缓存图与刚抽出的高清变体。
     all_urls: dict[str, tuple[dict[str, Any], str]] = {}
     failed_sources = {failure["url"] for failure in source_failures}
     for item in enriched:
-        refs, indexed, briefs = [], {}, {}
+        merged = {}
         source_urls = [str(source.get("url") or "") for source in item.get("sources", [])]
         for index, source in enumerate(item.get("sources", [])):
-            item_id = f"{item['event_id']}:{index}"
             source_url = str(source.get("url") or "")
-            refs.append({"item_id": item_id, "url": source.get("url", ""),
-                         "title": source.get("title", ""), "access": source.get("access")})
             page = page_results.get(source_url)
             details = [
                 {**image, "url": image.get("url") or image.get("resolved_url")}
@@ -297,15 +261,16 @@ def enrich_slide_images(
                         or image_variant_key(image["url"]) in confirmed
                     ]
                 details.extend(page[0])
-            indexed[item_id] = {
+            article = {
                 "url": source.get("url"), "source_name": source.get("name"),
                 "metadata": {"image_candidate_details": details},
             }
-            briefs[item_id] = {"primary_source": {"name": source.get("name", "")}}
-        event = {"source_refs": refs}
-        merged = _news_images(event, briefs, indexed, preserve_variants=True)
+            for candidate in _source_image_candidates(
+                article, {}, source.get("url"), preserve_variants=True,
+            ):
+                merged.setdefault(candidate["url"], candidate)
         candidates = []
-        for candidate in filter_editorial_templates(merged):
+        for candidate in filter_editorial_templates(list(merged.values())):
             for url in image_resolution_candidates(candidate["url"]):
                 # 新尺寸地址只有来源元数据；像素和缓存路径必须来自该地址的实际下载。
                 detail = (candidate if url == candidate["url"] else
@@ -429,11 +394,15 @@ def enrich_slide_images(
     for item in enriched:
         kept: list[dict] = []
         seen_digests: set[str] = set()
-        for candidate in item.get("images", []):
-            source_url = candidate.get("source_url")
-            candidate = chosen_by_url.get(candidate["url"], candidate).copy()
-            if source_url:
-                candidate["source_url"] = source_url
+        for source_image in item.get("images", []):
+            chosen = chosen_by_url.get(source_image["url"], source_image)
+            candidate = chosen.copy()
+            if chosen.get("source_url") != source_image.get("source_url"):
+                # 共用下载后的文件，图注、署名等仍取自当前报道。
+                candidate = {
+                    **source_image,
+                    **{key: chosen[key] for key in _IMAGE_FILE_FIELDS if key in chosen},
+                }
             url = candidate["url"]
             value = resolved.get(url)
             if isinstance(value, DownloadedImage):

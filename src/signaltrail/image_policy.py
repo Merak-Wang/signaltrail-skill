@@ -12,7 +12,7 @@ _RESIZE_QUERY_HOSTS = {
     "i.abcnewsfe.com", "dam.mediacorp.sg", "www.bbc.com", "ichef.bbci.co.uk",
 }
 _SIZE_QUERY_KEYS = {"w", "width", "h", "height", "dpr"}
-_RESIZE_QUERY_KEYS = _SIZE_QUERY_KEYS | {"q", "quality", "fm", "format", "auto", "fit"}
+_RESIZE_QUERY_KEYS = _SIZE_QUERY_KEYS | {"q", "quality", "fm", "format", "auto"}
 
 _PLACEHOLDER_MARKERS = (
     "placeholder",
@@ -35,12 +35,35 @@ _PLACEHOLDER_FILENAMES = {
     "transparent.gif",
     "transparent.png",
 }
+_GOOGLE_NEWS_SHARE_IMAGE = (
+    "/J6_coFbogxhRI9iM864NL_liGXvsQp2AupsKei7z0cNNfDvGUmWUy20nuUhkREQyrpY4bEeIBuc"
+)
+_SITE_BRANDING_DIGESTS = {
+    "03c3004a26987262a01451e86f1cb372a571d75e55db135553840ad59852ced5",
+    "872cdca296d04a7be7cba2f91f6825164499491bbbec26e2c6dcadb43859c7b0",
+}
+# BBC 同一推广素材的裁切和转码地址保留资产编号。
+_BBC_PROMO_IMAGES = {
+    "2bce6ee0-0b00-11f0-97d3-37df2b293ed1",
+    "f9295fc0-0fde-11f0-ba12-8d27eb561761",  # Future Earth 邮件订阅横幅。
+}
+_PUBLISHER_TEMPLATE_PATHS = {
+    "imgcdn.cna.com.tw": {
+        "/www/images/pic_fb.jpg",
+        "/www/website/img/ad300x223.jpg",
+    },
+    "jingdaily.com": {"/og.png"},
+    # 旧头像资产没有 author 前缀，按人工核对过的确切原图地址识别。
+    "static01.nyt.com": {
+        "/images/2022/08/12/universal/keith-bradsher/keith-bradsher-thumblarge.png",
+        "/images/2022/08/12/universal/keith-bradsher/keith-bradsher-thumbstandard.png",
+    },
+}
 
 
 def is_placeholder_image_url(value: object) -> bool:
     """处理：判断地址是否明显指向占位图而非内容图片。
-    输入：
-    - ``value``：待解析或规范化的单个输入值；非法值按函数契约返回空值或报错。
+    输入：待解析的值。
     输出：布尔判断；True 表示满足处理说明中的条件，False 表示不满足且不产生该结果。
     """
     text = str(value or "").strip()
@@ -54,6 +77,36 @@ def is_placeholder_image_url(value: object) -> bool:
     )
 
 
+def _known_non_story_image(url: object) -> bool:
+    """处理：按经画面核验的主机和资产地址识别站点推广图与作者头像。
+    输入：候选或下载后确认的图片地址。
+    输出：命中已确认的用途时返回真，其他新闻图片按原策略继续筛选。
+    """
+    parsed = urlsplit(str(url or ""))
+    path = unquote(parsed.path)
+    folded = path.casefold()
+    return bool(
+        folded in _PUBLISHER_TEMPLATE_PATHS.get(parsed.hostname or "", ())
+        or (
+            parsed.hostname == "lh3.googleusercontent.com"
+            and path.partition("=")[0] == _GOOGLE_NEWS_SHARE_IMAGE
+        )
+        or (
+            parsed.hostname == "ichef.bbci.co.uk"
+            and folded.startswith("/news/")
+            and folded.rsplit("/", 1)[-1].partition(".")[0] in _BBC_PROMO_IMAGES
+        )
+        or (
+            parsed.hostname == "static01.nyt.com"
+            and re.fullmatch(
+                r"/images/\d{4}/\d{2}/\d{2}/(?:reader-center|multimedia)/"
+                r"(author-[a-z0-9-]+)/\1-thumb(?:large|standard)(?:-v\d+)?\.png",
+                folded,
+            )
+        )
+    )
+
+
 def is_editorial_template(image: dict) -> bool:
     """处理：识别已核实的站点推广、二维码与品牌模板。
     输入：图片地址及原文替代文本、图注。
@@ -63,7 +116,13 @@ def is_editorial_template(image: dict) -> bool:
     path = unquote(parsed.path).casefold()
     label = str(image.get("alt") or "") + " " + str(image.get("caption") or "")
     return bool(
-        re.search(
+        str(image.get("sha256") or "").lower() in _SITE_BRANDING_DIGESTS
+        or _known_non_story_image(image.get("url") or image.get("source_url"))
+        or (
+            image.get("resolved_url") != image.get("url")
+            and _known_non_story_image(image.get("resolved_url"))
+        )
+        or re.search(
             r"(?:qrcode|qr[-_]code|download[-_]app|app[-_]download|/emoji/"
             r"|/file/authors/|/articles/programs/africanews/)", path,
         )
@@ -226,6 +285,15 @@ def image_variant_key(url: str) -> tuple:
         if match:
             return "dw-photo", host, match[1], query
     if host == "ichef.bbci.co.uk":
+        news_asset = re.fullmatch(
+            r"/news/\d+/(?:branded_news|cpsprodpb)/"
+            r"([0-9a-f]{4}/live/[0-9a-f-]{36})\.(?:jpe?g|png)(?:\.webp)?",
+            path,
+            re.I,
+        )
+        if news_asset:
+            # BBC 同资产的带台标分享图和正文图共用图片编号。
+            return "bbc-news-photo", host, news_asset[1], query
         match = re.fullmatch(r"(/ace/(?:standard|branded_news))/\d+/(.+?)(?:\.webp)?", path)
         if match:
             return "bbc-photo", host, match[1], match[2], query
@@ -242,7 +310,7 @@ def image_variant_key(url: str) -> tuple:
         if match:
             return ("wordpress-photo", host, match[1], match[2].lower(),
                     tuple((key, value) for key, value in query
-                          if key not in _RESIZE_QUERY_KEYS
+                          if key not in _RESIZE_QUERY_KEYS | {"fit"}
                           and not (key == "resize" and re.fullmatch(r"\d+,\d+", value))))
     if host == "dam.mediacorp.sg" and "/image/upload/" in path:
         parts = path.split("/")
@@ -254,18 +322,14 @@ def image_variant_key(url: str) -> tuple:
                 parts[position] = ""
         return "cloudinary-photo", host, "/".join(part for part in parts if part), query
     parameters = dict(query)
-    crop_fields = {"rect", "crop", "x", "y", "focal", "fp-x", "fp-y"} & parameters.keys()
-    if parameters.get("crop", "").casefold() == "none":
-        crop_fields.discard("crop")
-    if (host in _RESIZE_QUERY_HOSTS and _SIZE_QUERY_KEYS & parameters.keys()
-            and not crop_fields):
+    if host in _RESIZE_QUERY_HOSTS and _SIZE_QUERY_KEYS & parameters.keys():
         width = _image_dimension(parameters.get("w") or parameters.get("width"))
         height = _image_dimension(parameters.get("h") or parameters.get("height"))
-        # 普通尺寸查询只合并等比版本，保留不同构图与所有非尺寸参数。
+        # 同一构图内合并尺寸与编码版本，裁切、定位和签名参数参与分组。
         ratio = round(width / height, 2) if width and height else None
         return ("query-resize", host, path, ratio,
                 tuple((key, value) for key, value in query
-                      if key not in _RESIZE_QUERY_KEYS
+                      if key not in _RESIZE_QUERY_KEYS | {"ffmt"}
                       and not (key == "crop" and value.casefold() == "none")))
     return "url", url
 

@@ -119,8 +119,7 @@ SECTION_TITLES_EN_V13 = {
 
 def section_titles(language: object) -> dict[str, str]:
     """处理：按输出语言返回规范栏目 ID 到标题的映射。
-    输入：
-    - ``language``：规范语言标识；用于本地化选择或语言一致性判断。
+    输入：输出语言。
     输出：“按输出语言返回规范栏目 ID 到标题的映射”形成的结构化字典；
       键值表达该处理定义的业务记录或查找关系。
     """

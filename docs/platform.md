@@ -40,9 +40,21 @@ Brief planning selects up to 15 eligible current-day articles per source by orig
 
 Collection keeps the complete observed article index and actual access statuses. Before daily admission, article links without an original publication date receive a bounded HTTP metadata request, deduplicated by canonical URL and reusing previously obtained dates. Publisher metadata, article JSON-LD, and source-specific listing fields supply publication dates; update times, ranking times and capture times remain separate. Navigation links are excluded by each publisher's article patterns. A source with accessible older or undated articles remains successful even when its current-day writing count is zero.
 
+When a Xinhua English listing supplies only the edition date, collection reads the original article header before applying the cutoff and sorting. The precise publication timestamp is also used in the report.
+
 For articles that pass the current edition's selection, a complete HTML response from the date probe can also supply the article body. The normal extractor saves reusable full text, structured blocks and image references in the content store. When the article is selected for enrichment, that evidence replaces a second HTTP request. Truncated responses, incomplete text and unresolved tables continue through normal enrichment. Browser responses remain in memory and are never saved as raw HTML.
 
-Weibo uses its official listing endpoint with a configurable public 60s API fallback. Each returned topic records `listing_endpoint`; a heat rank has no original publication date. Hugging Face paper pages supply `paper.publishedAt`, while `submittedOnDailyAt` remains a listing observation. A relative age such as “hours ago” requires an original-page date before daily admission. Year-only and month-only research catalog dates retain their uncertainty.
+For publishers that provide a public Google News sitemap, a configured `feed_urls` entry can collect article headlines, links and original `news:publication_date` values. Forbes uses this route. A sitemap's `lastmod` describes a revision. A zero in the report's source table counts admitted briefs from that configured section up to the cutoff. To establish whether the publisher had a release that day, check its dated archive or an article with an original timestamp.
+
+Reuters collection can also use AOL's public news listing. Only cards labelled Reuters supply reprints, and the linked article's publication metadata governs the daily cutoff. The index retains the AOL article address and the Reuters credit, together with the separately observed Reuters homepage status.
+
+SEC EDGAR records the Atom filing date and update time separately. The filing detail page's `Accepted` field supplies the New York time used for the daily cutoff.
+
+ABC live updates with an `entryId` use the matching update's published time. When that update is missing from the returned page, its publication time remains unknown.
+
+Discovery links can use the publisher's explicit `og:published_time`, as on Mastodon posts. Lobsters archive links are excluded from article selection.
+
+Weibo uses its official listing endpoint with a configurable public 60s API fallback. Each returned topic records `listing_endpoint`. Hugging Face Papers reads the edition's dated paper list as well as the trending list. Paper metadata and the first arXiv submission in the version history can supply original timestamps. `submittedOnDailyAt` and platform activity describe listing or observation. In a retrospective check, a dated public comment can establish that the paper page was already visible at that time. A relative age such as “hours ago” requires an original-page date before daily admission. Year-only and month-only research catalog dates retain their uncertainty.
 
 Google News item dates remain separate from confirmed publisher dates. When an accessible static wrapper has no date, an anonymous browser follows its normal public redirect and reads the publisher's publication metadata. The publisher's complete HTML can supply reusable full text under the same rules. Publisher access failures remain visible, and the resolved original URL remains available for subsequent body retrieval. Aggregate topic pages are excluded from article candidates.
 

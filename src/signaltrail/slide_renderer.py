@@ -15,6 +15,17 @@ from .local_output import _embedded_image_sources
 _ASSET_DIR = project_root() / "assets" / "news-slides"
 
 
+def display_slide_title(value: object) -> str:
+    """处理：移除已确认的站点标题尾缀。
+    输入：原始或已接受的图文标题。
+    输出：仅供图文展示的标题，保留有新闻含义的文本和标点。
+    """
+    title = str(value or "").strip()
+    return re.sub(
+        r"\s+(?:\|\s*兩岸\s*\|\s*中央社\s+CNA|[-–—]\s+RTHK)$", "", title,
+    ) or title
+
+
 def _text(value: object) -> str:
     """处理：把外部字段编码为 HTML 文本或属性值。
 
@@ -72,13 +83,37 @@ def _source_markup(sources: list[dict], language: str) -> str:
             f'<ul>{"".join(details)}</ul></details>') if sources else ""
 
 
-def _gallery_markup(images: list[dict], labels: tuple, data_dir: Path | None,
-                    position: int, image_uri_cache: dict[str, str]) -> str:
-    """处理：把原图与原文图注置于独立主视觉框，保留完整图片查看入口。
-    输入：新闻图片记录、本地缓存目录、页面序号和本次渲染图片 URI 缓存；不改写图注。
-    输出：有图时返回切换图集，无图时返回明确标注的排版示意图形。
+def _preferred_lead(images: list[dict], sources: list[dict]) -> list[dict]:
+    """处理：优先展示有强同篇证据的正文配图，保留其余图位。
+    输入：已选图像、事件绑定的报道 URL 及原始报道标题。
+    输出：唯一一张正文图的替代文字完全匹配同篇标题时将它提到首位。
     """
-    images = select_image_variants(images, data_dir=data_dir)
+    source_titles = {
+        (source.get("url"), title)
+        for source in sources
+        for raw in (str(source.get("title") or ""),)
+        for value in (raw, raw.rsplit(" | ", 1)[0])
+        if source.get("url") and len(title := " ".join(value.casefold().split())) >= 24
+    }
+    matches = [
+        i for i, image in enumerate(images)
+        if image.get("local_path") and image.get("provenance") == "article_body"
+        and (image.get("source_url"), " ".join(str(image.get("alt") or "").casefold().split()))
+        in source_titles
+    ]
+    if len(matches) != 1 or matches[0] == 0:
+        return images
+    index = matches[0]
+    return [images[index], *images[:index], *images[index + 1:]]
+
+
+def _gallery_markup(images: list[dict], sources: list[dict], labels: tuple, data_dir: Path | None,
+                    position: int, image_uri_cache: dict[str, str]) -> tuple[str, bool]:
+    """处理：把原图与原文图注置于独立主视觉框，保留完整图片查看入口。
+    输入：新闻图片与已绑定来源、本地缓存目录、页面序号及图片 URI 缓存；不改写图注。
+    输出：图集或占位的 HTML 片段及实际是否有图，供不同版式选择。
+    """
+    images = _preferred_lead(images, sources)
     figures = []
     for entry in images:
         local_path = str(entry.get("local_path") or "").replace("\\", "/")
@@ -91,46 +126,48 @@ def _gallery_markup(images: list[dict], labels: tuple, data_dir: Path | None,
         )
         source_url = _url(entry.get("source_url"))
         source = (f'<a href="{source_url}" target="_blank" rel="noopener noreferrer">'
-                  f'{labels[7]} ↗</a>') if source_url else ""
+                  f'{labels[6]} ↗</a>') if source_url else ""
         original = _url(entry.get("url") or entry.get("resolved_url"))
         original_link = (
             f'<a href="{original}" target="_blank" rel="noopener noreferrer">'
-            f'{labels[13]} ↗</a>'
+            f'{labels[12]} ↗</a>'
         ) if original else ""
         disabled = "" if url else " disabled"
         figures.append(
             f'<figure data-original="{original}"><div class="image-frame">'
             f'<img src="{url}" alt="{_text(entry.get("alt"))}" loading="lazy">'
-            f'<span class="image-fallback">{labels[8]}</span>'
-            f'<button class="image-open" data-open-image aria-label="{labels[12]}"{disabled}>'
-            f'<span>{labels[12]} ↗</span></button></div>{caption}'
+            f'<span class="image-fallback">{labels[7]}</span>'
+            f'<button class="image-open" data-open-image aria-label="{labels[11]}"{disabled}>'
+            f'<span>{labels[11]} ↗</span></button></div>{caption}'
             f'<div class="image-credit">{_text(entry.get("credit"))} {source} {original_link}'
             '</div></figure>'
         )
     if not figures:
-        return (f'<div class="visual-placeholder" aria-label="{labels[11]}">'
+        return (f'<div class="visual-placeholder" aria-label="{labels[10]}">'
                 '<div class="field-lines" aria-hidden="true"><i></i><i></i><i></i><i></i></div>'
                 f'<span class="placeholder-number" aria-hidden="true">{position:02}</span>'
-                f'<p>{labels[11]}<span> SIGNAL / {position:02}</span></p></div>')
+                f'<p>{labels[10]}<span> SIGNAL / {position:02}</span></p></div>'), False
     controls = (
         '<div class="gallery-controls">'
-        f'<button data-image-prev aria-label="{labels[9]}">↖</button>'
+        f'<button data-image-prev aria-label="{labels[8]}">↖</button>'
         '<span class="image-count"></span>'
-        f'<button data-image-next aria-label="{labels[10]}">↗</button></div>'
+        f'<button data-image-next aria-label="{labels[9]}">↗</button></div>'
     ) if len(figures) > 1 else ""
     return (f'<div class="gallery" data-gallery><div class="visual-topline">'
             f'<span>SOURCE IMAGERY</span><span>FIG. {position:02}</span></div>'
             f'{"".join(figures)}{controls}'
             '<div class="gallery-thumbnails" data-thumbnails></div>'
             '<span class="visual-cross" aria-hidden="true">+</span>'
-            '</div>')
+            '</div>'), True
 
 
-def render_slides_html(deck: dict, data_dir: Path | None = None) -> str:
+def render_slides_html(
+    deck: dict, data_dir: Path | None = None, *, images_selected: bool = False,
+) -> str:
     """处理：读取新闻稿包、装配逐条新闻页并内嵌静态资源。
 
     输入：``deck`` 含标题、语言、日期、报告编号和新闻页；可选 ``data_dir``
-    为本地图片提供数据根。外部文字统一转义，链接仅允许 HTTP(S)。
+    为本地图片提供数据根。由 render_slides 生成并保存的图集已完成选图。
     输出：包含内嵌模板与交互控件的单文件 HTML；本地图片可嵌入，远程图片需联网加载。
     """
     language = "zh-CN" if deck.get("language") == "zh-CN" else "en"
@@ -141,7 +178,6 @@ def render_slides_html(deck: dict, data_dir: Path | None = None) -> str:
             "下一条",
             "全屏",
             "来源",
-            "摘要",
             "讲解",
             "图片来源",
             "图片不可用",
@@ -157,7 +193,6 @@ def render_slides_html(deck: dict, data_dir: Path | None = None) -> str:
             "Next",
             "Fullscreen",
             "Sources",
-            "Summary",
             "Story",
             "Image source",
             "Image unavailable",
@@ -172,7 +207,8 @@ def render_slides_html(deck: dict, data_dir: Path | None = None) -> str:
     toc: list[str] = []
     image_uri_cache: dict[str, str] = {}
     for index, slide in enumerate(deck.get("slides", [])):
-        title = _text(slide.get("title"))
+        headline = display_slide_title(slide.get("title"))
+        title = _text(headline)
         source_names = " · ".join(dict.fromkeys(
             str(source["name"]).strip() for source in slide.get("sources", [])
             if source.get("name") and str(source["name"]).strip()
@@ -192,20 +228,22 @@ def render_slides_html(deck: dict, data_dir: Path | None = None) -> str:
             if line.strip()
         )
         story = (
-            f'<section class="narration-section"><h3><span>↳</span> {labels[6]}</h3>'
+            f'<section class="narration-section"><h3><span>↳</span> {labels[5]}</h3>'
             f'<div class="narration">{paragraphs}</div></section>'
         ) if paragraphs else ""
-        gallery = _gallery_markup(
-            slide.get("images", []), labels, data_dir, index + 1, image_uri_cache
+        images = slide.get("images", [])
+        if not images_selected:
+            images = select_image_variants(images, data_dir=data_dir)
+        gallery, has_gallery = _gallery_markup(
+            images, slide.get("sources", []), labels, data_dir, index + 1, image_uri_cache,
         )
         sources = _source_markup(slide.get("sources", []), language)
         byline = f'<p class="story-sources">{_text(source_names)}</p>' if source_names else ""
-        story_grid_class = "story-grid" if slide.get("images") else "story-grid no-gallery"
-        title_length = len(str(slide.get("title") or ""))
+        story_grid_class = "story-grid" if has_gallery else "story-grid no-gallery"
         headline_class = "headline"
-        if title_length > 28:
+        if len(str(slide.get("title") or "")) > 28:
             headline_class += " compact"
-        if title_length > 40:
+        if len(headline) > 40:
             headline_class += " dense"
         slides.append(
             f'<article class="slide" aria-labelledby="headline-{index}">'
@@ -244,10 +282,10 @@ def render_slides_html(deck: dict, data_dir: Path | None = None) -> str:
         "NO_SCRIPT": "当前浏览器未启用 JavaScript；所有新闻仍可向下阅读。"
         if language == "zh-CN"
         else "JavaScript is unavailable; all stories remain readable below.",
-        "IMAGE_VIEWER": labels[12],
-        "ORIGINAL_IMAGE": labels[13],
-        "IMAGE_PREVIOUS": labels[9],
-        "IMAGE_NEXT": labels[10],
+        "IMAGE_VIEWER": labels[11],
+        "ORIGINAL_IMAGE": labels[12],
+        "IMAGE_PREVIOUS": labels[8],
+        "IMAGE_NEXT": labels[9],
         "CLOSE_IMAGE": "关闭大图" if language == "zh-CN" else "Close image",
         "IMAGE_ZOOM": "原始尺寸" if language == "zh-CN" else "Actual size",
     }

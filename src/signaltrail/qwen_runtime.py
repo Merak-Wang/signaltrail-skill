@@ -107,6 +107,41 @@ def _probe(executable: Path, libraries: Path | None = None) -> tuple[list[tuple[
     return devices, log
 
 
+def _installation_model_dirs(program: Path | None) -> list[Path]:
+    """处理：由已指定的原生程序定位近邻模型目录。
+    输入：实际存在的常驻 worker 或原生程序路径。
+    输出：程序所在目录、相邻 model 目录和所属的标准 Qwen 安装目录。
+    """
+    if program is None or not program.is_file():
+        return []
+    directory = program.resolve().parent
+    candidates = [directory, directory / "model", directory.parent / "model"]
+    candidates.extend(
+        parent / "model" for parent in directory.parents
+        if parent.name == "qwen3" and parent.parent.name == "video-runtime"
+    )
+    return candidates
+
+
+def _has_model_pair(directory: Path) -> bool:
+    """处理：检查同一目录中有无两件已完成的 Qwen Q8 模型。
+    输入：受限发现范围内的运行缓存或原生安装目录。
+    输出：两件固定文件均可读且带 GGUF 文件头时返回真。
+    """
+    try:
+        for name in (MODEL_NAME, MMPROJ_NAME):
+            path = directory / name
+            if not path.is_file():
+                return False
+            with path.open("rb") as handle:
+                header = handle.read(24)
+            if len(header) < 24 or header[:4] != b"GGUF":
+                return False
+    except OSError:
+        return False
+    return True
+
+
 def ensure_qwen_runtime(data_dir: Path, profile: dict, *, device: str | None = None,
                         tts_executable: Path | None = None, model_dir: Path | None = None,
                         proxy: str | None = None) -> dict:
@@ -120,29 +155,45 @@ def ensure_qwen_runtime(data_dir: Path, profile: dict, *, device: str | None = N
     if requested not in {"auto", "cpu", "cuda", "vulkan", "metal"}:
         raise ValueError("TTS device must be auto, cpu, cuda, vulkan or metal")
     system = video_platform()
-    root = data_dir / "video-runtime" / "qwen3"
-    model = Path(model_dir or os.environ.get("SIGNALTRAIL_TTS_MODEL_DIR") or root / "model")
-    model.mkdir(parents=True, exist_ok=True)
-    for name in (MODEL_NAME, MMPROJ_NAME):
-        if not (model / name).is_file():
-            with httpx.Client(proxy=proxy, follow_redirects=True, timeout=180) as client:
-                _download(client, _MODELS + name, model / name)
     supplied = tts_executable or os.environ.get("SIGNALTRAIL_TTS_EXECUTABLE")
-    if supplied and not Path(supplied).is_file():
+    native = Path(supplied).expanduser() if supplied else None
+    if native is not None and not native.is_file():
         raise FileNotFoundError(supplied)
     from .config import resolve_signaltrail_home
     from .runtime import load_bound_data_root
 
     home = resolve_signaltrail_home()
     bound = load_bound_data_root(home) or home
+    root = data_dir / "video-runtime" / "qwen3"
+    explicit_worker = os.environ.get("SIGNALTRAIL_TTS_WORKER")
+    worker_path = Path(explicit_worker).expanduser() if explicit_worker else None
+    explicit_model = model_dir or os.environ.get("SIGNALTRAIL_TTS_MODEL_DIR")
+    model = None
+    if not explicit_model:
+        model_candidates = [
+            root / "model",
+            *_installation_model_dirs(worker_path),
+            *_installation_model_dirs(native),
+            bound / "video-runtime" / "qwen3" / "model",
+        ]
+        model = next((path for path in dict.fromkeys(model_candidates) if _has_model_pair(path)),
+                     None)
+    if model is None:
+        # 自动发现从不补写外部安装。显式路径沿用原先的下载位置。
+        model = Path(explicit_model).expanduser() if explicit_model else root / "model"
+        missing = [name for name in (MODEL_NAME, MMPROJ_NAME) if not (model / name).is_file()]
+        if missing:
+            model.mkdir(parents=True, exist_ok=True)
+            with httpx.Client(proxy=proxy, follow_redirects=True, timeout=180) as client:
+                for name in missing:
+                    _download(client, _MODELS + name, model / name)
     filename = "llama-tts-worker.exe" if system[0] == "Windows" else "llama-tts-worker"
     candidates = [root / "worker" / filename, model.parent / "worker" / filename,
                   bound / "video-runtime" / "qwen3" / "worker" / filename]
-    if supplied:
-        candidates.insert(1, Path(supplied).parent / filename)
-    explicit_worker = os.environ.get("SIGNALTRAIL_TTS_WORKER")
-    if explicit_worker:
-        candidates.insert(0, Path(explicit_worker))
+    if native is not None:
+        candidates.insert(1, native.parent / filename)
+    if worker_path is not None:
+        candidates.insert(0, worker_path)
     worker = next((path.resolve() for path in candidates if path.is_file()), None)
     worker_devices, worker_log = _probe(worker) if worker else ([], "")
     choices = [requested]
@@ -159,7 +210,7 @@ def ensure_qwen_runtime(data_dir: Path, profile: dict, *, device: str | None = N
     selected, device_name, libraries = "cpu", "none", None
     resident = False
     for choice in choices:
-        if choice not in _PACKAGES.get(system, {}) and not supplied:
+        if choice not in _PACKAGES.get(system, {}) and native is None:
             continue
         try:
             matches = [(key, label) for key, label in worker_devices
@@ -169,7 +220,7 @@ def ensure_qwen_runtime(data_dir: Path, profile: dict, *, device: str | None = N
                 selected, device_name = choice, matches[0][0] if matches else "none"
                 resident = True
                 break
-            executable = (Path(supplied).resolve() if supplied
+            executable = (native.resolve() if native is not None
                           else _program(root, system, choice, proxy))
             if choice == "cpu":
                 selected, device_name = "cpu", "none"
@@ -179,7 +230,7 @@ def ensure_qwen_runtime(data_dir: Path, profile: dict, *, device: str | None = N
             missing_library = re.search(
                 r"failed to load|cannot open shared object|specified module could not be found",
                 log, re.IGNORECASE)
-            if (not matches and missing_library and not supplied and choice == "cuda"
+            if (not matches and missing_library and native is None and choice == "cuda"
                     and system in _CUDA_RUNTIME):
                 libraries = root / "cuda-libraries"
                 marker = next(libraries.rglob("*cublas*"), None) if libraries.exists() else None

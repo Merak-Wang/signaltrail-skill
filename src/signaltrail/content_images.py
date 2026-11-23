@@ -56,6 +56,9 @@ def _image_caption(node: Tag, root: Tag) -> str:
         text = re.sub(r"\s+", " ", _inline_text(adjacent)).strip()
         if re.match(r"(?:figure|fig\.?|图)\s*\d+\s*[.:、)]", text, re.I):
             return text
+        if (root.get("id") == "detailContent" and node.parent is adjacent.find_previous_sibling("p")
+                and re.search(r"\(Xinhua(?:/[^()]+)?\)$", text)):
+            return text
     return ""
 
 

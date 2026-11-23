@@ -11,8 +11,34 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from signaltrail.narrative_store import load_artifact, parent_path  # noqa: E402
+from signaltrail.content import synchronize_nested_items  # noqa: E402
+from signaltrail.narrative_store import ArtifactReader  # noqa: E402
 from signaltrail.news_slides import prepare_slides  # noqa: E402
+from signaltrail.runtime import require_data_root_path  # noqa: E402
+from signaltrail.utils import read_json, write_json  # noqa: E402
+
+
+def _copy_benchmark_index(index: Path, data_dir: Path, root: Path) -> Path:
+    """处理：将冻结索引引用的正文和 Feed 文件复制到临时测量目录。
+    输入：已保存索引、原数据根和基准专用数据根。
+    输出：指向临时证据的基准索引，旧计划的父文件仍保留原始字节。
+    """
+    payload = read_json(index)
+    for item in payload["items"]:
+        metadata = item.get("metadata") or {}
+        for record, key in ((item, "content_path"), (metadata, "feed_content_path")):
+            if not record.get(key):
+                continue
+            relative = require_data_root_path(
+                data_dir / record[key], data_dir, "Benchmark evidence",
+            ).relative_to(data_dir)
+            source, target = data_dir / relative, root / relative
+            if source.is_file() and not target.exists():
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(source, target)
+            record[key] = str(target)
+    synchronize_nested_items(payload)
+    return write_json(root / "benchmark-index.json", payload)
 
 
 def benchmark(data_dir: Path, reuse_plan: Path, report: Path, index: Path) -> dict:
@@ -22,31 +48,31 @@ def benchmark(data_dir: Path, reuse_plan: Path, report: Path, index: Path) -> di
     """
     data_dir = data_dir.resolve()
     root = Path(tempfile.mkdtemp(prefix="signaltrail-slide-benchmark-"))
-    old = load_artifact(reuse_plan, data_dir, kind="slides-plan")
-    paths = {report.resolve(), index.resolve(),
-             *(parent_path(old, name, data_dir) for name in old["parents"])}
+    source_reader = ArtifactReader(data_dir)
+    old = source_reader.load(reuse_plan, kind="slides-plan")
+    paths = {report.resolve(), *(source_reader.parent_path(old, name) for name in old["parents"])}
     for path in paths:
         target = root / path.relative_to(data_dir)
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(path, target)
     copied_plan = root / reuse_plan.resolve().relative_to(data_dir)
     shutil.copytree(reuse_plan.parent, copied_plan.parent)
+    benchmark_index = _copy_benchmark_index(index, data_dir, root)
+    copied_report = root / report.resolve().relative_to(data_dir)
+    reader = ArtifactReader(root)
     cases = []
     for name, size, previous in (("baseline_batch4", 4, None),
                                  ("batch5", 5, None),
                                  ("reuse_batch5", 5, copied_plan)):
-        result = prepare_slides(root / report.resolve().relative_to(data_dir),
-                                root / index.resolve().relative_to(data_dir), root,
+        result = prepare_slides(copied_report, benchmark_index, root,
                                 batch_size=size, reuse_plan=previous)
-        plan = load_artifact(Path(result["plan_path"]), root)["payload"]
-        packets = [load_artifact(Path(path), root)["payload"]
-                   for path in result["packet_paths"]]
-        reused = len(plan.get("reused_slides", []))
+        packets = [reader.load(Path(path))["payload"] for path in result["packet_paths"]]
+        reused = result["reused_count"]
         cases.append({
             "case": name, "news_count": result["news_count"], "new_news_count":
-            result["news_count"] - reused, "reused_news_count": reused,
+            result["pending_news_count"], "reused_news_count": reused,
             "pending_packets": len(packets), "estimated_input_tokens":
-            sum(packet["budget"]["estimated_input_tokens"] for packet in packets),
+            result["estimated_input_tokens"],
             "compact_model_input_bytes": sum(len(json.dumps(
                 packet["model_input"], ensure_ascii=False, separators=(",", ":")
             ).encode("utf-8")) for packet in packets),

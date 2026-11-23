@@ -15,7 +15,7 @@ signaltrail --help
 
 Load the root `SKILL.md` in your agent. Keep the resource directory: configuration, templates, schemas, and assets are used at runtime. The Python distribution is `signaltrail-skill`, the command is `signaltrail`, and the module entry point is `python -m signaltrail.cli`.
 
-The installation scripts can optionally sync a copy into a Hermes skill directory. Sync updates matching files and retains extra files; back up customized configuration before updating. `-Editable` on Windows or `--editable` on macOS/Linux uses the original checkout. See [Hermes integration](../references/hermes-integration.md) for host-specific setup.
+Both installers sync the project into the Hermes skill directory and use the same file selection rules. Sync updates matching files and retains extra files; back up customized configuration before updating. `-Editable` on Windows or `--editable` on macOS/Linux uses the original checkout. See [Hermes integration](../references/hermes-integration.md) for host-specific setup.
 
 Windows can use system Edge. Install Chromium in the same Python environment for browser collection on macOS/Linux:
 
@@ -66,8 +66,12 @@ output:
 ```
 
 Titles, summaries, analysis, slides, and speech follow the selected language. Original headlines and source links remain available for reference.
+For a Simplified Chinese edition, briefs from Traditional Chinese sources have a Simplified Chinese main headline, with the publisher's original below.
+Briefs lead with the target-language headline, retain the publisher's original wording below it, and place the TL;DR before the illustration. A publisher supplying just a date is labeled “Publication date.”
 
 ## Sources and article evidence
+
+When a publisher list supplies only a calendar date, a current first-party Feed entry for the same article can supply a more precise publication timestamp. Collection requires compatible dates and matching publisher identity. The edition cutoff still applies after timezone conversion.
 
 Both [sources.yaml](../configs/sources.yaml) and [discovery-sources.yaml](../configs/discovery-sources.yaml) supply regular report sources through their existing module/category mappings. The default catalog has 45 source IDs, with 43 enabled. Each source contributes up to 15 verifiable current-day stories, newest original publication first, after same-source canonical de-duplication. Collection retains the observed evidence within finite public Feed/page boundaries. See [collection extensions](platform.md).
 
@@ -84,6 +88,8 @@ signaltrail --data-dir DATA_DIR extract-content --index INDEX.json --item-id ITE
 signaltrail --data-dir DATA_DIR extract-content --index INDEX.json --item-id ITEM_ID --headed --profile-dir PROFILE_DIR
 ```
 
+For a complete daily edition, `enrich-edition --run RUN.json --all-slide-candidates` continues through the eligible visual candidates in batches of 100. Each batch reuses the latest index and skips items already handled. `--max-items` sets the batch size in this mode. The result reports the last batch and its remaining candidate count, including any work left at the deadline.
+
 Extraction creates an enriched index revision. Use the returned path in later steps. Collection keeps login, challenge, rate-limit, and failure states visible. Use `verify-pending` for interactive browser verification. The [editorial policy](../references/editorial-policy.md) covers source selection and evidence handling.
 
 ## Collection monitor
@@ -97,7 +103,9 @@ The optional local monitor shows collected news, story clusters, source health, 
 
 ## Host usage and optional scoring
 
-The edition driver materializes complete inputs in a dedicated `author-inputs/` directory, preserving evidence, order, writing style and schema. Brief, analysis and slide tasks expose ordered `input_parts` filenames under `input_parts_dir`; each part contains at most 7,500 `o200k_base` tokens, and concatenating their UTF-8 bytes restores the complete input. Authors read every part in order, one part per tool result, before writing. Each task uses a new context with no preceding author history. Complete input files remain available for programmatic use and audit.
+The local Codex dispatcher reads each complete author file directly. A bundled invocation shares identical instructions and schemas across its assignments. Tool-based hosts read the ordered parts described below.
+
+The edition driver materializes complete inputs in a dedicated `author-inputs/` directory, preserving evidence, order, writing style and schema. For tool-based hosts, brief, analysis and slide tasks expose ordered `input_parts` filenames under `input_parts_dir`; each part contains at most 7,500 `o200k_base` tokens, and concatenating their UTF-8 bytes restores the complete input. Authors read every part in order, one part per tool result, before writing. Each task uses a new context with no preceding author history. Complete input files remain available for programmatic use and audit.
 
 After program date/evidence checks, enrichment and input freeze, visual event review can run alongside brief authors. It still reviews every eligible candidate and saves merging/ranking decisions before finalization. Brief coverage follows the source index independently of the visual top 50.
 
@@ -141,7 +149,7 @@ Candidate review skips navigation when extracting its bounded lead and retains `
 
 `slides review --index INDEX.json --max-news 50 --model-input --parts-dir REVIEW_INPUT_DIR` prepares all candidates within the per-source limit with the same ordered reader. The reviewer reads all parts before merging and ranking events.
 
-Slide authoring returns `background_commands` for image prefetch and any unfinished edition tail/PDF. Start each once alongside the authors, retain the process handles and pass `--in-flight slides-images` / `--in-flight edition-tail` while running. Wait for both before rendering, since tail and rendering update the report projection. `slides prefetch-images --plan PLAN.json` writes enriched news and metrics atomically to `images-slides-plan-rN.json` beside the immutable plan; rendering reuses it without fetching pages again. `--refresh` refreshes the receipt. Without prefetch, rendering keeps its image-collection behavior.
+Slide authoring returns `background_commands` for image prefetch and any unfinished edition tail/PDF. Start each once alongside the authors, retain the process handles and pass `--in-flight slides-images` / `--in-flight edition-tail` while running. Wait for both before rendering, since tail and rendering update the report projection. `slides prefetch-images --plan PLAN.json` writes each event's selected images and metrics atomically to `images-slides-plan-rN.json` beside the immutable plan; rendering reuses it without fetching pages again. `--refresh` refreshes the receipt. Without prefetch, rendering keeps its image-collection behavior.
 
 HTTP index prefetch reads up to `browser.http_prefetch_max_bytes` decompressed bytes (8 MiB by default). Truncated pages retain their candidates and receive one browser fallback; page diagnostics record both attempts.
 

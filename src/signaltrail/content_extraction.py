@@ -3,15 +3,16 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from contextlib import suppress
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime
 from importlib.metadata import version
 from typing import Any
 from urllib.parse import urlsplit
 
 from bs4 import BeautifulSoup, Comment, NavigableString, Tag
 
-from .article_time import normalize_time
+from .article_time import abc_live_entry_id, normalize_time
 from .models import ContentStatus
 
 NOISE_SELECTORS = [
@@ -309,13 +310,13 @@ def title_overlap(title: str, text: str) -> float | None:
 
 def extract_with_fallback(
     soup: BeautifulSoup, selectors: list[str], *, truncated: bool = False,
-    expected_title: str = "", fallback: str = "none",
+    expected_title: str = "", fallback: str = "none", page_url: str = "",
 ) -> ExtractedDocument:
     """处理：保留具体正文基线，仅在内容不足时比较可选本地抽取器。
     输入：已获准读取的 HTML、来源选择器和显式配置的候选抽取器。
     输出：带选择理由的正文；供应器失败不丢失基线，供应器输出不自动升级为全文。
     """
-    source_metadata = observed_source_metadata(soup)
+    source_metadata = observed_source_metadata(soup, page_url)
     baseline = extract_document(
         soup, selectors, truncated=truncated, expected_title=expected_title,
     )
@@ -404,7 +405,7 @@ def extract_with_fallback(
 
 
 def publisher_dom_publication_date(soup: BeautifulSoup, page_url: str) -> str | None:
-    """处理：按已核验的中文来源发布栏读取日期，避开正文与推荐文章。
+    """处理：按已核验的来源发布栏读取日期，避开正文与推荐文章。
     输入：原网页 DOM 和最终文章地址，地址缺失时使用网页声明的规范地址。
     输出：上海时区的明确发布时间或日精度日期，未出现发布栏时为空。
     """
@@ -415,6 +416,15 @@ def publisher_dom_publication_date(soup: BeautifulSoup, page_url: str) -> str | 
         page_url = (str(canonical.get("href") or canonical.get("content") or "")
                     if canonical else "")
     host = (urlsplit(page_url).hostname or "").removeprefix("www.")
+    if host == "sec.gov" and urlsplit(page_url).path.startswith("/Archives/edgar/data/"):
+        for label in soup.select(".infoHead"):
+            if label.get_text(" ", strip=True) == "Accepted":
+                value = label.find_next_sibling(class_="info")
+                if value:
+                    text = value.get_text(" ", strip=True)
+                    if re.fullmatch(r"20\d{2}-\d\d-\d\d \d\d:\d\d:\d\d", text):
+                        return normalize_time(text, "America/New_York")
+        return None
     selectors = {
         "ithome.com": "#pubtime_baidu",
         "ithome.com.tw": ".submitted .created",
@@ -449,6 +459,35 @@ def publisher_dom_publication_date(soup: BeautifulSoup, page_url: str) -> str | 
     return None
 
 
+def _abc_entry_publication(soup: BeautifulSoup, entry_id: str) -> str | None:
+    """处理：在 ABC 直播渲染数据中按条目编号读取公开卡片的发稿时间。
+    输入：原网页 DOM、来自文章 URL 的独立更新编号。
+    输出：与该编号唯一匹配的时间，避免使用母页或其他更新的时间。
+    """
+    marker = "window['__abcnews__']="
+    stamps: set[str] = set()
+    for script in soup.find_all("script"):
+        _, found, raw = (script.string or "").partition(marker)
+        if not found:
+            continue
+        try:
+            state, _ = json.JSONDecoder().raw_decode(raw.lstrip())
+            components = state["page"]["content"]["data"]["mainComponents"]
+        except (KeyError, TypeError, ValueError):
+            continue
+        for component in components:
+            entries = (component.get("props") or {}).get("entries") or []
+            for entry in entries:
+                if str(entry.get("id") or "") != entry_id:
+                    continue
+                published = (entry.get("issued") or
+                             ((entry.get("shareBylineData") or {}).get("publishedDate") or {})
+                             .get("date"))
+                if isinstance(published, str) and (value := normalize_time(published)):
+                    stamps.add(value)
+    return next(iter(stamps)) if len(stamps) == 1 else None
+
+
 def observed_source_metadata(soup: BeautifulSoup, page_url: str = "") -> dict[str, Any]:
     """处理：记录页面明确声明的作者、发布者、发布日期与语言。
     输入：清洗之前的页面 DOM；只接受发布语义元数据，不把更新时间当发布日期。
@@ -461,6 +500,13 @@ def observed_source_metadata(soup: BeautifulSoup, page_url: str = "") -> dict[st
     ):
         node = soup.select_one(selector)
         values[key] = str(node.get("content") or "").strip()[:500] or None if node else None
+    if abc_entry := abc_live_entry_id(page_url):
+        return {
+            **values, "published_at": _abc_entry_publication(soup, abc_entry),
+            "publication_entry_id": abc_entry,
+            "language": str(soup.html.get("lang") or "")[:80] or None if soup.html else None,
+            "basis": "page_declared", "independent_origin": None,
+        }
     published_at = None
     for node in soup.select(
         'meta[property="article:published_time"], meta[name="article:published_time"]'
@@ -510,6 +556,10 @@ def observed_source_metadata(soup: BeautifulSoup, page_url: str = "") -> dict[st
                 published_at = dates[0]
                 break
     if not published_at:
+        social_date = soup.select_one('meta[property="og:published_time"]')
+        if social_date:
+            published_at = str(social_date.get("content") or "").strip()
+    if not published_at:
         node = soup.select_one('[data-target="PaperContent"][data-props]')
         if node:
             try:
@@ -520,6 +570,21 @@ def observed_source_metadata(soup: BeautifulSoup, page_url: str = "") -> dict[st
             date = paper.get("publishedAt")
             if isinstance(date, str) and date.strip():
                 published_at = date.strip()
+    parts = urlsplit(page_url)
+    if not published_at and parts.hostname in {"arxiv.org", "www.arxiv.org"} and (
+            parts.path.startswith("/abs/")):
+        history = soup.select_one(".submission-history")
+        if history:
+            # 版本历史中的 v1 有明确 UTC 钟点；引文日期通常只有 UTC 自然日。
+            match = re.search(
+                r"\[v1\]\s*(\w{3}, \d{1,2} \w{3} \d{4} \d\d:\d\d:\d\d) UTC",
+                history.get_text(" ", strip=True),
+            )
+            if match:
+                with suppress(ValueError):
+                    published_at = datetime.strptime(
+                        match[1], "%a, %d %b %Y %H:%M:%S"
+                    ).replace(tzinfo=UTC).isoformat()
     if not published_at:
         for node in soup.select(
             'meta[name="citation_publication_date"], meta[name="citation_date"], '
@@ -537,6 +602,25 @@ def observed_source_metadata(soup: BeautifulSoup, page_url: str = "") -> dict[st
                 published_at = datetime.strptime(text, "%B %d, %Y").date().isoformat()
             except ValueError:
                 published_at = None
+    if parts.hostname == "english.news.cn" and (
+        not published_at or len(published_at) == 10
+    ):
+        # 英文稿页刊头显示北京时间，publishdate 元数据只保留日期。
+        header = soup.select_one(".conTop .infoBox .info > p.time")
+        if header:
+            stamp = header.get_text(" ", strip=True)
+            stamp = re.sub(r"\s+(?:UTC|GMT)$", "+00:00", stamp)
+            stamp = re.sub(r"\s+Beijing Time$", "", stamp, flags=re.IGNORECASE)
+            published_at = normalize_time(stamp, "Asia/Shanghai") or published_at
+    if parts.hostname in {"nature.com", "www.nature.com"}:
+        # Nature 的可见刊头使用日期，结构化数据可能把同日编码成 UTC 午夜。
+        header = soup.select_one("header time[datetime], .c-article-identifiers time[datetime]")
+        day = str(header["datetime"]) if header else ""
+        if re.fullmatch(r"20\d\d-\d\d-\d\d", day) and (
+            not published_at or re.fullmatch(re.escape(day) + r"T00:00:00(?:Z|\+00:00)",
+                                             published_at)
+        ):
+            published_at = day
     if not published_at:
         published_at = publisher_dom_publication_date(soup, page_url)
     values["published_at"] = published_at[:500] if published_at else None

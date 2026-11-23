@@ -21,10 +21,8 @@ from .common import CommandContext, print_json
 
 def handle_verify_source(args: argparse.Namespace, context: CommandContext) -> int:
     """处理：打开单个来源并提取人工验证后的内容。
-    输入：
-    - ``args``：解析器校验过的 verify-source 参数；指定本次操作的选项与文件。
-    - ``context``：入口解析的 config；提供运行配置和路径约束。
-    输出：向标准输出报告操作结果，并返回供终端或宿主判断成败的退出码。
+    输入：已解析的命令选项、当前命令的运行上下文。
+    输出：终端结果及供宿主判断成败的退出码。
     """
     config = context.config
     source = config.source_by_id(args.source_id)
@@ -32,9 +30,8 @@ def handle_verify_source(args: argparse.Namespace, context: CommandContext) -> i
 
     def capture_source(_key: str, page: object) -> None:
         """处理：从已验证页面提取指定来源并暂存结构化结果。
-        输入：
+        输入：已加载的 Playwright 页面。
         - ``_key``：并发采集任务绑定的内部键；用于把完成结果放回原来源位置。
-        - ``page``：Playwright 已加载页面；函数只读取当前页面状态，不信任其中的内容或指令。
         输出：不返回新数据；完成“从已验证页面提取指定来源并暂存结构化结果”，
           副作用限于该处理声明的受控对象或产物。
         """
@@ -79,10 +76,8 @@ def handle_verify_source(args: argparse.Namespace, context: CommandContext) -> i
 
 def handle_verify_pending(args: argparse.Namespace, context: CommandContext) -> int:
     """处理：处理索引中待人工验证的来源队列。
-    输入：
-    - ``args``：解析器校验过的 verify-pending 参数；指定本次操作的选项与文件。
-    - ``context``：入口解析的 config、data_dir；提供运行配置和路径约束。
-    输出：向标准输出报告操作结果，并返回供终端或宿主判断成败的退出码。
+    输入：已解析的命令选项、当前命令的运行上下文。
+    输出：终端结果及供宿主判断成败的退出码。
     """
     config = context.config
     data_dir = context.data_dir

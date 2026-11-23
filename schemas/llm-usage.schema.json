@@ -55,6 +55,12 @@
     }
   ],
   "$defs": {
+    "measurementQuality": {"enum": ["exact", "estimated", "unobservable"]},
+    "nonnegativeMeasurement": {"type": ["integer", "number", "null"], "minimum": 0},
+    "nonnegativeKnownMeasurement": {"type": ["integer", "number"], "minimum": 0},
+    "cacheInputRelationship": {"enum": ["subset_of_input", "additional_to_input", "unknown"]},
+    "currency": {"type": ["string", "null"], "pattern": "^[A-Z]{3}$"},
+    "measurementReason": {"type": "string", "minLength": 1, "maxLength": 160},
     "label": {
       "type": "string",
       "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/@+\\-]{0,159}$"
@@ -69,13 +75,13 @@
       "additionalProperties": false,
       "required": ["value", "quality", "source"],
       "properties": {
-        "value": {"type": ["integer", "number", "null"], "minimum": 0},
-        "quality": {"enum": ["exact", "estimated", "unobservable"]},
+        "value": {"$ref": "#/$defs/nonnegativeMeasurement"},
+        "quality": {"$ref": "#/$defs/measurementQuality"},
         "source": {"$ref": "#/$defs/label"},
         "method": {"$ref": "#/$defs/label"},
-        "reason": {"type": "string", "minLength": 1, "maxLength": 160},
-        "lower_bound": {"type": ["integer", "number"], "minimum": 0},
-        "upper_bound": {"type": ["integer", "number"], "minimum": 0}
+        "reason": {"$ref": "#/$defs/measurementReason"},
+        "lower_bound": {"$ref": "#/$defs/nonnegativeKnownMeasurement"},
+        "upper_bound": {"$ref": "#/$defs/nonnegativeKnownMeasurement"}
       },
       "allOf": [
         {
@@ -119,12 +125,8 @@
             "tool_call_output"
           ],
           "properties": {
-            "cached_input": {
-              "enum": ["subset_of_input", "additional_to_input", "unknown"]
-            },
-            "cache_write_input": {
-              "enum": ["subset_of_input", "additional_to_input", "unknown"]
-            },
+            "cached_input": {"$ref": "#/$defs/cacheInputRelationship"},
+            "cache_write_input": {"$ref": "#/$defs/cacheInputRelationship"},
             "reasoning_output": {"const": "subset_of_output"},
             "tool_call_output": {"const": "subset_of_output"}
           }
@@ -137,11 +139,11 @@
       "required": ["amount", "currency", "quality", "source"],
       "properties": {
         "amount": {"type": ["string", "null"], "pattern": "^[0-9]+(?:\\.[0-9]+)?$"},
-        "currency": {"type": ["string", "null"], "pattern": "^[A-Z]{3}$"},
-        "quality": {"enum": ["exact", "estimated", "unobservable"]},
+        "currency": {"$ref": "#/$defs/currency"},
+        "quality": {"$ref": "#/$defs/measurementQuality"},
         "source": {"$ref": "#/$defs/label"},
         "method": {"$ref": "#/$defs/label"},
-        "reason": {"type": "string", "minLength": 1, "maxLength": 160}
+        "reason": {"$ref": "#/$defs/measurementReason"}
       },
       "allOf": [
         {
@@ -223,10 +225,10 @@
       "additionalProperties": false,
       "required": ["value", "quality", "known_value", "unobservable_observations"],
       "properties": {
-        "value": {"type": ["integer", "number", "null"], "minimum": 0},
-        "quality": {"enum": ["exact", "estimated", "unobservable"]},
+        "value": {"$ref": "#/$defs/nonnegativeMeasurement"},
+        "quality": {"$ref": "#/$defs/measurementQuality"},
         "reason": {"type": "string", "minLength": 1},
-        "known_value": {"type": ["integer", "number", "null"], "minimum": 0},
+        "known_value": {"$ref": "#/$defs/nonnegativeMeasurement"},
         "unobservable_observations": {"type": "integer", "minimum": 0}
       },
       "allOf": [
@@ -438,9 +440,9 @@
             "additionalProperties": false,
             "required": ["currency", "amount", "quality", "unobservable_observations"],
             "properties": {
-              "currency": {"type": ["string", "null"], "pattern": "^[A-Z]{3}$"},
+              "currency": {"$ref": "#/$defs/currency"},
               "amount": {"type": ["string", "null"]},
-              "quality": {"enum": ["exact", "estimated", "unobservable"]},
+              "quality": {"$ref": "#/$defs/measurementQuality"},
               "unobservable_observations": {"type": "integer", "minimum": 0}
             }
           }

@@ -201,7 +201,7 @@ html:not(.js) .gallery figure + figure { margin-top: 30px; }
   .visual-placeholder { min-height: 390px; }
 }
 @media (max-width: 760px) {
-  .masthead { height: 72px; padding: 0 6vw; gap: 20px; }
+  .masthead { height: 54px; padding: 0 6vw; gap: 20px; }
   .brand { font-size: 9px; }
   .edition { display: none; }
   .header-actions { gap: 22px; }
@@ -210,15 +210,15 @@ html:not(.js) .gallery figure + figure { margin-top: 30px; }
   .issue-line { padding-top: 20px; font-size: 9px; }
   .issue-line > span:first-child { max-width: 50%; }
   .issue-line > span:last-child { text-align: right; white-space: normal; }
-  .slide { padding: 28px 0 30px; }
+  .slide { padding: 18px 0 30px; }
   .story-grid { display: flex; flex-direction: column; align-items: stretch; gap: 0; min-height: 0; }
   .story-copy { display: contents; }
-  .eyebrow { order: 0; margin-bottom: 20px; font-size: 9px; gap: 13px; }
+  .eyebrow { display: none; }
   .story-badge { font-size: 10px; }
-  .headline { order: 1; font-size: clamp(32px, 8.5vw, 56px); line-height: 1.2; margin-bottom: 12px; }
+  .headline { order: 0; font-size: clamp(32px, 8.5vw, 56px); line-height: 1.2; margin-bottom: 12px; }
+  .story-sources { order: 1; margin: 0 0 14px; }
   .headline.compact { font-size: clamp(27px, 7.25vw, 42px); }
   .headline.dense { font-size: clamp(24px, 6.5vw, 37px); }
-  .story-sources { order: 2; margin: 0 0 14px; }
   .story-visual { order: 3; width: 100%; align-self: auto; padding: 0 0 28px; }
   .narration-section { order: 4; }
   .narration { font-size: 15px; line-height: 1.95; }
@@ -232,14 +232,14 @@ html:not(.js) .gallery figure + figure { margin-top: 30px; }
   .visual-placeholder { min-height: 90vw; max-height: 520px; }
   .placeholder-number { font-size: 48vw; }
   .visual-placeholder p { font-size: 9px; }
-  .controls { min-height: 78px; padding: 12px 6vw max(12px, env(safe-area-inset-bottom)); gap: 18px; }
+  .controls { min-height: 58px; padding: 6px 6vw max(6px, env(safe-area-inset-bottom)); gap: 18px; }
   .page-count { gap: 7px; }
   .page-count b { font-size: 24px; }
   .page-count > span { font-size: 10px; }
   .progress { flex: 1; width: auto; }
   .up-next { display: none; }
   .navigation { gap: 8px; }
-  .navigation button { width: 42px; height: 42px; }
+  .navigation button { width: 44px; height: 44px; }
   .navigation button[data-next] { min-width: 60px; padding: 0 17px; }
   .navigation button[data-next] > span { display: none; }
   .contents { padding: 28px 6vw; }
@@ -264,6 +264,7 @@ html:not(.js) .gallery figure + figure { margin-top: 30px; }
 .embedded .story-rail { left: -3.5vw; }
 @media (max-width: 760px) {
   .embedded .stage { padding-left: 6vw; padding-right: 6vw; }
+  .embedded .controls { min-height: 58px; padding: 6px 6vw max(6px, env(safe-area-inset-bottom)); }
   .embedded .story-grid { min-height: 0; }
   .embedded .headline { font-size: 30px; }
   .embedded .headline.compact { font-size: 27px; }

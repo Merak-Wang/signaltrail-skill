@@ -38,6 +38,8 @@ LLM token。账本位于 `DATA_DIR/usage/YYYY-MM-DD/TASK_ID/events/`，事件不
 `payload_hash` 只对已筛选的安全结构计算，不能用原始 receipt 生成。任务 ID、
 `source_tag` 和 `phase` 也只能使用无秘密的短机器标签。
 
+整期验收以一次独立的生成指令为单位。从宿主接收指令至交付回复，沿请求归属计入协调者、作者、工具往返后的模型调用、重试和交付检查。逐个模型响应按标识去重后求和，公式为 `Σ(input_tokens + output_tokens)`；每次调用读取的缓存上下文已在该次输入内，推理部分已在该次输出内。Codex 的 `scripts/measure_codex_turn.py --completed-turn` 读取原生指令和最终回复事件，并按轮次归属计入延迟落盘的用量。其他宿主从各自的调用记录提供相同的输入与输出计数。诊断用量可另选子树或时间窗。[整期评分口径](../docs/zh-CN/development.md#整期验收)
+
 ## 通用生命周期
 
 宿主包装器应在启动 authoring coordinator 之前执行。下面以 PowerShell 为例；task ID 必须对并发

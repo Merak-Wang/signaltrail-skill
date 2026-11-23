@@ -28,8 +28,10 @@ this architecture map, bilingual READMEs, release/security/license records, and 
 | `examples/` | Current and historical public samples, including the report evaluation's synthetic text seed |
 | `.github/workflows/ci.yml` | Repository validation in CI |
 
-The package includes `scripts/install.ps1`, `install.sh`, `build_hermes_skill.py` and
-`measure_codex_turn.py`, `run_signaltrail.py` and `build_qwen_worker.py`. The source checkout additionally contains `check_code_comments.py`,
+The packaged PowerShell and shell installers call the same `scripts/install.py`. The package
+also includes the daily CLI and Codex dispatcher (`run_signaltrail.py`, `run_codex_edition.py`),
+their usage tools (`measure_codex_turn.py`, `measure_codex_exec.py`) and the skill and Qwen worker
+builders. The source checkout additionally contains `check_code_comments.py`,
 `check_docs.py`, `evaluate_modules.py`, and `benchmark_slide_efficiency.py` for contributor
 checks and benchmarks. Package inclusion follows the build script's allowlist, independently
 of Python imports. Scripts, schemas and prompts can be consumed directly by people, hosts or evaluations.
@@ -71,7 +73,7 @@ See [news slides](docs/news-slides.md).
 
 Video export reads the saved deck and captures the delivered slide HTML at its native 1920 × 1080 viewport.
 The frames use the presentation's own layout and displayed narration. Local Qwen3-TTS
-1.7B Q8 speaks each title and `video_tldr`. Measured audio controls page duration and image rotation.
+1.7B Q8 speaks each title and `video_tldr`; measured audio controls page duration and image rotation.
 The runtime prepares native programs and models, uses the bundled reference voice by default,
 and prefers a synthesis-verified GPU with CPU fallback. A built `llama-tts-worker` keeps
 model weights and reference audio loaded across utterances; the Python synthesizer sends each

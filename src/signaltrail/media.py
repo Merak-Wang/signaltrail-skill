@@ -3,18 +3,18 @@ from __future__ import annotations
 import hashlib
 import ipaddress
 import socket
-import threading
 import time
-from collections import deque
-from collections.abc import Callable
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from collections import defaultdict, deque
+from collections.abc import Callable, Iterable, Iterator
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from contextlib import ExitStack
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from functools import lru_cache
 from io import BytesIO
+from itertools import chain
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeVar
 from urllib.parse import parse_qsl, urljoin, urlsplit
 
 import httpx
@@ -97,8 +97,7 @@ def _utc_now() -> datetime:
 
 def _utc_iso(value: datetime | None = None) -> str:
     """处理：把 UTC 时间格式化为秒级 ISO 字符串。
-    输入：
-    - ``value``：待解析或规范化的单个输入值；非法值按函数契约返回空值或报错。
+    输入：待解析的值。
     输出：“把 UTC 时间格式化为秒级 ISO 字符串”得到的规范字符串，供调用方存储、比较或展示。
     """
     return (value or _utc_now()).isoformat(timespec="seconds")
@@ -106,8 +105,7 @@ def _utc_iso(value: datetime | None = None) -> str:
 
 def _parse_cache_time(value: object) -> datetime | None:
     """处理：把图片缓存中的 ISO 时间解析为 UTC 时间，非法值返回 None。
-    输入：
-    - ``value``：待解析或规范化的单个输入值；非法值按函数契约返回空值或报错。
+    输入：待解析的值。
     输出：封装“把图片缓存中的 ISO 时间解析为 UTC 时间，
       非法值返回 None”业务结果的 ``datetime | None`` 对象；
       调用方据此继续相邻阶段或识别无结果状态。
@@ -123,8 +121,7 @@ def _parse_cache_time(value: object) -> datetime | None:
 
 def _image_cache_path(data_dir: Path) -> Path:
     """处理：返回运行数据根中的图片下载缓存文件。
-    输入：
-    - ``data_dir``：当前运行的唯一数据根；所有状态和版本化产物都必须位于其中。
+    输入：本次运行的数据根。
     输出：指向“返回运行数据根中的图片下载缓存文件”所生成、定位或确认产物的本地路径。
     """
     return data_dir / "media" / "image-cache.json"
@@ -132,8 +129,7 @@ def _image_cache_path(data_dir: Path) -> Path:
 
 def _load_image_cache(data_dir: Path) -> dict[str, Any]:
     """处理：读取版本化图片缓存并校验 entries 根对象，损坏时回退为空缓存。
-    输入：
-    - ``data_dir``：当前运行的唯一数据根；所有状态和版本化产物都必须位于其中。
+    输入：本次运行的数据根。
     输出：“读取版本化图片缓存并校验 entries 根对象，损坏时回退为空缓存”形成的结构化字典；
       典型键包括 entries、schema_version、updated_at。
     """
@@ -163,8 +159,7 @@ def _load_image_cache(data_dir: Path) -> dict[str, Any]:
 
 def _write_image_cache(data_dir: Path, cache: dict[str, Any]) -> None:
     """处理：把内存中的图片成功与失败记录原子写入当前数据根的缓存文件。
-    输入：
-    - ``data_dir``：当前运行的唯一数据根；所有状态和版本化产物都必须位于其中。
+    输入：本次运行的数据根。
     - ``cache``：本地持久化缓存对象；包含状态、时间、响应元数据和可复用结果。
     输出：不返回新数据；完成“把内存中的图片成功与失败记录原子写入当前数据根的缓存文件”，
       副作用限于该处理声明的受控对象或产物。
@@ -176,9 +171,7 @@ def _write_image_cache(data_dir: Path, cache: dict[str, Any]) -> None:
 
 def _safe_cached_image_path(data_dir: Path, value: object) -> Path | None:
     """处理：把缓存相对路径限制在媒体目录并返回规范绝对路径。
-    输入：
-    - ``data_dir``：当前运行的唯一数据根；所有状态和版本化产物都必须位于其中。
-    - ``value``：待解析或规范化的单个输入值；非法值按函数契约返回空值或报错。
+    输入：本次运行的数据根、待解析的值。
     输出：指向“把缓存相对路径限制在媒体目录并返回规范绝对路径”所生成、定位或确认产物的本地路径；
       条件不满足时返回 None。
     """
@@ -207,11 +200,9 @@ def _cached_download(
     config: MediaConfig,
 ) -> DownloadedImage | ImageDownloadError | None:
     """处理：校验缓存状态、时效、路径、大小和哈希后恢复图片结果。
-    输入：
+    输入：本次运行的数据根、已校验的采集和输出配置。
     - ``source_url``：来源或图片的原始 URL；进入网络或索引前会执行相应规范化与安全检查。
     - ``entry``：图片缓存中的单条记录；校验状态、时效、路径、大小和哈希后才可复用。
-    - ``data_dir``：当前运行的唯一数据根；所有状态和版本化产物都必须位于其中。
-    - ``config``：已校验的应用配置；提供时区、来源策略、并发限制、预算和输出选项。
     输出：通过公网、大小、格式和像素校验的本地图片记录，供报告渲染和远程投影复用。
     """
     if not isinstance(entry, dict):
@@ -283,9 +274,8 @@ def _cache_success(downloaded: DownloadedImage) -> dict[str, Any]:
 
 def _cache_failure(exc: Exception, config: MediaConfig) -> dict[str, Any]:
     """处理：把下载异常转换为带下次重试时间的负缓存记录。
-    输入：
+    输入：已校验的采集和输出配置。
     - ``exc``：图片下载失败异常；提取错误文本并生成带重试时间的负缓存。
-    - ``config``：已校验的应用配置；提供时区、来源策略、并发限制、预算和输出选项。
     输出：“把下载异常转换为带下次重试时间的负缓存记录”形成的结构化字典；
       典型键包括 checked_at、error、retry_after、status。
     """
@@ -302,8 +292,7 @@ def _cache_failure(exc: Exception, config: MediaConfig) -> dict[str, Any]:
 
 def _is_public_address(value: str) -> bool:
     """处理：判断 IP 地址是否可由公网路由，排除本地和保留网段。
-    输入：
-    - ``value``：待解析或规范化的单个输入值；非法值按函数契约返回空值或报错。
+    输入：待解析的值。
     输出：布尔判断；True 表示满足处理说明中的条件，False 表示不满足且不产生该结果。
     """
     address = ipaddress.ip_address(value)
@@ -339,8 +328,7 @@ def _resolve_system_addresses(hostname: str, port: int) -> tuple[str, ...]:
 
 def _is_proxy_fake_address(value: str) -> bool:
     """处理：判断 IPv4 地址是否属于代理软件使用的 fake-IP 网段。
-    输入：
-    - ``value``：待解析或规范化的单个输入值；非法值按函数契约返回空值或报错。
+    输入：待解析的值。
     输出：布尔判断；True 表示满足处理说明中的条件，False 表示不满足且不产生该结果。
     """
     address = ipaddress.ip_address(value)
@@ -393,8 +381,7 @@ def _resolve_public_dns_addresses(hostname: str) -> tuple[str, ...]:
 
 def assert_public_image_url(url: str) -> None:
     """处理：拒绝凭证、非 HTTP 协议、异常端口和非公网图片主机。
-    输入：
-    - ``url``：调用方提供的 URL；当前函数按处理说明进行规范化、过滤或访问。
+    输入：待处理的 URL。
     输出：不返回新数据；完成“拒绝凭证、非 HTTP 协议、异常端口和非公网图片主机”，
       副作用限于该处理声明的受控对象或产物。
     """
@@ -520,8 +507,7 @@ def _request_headers(referer: str | None) -> dict[str, str]:
 
 def _serialized_http_url(url: str) -> str:
     """处理：返回适合 JSON Schema 与远程发布器的 ASCII URI。
-    输入：
-    - ``url``：调用方提供的 URL；当前函数按处理说明进行规范化、过滤或访问。
+    输入：待处理的 URL。
     输出：经过选择、规范化或安全处理的 URL 字符串，供后续访问或渲染使用。
     """
     try:
@@ -541,10 +527,8 @@ def download_image(
     url_validator: Callable[[str], None] = assert_public_image_url,
 ) -> DownloadedImage:
     """处理：把单张不可信公网栅格图片下载到内容寻址的本地存储。
-    输入：
+    输入：本次运行的数据根、已校验的采集和输出配置。
     - ``source_url``：报告索引提供的不可信公网图片 URL；每次重定向后都会重新执行公网校验。
-    - ``data_dir``：当前运行的唯一数据根；所有状态和版本化产物都必须位于其中。
-    - ``config``：已校验的应用配置；提供时区、来源策略、并发限制、预算和输出选项。
     - ``referer``：可选来源页面 URL；通过换行和协议检查后才写入请求头。
     - ``max_bytes``：允许读取或下载的最大字节数；达到上限后停止或报错。
     - ``client``：已配置超时、重定向和连接池策略的 HTTP 客户端。
@@ -671,8 +655,7 @@ def download_image(
 
 def _report_briefs(report: dict[str, Any]) -> list[dict[str, Any]]:
     """处理：从全部报告栏目展开结构化简报列表。
-    输入：
-    - ``report``：当前报告结构；包含栏目、简报或事件、来源引用及质量元数据。
+    输入：含栏目和来源引用的报告。
     输出：“从全部报告栏目展开结构化简报列表”得到的有序结构化记录；
       每项承载处理说明所定义的身份、证据或状态字段，可直接交给下一阶段。
     """
@@ -683,6 +666,48 @@ def _report_briefs(report: dict[str, Any]) -> list[dict[str, Any]]:
         for brief in section.get("briefs", [])
         if isinstance(brief, dict)
     ]
+
+
+_Input = TypeVar("_Input")
+_Result = TypeVar("_Result")
+
+
+def _domain_tasks(
+    rows: list[tuple[str, _Input]],
+    run: Callable[[str, _Input], _Result],
+    pool: ThreadPoolExecutor,
+    config: MediaConfig,
+) -> Iterator[tuple[str, Future[_Result]]]:
+    """处理：按域名轮转提交当前可开始的 HTTP 任务。
+    输入：以 URL 为首项的待请求列表、执行函数和媒体并发配置。
+    输出：已完成的请求，交由页面抽取或图片下载分别处理结果与错误。
+    """
+    queues: dict[str, deque[tuple[str, _Input]]] = defaultdict(deque)
+    for url, argument in rows:
+        queues[(urlsplit(url).hostname or "unknown").casefold()].append((url, argument))
+    domains = deque(queues)
+    active: dict[str, int] = defaultdict(int)
+    pending: dict[Future[_Result], tuple[str, str]] = {}
+    while domains or pending:
+        while len(pending) < config.global_concurrency:
+            for _ in range(len(domains)):
+                domain = domains.popleft()
+                queue = queues[domain]
+                if active[domain] < config.per_domain_concurrency:
+                    url, argument = queue.popleft()
+                    pending[pool.submit(run, url, argument)] = (url, domain)
+                    active[domain] += 1
+                    if queue:
+                        domains.append(domain)
+                    break
+                domains.append(domain)
+            else:
+                break
+        for future in wait(pending, return_when=FIRST_COMPLETED).done:
+            url, domain = pending.pop(future)
+            active[domain] -= 1
+            yield url, future
+
 
 
 def _download_image_batch(
@@ -696,10 +721,8 @@ def _download_image_batch(
     shared: dict[str, Any] | None = None,
 ) -> dict[str, DownloadedImage | Exception]:
     """处理：使用共享连接池和同域限制下载一个优先级批次。
-    输入：
+    输入：本次运行的数据根、已校验的采集和输出配置。
     - ``rows``：同一优先级的图片候选二元组；每项依次提供公网图片 URL 和可选来源页 Referer。
-    - ``data_dir``：当前运行的唯一数据根；所有状态和版本化产物都必须位于其中。
-    - ``config``：已校验的应用配置；提供时区、来源策略、并发限制、预算和输出选项。
     - ``max_bytes``：允许读取或下载的最大字节数；达到上限后停止或报错。
     - ``downloader``：图片下载函数；接收候选 URL、来源页和安全预算，返回已验证的本地图片记录。
     输出：通过公网、大小、格式和像素校验的本地图片记录，供报告渲染和远程投影复用。
@@ -733,44 +756,16 @@ def _download_image_batch(
         shared["executor"] = resources.enter_context(ThreadPoolExecutor(
             max_workers=config.global_concurrency, thread_name_prefix="daily-intel-image",
         ))
-    domain_limits = shared.setdefault("domain_limits", {})
-    domain_lock = threading.Lock()
-
-    def guarded(
-        client: httpx.Client,
-        source_url: str,
-        referer: str | None,
-    ) -> DownloadedImage:
-        """处理：在并发限制内执行单项任务。
-        输入：
-        - ``client``：已配置超时、重定向和连接池策略的 HTTP 客户端。
-        - ``source_url``：来源或图片的原始 URL；进入网络或索引前会执行相应规范化与安全检查。
-        - ``referer``：可选来源页面 URL；通过换行和协议检查后才写入请求头。
-        输出：通过公网、大小、格式和像素校验的本地图片记录，供报告渲染和远程投影复用。
+    def download(source_url: str, referer: str | None) -> DownloadedImage:
+        """处理：通过批次共享连接下载单张图片。
+        输入：调度器选中的图片 URL 和来源页地址。
+        输出：通过解码检查的本地图片及其缓存信息。
         """
-        domain = (urlsplit(source_url).hostname or "unknown").casefold()
-        with domain_lock:
-            semaphore = domain_limits.setdefault(
-                domain,
-                threading.BoundedSemaphore(config.per_domain_concurrency),
-            )
-        with semaphore:
-            return downloader(
-                source_url,
-                data_dir,
-                config,
-                referer=referer,
-                max_bytes=max_bytes,
-                client=client,
-            )
+        return downloader(source_url, data_dir, config, referer=referer,
+                          max_bytes=max_bytes, client=shared["client"])
 
     results = {}
-    futures = {
-        shared["executor"].submit(guarded, shared["client"], source_url, referer): source_url
-        for source_url, referer in rows
-    }
-    for future in as_completed(futures):
-        source_url = futures[future]
+    for source_url, future in _domain_tasks(rows, download, shared["executor"], config):
         try:
             results[source_url] = future.result()
         except (ImageDownloadError, OSError) as exc:
@@ -778,12 +773,11 @@ def _download_image_batch(
     return results
 
 
-def _indexed_image_candidates(indexed: dict[str, Any]) -> list[str]:
+def _indexed_image_candidates(indexed: dict[str, Any]) -> list[dict]:
     """处理：合并索引主图片与元数据候选并规范化 URL。
     输入：
     - ``indexed``：权威来源索引中与当前 item_id 对应的条目记录。
-    输出：“合并索引主图片与元数据候选并规范化 URL”得到的字符串列表；
-      顺序保持确定并可供下一步骤逐项处理。
+    输出：保留原站图注和尺寸的有序记录，供预取和报告附件共用。
     """
     values: list[object] = [indexed.get("image_url")]
     direct_candidates = indexed.get("image_candidates")
@@ -818,16 +812,17 @@ def _indexed_image_candidates(indexed: dict[str, Any]) -> list[str]:
                                      "quality", "q", "auto", "format"}))
 
     families = {}
-    for group in groups:
-        family = signed_family(group)
+    family_keys = [signed_family(group) for group in groups]
+    for group, family in zip(groups, family_keys, strict=True):
         if family is not None:
             families.setdefault(family, []).append(group)
     ordered = {key: iter(sorted(rows, key=lambda group: _image_pixels(group[0]), reverse=True))
                for key, rows in families.items()}
     # URL 仍各自保留有效签名；只调整同图尺寸的尝试顺序，失败后继续回退。
-    groups = [next(ordered[family]) if (family := signed_family(group)) is not None else group
-              for group in groups]
-    return [row["url"] for group in groups for row in group]
+    return list(chain.from_iterable(
+        next(ordered[family]) if family is not None else group
+        for group, family in zip(groups, family_keys, strict=True)
+    ))
 
 
 def materialize_report_images(
@@ -862,17 +857,14 @@ def _indexed_image_caption(indexed: dict[str, Any], image_url: str) -> str:
     )
 
 
-def _image_variant_urls(items: list[dict], cache_entries: dict) -> dict[str, list[str]]:
+def _image_variant_urls(candidates: Iterable[dict], cache_entries: dict) -> dict[str, list[str]]:
     """处理：合并当前候选与已有高清缓存，供预取和最终附件共用尺寸选择。
     输入：当前索引条目及媒体缓存记录。
     输出：每个候选对应的高清优先地址列表，保留失败回退顺序。
     """
     details = {}
-    for item in items:
-        metadata = {row["url"]: row for row in
-                    (item.get("metadata") or {}).get("image_candidate_details", [])}
-        for url in _indexed_image_candidates(item):
-            details.setdefault(url, {**metadata.get(url, {}), "url": url})
+    for row in candidates:
+        details.setdefault(row["url"], row)
     selected_keys = {image_variant_key(url) for url in details}
     for url, entry in cache_entries.items():
         if (isinstance(entry, dict) and entry.get("status") == "success"
@@ -893,11 +885,9 @@ def _materialize_report_images(
     preserved_images: dict[str, dict | None] | None = None,
 ) -> list[str]:
     """处理：将权威索引图片绑定到报告简报并持久化本地副本。
-    输入：
+    输入：本次运行的数据根、已校验的采集和输出配置。
     - ``report``：已编译报告对象；函数只为与权威索引匹配的简报附加本地图片元数据。
     - ``index``：权威来源索引；提供 item_id 对应的来源页、图片候选和来源身份。
-    - ``data_dir``：当前运行的唯一数据根；所有状态和版本化产物都必须位于其中。
-    - ``config``：已校验的应用配置；提供时区、来源策略、并发限制、预算和输出选项。
     - ``downloader``：可注入的图片下载函数；生产使用安全下载器，测试可替换为确定性实现。
     输出：未能附图或降级时的警告列表；report 会就地获得通过预算和安全校验的本地图片元数据。
     """
@@ -926,15 +916,20 @@ def _materialize_report_images(
     candidates: list[
         tuple[int, dict[str, Any], dict[str, Any], list[str]]
     ] = []
+    images_by_item = {}
     for order, brief in enumerate(briefs):
-        if str(brief.get("item_id")) in without_image:
+        item_id = str(brief.get("item_id"))
+        if item_id in without_image:
             continue
-        indexed = indexed_items.get(str(brief.get("item_id")))
+        indexed = indexed_items.get(item_id)
         if not indexed:
             continue
-        image_candidates = (["preserved:" + str(brief["item_id"])]
-                            if str(brief.get("item_id")) in preserved else
-                            _indexed_image_candidates(indexed))
+        if item_id in preserved:
+            image_candidates = ["preserved:" + item_id]
+        else:
+            if item_id not in images_by_item:
+                images_by_item[item_id] = _indexed_image_candidates(indexed)
+            image_candidates = [row["url"] for row in images_by_item[item_id]]
         if not image_candidates:
             continue
         candidates.append((order, brief, indexed, image_candidates))
@@ -973,7 +968,14 @@ def _materialize_report_images(
     cache_enabled = downloader is download_image
     cache = _load_image_cache(data_dir) if cache_enabled else {"entries": {}}
     cache_entries = cache["entries"]
-    variant_urls = _image_variant_urls([indexed for _, _, indexed, _ in candidates], cache_entries)
+    for _, brief, indexed, _ in candidates:
+        item_id = str(brief["item_id"])
+        if item_id not in images_by_item:
+            images_by_item[item_id] = _indexed_image_candidates(indexed)
+    variant_urls = _image_variant_urls(
+        (row for _, brief, _, _ in candidates for row in images_by_item[str(brief["item_id"])]),
+        cache_entries,
+    )
     cache_warning_emitted = False
     shared: dict[str, Any] = {}
 
@@ -1175,11 +1177,11 @@ def prefetch_index_images(
     wanted = set(map(str, item_ids))
     items = [item for item in index.get("items", []) if str(item.get("item_id")) in wanted]
     cache = _load_image_cache(data_dir)
-    variants = _image_variant_urls(items, cache["entries"])
+    candidates = [_indexed_image_candidates(item) for item in items]
+    variants = _image_variant_urls(chain.from_iterable(candidates), cache["entries"])
     pending = []
-    for item in items:
-        urls = list(dict.fromkeys(url for candidate in _indexed_image_candidates(item)
-                                 for url in variants.get(candidate, [candidate])))
+    for item, images in zip(items, candidates, strict=True):
+        urls = list(dict.fromkeys(url for image in images for url in variants[image["url"]]))
         if urls:
             pending.append({"item": item, "urls": deque(urls), "error": None,
                             "budget_blocked": False})

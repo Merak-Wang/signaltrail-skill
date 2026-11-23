@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import re
 from collections import defaultdict
 from dataclasses import replace
 from datetime import datetime, timedelta
@@ -12,9 +13,11 @@ from urllib.parse import urlsplit
 import httpx
 from playwright.sync_api import BrowserContext, Page
 
-from .access import CHALLENGE_TEXTS, classify_access_text
+from .access import CHALLENGE_TEXTS, classify_access_text, classify_source_status
 from .adapters import collect_candidates, is_eligible
 from .article_time import (
+    _declared_datetime,
+    abc_live_entry_id,
     in_window,
     normalize_time,
     observe_items,
@@ -46,6 +49,18 @@ from .storage import next_revision, write_immutable_json
 from .utils import canonicalize_url, now_iso, read_json, timestamp_slug, today_str, write_json
 
 __all__ = ["CHALLENGE_TEXTS", "is_eligible"]
+
+
+def _paper_publisher_url(url: str) -> str:
+    """处理：将 HF 论文镜像指向相同编号的 arXiv 原文。
+    输入：规范候选地址；输出：同一篇论文的原发地址或原候选地址。
+    """
+    parts = urlsplit(url)
+    if parts.hostname == "huggingface.co":
+        paper = re.fullmatch(r"/papers/(\d{4}\.\d{4,6})/?", parts.path)
+        if paper:
+            return f"https://arxiv.org/abs/{paper[1]}"
+    return url
 
 
 def _within_window(item: Any, start: datetime, end: datetime) -> bool:
@@ -83,7 +98,7 @@ def _monitor_sufficient(
     """
     if result is None or result.status not in {SourceStatus.SUCCESS, SourceStatus.PARTIAL}:
         return False
-    if source.collect_all_items:
+    if source.collect_all_items or source.id == "huggingface_papers":
         return False
     items = _current_monitor_items(result.items, source, window)
     if date_value:
@@ -97,7 +112,7 @@ def _monitor_sufficient(
 def _merge_monitor_evidence(item: Any, cached: Any, data_dir: Path) -> Any:
     """处理：用同源同文章的当前 Feed 补充实时条目。
     输入：实时条目、监控条目和内容文件所在数据根。
-    输出：保留实时排名、日期和访问状态的条目副本。
+    输出：保留实时排名与访问状态，并用同篇 Feed 的精确时间补足兼容的列表日期。
     """
     if (item.source_id, item.item_id, item.canonical_url) != (
         cached.source_id, cached.item_id, cached.canonical_url
@@ -106,10 +121,31 @@ def _merge_monitor_evidence(item: Any, cached: Any, data_dir: Path) -> Any:
     metadata = dict(item.metadata)
     description = item.description
     published_at = item.published_at
+    live_item = item.to_dict()
     cached_original = original_publication_time(cached.to_dict())
-    if not original_publication_time(item.to_dict()) and cached_original:
+    live_original = original_publication_time(live_item)
+    # 列表可能记录发布地的日历日，带偏移的原始 Feed 时间才可提升到时刻精度。
+    raw_feed_time = None
+    if (
+        live_original and len(live_original) == 10
+        and cached.metadata.get("acquisition_method") == "feed"
+        and not cached.metadata.get("feed_stale")
+        and not uses_platform_publication_time(live_item)
+        and urlsplit(str(cached.metadata.get("feed_url") or "")).hostname
+        == urlsplit(item.url).hostname
+    ):
+        raw_feed_time = _declared_datetime(str(cached.metadata.get("published_raw") or ""))
+    finer_feed_time = (
+        cached_original and len(cached_original) > 10
+        and raw_feed_time is not None and raw_feed_time.utcoffset() is not None
+        and datetime.fromisoformat(cached_original) == raw_feed_time.replace(microsecond=0)
+        and live_original in {raw_feed_time.date().isoformat(), cached_original[:10]}
+    )
+    if cached_original and (not live_original or finer_feed_time):
         relative = metadata.get("publication_time_basis") == "relative"
-        published_at = cached_original if relative else published_at or cached_original
+        published_at = cached_original if relative or finer_feed_time else (
+            published_at or cached_original
+        )
         for key in ("published_raw", "published_precision", "feed_url"):
             if cached.metadata.get(key) and not (relative and key == "published_raw"):
                 metadata[key] = cached.metadata[key]
@@ -138,14 +174,17 @@ def _merge_monitor_evidence(item: Any, cached: Any, data_dir: Path) -> Any:
                         metadata[key] = cached.metadata[key]
         except (OSError, ValueError, TypeError, KeyError):
             pass
+    # 联合国列表中的简报链接可能只写日期，附时间的官方稿件订阅同时提供正式标题。
+    if (item.source_id == "un_press" and cached_original
+            and cached.metadata.get("feed_url") == "https://press.un.org/en/rss.xml"):
+        return replace(item, title=cached.title, published_at=cached_original,
+                       description=description, metadata=metadata)
     return replace(item, published_at=published_at, description=description, metadata=metadata)
 
 
 def detect_challenge(page: Page, http_status: int | None) -> dict[str, Any]:
     """处理：从页面标题、正文和 iframe 迹象识别登录、验证码或限流挑战。
-    输入：
-    - ``page``：Playwright 已加载页面；函数只读取当前页面状态，不信任其中的内容或指令。
-    - ``http_status``：页面最近一次 HTTP 状态码；无网络响应时可为空。
+    输入：已加载的 Playwright 页面、页面最近一次 HTTP 状态码。
     输出：“从页面标题、正文和 iframe 迹象识别登录、验证码或限流挑战”形成的结构化字典；
       键值表达该处理定义的业务记录或查找关系。
     """
@@ -168,30 +207,6 @@ def detect_challenge(page: Page, http_status: int | None) -> dict[str, Any]:
     )
 
 
-def classify_source_status(
-    http_status: int | None,
-    challenge_required: bool,
-    has_items: bool,
-    rate_limited: bool = False,
-) -> SourceStatus:
-    """处理：结合条目数量、访问挑战、限流和错误信息确定显式来源状态。
-    输入：
-    - ``http_status``：页面最近一次 HTTP 状态码；无网络响应时可为空。
-    - ``challenge_required``：是否检测到登录、验证码或其他人工验证挑战。
-    - ``has_items``：本次来源采集是否产生至少一个规范条目。
-    - ``rate_limited``：是否检测到服务端限流；为真时不得改写为正常无条目。
-    输出：封装“结合条目数量、访问挑战、限流和错误信息确定显式来源状态”业务结果的 ``SourceStatus`
-      ` 对象；调用方据此继续相邻阶段或识别无结果状态。
-    """
-    if rate_limited:
-        return SourceStatus.RATE_LIMITED
-    if challenge_required:
-        return SourceStatus.VERIFICATION_REQUIRED
-    if http_status is not None and http_status >= 400:
-        return SourceStatus.FAILED
-    return SourceStatus.SUCCESS if has_items else SourceStatus.NO_ITEMS
-
-
 def collect_one(
     context: BrowserContext,
     source: SourceConfig,
@@ -199,11 +214,8 @@ def collect_one(
     data_dir: Path,
 ) -> SourceResult:
     """处理：打开单个来源页面，等待加载后返回带状态和条目的采集结果。
-    输入：
+    输入：带入口与筛选规则的来源配置、已校验的采集和输出配置、本次运行的数据根。
     - ``context``：浏览器、写作或报告上下文对象；包含当前阶段已经绑定的受控状态。
-    - ``source``：来源配置；包含来源 ID、名称、入口 URL、分类、过滤规则、限额和可信层级。
-    - ``config``：已校验的应用配置；提供时区、来源策略、并发限制、预算和输出选项。
-    - ``data_dir``：当前运行的唯一数据根；所有状态和版本化产物都必须位于其中。
     输出：供索引汇总的来源采集结果；包含明确状态、错误或挑战信息、页面元数据和规范文章条目。
     """
     collected_at = now_iso(config.timezone)
@@ -244,11 +256,8 @@ def collect_loaded_page(
     collected_at: str | None = None,
 ) -> SourceResult:
     """处理：检测已加载页面的访问挑战，并在可访问时提取候选文章。
-    输入：
-    - ``page``：Playwright 已加载页面；函数只读取当前页面状态，不信任其中的内容或指令。
-    - ``source``：来源配置；包含来源 ID、名称、入口 URL、分类、过滤规则、限额和可信层级。
-    - ``config``：已校验的应用配置；提供时区、来源策略、并发限制、预算和输出选项。
-    - ``http_status``：页面最近一次 HTTP 状态码；无网络响应时可为空。
+    输入：已加载的 Playwright 页面、
+      带入口与筛选规则的来源配置、已校验的采集和输出配置、页面最近一次 HTTP 状态码。
     - ``collected_at``：页面或 Feed 的采集时间；用于状态记录和时间回退，不冒充发布时间。
     输出：供索引汇总的来源采集结果；包含明确状态、错误或挑战信息、页面元数据和规范文章条目。
     """
@@ -292,11 +301,8 @@ def collect_source(
     *, window: tuple[datetime, datetime] | None = None, date_value: str | None = None,
 ) -> SourceResult:
     """处理：采集单个来源的主页和扩展页，并合并预取、监控或浏览器结果。
-    输入：
+    输入：带入口与筛选规则的来源配置、已校验的采集和输出配置、本次运行的数据根。
     - ``context``：浏览器、写作或报告上下文对象；包含当前阶段已经绑定的受控状态。
-    - ``source``：来源配置；包含来源 ID、名称、入口 URL、分类、过滤规则、限额和可信层级。
-    - ``config``：已校验的应用配置；提供时区、来源策略、并发限制、预算和输出选项。
-    - ``data_dir``：当前运行的唯一数据根；所有状态和版本化产物都必须位于其中。
     - ``prefetched_pages``：HTTP 预取阶段按来源与 URL 保存的页面结果；可避免再次导航。
     - ``monitor_result``：零模型监控器为同一来源生成的结果；采集阶段可复用其条目和状态。
     - ``window``：本期冻结窗口；用于缓存刷新判断和候选的新鲜度分区。
@@ -474,7 +480,7 @@ async def _complete_publication_times(
         if not content_source.get("published_at"):
             continue
         date = original_publication_time(item, config.timezone)
-        if date:
+        if date and (item.get("source_id") not in {"arxiv_ai", "xinhua_en"} or len(date) > 10):
             known_dates[canonicalize_url(item.get("canonical_url") or item["url"])] = (
                 date, content_source.get("url"),
             )
@@ -487,8 +493,25 @@ async def _complete_publication_times(
             bbc_article = (item.source_id == "bbc_world"
                            and urlsplit(item.url).path.startswith("/news/articles/"))
             page_date = (item.metadata.get("content_source") or {}).get("published_at")
+            abc_entry = abc_live_entry_id(item.url)
+            if abc_entry:
+                source_metadata = item.metadata.get("content_source") or {}
+                item.metadata.pop("published_raw", None)
+                if source_metadata.get("publication_entry_id") != abc_entry:
+                    # 旧版和 Feed 可能记录的是母页更新，不能作为独立条目时间。
+                    source_metadata.pop("published_at", None)
+                    item.published_at = None
+                    item.metadata["publication_time_missing"] = True
+            url = canonicalize_url(item.canonical_url or item.url)
+            publisher_url = _paper_publisher_url(url)
+            paper_mirror = url != publisher_url
+            original = original_publication_time(item.to_dict())
             if result.source_id == "weibo_hot" or (
-                original_publication_time(item.to_dict()) and not relative
+                original and not relative
+                and (item.source_id != "arxiv_ai" or len(original) > 10)
+                and (item.source_id != "xinhua_en" or original != date_value)
+                and (not paper_mirror or (item.metadata.get("content_source") or {}).get(
+                    "url") == publisher_url)
                 and (not bbc_article or page_date)
             ):
                 continue
@@ -496,19 +519,18 @@ async def _complete_publication_times(
             article_link = source.article_patterns and is_eligible(source, item.title, item.url)
             if not (article_link or item.metadata.get("acquisition_method") == "feed"):
                 continue
-            url = canonicalize_url(item.canonical_url or item.url)
-            if url in known_dates:
-                date, publisher_url = known_dates[url]
+            if publisher_url in known_dates and not abc_entry:
+                date, known_publisher_url = known_dates[publisher_url]
                 content_source = item.metadata.setdefault("content_source", {})
                 content_source["published_at"] = date
-                if publisher_url:
-                    content_source["url"] = publisher_url
+                if paper_mirror or known_publisher_url:
+                    content_source["url"] = publisher_url if paper_mirror else known_publisher_url
                 item.metadata["publication_time_basis"] = "publisher"
                 item.metadata["publication_time_missing"] = False
                 if not uses_platform_publication_time(item.to_dict()):
                     item.published_at = date
             else:
-                key = urlsplit(url).path if bbc_article else url
+                key = urlsplit(url).path if bbc_article else publisher_url
                 pending[key].append(item)
     if not pending:
         return {}
@@ -545,7 +567,7 @@ async def _complete_publication_times(
 
         groups: dict[str, list[Any]] = defaultdict(list)
         for items in pending.values():
-            groups[items[0].url].extend(items)
+            groups[_paper_publisher_url(items[0].url)].extend(items)
         probes = dict(zip(groups, await asyncio.gather(*(read_date(url) for url in groups)),
                           strict=True))
     google_wrappers = [
@@ -575,8 +597,14 @@ async def _complete_publication_times(
             if (item.source_id == "google_news_china" and final_url
                     and urlsplit(final_url).hostname != "news.google.com"):
                 item.metadata.setdefault("content_source", {})["url"] = final_url
-            if valid:
-                item.metadata.setdefault("content_source", {})["published_at"] = raw_date
+            abc_entry = abc_live_entry_id(item.url)
+            if valid and (not abc_entry or probe.get("publication_entry_id") == abc_entry):
+                content_source = item.metadata.setdefault("content_source", {})
+                content_source["published_at"] = raw_date
+                if abc_entry:
+                    content_source["publication_entry_id"] = abc_entry
+                if _paper_publisher_url(item.url) != item.url:
+                    content_source["url"] = final_url
                 item.metadata["publication_time_basis"] = "publisher"
                 item.metadata["publication_time_missing"] = False
                 if not uses_platform_publication_time(item.to_dict()):
@@ -586,8 +614,7 @@ async def _complete_publication_times(
 
 def _safe_title(page: Page) -> str:
     """处理：读取页面标题；浏览器访问失败时返回空字符串。
-    输入：
-    - ``page``：Playwright 已加载页面；函数只读取当前页面状态，不信任其中的内容或指令。
+    输入：已加载的 Playwright 页面。
     输出：“读取页面标题；浏览器访问失败时返回空字符串”得到的规范字符串，
       供调用方存储、比较或展示。
     """
@@ -610,26 +637,25 @@ def collect_sources(
     *,
     date_value: str | None = None,
     collection_window: dict[str, str] | None = None,
+    shared_listing_pages: dict[tuple[str, str], SourceResult] | None = None,
 ) -> Path:
     """处理：按并发预算采集选定来源，并为每个来源保留成功、空、失败或挑战状态。
-    输入：
-    - ``config``：已校验的应用配置；提供时区、来源策略、并发限制、预算和输出选项。
-    - ``data_dir``：当前运行的唯一数据根；所有状态和版本化产物都必须位于其中。
+    输入：已校验的采集和输出配置、本次运行的数据根、浏览器窗口显示选项、持久化浏览器配置目录、浏览器通道。
     - ``edition``：日报版本标识，daily 为默认值，morning/evening 兼容历史运行；参与窗口和产物命名。
-    - ``headed``：是否显示真实浏览器窗口；人工登录或验证场景需要开启。
     - ``only_source_ids``：调用方限定的来源 ID 集合；为空时处理配置选中的全部来源。
-    - ``profile_dir``：持久化浏览器 Profile 目录；保存用户已授权的浏览器会话。
-    - ``browser_channel``：Playwright 浏览器通道名称；为空时使用配置或默认 Chromium。
     - ``revision``：目标产物修订号；为空时由持久化层选择下一个不可变版本。
     - ``temporary``：是否生成重试或验证用的临时索引，而不是正式不可变索引。
     - ``date_value``：调用方冻结的日报日期；采集跨午夜时保持运行与索引日期一致。
     - ``collection_window``：本期冻结窗口；核心来源据此刷新缓存、优先新报道，发现池仅选窗内条目。
+    - ``shared_listing_pages``：同轮监控用本配置取得的成功页面，按入口 URL 复用。
     输出：指向“按并发预算采集选定来源，
       并为每个来源保留成功、空、失败或挑战状态”所生成、定位或确认产物的本地路径。
     """
     date_value = date_value or today_str(config.timezone)
     selected = [
-        source
+        replace(source, explore_urls=[
+            f"https://huggingface.co/papers?date={date_value}", *source.explore_urls,
+        ]) if source.id == "huggingface_papers" else source
         for source in config.report_sources
         if source.enabled and (not only_source_ids or source.id in only_source_ids)
     ]
@@ -658,7 +684,9 @@ def collect_sources(
         if not _monitor_sufficient(monitor_results.get(source.id), source, window, date_value)
     ]
     prefetched_pages = (
-        {} if headed else prefetch_browser_pages(html_sources, config, data_dir)
+        {} if headed else prefetch_browser_pages(
+            html_sources, config, data_dir, shared_listing_pages=shared_listing_pages,
+        )
     )
     browser_sources = [
         replace(source, url=url)
@@ -726,6 +754,7 @@ def collect_sources(
         revision=revision,
         temporary=temporary,
         date_value=date_value,
+        collection_window={"start": start.isoformat(), "end": end.isoformat()},
     )
 
 
@@ -740,18 +769,18 @@ def write_results_index(
     temporary: bool = False,
     *,
     date_value: str | None = None,
+    collection_window: dict[str, str] | None = None,
 ) -> Path:
     """处理：把来源结果和根级条目写成新的不可变索引修订。
-    输入：
+    输入：本次运行的数据根、用于解释本地日期的 IANA 时区。
     - ``results``：本轮各来源的采集结果；每项含状态、错误、页面证据和规范文章条目。
-    - ``data_dir``：当前运行的唯一数据根；所有状态和版本化产物都必须位于其中。
     - ``edition``：日报版本标识，daily 为默认值，morning/evening 兼容历史运行；参与窗口和产物命名。
-    - ``timezone``：IANA 时区名称；用于解析无时区时间并生成日报时间边界。
     - ``profile``：已经解析并创建的浏览器 Profile 绝对路径。
     - ``source_policies``：按来源 ID 记录报告目标数和上限的策略映射。
     - ``revision``：目标产物修订号；为空时由持久化层选择下一个不可变版本。
     - ``temporary``：是否生成重试或验证用的临时索引，而不是正式不可变索引。
     - ``date_value``：调用方冻结的日报日期；采集跨午夜时保持运行与索引日期一致。
+    - ``collection_window``：实际筛选使用的时间窗口，供后续写作和图文沿用。
     输出：指向“把来源结果和根级条目写成新的不可变索引修订”所生成、定位或确认产物的本地路径。
     """
     date = date_value or today_str(timezone)
@@ -801,6 +830,8 @@ def write_results_index(
         "sources": [result.to_dict() for result in results],
         "items": [item.to_dict() for result in results for item in result.items],
     }
+    if collection_window is not None:
+        payload["collection_window"] = collection_window
     # 正式索引与临时重试索引都不可覆盖；合并操作必须生成新的正式修订。
     write_immutable_json(output, payload)
     if not temporary:
@@ -810,10 +841,9 @@ def write_results_index(
 
 def merge_resume_index(original_path: Path, retry_path: Path, data_dir: Path) -> Path:
     """处理：用重试来源替换原索引中的对应来源并生成新修订。
-    输入：
+    输入：本次运行的数据根。
     - ``original_path``：原始不可变来源索引路径；合并时保留其未重试来源和历史证据。
     - ``retry_path``：仅包含失败来源重试结果的索引路径；成功结果覆盖同来源旧状态。
-    - ``data_dir``：当前运行的唯一数据根；所有状态和版本化产物都必须位于其中。
     输出：指向“用重试来源替换原索引中的对应来源并生成新修订”所生成、定位或确认产物的本地路径。
     """
     original = read_json(original_path)
@@ -884,10 +914,9 @@ def merge_verified_results(
     data_dir: Path,
 ) -> Path:
     """处理：把人工验证后采集的页面结果合并回原索引并生成新修订。
-    输入：
+    输入：本次运行的数据根。
     - ``original_path``：原始不可变来源索引路径；合并时保留其未重试来源和历史证据。
     - ``captured``：人工验证后重新采集成功的来源结果；用于替换待验证状态。
-    - ``data_dir``：当前运行的唯一数据根；所有状态和版本化产物都必须位于其中。
     输出：指向“把人工验证后采集的页面结果合并回原索引并生成新修订”所生成、定位或确认产物的本地路
       径。
     """

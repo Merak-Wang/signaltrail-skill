@@ -31,10 +31,13 @@ PACKAGE_FILES = {
     Path("pyproject.toml"),
     Path("scripts/build_hermes_skill.py"),
     Path("scripts/measure_codex_turn.py"),
+    Path("scripts/measure_codex_exec.py"),
+    Path("scripts/run_codex_edition.py"),
     Path("scripts/run_signaltrail.py"),
     Path("scripts/build_qwen_worker.py"),
     Path("scripts/install.ps1"),
     Path("scripts/install.sh"),
+    Path("scripts/install.py"),
 }
 PACKAGE_DIRECTORIES = (
     Path("assets/monitor"),
@@ -215,13 +218,10 @@ def is_packaged(relative_path: Path) -> bool:
     )
 
 
-def inspect_package_file(relative_path: Path, absolute_path: Path) -> None:
-    """处理：校验单个跟踪文件能否安全写入发布包。
-    输入：
-    - ``relative_path``：相对于仓库根的跟踪文件路径；用于白名单和危险文件检查。
-    - ``absolute_path``：待检查跟踪文件的绝对路径；只读取大小和受控文本内容。
-    输出：不返回新数据；完成“校验单个跟踪文件能否安全写入发布包”，
-      副作用限于该处理声明的受控对象或产物。
+def copy_package_file(relative_path: Path, source: Path, destination: Path) -> int:
+    """处理：检查并复制发布文件，文本换行统一为 LF。
+    输入：受控相对路径、源文件和暂存目录中的目标文件。
+    输出：实际写入的字节数，用于汇总包大小。
     """
     lowered_parts = {part.casefold() for part in relative_path.parts}
     blocked = sorted(lowered_parts & FORBIDDEN_COMPONENTS)
@@ -230,35 +230,25 @@ def inspect_package_file(relative_path: Path, absolute_path: Path) -> None:
             f"Refusing forbidden path component {blocked[0]!r}: {relative_path.as_posix()}"
         )
     lowered_name = relative_path.name.casefold()
-    if lowered_name == ".env" or lowered_name.endswith(FORBIDDEN_SUFFIXES):
+    private_env = lowered_name.startswith(".env.") and lowered_name != ".env.example"
+    if lowered_name == ".env" or private_env or lowered_name.endswith(FORBIDDEN_SUFFIXES):
         raise PackageError(f"Refusing credential/runtime file: {relative_path.as_posix()}")
-    if absolute_path.stat().st_size > 10 * 1024 * 1024:
+    if source.stat().st_size > 10 * 1024 * 1024:
         raise PackageError(f"Refusing file larger than 10 MiB: {relative_path.as_posix()}")
+    content = source.read_bytes()
     try:
-        text = absolute_path.read_text(encoding="utf-8")
-    except (UnicodeDecodeError, OSError):
-        return
-    for pattern in SECRET_PATTERNS:
-        if pattern.search(text):
-            raise PackageError(
-                f"Potential secret matched {pattern.pattern!r}: {relative_path.as_posix()}"
-            )
-
-
-def copy_package_file(relative_path: Path, source: Path, destination: Path) -> None:
-    """处理：复制白名单文件，并将已知文本格式统一为 LF 换行。
-    输入：
-    - ``relative_path``：仓库相对路径；用于识别文本格式。
-    - ``source``：已经过安全检查的规范源文件。
-    - ``destination``：发布暂存目录中的目标文件。
-    输出：不返回新数据；目标文件内容与源文件一致，文本换行在各平台保持稳定。
-    """
+        text = content.decode("utf-8")
+    except UnicodeDecodeError:
+        pass
+    else:
+        for pattern in SECRET_PATTERNS:
+            if pattern.search(text):
+                raise PackageError(f"Potential secret in {relative_path.as_posix()}")
     if relative_path.suffix.casefold() in TEXT_SUFFIXES or relative_path.name in TEXT_FILENAMES:
-        content = source.read_bytes().replace(b"\r\n", b"\n").replace(b"\r", b"\n")
-        destination.write_bytes(content)
-        shutil.copystat(source, destination)
-        return
-    shutil.copy2(source, destination)
+        content = content.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+    destination.write_bytes(content)
+    shutil.copystat(source, destination)
+    return len(content)
 
 
 def validate_output_target(source_root: Path, output_dir: Path) -> None:
@@ -342,7 +332,7 @@ def build_package(
             source_root,
             include_uncommitted=include_uncommitted,
         )
-        if is_packaged(path)
+        if is_packaged(path) and (source_root / path).is_file()
     ]
     missing = sorted(path.as_posix() for path in PACKAGE_FILES if path not in selected)
     if missing:
@@ -355,18 +345,16 @@ def build_package(
     ) as temporary_parent:
         staging = Path(temporary_parent) / SKILL_NAME
         staging.mkdir()
+        total_bytes = 0
         for relative_path in selected:
-            source_path = source_root / relative_path
-            if not source_path.is_file():
-                continue
-            inspect_package_file(relative_path, source_path)
             destination = staging / relative_path
             destination.parent.mkdir(parents=True, exist_ok=True)
-            copy_package_file(relative_path, source_path, destination)
+            total_bytes += copy_package_file(
+                relative_path, source_root / relative_path, destination
+            )
         metadata = validate_skill_directory(staging)
         replace_directory_atomically(staging, output_dir)
 
-    total_bytes = sum(path.stat().st_size for path in output_dir.rglob("*") if path.is_file())
     return {
         "status": "built",
         "name": metadata["name"],

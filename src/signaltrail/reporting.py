@@ -3,9 +3,12 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from collections import Counter
+from collections import Counter, defaultdict
+from collections.abc import Callable, Iterable, Iterator
 from copy import deepcopy
 from datetime import date, datetime
+from functools import lru_cache
+from itertools import chain
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
@@ -13,12 +16,13 @@ from zoneinfo import ZoneInfo
 
 from jsonschema import Draft202012Validator, FormatChecker
 
+from .article_time import original_publication_time
 from .config import canonical_source_page_url, project_root
 from .localization import (
     OUTPUT_LANGUAGES,
+    brief_title_requires_translation,
     is_chinese_output,
     localized,
-    source_matches_output_language,
     text_matches_output_language,
     translated_title,
     translated_title_field,
@@ -32,6 +36,7 @@ from .semantics import (
 )
 from .state import stable_analysis_id
 from .taxonomy import (
+    SECTION_GROUPS_V13,
     SECTION_ID_ALIASES_V15,
     SECTION_ORDER_V13,
     canonical_section_id,
@@ -44,6 +49,10 @@ from .utils import canonicalize_url, now_iso, read_json
 MAX_FEATURED_EVENTS = 12
 CURRENT_REPORT_SCHEMA = "2.0"
 BRIEF_REPORT_SCHEMAS = {"1.5", "2.0"}
+_SOURCE_GROUP_SCHEMAS = BRIEF_REPORT_SCHEMAS | {"1.4"}
+_DAILY_SCHEMAS = _SOURCE_GROUP_SCHEMAS | {"1.3"}
+_FRESHNESS_SCHEMAS = _DAILY_SCHEMAS | {"1.2"}
+_STRICT_SCHEMAS = _FRESHNESS_SCHEMAS | {"1.1"}
 IMPORTANCE_CAPS = {
     "impact": 30,
     "freshness": 15,
@@ -86,6 +95,12 @@ _LANGUAGE_MARKER_PATTERN = re.compile(r"^\s*\[(?:英|英文|EN|中|中文|ZH)\]\
 _TRANSLATION_PREFIX_PATTERN = re.compile(
     r"^\s*(?:\[[^\]\r\n]{1,40}\]|【[^】\r\n]{1,40}】)\s*[:：-]?\s*"
 )
+_CHINESE_BRIEF_TITLE_SUFFIX = {
+    "cna_mainland": re.compile(
+        r"(?:\s*\|\s*(?:兩岸|两岸|政治))?\s*\|\s*(?:中央社\s+CNA|CNA|中央社)\s*$", re.I,
+    ),
+    "rthk_finance_alt": re.compile(r"\s*[-–—|]\s*(?:RTHK|香港[电電][台臺])\s*$", re.I),
+}
 _UNREAD_BODY_MARKERS = (
     "未读取正文",
     "正文尚未读取",
@@ -98,10 +113,85 @@ _UNREAD_BODY_MARKERS = (
 )
 
 
+def ordered_sections(
+    report: dict[str, Any], module: str, *, preserve_extra: bool = False,
+) -> list[dict[str, Any]]:
+    """处理：按报告契约读取栏目，供发布视图共用。
+    输入：报告、栏目组及本地视图是否保留历史自定义栏目。
+    输出：规范栏目按契约顺序排列，旧版栏目沿用各投影的历史顺序。
+    """
+    values = report.get("sections", []) if preserve_extra else report["sections"]
+    sections = [section for section in values if section.get("module") == module]
+    if preserve_extra:
+        by_id = {str(section.get("id")): section for section in sections}
+    else:
+        if report.get("schema_version") not in {"1.3", "1.4", "1.5", "2.0"}:
+            return sections
+        by_id = {section["id"]: section for section in sections}
+    ordered = [by_id[key] for key in SECTION_GROUPS_V13[module] if key in by_id]
+    if preserve_extra:
+        ordered.extend(section for section in sections if section not in ordered)
+    return ordered
+
+
+def group_items_by_source(
+    section: dict[str, Any], language: object = "zh-CN", *, local: bool = False,
+) -> list[tuple[dict[str, Any], list[dict]]]:
+    """处理：按来源组织已编译栏目，保留简报和来源首次出现顺序。
+    输入：报告栏目、显示语言及本地视图对旧记录的回退规则。
+    输出：按来源分组的简报，供 Markdown 和本地发布视图使用。
+    """
+    values = section.get("briefs") if "briefs" in section else section.get("items", [])
+    groups: dict[str, tuple[dict[str, Any], list[dict]]] = {}
+    for item in values or []:
+        source = item.get("primary_source")
+        if (local and not isinstance(source, dict)) or (not local and not source):
+            refs = item.get("source_refs") or [item.get("source_ref", {})]
+            source = {
+                "id": "unknown",
+                "name": localized(language, "未知来源", "Unknown source"),
+                "url": (refs[0] or {}).get("url", "#") if local else refs[0]["url"],
+            }
+        key = (source.get("id") or source.get("name") or "unknown") if local else source["id"]
+        groups.setdefault(str(key), (source, []))[1].append(item)
+    return list(groups.values())
+
+
+def optional_analysis_prose(
+    analysis: dict[str, Any], language: object,
+) -> Iterator[tuple[str, str]]:
+    """处理：读取有正文的可选研判说明，沿用发布视图的共同标题。
+    输入：已编译研判与目标语言。
+    输出：按合同顺序排列的说明标题和原文。
+    """
+    for key, chinese, english in (
+        ("time_horizon", "时间跨度", "Time horizon"),
+        ("confidence_rationale", "置信度依据", "Confidence rationale"),
+        ("change_from_prior", "相对上一版", "Change from prior"),
+        ("decision_relevance", "决策相关性", "Decision relevance"),
+    ):
+        if value := analysis.get(key):
+            yield localized(language, chinese, english), value
+
+
+def report_followups(
+    report: dict[str, Any], language: object,
+) -> Iterator[tuple[str, list[str]]]:
+    """处理：按固定顺序读取日报新增变动和次日观察。
+    输入：已编译日报和显示语言。
+    输出：有条目的相关栏目标题及正文。
+    """
+    for key, chinese, english in (
+        ("changes", "日间新增、确认与修正", "New, Confirmed, and Revised Since Morning"),
+        ("tomorrow_watch_items", "次日观察项", "Next-Day Watch List"),
+    ):
+        if items := report.get(key):
+            yield localized(language, chinese, english), items
+
+
 def split_narrative_paragraphs(value: object) -> list[str]:
     """处理：返回作者正文段落，不把自动换行误判为结构。
-    输入：
-    - ``value``：待解析或规范化的单个输入值；非法值按函数契约返回空值或报错。
+    输入：待解析的值。
     输出：“返回作者正文段落，不把自动换行误判为结构”得到的字符串列表；
       顺序保持确定并可供下一步骤逐项处理。
     """
@@ -153,8 +243,7 @@ def evaluation_continuity_floor(
     evaluation: dict[str, Any],
 ) -> tuple[str, set[str], str | None]:
     """处理：对评估器的复用决定应用确定性的污染防护门槛。
-    输入：
-    - ``evaluation``：独立质量评估对象；包含评分、问题和改进建议。
+    输入：独立质量评估。
     输出：“对评估器的复用决定应用确定性的污染防护门槛”得到的固定结构结果；
       返回位置依次对应 decision、excluded、None。
     """
@@ -239,14 +328,14 @@ def reference_time_fields(
     fallback_collected_at: object | None = None,
 ) -> dict[str, str]:
     """处理：返回唯一权威展示时间，且不改变新鲜度语义。
-    输入：
+    输入：带入口与筛选规则的来源配置。
     - ``indexed``：权威来源索引中与当前 item_id 对应的条目记录。
-    - ``source``：来源配置；包含来源 ID、名称、入口 URL、分类、过滤规则、限额和可信层级。
     - ``fallback_collected_at``：索引级采集时间；仅在条目没有发布时间和发现时间时作为展示回退。
     输出：“返回唯一权威展示时间，且不改变新鲜度语义”形成的结构化字典；
       典型键包括 collected_at、published_at。
     """
-    published_at = str(indexed.get("published_at") or "").strip()
+    # 选材和展示均采用出版方原发时间；发现平台的时间只说明上榜或收录。
+    published_at = original_publication_time(indexed)
     if published_at:
         return {"published_at": published_at}
     source = source or {}
@@ -264,14 +353,15 @@ def reference_time_label(
     output_language: object = "zh-CN",
 ) -> tuple[str, str] | None:
     """处理：选择读者可见的时间标签，并优先使用实际发布时间。
-    输入：
+    输入：报告目标语言。
     - ``ref``：报告条目的 reference_time 对象；包含时间值、类型和是否为回退。
-    - ``output_language``：目标报告语言；决定标题译文字段、校验规则和界面文本。
     输出：“选择读者可见的时间标签，并优先使用实际发布时间”得到的固定结构结果；
       返回位置依次对应 localized(output_language, '发布时间、published_at。
     """
     published_at = str(ref.get("published_at") or "").strip()
     if published_at:
+        if re.fullmatch(r"\d{4}-\d{2}-\d{2}", published_at):
+            return localized(output_language, "发布日期", "Publication date"), published_at
         return localized(output_language, "发布时间", "Published"), published_at
     collected_at = str(ref.get("collected_at") or "").strip()
     if collected_at:
@@ -286,11 +376,9 @@ def _require_output_language(
     language: object = "zh-CN",
 ) -> None:
     """处理：从报告对象读取输出语言，并在不属于受支持语言集合时记录校验错误。
-    输入：
-    - ``value``：待解析或规范化的单个输入值；非法值按函数契约返回空值或报错。
+    输入：待解析的值、输出语言。
     - ``location``：当前校验字段的 JSON 路径；用于生成可定位的错误消息。
     - ``errors``：已收集的校验错误列表；调用方可一次性修复。
-    - ``language``：规范语言标识；用于本地化选择或语言一致性判断。
     输出：不返回新数据；完成“从报告对象读取输出语言，并在不属于受支持语言集合时记录校验错误”，
       副作用限于该处理声明的受控对象或产物。
     """
@@ -307,10 +395,9 @@ def _normalize_brief_title(
     output_language: object,
 ) -> None:
     """处理：保留索引原题，并只保留一个目标语言译题。
-    输入：
+    输入：报告目标语言。
     - ``brief``：模型生成或缓存复用的单条简报；包含标题、摘要、重要性、证据和条目 ID。
     - ``indexed``：权威来源索引中与当前 item_id 对应的条目记录。
-    - ``output_language``：目标报告语言；决定标题译文字段、校验规则和界面文本。
     输出：不返回新数据；完成“保留索引原题，并只保留一个目标语言译题”，
       副作用限于该处理声明的受控对象或产物。
     """
@@ -327,34 +414,39 @@ def _normalize_brief_title(
     )
     brief["title"] = original_title
     brief.pop(other_field, None)
-    source_language = (
-        indexed.get("metadata", {}).get("language")
-        if isinstance(indexed.get("metadata"), dict)
-        else None
-    )
-    if source_matches_output_language(
-        source_language, original_title, output_language
-    ):
+    if not brief_title_requires_translation(indexed, output_language):
         brief.pop(translation_field, None)
         return
     if not text_matches_output_language(
         drafted_translation, output_language
     ) and text_matches_output_language(drafted_title, output_language):
         drafted_translation = drafted_title
+    if translation_field == "title_zh" and (
+        source_suffix := _CHINESE_BRIEF_TITLE_SUFFIX.get(indexed.get("source_id"))
+    ):
+        drafted_translation = source_suffix.sub("", drafted_translation).strip()
     if text_matches_output_language(drafted_translation, output_language):
         brief[translation_field] = drafted_translation
     else:
         brief.pop(translation_field, None)
 
 
+@lru_cache(maxsize=4)
+def _report_schema_validator(contents: bytes) -> Draft202012Validator:
+    """处理：解析并复用同一份日报 Schema 的校验器。
+    输入：当前生效的 Schema 文件字节，修改后的资源具有新缓存键。
+    输出：使用标准 Draft 2020-12 规则和格式校验的实例。
+    """
+    return Draft202012Validator(json.loads(contents), format_checker=FormatChecker())
+
+
 def _schema_errors(report: object) -> list[str]:
     """处理：使用 JSON Schema 收集并格式化结构错误。
-    输入：
-    - ``report``：当前报告结构；包含栏目、简报或事件、来源引用及质量元数据。
+    输入：含栏目和来源引用的报告。
     输出：可操作的校验错误消息列表；空列表表示通过当前规则。
     """
-    schema = read_json(project_root() / "schemas" / "report.schema.json")
-    validator = Draft202012Validator(schema, format_checker=FormatChecker())
+    schema_path = project_root() / "schemas" / "report.schema.json"
+    validator = _report_schema_validator(schema_path.read_bytes())
     errors: list[str] = []
     for error in sorted(validator.iter_errors(report), key=lambda item: list(item.absolute_path)):
         location = "$"
@@ -366,9 +458,7 @@ def _schema_errors(report: object) -> list[str]:
 
 def _publication_date(value: object, timezone: str) -> date | None:
     """处理：从条目或来源引用中读取规范发布日期。
-    输入：
-    - ``value``：待解析或规范化的单个输入值；非法值按函数契约返回空值或报错。
-    - ``timezone``：IANA 时区名称；用于解析无时区时间并生成日报时间边界。
+    输入：待解析的值、用于解释本地日期的 IANA 时区。
     输出：封装“从条目或来源引用中读取规范发布日期”业务结果的 ``date | None`` 对象；
       调用方据此继续相邻阶段或识别无结果状态。
     """
@@ -405,9 +495,7 @@ def _freshness_cap(age_days: int) -> int:
 
 def hydrate_report_evidence(report: dict, index: dict | None) -> None:
     """处理：用权威索引回填报告简报的来源身份、引用时间和正文证据，拒绝未知条目。
-    输入：
-    - ``report``：当前报告结构；包含栏目、简报或事件、来源引用及质量元数据。
-    - ``index``：当前来源索引对象；包含规范条目、来源结果、策略和采集时间。
+    输入：含栏目和来源引用的报告、规范来源索引。
     输出：不返回新数据；完成“用权威索引回填报告简报的来源身份、引用时间和正文证据，
       拒绝未知条目”，副作用限于该处理声明的受控对象或产物。
     """
@@ -522,10 +610,8 @@ def _allocate_importance(total: int, freshness_cap: int) -> tuple[int, dict[str,
 
 def _source_rank_label(source_id: str, rank: int, output_language: object) -> str:
     """处理：把来源内排序转换为读者可理解的排名标签。
-    输入：
-    - ``source_id``：来源的稳定 ID；用于配置查找、索引关联和状态分区。
+    输入：稳定来源 ID、报告目标语言。
     - ``rank``：简报或来源在当前栏目中的一基排序号。
-    - ``output_language``：目标报告语言；决定标题译文字段、校验规则和界面文本。
     输出：“把来源内排序转换为读者可理解的排名标签”得到的规范字符串，供调用方存储、比较或展示。
     """
     if not is_chinese_output(output_language):
@@ -546,9 +632,7 @@ def _pending_from_index(
     output_language: object = "zh-CN",
 ) -> list[dict[str, str]]:
     """处理：从索引提取仍需验证或失败的来源记录。
-    输入：
-    - ``index``：当前来源索引对象；包含规范条目、来源结果、策略和采集时间。
-    - ``output_language``：目标报告语言；决定标题译文字段、校验规则和界面文本。
+    输入：规范来源索引、报告目标语言。
     输出：“从索引提取仍需验证或失败的来源记录”得到的有序结构化记录；
       典型字段包括 error、note、source_id、source_name、status、url，可直接交给下一阶段。
     """
@@ -628,8 +712,7 @@ def _pending_from_index(
 
 def _normalize_draft_sections(value: object) -> tuple[dict[str, dict[str, Any]], list[str]]:
     """处理：规范化列表或映射形式的草稿栏目及已知模型别名。
-    输入：
-    - ``value``：待解析或规范化的单个输入值；非法值按函数契约返回空值或报错。
+    输入：待解析的值。
     输出：“规范化列表或映射形式的草稿栏目及已知模型别名”得到的固定结构结果；
       返回位置依次对应 normalized、warnings。
     """
@@ -689,8 +772,7 @@ def _normalize_draft_sections(value: object) -> tuple[dict[str, dict[str, Any]],
 
 def _normalize_draft_analyses(value: object) -> tuple[list[dict[str, Any]], list[str]]:
     """处理：规范化列表或映射形式的分析草稿，不虚构语义内容。
-    输入：
-    - ``value``：待解析或规范化的单个输入值；非法值按函数契约返回空值或报错。
+    输入：待解析的值。
     输出：“规范化列表或映射形式的分析草稿，不虚构语义内容”得到的固定结构结果；
       返回位置依次对应 [dict(analysis) for analysis in 、warnings。
     """
@@ -713,6 +795,15 @@ def _normalize_draft_analyses(value: object) -> tuple[list[dict[str, Any]], list
     if not all(isinstance(analysis, dict) for analysis in rows):
         raise ValueError("Every report draft analysis entry must be an object")
     return [dict(analysis) for analysis in rows], warnings
+
+
+def _indexed_report_section(item: dict) -> str | None:
+    """处理：将来源索引的栏目别名归入报告使用的栏目。
+    输入：权威索引条目的模块和类别。
+    输出：规范栏目 ID，索引无分类时为空。
+    """
+    module, category = item.get("module"), item.get("category")
+    return canonical_section_id(f"{module}.{category}") if module and category else None
 
 
 def compile_report_data(
@@ -782,59 +873,33 @@ def compile_report_data(
     report.setdefault("tomorrow_watch_items", [])
     report["pending_verifications"] = _pending_from_index(index, output_language)
 
-    sources = {
-        str(row.get("source_id")): row
-        for row in index.get("sources", [])
-        if isinstance(row, dict) and row.get("source_id")
-    }
-    indexed_items = {
-        str(row.get("item_id")): row
-        for row in index.get("items", [])
-        if isinstance(row, dict) and row.get("item_id")
-    }
-    source_positions = {
-        str(row.get("source_id")): position
-        for position, row in enumerate(index.get("sources", []))
-        if isinstance(row, dict) and row.get("source_id")
-    }
-    indexed_source_names = {
-        str(row.get("source_id")): str(
-            row.get("source_name") or row.get("source_id") or ""
-        )
-        for row in index.get("sources", [])
-        if isinstance(row, dict) and row.get("source_id")
-    }
+    sources, source_positions = {}, {}
+    for position, row in enumerate(index.get("sources", [])):
+        if isinstance(row, dict) and row.get("source_id"):
+            source_id = str(row["source_id"])
+            sources[source_id] = row
+            source_positions[source_id] = position
+    indexed_items: dict[str, dict] = {}
     source_item_counts: Counter[str] = Counter()
     source_item_positions: dict[str, int] = {}
     indexed_section_candidate_counts: Counter[str] = Counter()
     for row in index.get("items", []):
         if not isinstance(row, dict) or not row.get("item_id"):
             continue
+        item_id = str(row["item_id"])
+        indexed_items[item_id] = row
         source_id = str(row.get("source_id") or "")
         source_item_counts[source_id] += 1
-        source_item_positions[str(row["item_id"])] = source_item_counts[source_id]
+        source_item_positions[item_id] = source_item_counts[source_id]
         source_positions.setdefault(source_id, len(source_positions))
-        module = str(row.get("module") or "")
-        category = str(row.get("category") or "")
-        if module and category:
-            indexed_section_candidate_counts[
-                canonical_section_id(f"{module}.{category}")
-            ] += 1
+        if section_id := _indexed_report_section(row):
+            indexed_section_candidate_counts[section_id] += 1
     normalized_plan = (
         {
             str(source_id): [str(item_id) for item_id in item_ids]
             for source_id, item_ids in brief_plan_item_ids.items()
         }
         if brief_plan_item_ids is not None
-        else None
-    )
-    allowed_brief_ids = (
-        {
-            item_id
-            for item_ids in normalized_plan.values()
-            for item_id in item_ids
-        }
-        if normalized_plan is not None
         else None
     )
     planned_positions = {
@@ -846,6 +911,7 @@ def compile_report_data(
         (normalized_plan or {}).items(),
         key=lambda row: (source_positions.get(row[0], 1_000_000), row[0]),
     )
+    allowed_brief_ids = planned_positions.keys() if normalized_plan is not None else None
     if semantic_cache and normalized_plan is not None:
         existing_ids = {
             str(brief.get("item_id"))
@@ -869,9 +935,7 @@ def compile_report_data(
                 if not cached:
                     continue
                 # 只有 brief_plan 明确授权的条目才能进入当前版本，避免旧缓存越过 Top 窗口。
-                section_id = canonical_section_id(
-                    f"{indexed.get('module', '')}.{indexed.get('category', '')}"
-                )
+                section_id = _indexed_report_section(indexed)
                 if section_id not in SECTION_ORDER_V13:
                     continue
                 target_section = provided_sections.setdefault(
@@ -924,6 +988,19 @@ def compile_report_data(
             ),
         }
 
+    def primary_source(indexed: dict) -> dict:
+        """处理：从索引条目和配置的发布者构造统一的来源标识。
+        输入：当前简报或精选事件的第一条权威来源。
+        输出：引用主来源的 ID、名称和链接。
+        """
+        source_id = str(indexed.get("source_id", ""))
+        source = sources.get(source_id, {})
+        return {
+            "id": source_id,
+            "name": indexed.get("source_name") or source.get("source_name") or source_id,
+            "url": source.get("source_url") or indexed.get("url"),
+        }
+
     for original_section_id, section in list(provided_sections.items()):
         retained_briefs: list[dict[str, Any]] = []
         for brief in section.get("briefs", []):
@@ -944,13 +1021,7 @@ def compile_report_data(
                     "context.brief_plan default_item_ids"
                 )
                 continue
-            indexed_module = indexed.get("module")
-            indexed_category = indexed.get("category")
-            target_section_id = (
-                canonical_section_id(f"{indexed_module}.{indexed_category}")
-                if indexed_module and indexed_category
-                else original_section_id
-            )
+            target_section_id = _indexed_report_section(indexed) or original_section_id
             if target_section_id not in SECTION_ORDER_V13:
                 warnings.append(
                     f"omitted brief {item_id!r} because its indexed section "
@@ -990,13 +1061,7 @@ def compile_report_data(
             if not indexed:
                 retained_events.append(event)
                 continue
-            indexed_module = indexed.get("module")
-            indexed_category = indexed.get("category")
-            target_section_id = (
-                canonical_section_id(f"{indexed_module}.{indexed_category}")
-                if indexed_module and indexed_category
-                else original_section_id
-            )
+            target_section_id = _indexed_report_section(indexed) or original_section_id
             if target_section_id in SECTION_ORDER_V13 and target_section_id != original_section_id:
                 target = provided_sections.setdefault(
                     target_section_id,
@@ -1011,10 +1076,25 @@ def compile_report_data(
                 retained_events.append(event)
         section["items"] = retained_events
 
+    planned_coverage: dict[str, list[tuple[str, str, int]]] = defaultdict(list)
+    for source_id, planned_ids in ordered_plan:
+        planned_by_section: dict[str, list[dict]] = defaultdict(list)
+        for item_id in planned_ids:
+            indexed = indexed_items.get(item_id)
+            if not indexed or str(indexed.get("source_id") or "") != source_id:
+                continue
+            if section_id := _indexed_report_section(indexed):
+                planned_by_section[section_id].append(indexed)
+        source = sources.get(source_id)
+        for section_id, items in planned_by_section.items():
+            name = (source or items[0]).get("source_name") or source_id
+            planned_coverage[section_id].append((source_id, str(name), len(items)))
+
     compiled_sections: list[dict[str, Any]] = []
     event_by_item: dict[str, str] = {}
     used_brief_ids: set[str] = set()
     used_brief_urls: set[tuple[str, str]] = set()
+    titles = section_titles(output_language)
     for section_id in SECTION_ORDER_V13:
         module, category = section_id.split(".", 1)
         section = provided_sections.get(section_id, {})
@@ -1023,7 +1103,7 @@ def compile_report_data(
                 "id": section_id,
                 "module": module,
                 "category": category,
-                "title": section_titles(output_language)[section_id],
+                "title": titles[section_id],
             }
         )
         section.setdefault("briefs", [])
@@ -1057,15 +1137,10 @@ def compile_report_data(
                 continue
             indexed = indexed_items[item_id]
             _normalize_brief_title(brief, indexed, output_language)
-            source_id = str(indexed.get("source_id", ""))
-            source = sources.get(source_id, {})
             brief["source_ref"] = ref
             brief["semantic_fingerprint"] = semantic_fingerprint(indexed)
-            brief["primary_source"] = {
-                "id": source_id,
-                "name": indexed.get("source_name") or source.get("source_name") or source_id,
-                "url": source.get("source_url") or indexed.get("url"),
-            }
+            primary = primary_source(indexed)
+            brief["primary_source"] = primary
             rank = item_ranks.get(item_id, 1)
             brief["source_rank"] = rank
             brief["selection_rank"] = planned_positions.get(
@@ -1073,7 +1148,7 @@ def compile_report_data(
                 source_item_positions.get(item_id, rank),
             )
             brief["source_rank_label"] = _source_rank_label(
-                source_id, rank, output_language
+                primary["id"], rank, output_language
             )
             published = _publication_date(
                 indexed.get("published_at"),
@@ -1102,16 +1177,7 @@ def compile_report_data(
             ]
             if compiled_refs:
                 event["source_refs"] = compiled_refs
-                primary_item = indexed_items[compiled_refs[0]["item_id"]]
-                primary_source_id = str(primary_item.get("source_id", ""))
-                primary_source = sources.get(primary_source_id, {})
-                event["primary_source"] = {
-                    "id": primary_source_id,
-                    "name": primary_item.get("source_name")
-                    or primary_source.get("source_name")
-                    or primary_source_id,
-                    "url": primary_source.get("source_url") or primary_item.get("url"),
-                }
+                event["primary_source"] = primary_source(indexed_items[compiled_refs[0]["item_id"]])
             if compiled_refs and (source_item_ids or not event.get("event_id")):
                 digest = hashlib.sha256(compiled_refs[0]["item_id"].encode()).hexdigest()[:8]
                 event["event_id"] = f"EVT-{str(report['date']).replace('-', '')}-{digest.upper()}"
@@ -1185,31 +1251,11 @@ def compile_report_data(
             for brief in section["briefs"]
             if isinstance(brief, dict)
         )
-        incomplete_sources: list[tuple[str, int, int]] = []
-        for source_id, planned_ids in ordered_plan:
-            current_section_ids = [
-                item_id
-                for item_id in planned_ids
-                if item_id in indexed_items
-                and str(indexed_items[item_id].get("source_id") or "") == source_id
-                and canonical_section_id(
-                    f"{indexed_items[item_id].get('module', '')}."
-                    f"{indexed_items[item_id].get('category', '')}"
-                )
-                == section_id
-            ]
-            planned_count = len(current_section_ids)
-            selected_count = selected_source_counts[source_id]
-            if planned_count and selected_count < planned_count:
-                source_name = indexed_source_names.get(source_id)
-                if not source_name and current_section_ids:
-                    source_name = str(
-                        indexed_items[current_section_ids[0]].get("source_name")
-                        or source_id
-                    )
-                incomplete_sources.append(
-                    (source_name or source_id, selected_count, planned_count)
-                )
+        incomplete_sources = [
+            (name, selected_source_counts[source_id], planned)
+            for source_id, name, planned in planned_coverage[section_id]
+            if selected_source_counts[source_id] < planned
+        ]
         if incomplete_sources:
             details = (
                 "、".join(
@@ -1256,6 +1302,25 @@ def compile_report_data(
         if event.get("event_id")
     }
 
+    def bind_evidence(draft: dict) -> list[str]:
+        """处理：把研判引用的索引条目转为已编译的精选事件。
+        输入：研判或综合草稿中的条目 ID，或旧稿直接引用的事件 ID。
+        输出：保序写入去重后的事件 ID，返回未关联的来源条目。
+        """
+        requested = draft.get("evidence_item_ids") or draft.get("evidence_event_ids", [])
+        bound: dict[str, None] = {}
+        ignored: set[str] = set()
+        for item_id in map(str, requested):
+            event_id = event_by_item.get(item_id)
+            if event_id:
+                bound[event_id] = None
+            elif item_id in event_ids:
+                bound[item_id] = None
+            else:
+                ignored.add(item_id)
+        draft["evidence_event_ids"] = list(bound)
+        return sorted(ignored)
+
     for position, analysis in enumerate(report.get("analyses", []), start=1):
         domain = str(analysis.get("domain", ""))
         if domain in ANALYSIS_DOMAIN_REQUIREMENTS:
@@ -1263,60 +1328,23 @@ def compile_report_data(
         else:
             analysis.setdefault("analysis_id", f"ANALYSIS-UNSUPPORTED-{position}")
         requirements = ANALYSIS_DOMAIN_REQUIREMENTS.get(domain, {})
-        analysis["perspectives"] = list(
-            dict.fromkeys(
-                [
-                    *requirements.get("perspectives", []),
-                    *analysis.get("perspectives", []),
-                ]
-            )
-        )
-        analysis["assessment_types"] = list(
-            dict.fromkeys(
-                [*requirements.get("assessment_types", []), *analysis.get("assessment_types", [])]
-            )
-        )
-        evidence_ids = analysis.get("evidence_item_ids") or analysis.get("evidence_event_ids", [])
-        compiled_evidence: list[str] = []
-        ignored_evidence: list[str] = []
-        for item_id in evidence_ids:
-            requested_id = str(item_id)
-            event_id = event_by_item.get(requested_id)
-            if event_id:
-                compiled_evidence.append(event_id)
-            elif requested_id in event_ids:
-                compiled_evidence.append(requested_id)
-            else:
-                ignored_evidence.append(requested_id)
-        analysis["evidence_event_ids"] = list(dict.fromkeys(compiled_evidence))
-        if ignored_evidence:
+        for field in ("perspectives", "assessment_types"):
+            values = [*requirements.get(field, []), *analysis.get(field, [])]
+            analysis[field] = list(dict.fromkeys(values))
+        if ignored_evidence := bind_evidence(analysis):
             warnings.append(
                 f"analysis {domain or position!r} ignored evidence item IDs that are not "
-                f"part of any featured event: {sorted(set(ignored_evidence))}"
+                f"part of any featured event: {ignored_evidence}"
             )
     if report.get("schema_version") == "2.0":
         synthesis = report.get("cross_perspective_synthesis")
         if isinstance(synthesis, dict):
-            evidence_ids = synthesis.get("evidence_item_ids") or synthesis.get(
-                "evidence_event_ids", []
-            )
-            compiled_evidence: list[str] = []
-            ignored_evidence: list[str] = []
-            for item_id in evidence_ids:
-                requested_id = str(item_id)
-                event_id = event_by_item.get(requested_id)
-                if event_id:
-                    compiled_evidence.append(event_id)
-                elif requested_id in event_ids:
-                    compiled_evidence.append(requested_id)
-                else:
-                    ignored_evidence.append(requested_id)
-            synthesis["evidence_event_ids"] = list(dict.fromkeys(compiled_evidence))
+            ignored_evidence = bind_evidence(synthesis)
             synthesis.pop("evidence_item_ids", None)
             if ignored_evidence:
                 warnings.append(
                     "cross-perspective synthesis ignored evidence item IDs that are not "
-                    f"part of any featured event: {sorted(set(ignored_evidence))}"
+                    f"part of any featured event: {ignored_evidence}"
                 )
     analysis_order = {"geopolitics": 0, "ai_technology": 1, "markets": 2}
     report.setdefault("analyses", []).sort(
@@ -1342,9 +1370,7 @@ def compile_report_data(
 
 def normalize_report_data(report: dict, index: dict | None) -> None:
     """处理：为当前契约补齐确定性计数和来源指标。
-    输入：
-    - ``report``：当前报告结构；包含栏目、简报或事件、来源引用及质量元数据。
-    - ``index``：当前来源索引对象；包含规范条目、来源结果、策略和采集时间。
+    输入：含栏目和来源引用的报告、规范来源索引。
     输出：不返回新数据；完成“为当前契约补齐确定性计数和来源指标”，
       副作用限于该处理声明的受控对象或产物。
     """
@@ -1353,11 +1379,11 @@ def normalize_report_data(report: dict, index: dict | None) -> None:
         return
     events = [item for section in report.get("sections", []) for item in section.get("items", [])]
     briefs = [item for section in report.get("sections", []) for item in section.get("briefs", [])]
-    represented = {
+    brief_counts = Counter(
         str(item.get("primary_source", {}).get("id"))
         for item in briefs
         if item.get("primary_source", {}).get("id")
-    }
+    )
     report["event_count"] = len({item.get("event_id") for item in events})
     report["brief_count"] = len({item.get("item_id") for item in briefs})
     if isinstance(index, dict):
@@ -1373,22 +1399,17 @@ def normalize_report_data(report: dict, index: dict | None) -> None:
             for row in sources
             if isinstance(row, dict)
         )
-        report["source_count"] = len(represented)
+        report["source_count"] = len(brief_counts)
         report["source_metrics"] = {
             "configured": len(sources),
             "successful": successful,
-            "represented": len(represented),
+            "represented": len(brief_counts),
             "pending": pending,
         }
         indexed_counts = Counter(
             str(item.get("source_id"))
             for item in index.get("items", [])
             if isinstance(item, dict) and item.get("source_id")
-        )
-        brief_counts = Counter(
-            str(item.get("primary_source", {}).get("id"))
-            for item in briefs
-            if item.get("primary_source", {}).get("id")
         )
         policies = index.get("source_policies", {})
         report["coverage_metrics"] = [
@@ -1410,13 +1431,310 @@ def normalize_report_data(report: dict, index: dict | None) -> None:
 
 def report_content_hash(report: dict) -> str:
     """处理：移除可变投影字段后计算报告语义内容哈希。
-    输入：
-    - ``report``：当前报告结构；包含栏目、简报或事件、来源引用及质量元数据。
+    输入：含栏目和来源引用的报告。
     输出：“移除可变投影字段后计算报告语义内容哈希”得到的规范字符串，供调用方存储、比较或展示。
     """
     payload = {key: value for key, value in report.items() if key != "quality_evaluation"}
     canonical = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _require_list_text(
+    values: Iterable[object], location: str, check_text: Callable[[object, str], None]
+) -> None:
+    """处理：按顺序检查用户可见列表中的每段文字。
+    输入：字段中的文字列表、JSON 路径和当前报告的文本规则。
+    输出：路径带数组下标的语言诊断由本版检查器收集。
+    """
+    for position, value in enumerate(values):
+        check_text(value, f"{location}[{position}]")
+
+
+def _validate_report_analyses(
+    report: dict,
+    event_source_ids: dict[str, set[str]],
+    mentioned_source_ids: Callable[[list[object]], set[str]],
+    require_output_language: Callable[[object, str], None],
+    errors: list[str],
+    warnings: list[str],
+) -> None:
+    """处理：校验研判文本、领域覆盖及其与精选事件的证据关联。
+    输入：通过结构校验的报告、事件到来源的关系和本版文本检查规则。
+    输出：将按报告顺序发现的研判错误和警告加入交付诊断。
+    """
+    schema_version = report.get("schema_version")
+    strict_contract = schema_version in _STRICT_SCHEMAS
+    daily_contract = schema_version in _DAILY_SCHEMAS
+    source_group_contract = schema_version in _SOURCE_GROUP_SCHEMAS
+    analysis_v2_contract = schema_version == "2.0"
+    event_ids = event_source_ids.keys()
+    if daily_contract and not report["analyses"]:
+        errors.append(
+            f"analyses: schema_version {schema_version} requires evidence-backed judgement"
+        )
+
+    analysis_ids: set[str] = set()
+    analysis_domains: Counter[str] = Counter()
+    assessment_types: set[str] = set()
+    perspectives: set[str] = set()
+    analyzed_event_ids: set[str] = set()
+    for analysis_index, analysis in enumerate(report["analyses"]):
+        analysis_prefix = f"analyses[{analysis_index}]"
+        require_output_language(analysis.get("claim"), f"{analysis_prefix}.claim")
+        require_output_language(
+            analysis.get("reasoning"), f"{analysis_prefix}.reasoning"
+        )
+        if source_group_contract:
+            for field in ("narrative", "dialectical_analysis", "historical_context"):
+                require_output_language(
+                    analysis.get(field), f"{analysis_prefix}.{field}"
+                )
+                if not analysis.get(field):
+                    errors.append(
+                        f"{analysis_prefix}.{field}: required by schema_version {schema_version}"
+                    )
+            narrative_paragraphs = split_narrative_paragraphs(
+                analysis.get("narrative")
+            )
+            if analysis_v2_contract and not 4 <= len(narrative_paragraphs) <= 7:
+                errors.append(
+                    f"{analysis_prefix}.narrative: analysis protocol 2.0 requires "
+                    f"4-7 natural paragraphs, got {len(narrative_paragraphs)}"
+                )
+            perspectives.update(analysis.get("perspectives", []))
+            if not analysis.get("perspectives"):
+                errors.append(
+                    f"{analysis_prefix}.perspectives: required by schema_version {schema_version}"
+                )
+            positions = analysis.get("stakeholder_positions", [])
+            if not positions:
+                errors.append(
+                    f"{analysis_prefix}.stakeholder_positions: required by schema_version "
+                    f"{schema_version}"
+                )
+            for position_index, position in enumerate(positions):
+                for field in ("stakeholder", "position", "interests"):
+                    require_output_language(
+                        position.get(field),
+                        f"{analysis_prefix}.stakeholder_positions[{position_index}].{field}",
+                    )
+        for field in (
+            "facts",
+            "counter_evidence",
+            "scenarios",
+            "implications",
+            "actions",
+            "watch_signals",
+            "invalidation_signals",
+        ):
+            _require_list_text(analysis.get(field, []), f"{analysis_prefix}.{field}",
+                               require_output_language)
+        if strict_contract:
+            for field in ("facts", "reasoning", "scenarios", "actions", "invalidation_signals"):
+                if not analysis.get(field):
+                    errors.append(
+                        f"{analysis_prefix}.{field}: required by schema_version {schema_version}"
+                    )
+        if analysis_v2_contract:
+            for field in (
+                "time_horizon",
+                "confidence_rationale",
+                "change_from_prior",
+                "decision_relevance",
+            ):
+                value = analysis.get(field)
+                if not value:
+                    errors.append(
+                        f"{analysis_prefix}.{field}: required by analysis protocol 2.0"
+                    )
+                else:
+                    require_output_language(value, f"{analysis_prefix}.{field}")
+            for field in ("causal_chain", "assumptions", "evidence_gaps"):
+                values = analysis.get(field, [])
+                minimum = 2 if field == "causal_chain" else 1
+                if not isinstance(values, list) or len(values) < minimum:
+                    errors.append(
+                        f"{analysis_prefix}.{field}: analysis protocol 2.0 requires "
+                        f"at least {minimum} item(s)"
+                    )
+                    continue
+                _require_list_text(values, f"{analysis_prefix}.{field}", require_output_language)
+        evidence_ids = analysis["evidence_event_ids"]
+        if daily_contract:
+            assessment_types.update(analysis.get("assessment_types", []))
+            if not analysis.get("assessment_types"):
+                errors.append(
+                    f"{analysis_prefix}.assessment_types: required by schema_version "
+                    f"{schema_version}"
+                )
+            if not evidence_ids:
+                errors.append(
+                    f"{analysis_prefix}.evidence_event_ids: judgement must cite report events"
+                )
+        domain = str(analysis.get("domain"))
+        analysis_domains[domain] += 1
+        if analysis_v2_contract and domain in ANALYSIS_DOMAIN_REQUIREMENTS:
+            expected_analysis_id = stable_analysis_id(domain)
+            if analysis.get("analysis_id") != expected_analysis_id:
+                errors.append(
+                    f"{analysis_prefix}.analysis_id: must equal stable domain identity "
+                    f"{expected_analysis_id!r}"
+                )
+        if analysis["analysis_id"] in analysis_ids:
+            errors.append(
+                f"analyses[{analysis_index}]: duplicate analysis_id {analysis['analysis_id']}"
+            )
+        analysis_ids.add(analysis["analysis_id"])
+        missing_events = [event_id for event_id in evidence_ids if event_id not in event_ids]
+        if missing_events:
+            errors.append(
+                f"analyses[{analysis_index}] references unknown event IDs: {missing_events}"
+            )
+        bound_analysis_sources = {
+            source_id
+            for event_id in evidence_ids
+            for source_id in event_source_ids.get(str(event_id), set())
+        }
+        fact_mentions = mentioned_source_ids(list(analysis.get("facts", [])))
+        unbound_fact_sources = sorted(fact_mentions - bound_analysis_sources)
+        if unbound_fact_sources:
+            errors.append(
+                f"{analysis_prefix}.facts names sources not represented by evidence_event_ids: "
+                f"{unbound_fact_sources}"
+            )
+        if any(_NUMERIC_SCENARIO_PATTERN.search(str(value))
+               for value in analysis.get("scenarios", [])):
+            scenario_basis = str(analysis.get("scenario_basis") or "").strip()
+            if not scenario_basis:
+                errors.append(
+                    f"{analysis_prefix}.scenario_basis: numeric probabilities, prices, or ranges "
+                    "must state their source or explicitly identify them as scenario assumptions"
+                )
+            else:
+                require_output_language(
+                    scenario_basis, f"{analysis_prefix}.scenario_basis"
+                )
+        analyzed_event_ids.update(evidence_ids)
+        if not analysis["watch_signals"]:
+            warnings.append(f"analyses[{analysis_index}] has no watch_signals")
+    if daily_contract:
+        missing_assessments = sorted(
+            {"trend", "risk", "learning_research"} - assessment_types
+        )
+        if missing_assessments:
+            errors.append(
+                "analyses missing required assessment coverage: " f"{missing_assessments}"
+            )
+    if source_group_contract:
+        missing_perspectives = sorted(REQUIRED_PERSPECTIVES - perspectives)
+        if missing_perspectives:
+            errors.append(f"analyses missing required perspectives: {missing_perspectives}")
+        if event_ids and len(analyzed_event_ids) / len(event_ids) < 0.6:
+            errors.append(
+                "analyses must cite at least 60% of selected events; "
+                f"covered {len(analyzed_event_ids)}/{len(event_ids)}"
+            )
+    if schema_version in BRIEF_REPORT_SCHEMAS:
+        missing_domains = sorted(ANALYSIS_DOMAIN_REQUIREMENTS.keys() - analysis_domains.keys())
+        if missing_domains:
+            errors.append(
+                "analyses must contain separate geopolitics, ai_technology, and markets "
+                f"sections; missing {missing_domains}"
+            )
+        duplicate_domains = sorted(
+            domain for domain, count in analysis_domains.items() if count > 1
+        )
+        if duplicate_domains:
+            errors.append(
+                "analyses must contain exactly one section per domain; duplicates "
+                f"{duplicate_domains}"
+            )
+    if analysis_v2_contract:
+        _validate_report_synthesis(report, event_source_ids, require_output_language, errors)
+
+
+def _validate_report_synthesis(
+    report: dict,
+    event_source_ids: dict[str, set[str]],
+    require_output_language: Callable[[object, str], None],
+    errors: list[str],
+) -> None:
+    """处理：检查跨视角综合的判断、分歧与精选事件引用。
+    输入：2.0 版报告、已登记的精选事件与本版文本检查规则。
+    输出：将协议、综合正文和事件绑定错误追加到报告诊断。
+    """
+    if report.get("analysis_protocol_version") != "2.0":
+        errors.append("analysis_protocol_version: schema 2.0 requires '2.0'")
+    synthesis = report.get("cross_perspective_synthesis")
+    if not isinstance(synthesis, dict):
+        errors.append("cross_perspective_synthesis: schema 2.0 requires an explicit synthesis")
+        return
+    location = "cross_perspective_synthesis"
+    overall = synthesis.get("overall_judgment")
+    if not overall:
+        errors.append(f"{location}.overall_judgment: required")
+    else:
+        require_output_language(overall, f"{location}.overall_judgment")
+    for field, minimum in (
+        ("consensus", 1),
+        ("transmission_chain", 2),
+        ("shared_watch_signals", 3),
+        ("revision_triggers", 1),
+    ):
+        values = synthesis.get(field, [])
+        if not isinstance(values, list) or len(values) < minimum:
+            errors.append(
+                f"cross_perspective_synthesis.{field}: require at least "
+                f"{minimum} item(s)"
+            )
+            continue
+        _require_list_text(values, f"{location}.{field}", require_output_language)
+    tensions = synthesis.get("tensions", [])
+    if not isinstance(tensions, list) or not tensions:
+        errors.append(
+            "cross_perspective_synthesis.tensions: require at least one "
+            "explicit disagreement"
+        )
+    else:
+        for tension_index, tension in enumerate(tensions):
+            prefix = f"{location}.tensions[{tension_index}]"
+            if not isinstance(tension, dict):
+                errors.append(f"{prefix}: must be an object")
+                continue
+            for field in ("issue", "source_of_difference"):
+                if not tension.get(field):
+                    errors.append(f"{prefix}.{field}: required")
+                else:
+                    require_output_language(
+                        tension[field], f"{prefix}.{field}"
+                    )
+            tension_perspectives = tension.get("perspectives", [])
+            if (
+                not isinstance(tension_perspectives, list)
+                or len(tension_perspectives) < 2
+            ):
+                errors.append(
+                    f"{prefix}.perspectives: require at least two viewpoints"
+                )
+            else:
+                _require_list_text(tension_perspectives, f"{prefix}.perspectives",
+                                   require_output_language)
+    synthesis_evidence = synthesis.get("evidence_event_ids", [])
+    if not synthesis_evidence:
+        errors.append(
+            "cross_perspective_synthesis.evidence_event_ids: synthesis must "
+            "cite featured events"
+        )
+    unknown_synthesis_events = [
+        event_id
+        for event_id in synthesis_evidence
+        if event_id not in event_source_ids
+    ]
+    if unknown_synthesis_events:
+        errors.append(
+            "cross_perspective_synthesis references unknown event IDs: "
+            f"{unknown_synthesis_events}"
+        )
 
 
 def validate_report_data(
@@ -1428,9 +1746,7 @@ def validate_report_data(
     brief_plan_item_ids: dict[str, list[str]] | None = None,
 ) -> tuple[list[str], list[str]]:
     """处理：校验报告数据并在不满足约束时报告错误。
-    输入：
-    - ``report``：当前报告结构；包含栏目、简报或事件、来源引用及质量元数据。
-    - ``index``：当前来源索引对象；包含规范条目、来源结果、策略和采集时间。
+    输入：含栏目和来源引用的报告、规范来源索引。
     - ``existing_events``：已在其他栏目登记的事件；用于阻止跨栏目重复 item_id。
     - ``coverage_targets``：按来源 ID 指定的最小报告覆盖数；由运行情境拥有。
     - ``brief_plan_item_ids``：冻结计划中的每源条目与顺序，决定覆盖目标；独立评估可使用已编译名次。
@@ -1444,35 +1760,35 @@ def validate_report_data(
 
     warnings: list[str] = []
     schema_version = report.get("schema_version")
-    strict_contract = schema_version in {"1.1", "1.2", "1.3", "1.4", "1.5", "2.0"}
-    freshness_contract = schema_version in {"1.2", "1.3", "1.4", "1.5", "2.0"}
-    daily_contract = schema_version in {"1.3", "1.4", "1.5", "2.0"}
-    source_group_contract = schema_version in {"1.4", "1.5", "2.0"}
+    strict_contract = schema_version in _STRICT_SCHEMAS
+    freshness_contract = schema_version in _FRESHNESS_SCHEMAS
+    daily_contract = schema_version in _DAILY_SCHEMAS
+    source_group_contract = schema_version in _SOURCE_GROUP_SCHEMAS
     brief_contract = schema_version in BRIEF_REPORT_SCHEMAS
     analysis_v2_contract = schema_version == "2.0"
     output_language = str(report.get("language") or "zh-CN")
-    validation_source_positions: dict[str, int] = {}
-    validation_item_positions: dict[str, int] = {}
+    source_positions: dict[str, int] = {}
+    item_positions: dict[str, int] = {}
+    known_items: dict[str, dict] = {}
     if isinstance(index, dict):
-        validation_source_positions = {
-            str(row.get("source_id")): position
-            for position, row in enumerate(index.get("sources", []))
-            if isinstance(row, dict) and row.get("source_id")
+        source_positions = {
+            str(source["source_id"]): position
+            for position, source in enumerate(index.get("sources", []))
+            if isinstance(source, dict) and source.get("source_id")
         }
-        validation_source_counts: Counter[str] = Counter()
-        for row in index.get("items", []):
-            if not isinstance(row, dict) or not row.get("item_id"):
+        positioned_counts: Counter[str] = Counter()
+        index_items = index.get("items", [])
+        for item in index_items:
+            if not isinstance(item, dict) or not (item_id := item.get("item_id")):
                 continue
-            source_id = str(row.get("source_id") or "")
-            validation_source_counts[source_id] += 1
-            validation_item_positions[str(row["item_id"])] = (
-                validation_source_counts[source_id]
-            )
-            validation_source_positions.setdefault(
-                source_id, len(validation_source_positions)
-            )
+            source_id = str(item.get("source_id") or "")
+            positioned_counts[source_id] += 1
+            item_positions[str(item_id)] = positioned_counts[source_id]
+            source_positions.setdefault(source_id, len(source_positions))
+            if isinstance(index_items, list):
+                known_items[item_id] = item
     if brief_plan_item_ids is not None:
-        validation_item_positions.update(
+        item_positions.update(
             (item_id, position)
             for item_ids in brief_plan_item_ids.values()
             for position, item_id in enumerate(item_ids, start=1)
@@ -1480,8 +1796,7 @@ def validate_report_data(
 
     def require_output_language(value: object, location: str) -> None:
         """处理：读取当前校验节点的输出语言，并把缺失或非法值加入报告错误列表。
-        输入：
-        - ``value``：待解析或规范化的单个输入值；非法值按函数契约返回空值或报错。
+        输入：待解析的值。
         - ``location``：当前校验字段的 JSON 路径；用于生成可定位的错误消息。
         输出：不返回新数据；完成“读取当前校验节点的输出语言，并把缺失或非法值加入报告错误列表”，
           副作用限于该处理声明的受控对象或产物。
@@ -1516,29 +1831,16 @@ def validate_report_data(
             f"{list(OUTPUT_LANGUAGES)}"
         )
     require_output_language(report.get("title"), "title")
-    for summary_index, summary in enumerate(report.get("executive_summary", [])):
-        require_output_language(summary, f"executive_summary[{summary_index}]")
-    known_items: dict[str, dict] = {}
+    _require_list_text(report.get("executive_summary", []), "executive_summary",
+                       require_output_language)
     source_aliases: dict[str, set[str]] = {}
     if isinstance(index, dict):
-        index_items = index.get("items", [])
-        if isinstance(index_items, list):
-            known_items = {
-                item.get("item_id"): item
-                for item in index_items
-                if isinstance(item, dict) and item.get("item_id")
-            }
-        for source in index.get("sources", []):
+        for source in chain(index.get("sources", []), known_items.values()):
             if not isinstance(source, dict) or not source.get("source_id"):
                 continue
             source_id = str(source["source_id"])
             name = str(source.get("source_name") or "").strip()
             if len(name) >= 3:
-                source_aliases.setdefault(source_id, set()).add(name.casefold())
-        for item in known_items.values():
-            source_id = str(item.get("source_id") or "")
-            name = str(item.get("source_name") or "").strip()
-            if source_id and len(name) >= 3:
                 source_aliases.setdefault(source_id, set()).add(name.casefold())
 
     def mentioned_source_ids(values: list[object]) -> set[str]:
@@ -1573,7 +1875,6 @@ def validate_report_data(
         else "Asia/Shanghai"
     )
 
-    event_ids: set[str] = set()
     event_source_ids: dict[str, set[str]] = {}
     featured_brief_event_ids: set[str] = set()
     brief_item_ids: set[str] = set()
@@ -1581,6 +1882,7 @@ def validate_report_data(
     source_counts: Counter[str] = Counter()
     source_importance_values: dict[str, list[int]] = {}
     section_ids: set[str] = set()
+    expected_section_titles = section_titles(output_language)
     for section_index, section in enumerate(report["sections"]):
         prefix = f"sections[{section_index}]"
         try:
@@ -1594,13 +1896,11 @@ def validate_report_data(
             errors.append(f"{prefix}: duplicate section id {section['id']!r}")
         section_ids.add(section["id"])
         require_output_language(section.get("title"), f"{prefix}.title")
-        expected_section_titles = section_titles(output_language)
-        if daily_contract and section.get("title") != expected_section_titles.get(
-            section["id"]
-        ):
+        expected_title = expected_section_titles.get(section["id"])
+        if daily_contract and section.get("title") != expected_title:
             errors.append(
                 f"{prefix}.title: schema {schema_version} requires "
-                f"{expected_section_titles.get(section['id'])!r} for {section['id']!r}"
+                f"{expected_title!r} for {section['id']!r}"
             )
         briefs = section.get("briefs", []) if brief_contract else []
         if brief_contract and "briefs" not in section:
@@ -1617,16 +1917,16 @@ def validate_report_data(
         if importance_values != sorted(importance_values, reverse=True):
             errors.append(f"{prefix}: items must be sorted by importance descending")
 
-        if validation_item_positions:
+        if item_positions:
             brief_order_values = [
                 (
-                    validation_source_positions.get(
+                    source_positions.get(
                         str(brief.get("primary_source", {}).get("id") or ""),
                         1_000_000,
                     ),
                     brief["selection_rank"]
                     if brief_plan_item_ids is None and type(brief.get("selection_rank")) is int
-                    else validation_item_positions.get(
+                    else item_positions.get(
                         str(brief.get("item_id") or ""),
                         1_000_000,
                     ),
@@ -1690,15 +1990,7 @@ def validate_report_data(
             other_translation_field = (
                 "title_en" if translation_field == "title_zh" else "title_zh"
             )
-            source_language = (
-                indexed.get("metadata", {}).get("language")
-                if isinstance(indexed.get("metadata"), dict)
-                else None
-            )
-            original_matches_target = source_matches_output_language(
-                source_language, indexed_title, output_language
-            )
-            if indexed_title and not original_matches_target:
+            if indexed_title and brief_title_requires_translation(indexed, output_language):
                 if not text_matches_output_language(
                     translated, output_language, minimum_units=2
                 ):
@@ -1737,7 +2029,8 @@ def validate_report_data(
                     f"that the body was unread; item_id={item_id}"
                 )
             published_date = _publication_date(
-                indexed.get("published_at") or ref.get("published_at"), timezone
+                original_publication_time(indexed, timezone)
+                if indexed else ref.get("published_at"), timezone,
             )
             if brief["status"] == "NEW":
                 if published_date is None:
@@ -1754,9 +2047,8 @@ def validate_report_data(
         for item_index, item in enumerate(section["items"]):
             item_prefix = f"{prefix}.items[{item_index}]"
             event_id = item["event_id"]
-            if event_id in event_ids:
+            if event_id in event_source_ids:
                 errors.append(f"{item_prefix}: duplicate event_id {event_id}")
-            event_ids.add(event_id)
             for field in ("title", "tldr", "why_it_matters", "importance_reason"):
                 require_output_language(item.get(field), f"{item_prefix}.{field}")
             if _LANGUAGE_MARKER_PATTERN.match(str(item.get("title", ""))):
@@ -1780,10 +2072,8 @@ def validate_report_data(
                         source_counts[source_id] += 1
                     if urlsplit(str(primary.get("url", ""))).scheme not in {"http", "https"}:
                         errors.append(f"{item_prefix}.primary_source.url: invalid URL")
-            for note_index, note in enumerate(item.get("evidence_notes", [])):
-                require_output_language(
-                    note, f"{item_prefix}.evidence_notes[{note_index}]"
-                )
+            _require_list_text(item.get("evidence_notes", []), f"{item_prefix}.evidence_notes",
+                               require_output_language)
 
             score = item["importance_breakdown"]
             calculated = sum(score.values())
@@ -1795,7 +2085,7 @@ def validate_report_data(
 
             publication_dates: list[date] = []
             referenced_item_ids: set[str] = set()
-            referenced_source_ids: list[str] = []
+            referenced_sources: Counter[str] = Counter()
             access_levels: list[str] = []
             for ref_index, ref in enumerate(item["source_refs"]):
                 ref_prefix = f"{item_prefix}.source_refs[{ref_index}]"
@@ -1807,11 +2097,10 @@ def validate_report_data(
                 access_levels.append(ref["access"])
                 if known_items and item_id not in known_items:
                     errors.append(f"{ref_prefix}: item_id not present in index: {item_id}")
-                if item_id in known_items:
-                    indexed = known_items[item_id]
-                    if indexed.get("source_id"):
-                        referenced_source_ids.append(str(indexed["source_id"]))
-                    content_status = known_items[item_id].get("content_status")
+                if (indexed := known_items.get(item_id)) is not None:
+                    if source_id := indexed.get("source_id"):
+                        referenced_sources[str(source_id)] += 1
+                    content_status = indexed.get("content_status")
                     actual_access = content_status_to_access(content_status)
                     if actual_access and ref["access"] != actual_access:
                         errors.append(
@@ -1835,21 +2124,19 @@ def validate_report_data(
                             f"{item_prefix}.primary_source.id does not match the first "
                             "indexed source reference"
                         )
-                    published_at = known_items[item_id].get("published_at")
-                    published_date = _publication_date(published_at, timezone)
-                    if published_date is not None:
-                        publication_dates.append(published_date)
-                elif ref.get("published_at"):
-                    published_date = _publication_date(ref.get("published_at"), timezone)
-                    if published_date is not None:
-                        publication_dates.append(published_date)
+                    published_at = (
+                        original_publication_time(indexed, timezone)
+                        if analysis_v2_contract else indexed.get("published_at")
+                    )
+                else:
+                    published_at = ref.get("published_at")
+                if published_date := _publication_date(published_at, timezone):
+                    publication_dates.append(published_date)
 
             repeated_sources = sorted(
-                source_id
-                for source_id, count in Counter(referenced_source_ids).items()
-                if count > 1
+                source_id for source_id, count in referenced_sources.items() if count > 1
             )
-            event_source_ids[event_id] = set(referenced_source_ids)
+            event_source_ids[event_id] = set(referenced_sources)
             note_mentions = mentioned_source_ids(list(item.get("evidence_notes", [])))
             unbound_note_sources = sorted(note_mentions - event_source_ids[event_id])
             if unbound_note_sources:
@@ -1872,17 +2159,16 @@ def validate_report_data(
                     "use distinct publishers only when they corroborate the same event"
                 )
 
-            if freshness_contract and access_levels and all(
+            metadata_only = bool(access_levels) and all(
                 access in {"metadata_only", "verification_required"} for access in access_levels
-            ) and item["confidence"] > 0.65:
+            )
+            if freshness_contract and metadata_only and item["confidence"] > 0.65:
                 errors.append(
                     f"{item_prefix}: confidence above 0.65 requires at least one partial or "
                     "full-text source"
                 )
 
-            if daily_contract and access_levels and all(
-                access in {"metadata_only", "verification_required"} for access in access_levels
-            ):
+            if daily_contract and metadata_only:
                 disclosure = " ".join(str(note) for note in item.get("evidence_notes", []))
                 if not any(marker in disclosure for marker in _UNREAD_BODY_MARKERS):
                     errors.append(
@@ -1890,6 +2176,7 @@ def validate_report_data(
                         "that the body was not read or that only a public abstract/title was used"
                     )
 
+            is_new = item["status"] == "NEW"
             if freshness_contract and publication_dates:
                 raw_newest_age = (report_date - max(publication_dates)).days
                 newest_age = max(0, raw_newest_age)
@@ -1899,59 +2186,49 @@ def validate_report_data(
                         f"{item_prefix}.importance_breakdown.freshness: {score['freshness']} "
                         f"exceeds age-based cap {cap}; newest source is {newest_age} day(s) old"
                     )
-                if item["status"] == "NEW" and raw_newest_age not in {0, 1}:
+                if is_new and raw_newest_age not in {0, 1}:
                     errors.append(
                         f"{item_prefix}.status: NEW requires source evidence published today "
                         "or yesterday; use WATCH/UPD or provide newer evidence"
                     )
-            elif freshness_contract and item["status"] == "NEW":
+            elif freshness_contract and is_new:
                 message = f"{item_prefix}.status: NEW has no parseable source publication date"
                 (errors if brief_contract else warnings).append(message)
 
-            if freshness_contract and item["status"] == "NEW":
-                previous_event = previous_events.get(event_id)
-                previous_report_ids: list[object] = []
-                if isinstance(previous_event, dict):
-                    raw_report_ids = previous_event.get("report_ids", [])
-                    if isinstance(raw_report_ids, list):
-                        previous_report_ids.extend(raw_report_ids)
-                    if previous_event.get("last_report_id"):
-                        previous_report_ids.append(previous_event["last_report_id"])
-                same_edition_revision = bool(
-                    report_series_id
-                    and any(
-                        _report_series_id(previous_report_id) == report_series_id
-                        for previous_report_id in previous_report_ids
-                    )
+            if freshness_contract and is_new:
+                previous_event = previous_events.get(event_id, {})
+                previous_report_ids = previous_event.get("report_ids", [])
+                if not isinstance(previous_report_ids, list):
+                    previous_report_ids = []
+                latest_report = previous_event.get("last_report_id")
+                same_edition_revision = report_series_id and any(
+                    _report_series_id(report_id) == report_series_id
+                    for report_id in [*previous_report_ids, latest_report]
                 )
                 if previous_event and not same_edition_revision:
                     errors.append(
                         f"{item_prefix}.status: event_id {event_id!r} already exists; "
                         "reuse it with UPD/CONF/REV/WATCH/CLOSED"
                     )
-                revision_items = (
-                    {
-                        item_id
-                        for item_id in previous_event.get("source_item_ids", [])
+                reused_items = referenced_item_ids & previous_item_ids
+                if same_edition_revision:
+                    reused_items.difference_update(
+                        item_id for item_id in previous_event.get("source_item_ids", [])
                         if isinstance(item_id, str)
-                    }
-                    if same_edition_revision and isinstance(previous_event, dict)
-                    else set()
-                )
-                reused_items = sorted(
-                    (referenced_item_ids & previous_item_ids) - revision_items
-                )
+                    )
                 if reused_items:
                     errors.append(
                         f"{item_prefix}.status: NEW reuses previously reported source items "
-                        f"{reused_items}; split continuing evidence from genuinely new events"
+                        f"{sorted(reused_items)}; split continuing evidence from genuinely "
+                        "new events"
                     )
 
-    missing_sections = sorted(required_section_ids(schema_version) - section_ids)
+    required_sections = required_section_ids(schema_version)
+    missing_sections = sorted(required_sections - section_ids)
     if strict_contract and missing_sections:
         errors.append(f"sections missing required ids: {missing_sections}")
     if daily_contract:
-        unexpected_sections = sorted(section_ids - required_section_ids(schema_version))
+        unexpected_sections = sorted(section_ids - required_sections)
         if unexpected_sections:
             errors.append(
                 f"sections contain unsupported ids for schema {schema_version}: "
@@ -1971,21 +2248,9 @@ def validate_report_data(
                     source_id: len(item_ids) for source_id, item_ids in brief_plan_item_ids.items()
                 }
             else:
-                indexed_counts = Counter(
-                    str(item.get("source_id"))
-                    for item in index.get("items", [])
-                    if isinstance(item, dict) and item.get("source_id")
-                )
-                policies = index.get("source_policies")
-                policies = policies if isinstance(policies, dict) else {}
                 targets = {
-                    source_id: min(
-                        indexed_counts[source_id],
-                        int(policy.get("report_target", indexed_counts[source_id])),
-                        int(policy.get("report_max", indexed_counts[source_id])),
-                    )
-                    for source_id, policy in policies.items()
-                    if isinstance(policy, dict) and indexed_counts[source_id]
+                    row["source_id"]: min(row["target"], row["maximum"])
+                    for row in report["coverage_metrics"]
                 }
             for source_id, target in sorted(targets.items()):
                 if coverage_targets is not None and source_id in coverage_targets:
@@ -2008,6 +2273,7 @@ def validate_report_data(
                         "complete this source's entries from context.brief_plan before finalization"
                     )
 
+    event_ids = event_source_ids.keys()
     if brief_contract:
         if len(event_ids) > MAX_FEATURED_EVENTS:
             errors.append(
@@ -2028,291 +2294,11 @@ def validate_report_data(
             f"but {len(event_ids)} unique event IDs were found"
         )
 
-    if daily_contract and not report["analyses"]:
-        errors.append(
-            f"analyses: schema_version {schema_version} requires evidence-backed judgement"
-        )
-
-    analysis_ids: set[str] = set()
-    assessment_types: set[str] = set()
-    perspectives: set[str] = set()
-    analyzed_event_ids: set[str] = set()
-    for analysis_index, analysis in enumerate(report["analyses"]):
-        analysis_prefix = f"analyses[{analysis_index}]"
-        require_output_language(analysis.get("claim"), f"{analysis_prefix}.claim")
-        require_output_language(
-            analysis.get("reasoning"), f"{analysis_prefix}.reasoning"
-        )
-        if source_group_contract:
-            for field in ("narrative", "dialectical_analysis", "historical_context"):
-                require_output_language(
-                    analysis.get(field), f"{analysis_prefix}.{field}"
-                )
-                if not analysis.get(field):
-                    errors.append(
-                        f"{analysis_prefix}.{field}: required by schema_version {schema_version}"
-                    )
-            narrative_paragraphs = split_narrative_paragraphs(
-                analysis.get("narrative")
-            )
-            if analysis_v2_contract and not 4 <= len(narrative_paragraphs) <= 7:
-                errors.append(
-                    f"{analysis_prefix}.narrative: analysis protocol 2.0 requires "
-                    f"4-7 natural paragraphs, got {len(narrative_paragraphs)}"
-                )
-            perspectives.update(analysis.get("perspectives", []))
-            if not analysis.get("perspectives"):
-                errors.append(
-                    f"{analysis_prefix}.perspectives: required by schema_version {schema_version}"
-                )
-            positions = analysis.get("stakeholder_positions", [])
-            if not positions:
-                errors.append(
-                    f"{analysis_prefix}.stakeholder_positions: required by schema_version "
-                    f"{schema_version}"
-                )
-            for position_index, position in enumerate(positions):
-                for field in ("stakeholder", "position", "interests"):
-                    require_output_language(
-                        position.get(field),
-                        f"{analysis_prefix}.stakeholder_positions[{position_index}].{field}",
-                    )
-        for field in (
-            "facts",
-            "counter_evidence",
-            "scenarios",
-            "implications",
-            "actions",
-            "watch_signals",
-            "invalidation_signals",
-        ):
-            for value_index, value in enumerate(analysis.get(field, [])):
-                require_output_language(
-                    value, f"{analysis_prefix}.{field}[{value_index}]"
-                )
-        if strict_contract:
-            for field in ("facts", "reasoning", "scenarios", "actions", "invalidation_signals"):
-                if not analysis.get(field):
-                    errors.append(
-                        f"{analysis_prefix}.{field}: required by schema_version {schema_version}"
-                    )
-        if analysis_v2_contract:
-            for field in (
-                "time_horizon",
-                "confidence_rationale",
-                "change_from_prior",
-                "decision_relevance",
-            ):
-                value = analysis.get(field)
-                if not value:
-                    errors.append(
-                        f"{analysis_prefix}.{field}: required by analysis protocol 2.0"
-                    )
-                else:
-                    require_output_language(value, f"{analysis_prefix}.{field}")
-            for field in ("causal_chain", "assumptions", "evidence_gaps"):
-                values = analysis.get(field, [])
-                minimum = 2 if field == "causal_chain" else 1
-                if not isinstance(values, list) or len(values) < minimum:
-                    errors.append(
-                        f"{analysis_prefix}.{field}: analysis protocol 2.0 requires "
-                        f"at least {minimum} item(s)"
-                    )
-                    continue
-                for value_index, value in enumerate(values):
-                    require_output_language(
-                        value, f"{analysis_prefix}.{field}[{value_index}]"
-                    )
-        if daily_contract:
-            assessment_types.update(analysis.get("assessment_types", []))
-            if not analysis.get("assessment_types"):
-                errors.append(
-                    f"{analysis_prefix}.assessment_types: required by schema_version "
-                    f"{schema_version}"
-                )
-            if not analysis.get("evidence_event_ids"):
-                errors.append(
-                    f"{analysis_prefix}.evidence_event_ids: judgement must cite report events"
-                )
-        domain = str(analysis.get("domain") or "")
-        if analysis_v2_contract and domain in ANALYSIS_DOMAIN_REQUIREMENTS:
-            expected_analysis_id = stable_analysis_id(domain)
-            if analysis.get("analysis_id") != expected_analysis_id:
-                errors.append(
-                    f"{analysis_prefix}.analysis_id: must equal stable domain identity "
-                    f"{expected_analysis_id!r}"
-                )
-        if analysis["analysis_id"] in analysis_ids:
-            errors.append(
-                f"analyses[{analysis_index}]: duplicate analysis_id {analysis['analysis_id']}"
-            )
-        analysis_ids.add(analysis["analysis_id"])
-        missing_events = [
-            event_id for event_id in analysis["evidence_event_ids"] if event_id not in event_ids
-        ]
-        if missing_events:
-            errors.append(
-                f"analyses[{analysis_index}] references unknown event IDs: {missing_events}"
-            )
-        bound_analysis_sources = {
-            source_id
-            for event_id in analysis.get("evidence_event_ids", [])
-            for source_id in event_source_ids.get(str(event_id), set())
-        }
-        fact_mentions = mentioned_source_ids(list(analysis.get("facts", [])))
-        unbound_fact_sources = sorted(fact_mentions - bound_analysis_sources)
-        if unbound_fact_sources:
-            errors.append(
-                f"{analysis_prefix}.facts names sources not represented by evidence_event_ids: "
-                f"{unbound_fact_sources}"
-            )
-        numeric_scenarios = [
-            value
-            for value in analysis.get("scenarios", [])
-            if _NUMERIC_SCENARIO_PATTERN.search(str(value))
-        ]
-        if numeric_scenarios:
-            scenario_basis = str(analysis.get("scenario_basis") or "").strip()
-            if not scenario_basis:
-                errors.append(
-                    f"{analysis_prefix}.scenario_basis: numeric probabilities, prices, or ranges "
-                    "must state their source or explicitly identify them as scenario assumptions"
-                )
-            else:
-                require_output_language(
-                    scenario_basis, f"{analysis_prefix}.scenario_basis"
-                )
-        analyzed_event_ids.update(analysis["evidence_event_ids"])
-        if not analysis["watch_signals"]:
-            warnings.append(f"analyses[{analysis_index}] has no watch_signals")
-    if daily_contract:
-        missing_assessments = sorted(
-            {"trend", "risk", "learning_research"} - assessment_types
-        )
-        if missing_assessments:
-            errors.append(
-                "analyses missing required assessment coverage: " f"{missing_assessments}"
-            )
-    if source_group_contract:
-        missing_perspectives = sorted(REQUIRED_PERSPECTIVES - perspectives)
-        if missing_perspectives:
-            errors.append(f"analyses missing required perspectives: {missing_perspectives}")
-        if event_ids and len(analyzed_event_ids) / len(event_ids) < 0.6:
-            errors.append(
-                "analyses must cite at least 60% of selected events; "
-                f"covered {len(analyzed_event_ids)}/{len(event_ids)}"
-            )
-    if brief_contract:
-        analysis_domains = Counter(
-            str(analysis.get("domain")) for analysis in report.get("analyses", [])
-        )
-        missing_domains = sorted(set(ANALYSIS_DOMAIN_REQUIREMENTS) - set(analysis_domains))
-        if missing_domains:
-            errors.append(
-                "analyses must contain separate geopolitics, ai_technology, and markets "
-                f"sections; missing {missing_domains}"
-            )
-        duplicate_domains = sorted(
-            domain for domain, count in analysis_domains.items() if count > 1
-        )
-        if duplicate_domains:
-            errors.append(
-                "analyses must contain exactly one section per domain; duplicates "
-                f"{duplicate_domains}"
-            )
-    if analysis_v2_contract:
-        if report.get("analysis_protocol_version") != "2.0":
-            errors.append("analysis_protocol_version: schema 2.0 requires '2.0'")
-        synthesis = report.get("cross_perspective_synthesis")
-        if not isinstance(synthesis, dict):
-            errors.append(
-                "cross_perspective_synthesis: schema 2.0 requires an explicit synthesis"
-            )
-        else:
-            overall = synthesis.get("overall_judgment")
-            if not overall:
-                errors.append(
-                    "cross_perspective_synthesis.overall_judgment: required"
-                )
-            else:
-                require_output_language(
-                    overall, "cross_perspective_synthesis.overall_judgment"
-                )
-            for field, minimum in (
-                ("consensus", 1),
-                ("transmission_chain", 2),
-                ("shared_watch_signals", 3),
-                ("revision_triggers", 1),
-            ):
-                values = synthesis.get(field, [])
-                if not isinstance(values, list) or len(values) < minimum:
-                    errors.append(
-                        f"cross_perspective_synthesis.{field}: require at least "
-                        f"{minimum} item(s)"
-                    )
-                    continue
-                for value_index, value in enumerate(values):
-                    require_output_language(
-                        value,
-                        f"cross_perspective_synthesis.{field}[{value_index}]",
-                    )
-            tensions = synthesis.get("tensions", [])
-            if not isinstance(tensions, list) or not tensions:
-                errors.append(
-                    "cross_perspective_synthesis.tensions: require at least one "
-                    "explicit disagreement"
-                )
-            else:
-                for tension_index, tension in enumerate(tensions):
-                    prefix = (
-                        f"cross_perspective_synthesis.tensions[{tension_index}]"
-                    )
-                    if not isinstance(tension, dict):
-                        errors.append(f"{prefix}: must be an object")
-                        continue
-                    for field in ("issue", "source_of_difference"):
-                        if not tension.get(field):
-                            errors.append(f"{prefix}.{field}: required")
-                        else:
-                            require_output_language(
-                                tension[field], f"{prefix}.{field}"
-                            )
-                    tension_perspectives = tension.get("perspectives", [])
-                    if (
-                        not isinstance(tension_perspectives, list)
-                        or len(tension_perspectives) < 2
-                    ):
-                        errors.append(
-                            f"{prefix}.perspectives: require at least two viewpoints"
-                        )
-                    else:
-                        for perspective_index, perspective in enumerate(
-                            tension_perspectives
-                        ):
-                            require_output_language(
-                                perspective,
-                                f"{prefix}.perspectives[{perspective_index}]",
-                            )
-            synthesis_evidence = synthesis.get("evidence_event_ids", [])
-            if not synthesis_evidence:
-                errors.append(
-                    "cross_perspective_synthesis.evidence_event_ids: synthesis must "
-                    "cite featured events"
-                )
-            unknown_synthesis_events = [
-                event_id
-                for event_id in synthesis_evidence
-                if event_id not in event_ids
-            ]
-            if unknown_synthesis_events:
-                errors.append(
-                    "cross_perspective_synthesis references unknown event IDs: "
-                    f"{unknown_synthesis_events}"
-                )
-    for change_index, change in enumerate(report.get("changes", [])):
-        require_output_language(change, f"changes[{change_index}]")
-    for watch_index, watch in enumerate(report.get("tomorrow_watch_items", [])):
-        require_output_language(watch, f"tomorrow_watch_items[{watch_index}]")
+    _validate_report_analyses(
+        report, event_source_ids, mentioned_source_ids, require_output_language, errors, warnings
+    )
+    for field in ("changes", "tomorrow_watch_items"):
+        _require_list_text(report.get(field, []), field, require_output_language)
     if daily_contract and report["edition"] == "evening":
         if not report.get("changes"):
             errors.append(
@@ -2357,10 +2343,8 @@ def validate_report_data(
                     f"quality_evaluation.dimensions[{dimension_index}].finding",
                 )
             for field in ("main_defects", "insufficient_evidence", "improvements"):
-                for value_index, value in enumerate(evaluation.get(field, [])):
-                    require_output_language(
-                        value, f"quality_evaluation.{field}[{value_index}]"
-                    )
+                _require_list_text(evaluation.get(field, []), f"quality_evaluation.{field}",
+                                   require_output_language)
             if evaluation.get("evaluated_report_id") != report.get("report_id"):
                 errors.append("quality_evaluation.evaluated_report_id must match report_id")
             if (
@@ -2390,9 +2374,7 @@ def validate_report(
     brief_plan_item_ids: dict[str, list[str]] | None = None,
 ) -> tuple[list[str], list[str]]:
     """处理：校验报告并在不满足约束时报告错误。
-    输入：
-    - ``report_path``：版本化报告 JSON 路径；本地报告是 HTML、PDF 和 Notion 的事实源。
-    - ``index_path``：版本化来源索引 JSON 路径；包含根级规范 items 和来源采集状态。
+    输入：版本化报告路径、版本化来源索引路径。
     - ``events_path``：可选历史事件 JSON 路径；提供时参与报告语义校验。
     - ``coverage_targets``：按来源 ID 指定的最小报告覆盖数；由运行情境拥有。
     - ``brief_plan_item_ids``：当前 context 固定的每来源有序条目；用于按同一边界编译验证副本。
@@ -2440,9 +2422,7 @@ def validate_report(
 
 def validate_evaluation_data(evaluation: object, report: object) -> list[str]:
     """处理：校验评估数据并在不满足约束时报告错误。
-    输入：
-    - ``evaluation``：独立质量评估对象；包含评分、问题和改进建议。
-    - ``report``：当前报告结构；包含栏目、简报或事件、来源引用及质量元数据。
+    输入：独立质量评估、含栏目和来源引用的报告。
     输出：可操作的校验错误消息列表；空列表表示通过当前规则。
     """
     if not isinstance(evaluation, dict) or not isinstance(report, dict):

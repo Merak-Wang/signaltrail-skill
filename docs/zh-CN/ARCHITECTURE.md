@@ -26,7 +26,9 @@
 | `examples/` | 当前与历史公开样例，含日报评估使用的合成文本样例 |
 | `.github/workflows/ci.yml` | 仓库 CI 检查 |
 
-发布包包含 `scripts/install.ps1`、`install.sh`、`build_hermes_skill.py` 、`measure_codex_turn.py`、`run_signaltrail.py` 和 `build_qwen_worker.py`。
+发布包的 PowerShell 和 shell 安装入口共用 `scripts/install.py`。包内另含日报及 Codex 调度入口
+（`run_signaltrail.py`、`run_codex_edition.py`）、用量工具（`measure_codex_turn.py`、
+`measure_codex_exec.py`）以及技能包和 Qwen 语音工作进程的构建脚本。
 源码仓库另有 `check_code_comments.py`、`check_docs.py`、`evaluate_modules.py` 和
 `benchmark_slide_efficiency.py`，用于开发检查和基准。发布范围由构建脚本白名单定义，与 Python
 导入关系分别维护。独立脚本、Schema 和提示词也可以由人、宿主或评估直接使用。
@@ -59,7 +61,8 @@ Python 负责采集、身份、访问状态、修订和持久化。模型在数�
 省去日报写作。渲染附加公开网页图片及原始图注；离线渲染复用本地图片。见[新闻幻灯片](news-slides.md)。
 
 视频导出读取已保存的 deck，并按 1920 × 1080 原始尺寸直接截取交付的图文 HTML。画面沿用图文页的版式和完整讲解。
-本地 Qwen3-TTS 1.7B Q8 朗读每页标题和 `video_tldr`，实测音频决定页面停留及图片轮播。运行时自动准备原生程序和模型，默认使用随包参考声线，
+本地 Qwen3-TTS 1.7B Q8 朗读每页标题和
+`video_tldr`，实测音频决定页面停留及图片轮播。运行时自动准备原生程序和模型，默认使用随包参考声线，
 优先采用通过合成探针的 GPU，不可用时回落 CPU。已构建的 `llama-tts-worker` 在多个句段之间保留模型和参考音频，
 Python 合成器逐段发送请求，并在导出完成后关闭进程。维护的源码位于 `src/signaltrail/native/`，
 `scripts/build_qwen_worker.py` 基于固定 llama.cpp 源码构建。音频和单页画面缓存用于后续导出。

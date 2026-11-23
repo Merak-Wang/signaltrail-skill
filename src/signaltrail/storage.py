@@ -32,8 +32,7 @@ def next_revision(directory: Path, stem: str) -> int:
 
 def write_immutable_json(path: Path, data: object) -> Path:
     """处理：无覆盖竞态地创建完整且不可变的 JSON artifact。
-    输入：
-    - ``path``：当前函数要读取、校验或写入的本地文件路径。
+    输入：本地文件路径。
     - ``data``：待持久化的 Python 对象；会序列化为 UTF-8 JSON，不执行其中内容。
     输出：指向“无覆盖竞态地创建完整且不可变的 JSON artifact”所生成、定位或确认产物的本地路径。
     """
@@ -59,8 +58,7 @@ def write_immutable_json(path: Path, data: object) -> Path:
 @contextmanager
 def exclusive_lock(path: Path, payload: dict) -> Iterator[None]:
     """处理：以排他创建方式持有运行锁，并在上下文退出时释放。
-    输入：
-    - ``path``：当前函数要读取、校验或写入的本地文件路径。
+    输入：本地文件路径。
     - ``payload``：上游传入的结构化对象；函数只读取处理说明列出的受支持字段。
     输出：上下文管理器控制权；进入时资源已取得，退出时无论成功失败都会释放。
     """

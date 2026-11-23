@@ -12,11 +12,33 @@ from .narrative_store import ArtifactReader, digest
 _IMAGE_FIELDS = {"images", "image_source_pages"}
 
 
-def _story_input(model_input: dict) -> dict:
-    """处理：比较单条讲稿时去掉整期视频命名字段。
-    输入：旧写作包或当前单条包；故事证据和讲稿指令保持完整。
-    输出：仅排除独立视频标题任务的输入，避免改整期标题重写未变的讲稿。
+def slide_writing_story(candidate: dict) -> dict:
+    """处理：去掉抽取器的候选比较记录，保留入选正文及其质量观测。
+    输入：冻结计划或历史写作包内的一条新闻。
+    输出：供作者写作和跨版本复用比对的新闻，原记录保持完整。
     """
+    story = {key: value for key, value in candidate.items() if key not in _IMAGE_FIELDS}
+    if "evidence" in story:
+        evidence = []
+        for row in story["evidence"]:
+            quality = row.get("content_quality")
+            if isinstance(quality, dict):
+                # 两个嵌套字段记录抽取器比较过的其他结果，入选正文的警告在本层。
+                row = {**row, "content_quality": {
+                    key: value for key, value in quality.items()
+                    if key not in {"candidates", "baseline_quality"}
+                }}
+            evidence.append(row)
+        story["evidence"] = evidence
+    return story
+
+
+def _story_input(model_input: dict) -> dict:
+    """处理：按当前写作投影比较单条讲稿，排除独立的整期命名任务。
+    输入：旧写作包或当前单条包；故事证据和讲稿指令保持完整。
+    输出：可与现行写作包比较的单条输入，旧版抽取过程记录仍在计划中可查。
+    """
+    model_input = {**model_input, "news": [slide_writing_story(row) for row in model_input["news"]]}
     if "video_title_context" not in model_input:
         return model_input
     result = {key: value for key, value in model_input.items()

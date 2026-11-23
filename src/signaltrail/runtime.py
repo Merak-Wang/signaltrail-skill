@@ -77,9 +77,7 @@ def _map_legacy_value(value: Any, root: Path, previous_root: Path | None) -> Any
 
 def require_data_root_path(path: Path, data_dir: Path, label: str) -> Path:
     """处理：拒绝不属于当前数据根的控制或数据 artifact。
-    输入：
-    - ``path``：当前函数要读取、校验或写入的本地文件路径。
-    - ``data_dir``：当前运行的唯一数据根；所有状态和版本化产物都必须位于其中。
+    输入：本地文件路径、本次运行的数据根。
     - ``label``：用于错误消息的字段或产物名称，使失败能定位到具体输入。
     输出：指向“拒绝不属于当前数据根的控制或数据 artifact”所生成、定位或确认产物的本地路径。
     """
@@ -96,8 +94,7 @@ def require_data_root_path(path: Path, data_dir: Path, label: str) -> Path:
 
 def resolved_data_root_hint(path: Path) -> str:
     """处理：从已知 artifact 目录推断数据根，以生成可操作错误。
-    输入：
-    - ``path``：当前函数要读取、校验或写入的本地文件路径。
+    输入：本地文件路径。
     输出：“从已知 artifact 目录推断数据根，以生成可操作错误”得到的规范字符串，
       供调用方存储、比较或展示。
     """
@@ -122,10 +119,7 @@ def resolved_data_root_hint(path: Path) -> str:
 
 def validate_run_data_root(run: dict[str, Any], run_path: Path, data_dir: Path) -> Path:
     """处理：校验运行数据根目录并在不满足约束时报告错误。
-    输入：
-    - ``run``：当前运行清单对象；包含状态、尝试次数、截止时间和产物路径。
-    - ``run_path``：运行清单 JSON 路径；记录当前阶段、产物血缘、截止时间和恢复动作。
-    - ``data_dir``：当前运行的唯一数据根；所有状态和版本化产物都必须位于其中。
+    输入：记录阶段与产物的运行清单、运行清单路径、本次运行的数据根。
     输出：指向“校验运行数据根目录并在不满足约束时报告错误”所生成、定位或确认产物的本地路径。
     """
     root = data_dir.expanduser().resolve()
@@ -202,11 +196,9 @@ def bind_data_root(
     timezone: str = "Asia/Shanghai",
 ) -> dict[str, Any]:
     """处理：将 SignalTrail 应用目录绑定到数据根并显式记录迁移来源。
-    输入：
-    - ``data_dir``：当前运行的唯一数据根；所有状态和版本化产物都必须位于其中。
+    输入：本次运行的数据根、用于解释本地日期的 IANA 时区。
     - ``app_home``：SignalTrail 应用目录；其登记表保存唯一数据根绑定。
     - ``adopt``：是否显式接管已有数据根绑定；未授权时冲突会中止。
-    - ``timezone``：IANA 时区名称；用于解析无时区时间并生成日报时间边界。
     输出：包含数据根、登记路径和绑定状态的字典；更换既有绑定需显式 adopt。
     """
     root = data_dir.expanduser().resolve()

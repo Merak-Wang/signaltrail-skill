@@ -1,4 +1,5 @@
 sources:
+  # Omitted source fields inherit SourceConfig defaults.
   # Enabled sources contribute to their configured report sections.
   - id: un_news
     article_patterns: ['^https://news\.un\.org/(?:feed/view/)?en/story/\d{4}/\d{2}/\d+']
@@ -8,10 +9,6 @@ sources:
     role: primary
     tier: 1
     bundle: geopolitics
-    module: information
-    category: international
-    language: en
-    region: global
     origin_scope: international_organization
     coverage_regions: [global]
     publisher_group: united_nations
@@ -20,13 +17,8 @@ sources:
     name: Al Jazeera
     url: https://www.aljazeera.com/
     feed_urls: [https://www.aljazeera.com/xml/rss/all.xml]
-    role: evidence
     tier: 1
     bundle: geopolitics
-    module: information
-    category: international
-    language: en
-    region: global
     origin_scope: qa
     coverage_regions: [middle_east, global]
     publisher_group: al_jazeera
@@ -36,13 +28,7 @@ sources:
     feed_urls: [https://tass.com/rss/v2.xml]
     include_domains: [tass.com]
     article_patterns: ['^https://tass\.com/[a-z-]+/\d+$']
-    role: evidence
-    tier: 2
     bundle: geopolitics
-    module: information
-    category: international
-    language: en
-    region: global
     origin_scope: ru
     coverage_regions: [ru, global]
     publisher_group: tass
@@ -51,13 +37,7 @@ sources:
     url: https://english.news.cn/
     include_domains: [english.news.cn]
     article_patterns: ['^https://english\.news\.cn/(?:[a-z]+/)?\d{8}/[a-f0-9]+/c\.html$']
-    role: evidence
-    tier: 2
     bundle: geopolitics
-    module: information
-    category: international
-    language: en
-    region: global
     origin_scope: cn
     coverage_regions: [cn, global]
     publisher_group: xinhua
@@ -69,7 +49,6 @@ sources:
     role: primary
     tier: 1
     bundle: markets
-    module: information
     category: market
     language: zh
     region: cn
@@ -80,15 +59,12 @@ sources:
   - id: un_press
     name: UN Meetings Coverage and Press Releases
     url: https://press.un.org/en
+    feed_urls: [https://press.un.org/en/rss.xml]
     include_domains: [press.un.org]
     article_patterns: ['^https://press\.un\.org/en/\d{4}/[a-z0-9]+\.doc\.htm$']
     role: primary
     tier: 1
     bundle: geopolitics
-    module: information
-    category: international
-    language: en
-    region: global
     origin_scope: international_organization
     coverage_regions: [global]
     publisher_group: united_nations
@@ -98,9 +74,7 @@ sources:
     url: https://en.irna.ir/
     include_domains: [en.irna.ir]
     article_patterns: ['^https://en\.irna\.ir/news/\d+/[^/?#]+/?$']
-    role: evidence
     bundle: geopolitics
-    language: en
     region: middle_east
     origin_scope: ir
     coverage_regions: [ir, middle_east, global]
@@ -110,9 +84,7 @@ sources:
     enabled: false
     url: https://www.wam.ae/en
     include_domains: [wam.ae]
-    role: evidence
     bundle: geopolitics
-    language: en
     region: middle_east
     origin_scope: ae
     coverage_regions: [ae, middle_east]
@@ -122,47 +94,29 @@ sources:
     name: DW
     url: https://www.dw.com/en/top-stories/s-9097
     feed_urls: [https://rss.dw.com/rdf/rss-en-all]
-    role: evidence
     tier: 1
     bundle: geopolitics
-    module: information
-    category: international
-    language: en
     region: eu
   - id: nyt_world
     name: The New York Times World
     url: https://www.nytimes.com/section/world
     feed_urls: [https://rss.nytimes.com/services/xml/rss/nyt/World.xml]
-    role: evidence
     tier: 1
     bundle: geopolitics
-    module: information
-    category: international
-    language: en
     region: us
   - id: cbc_world
     article_patterns: ['^https://www\.cbc\.ca/(?:[^?#]+-\d\.\d+|player/play/(?:video/)?\d\.\d+)']
     name: CBC World
     url: https://www.cbc.ca/news/world
     feed_urls: [https://www.cbc.ca/cmlink/rss-world]
-    role: evidence
-    tier: 2
     bundle: geopolitics
-    module: information
-    category: international
-    language: en
     region: ca
   - id: japan_times
     article_patterns: ['^https://www\.japantimes\.co\.jp/[^/]+/\d{4}/\d{2}/\d{2}/']
     name: The Japan Times
     url: https://www.japantimes.co.jp/news/
     feed_urls: [https://www.japantimes.co.jp/feed/]
-    role: evidence
-    tier: 2
     bundle: asia
-    module: information
-    category: international
-    language: en
     region: jp
   - id: google_news_china
     name: Google News · China
@@ -173,21 +127,16 @@ sources:
     role: discovery
     tier: 3
     bundle: china
-    module: information
     category: domestic
-    language: en
     region: cn
   - id: rand_research
     article_patterns: ['^https://www\.rand\.org/pubs/(?:[^/]+/)+[^/?#]+\.html']
     name: RAND Research
     url: https://www.rand.org/pubs.html
     feed_urls: [https://www.rand.org/pubs.xml]
-    role: evidence
     tier: 1
     bundle: geopolitics
-    module: information
     category: military
-    language: en
     region: us
 
   # AI, software engineering, and the broader technology ecosystem.
@@ -201,8 +150,6 @@ sources:
     bundle: ai
     module: technology
     category: news
-    language: en
-    region: global
   - id: huggingface_blog
     name: Hugging Face Blog
     url: https://huggingface.co/blog
@@ -212,8 +159,6 @@ sources:
     bundle: ai
     module: technology
     category: news
-    language: en
-    region: global
 
   # Research publications.
   - id: nature_news
@@ -221,13 +166,10 @@ sources:
     name: Nature
     url: https://www.nature.com/nature/articles
     feed_urls: [https://www.nature.com/nature.rss]
-    role: evidence
     tier: 1
     bundle: research
     module: technology
     category: papers
-    language: en
-    region: global
   - id: cna_mainland
     name: 中央社两岸
     url: https://www.cna.com.tw/list/acn.aspx
@@ -235,24 +177,22 @@ sources:
     article_patterns: ['^https://www\.cna\.com\.tw/news/acn/\d+\.aspx$']
     feed_urls:
     - https://feeds.feedburner.com/rsscna/mainland
-    enabled: true
     role: discovery
-    tier: 2
     bundle: geopolitics
-    module: information
     category: domestic
-    language: zh-CN
+    language: zh-Hant
     region: tw
     origin_scope: tw
     coverage_regions:
     - tw
     publisher_group: cna_taiwan
-    report_target: 0
-    report_max: 0
     refresh_interval_minutes: 30
   - id: boj_news
     name: Bank of Japan
     url: https://www.boj.or.jp/en/
+    explore_urls:
+    - https://www.boj.or.jp/en/statistics/market/short/mutan/index.htm
+    - https://www.boj.or.jp/en/statistics/market/forex/fxdaily/index.htm
     article_patterns: ['^https?://www\.boj\.or\.jp/en/[^?#]+']
     exclude_patterns:
     - '^https?://www\.boj\.or\.jp/en/(?:[^/?#]+/){0,2}index\.htm(?:[?#]|$)'
@@ -261,40 +201,30 @@ sources:
     - '^https?://www\.boj\.or\.jp/en/(?:mopo/(?:mpmsche_minu|measures|mpmdeci)|paym/market|research/brp|statistics/outline)/(?:[^/?#]+/)+index\.htm(?:[?#]|$)'
     feed_urls:
     - https://www.boj.or.jp/en/rss/whatsnew.xml
-    enabled: true
     role: discovery
     tier: 1
     bundle: markets
-    module: information
     category: market
-    language: en
     region: jp
     origin_scope: jp
     coverage_regions:
     - jp
     publisher_group: boj_news
-    report_target: 0
-    report_max: 0
     refresh_interval_minutes: 60
   - id: rthk_finance_alt
     name: 香港电台财经
-    url: https://news.rthk.hk/rthk/ch/news-programmes.htm
+    url: https://news.rthk.hk/rthk/ch/latest-news/finance.htm
     include_domains: [news.rthk.hk]
     article_patterns: ['^https://news\.rthk\.hk/rthk/ch/component/k2/\d+-\d{8}\.htm$']
     feed_urls:
     - https://rthk.hk/rthk/news/rss/c_expressnews_cfinance.xml
-    enabled: true
     role: discovery
-    tier: 2
     bundle: markets
-    module: information
     category: market
-    language: zh-CN
+    language: zh-Hant
     region: hk
     origin_scope: hk
     coverage_regions:
     - hk
     publisher_group: rthk_finance_alt
-    report_target: 0
-    report_max: 0
     refresh_interval_minutes: 30

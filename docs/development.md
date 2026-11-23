@@ -30,7 +30,7 @@ The full default run covers the four offline modules below on Windows and Ubuntu
 | `collection` | Collect fixed source responses, resolve dates, enrich articles, and verify the resulting index, coverage, and access status | Stage time, article throughput, HTTP request and response reuse counts |
 | `report` | Compile fixed author drafts and source index, check coverage and evidence links, verify Markdown and HTML contents and PDF readability, reject an incomplete draft, and publish a revision | Save and revision time, briefs per second, output sizes |
 | `slides` | Prepare and accept fixed slide drafts, render the deck, and verify the delivered presentation | Stage time, pages per second, output size |
-| `orchestration` | Dispatch and accept 13 slide batches through the real CLI, retain active drafts, repair a rejected batch, and render all 50 pages with a single coordinator | Dispatch rounds, forced handoffs, author occupancy, complete workflow time and page throughput |
+| `orchestration` | Dispatch and accept 13 slide batches using the same batch submission functions as the CLI, retain active drafts, repair a rejected batch, and render all 50 pages with a single coordinator | Dispatch rounds, forced handoffs, author occupancy, complete workflow time and page throughput |
 | `video` | Export a supplied local deck with the production TTS and video runtime, decode the result, and repeat the export to measure reuse | First and repeat export time, output duration per wall second, cache hits and generated audio segments |
 
 Each sample records the workload, module pass/fail checks, wall time, throughput, Python CPU
@@ -58,9 +58,32 @@ the first and repeat export times alongside their actual cache hits and generate
 python scripts/evaluate_modules.py --modules video --video-deck DECK.json --data-dir DATA --device vulkan --model-dir MODEL --tts-executable EXE --tts-worker WORKER --repeat 1
 ```
 
+To verify model discovery, omit `--model-dir` and unset `SIGNALTRAIL_TTS_MODEL_DIR`.
+Use a run data root without a complete model pair and explicitly supply the installed worker.
+The video receipt records the selected pair's directory and any new files in the run's model cache.
+
 Measure model latency and tokens in a separate host run with the same input, model, and scope.
 Use the host's request records and `scripts/measure_codex_turn.py` for Codex. The fixed author
 drafts in the module evaluation measure the application stages that consume those drafts.
+
+### Whole-edition acceptance
+
+Start a dedicated harness invocation with one request to generate the edition. Measure from the instruction to the final delivery reply and include every attributable model response from the coordinator, writers, retries and delivery checks. Total tokens are the sum of provider-reported input and output over unique responses. Cached input is already part of input and reasoning output is already part of output. Record collection-to-MP4 separately as a production-stage measurement. Label frozen replays and warm caches.
+
+```sh
+python scripts/measure_codex_turn.py --completed-turn --log-root CODEX_SESSIONS --root-thread-id THREAD --root-turn-id TURN --run RUN.json --output USAGE.json
+python scripts/evaluate_edition.py --run RUN.json --report REPORT.json --deck DECK.json --video VIDEO.mp4 --host-receipt USAGE.json --full-host-measurement --resources RESOURCES.json --editorial REVIEW.json --output SCORECARD.json
+```
+
+The full-measurement flag attests that all generation occurred in the measured invocation. For an independently dispatched coordinator, also pass its thread ID as `--subtree-thread-id` when measuring and `--expected-host-subtree-id` when scoring. Mixed development chats and manually selected time windows provide diagnostic usage. Another harness may supply a run-bound receipt with `scope=completed_turn`, `selection=completed_invocation`, start/end and wall time, unique-response input and output counts under `total`, and a model/reasoning response breakdown.
+
+Use the report and deck actually delivered. The tool verifies the deck's report ancestry and records which report the run bound. It counts every enabled source with zero published briefs and separately lists eligible frozen-plan items missing from the report. Inspect translated titles, original publication precision, visible time labels, TL;DR fidelity and concision. Record how many pages have decodable images. Grade the rendered presentation for image relevance, readable layout, concise language and directness, with page examples and sample size.
+
+The joint score is out of 100. Time and tokens carry 15 points each, with the fraction `max(0, 1 - abs(measured - target) / target)` against 1,800 seconds and 20 million tokens. The observed low-capability score awards five points in proportion to the share of calls handled by Terra at low reasoning or below, plus five for completed delivery entirely at that setting. This grades the demonstrated configuration on this workload. Device use carries ten points proportional to the arithmetic mean of average whole-machine CPU and GPU busy percentages on this CPU/GPU test host. Source coverage earns 15 points times the fraction of enabled sources represented. Brief quality earns 15 points across title, visible publication time and TL;DR (equal weights). Slides earn ten points across image richness, image relevance and readability (desktop/mobile averaged) and ten across concision, liveliness and directness. Use the scored artifact versions and include review coverage. An unobserved dimension keeps its fixed weight and produces an interval for the total.
+
+Start `python scripts/sample_edition_resources.py --run RUN.json --stop-file DONE --output RESOURCES.json` in a measurement terminal before launching collection. Create the new `DONE` file when the requested delivery is ready. This sampler measures host-wide CPU and memory and the busiest available NVIDIA GPU every five seconds.
+
+Optional resource receipts bind the final run file by SHA-256 and report sample count, duration, scope (`edition` or `partial`), normalized CPU, GPU busy and memory-use percentages. Identify whole-device vs process-tree observations, sampling interval and missing periods. Editorial receipts bind the report, deck and video files by SHA-256. Each reviewed dimension specifies its status, count of distinct briefs or pages checked, and notes. Omit unobserved measures. Retain the raw dimension results and the combined score in the same receipt.
 
 ## Names and modules
 

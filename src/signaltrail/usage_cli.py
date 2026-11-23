@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from signaltrail.llm_usage import UsageLedger, ingest_hook_from_env
+from signaltrail.llm_usage.ledger import USAGE_CORRELATION_ENV
 
 CommandHandler = Callable[[argparse.Namespace, Mapping[str, str]], dict[str, Any] | None]
 
@@ -131,9 +132,7 @@ def _required_runtime_value(
     输出：非空字符串；两处均缺失时抛出不包含宿主回执的 ValueError。
     """
 
-    value = str(explicit).strip() if explicit is not None else ""
-    if not value:
-        value = str(environ.get(env_name) or "").strip()
+    value = _optional_runtime_value(explicit, environ, env_name)
     if not value:
         raise ValueError(f"{label} is required")
     return value
@@ -263,38 +262,12 @@ def _import_command(
         adapter,
         args.path,
         phase=phase,
-        batch_id=_optional_runtime_value(
-            args.batch_id, environ, "SIGNALTRAIL_USAGE_BATCH"
-        ),
-        agent_role=_optional_runtime_value(
-            args.agent_role, environ, "SIGNALTRAIL_USAGE_AGENT_ROLE"
-        ),
-        run_attempt=(
-            args.run_attempt
-            if args.run_attempt is not None
-            else _optional_runtime_value(
-                None, environ, "SIGNALTRAIL_USAGE_RUN_ATTEMPT"
-            )
-        ),
-        repair_attempt=(
-            args.repair_attempt
-            if args.repair_attempt is not None
-            else _optional_runtime_value(
-                None, environ, "SIGNALTRAIL_USAGE_REPAIR_ATTEMPT"
-            )
-        ),
-        evaluation_attempt=(
-            args.evaluation_attempt
-            if args.evaluation_attempt is not None
-            else _optional_runtime_value(
-                None, environ, "SIGNALTRAIL_USAGE_EVALUATION_ATTEMPT"
-            )
-        ),
-        parent_session_id=_optional_runtime_value(
-            args.parent_session_id,
-            environ,
-            "SIGNALTRAIL_USAGE_PARENT_SESSION",
-        ),
+        **{
+            name: _optional_runtime_value(getattr(args, name), environ, key)
+            if not name.endswith("_attempt") or getattr(args, name) is None
+            else getattr(args, name)
+            for name, key in USAGE_CORRELATION_ENV.items()
+        },
     )
     return {
         "task_id": handle.task_id,

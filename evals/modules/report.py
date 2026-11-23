@@ -2,18 +2,40 @@
 
 from __future__ import annotations
 
+import json
+from contextlib import redirect_stdout
 from copy import deepcopy
+from io import StringIO
 from pathlib import Path
 from time import perf_counter
+from unittest.mock import patch
 
+from bs4 import BeautifulSoup
 from pypdf import PdfReader
 from tiktoken import get_encoding
 
+from signaltrail import authoring
 from signaltrail.authoring import brief_authoring_input
-from signaltrail.config import MediaConfig, OutputConfig
+from signaltrail.commands.common import CommandContext
+from signaltrail.commands.editions import handle_enrich_edition, handle_submit_authoring_batch
+from signaltrail.commands.parser import build_parser
+from signaltrail.config import (
+    AppConfig,
+    BrowserConfig,
+    MediaConfig,
+    MonitorConfig,
+    OutputConfig,
+    SourceConfig,
+)
 from signaltrail.reporting import validate_report_data
 from signaltrail.reports import save_report
 from signaltrail.utils import read_json, write_json
+from signaltrail.workflow import (
+    adopt_index_for_run,
+    begin_authoring,
+    enrich_edition,
+    prepare_edition,
+)
 
 _DATE = "2026-07-12"
 _SOURCES = (
@@ -197,6 +219,180 @@ def _frozen_report_inputs() -> tuple[dict, dict, dict[str, list[str]]]:
     return draft, index, plan
 
 
+def _evaluate_bulk_submission(
+    context: CommandContext, run_path: Path, session: dict, report_draft: dict,
+) -> tuple[dict, dict]:
+    """对有草稿、缺字段和在途的批次运行真实接收命令，核对单次校验与产物。"""
+    ready, invalid, in_flight = session["batches"]
+    briefs = {
+        row["item_id"]: row for section in report_draft["sections"] for row in section["briefs"]
+    }
+    expected = [briefs[item_id] for item_id in ready["author_item_ids"]]
+    write_json(Path(ready["draft_result_path"]), {"briefs": expected})
+    invalid_briefs = [dict(briefs[item_id]) for item_id in invalid["author_item_ids"]]
+    invalid_briefs[0].pop("importance")
+    write_json(Path(invalid["draft_result_path"]), {"briefs": invalid_briefs})
+    in_flight_draft = Path(in_flight["draft_result_path"])
+    partial = b'{"briefs": ['
+    in_flight_draft.write_bytes(partial)
+    args = context.parser.parse_args([
+        "submit-authoring-batch", "--run", str(run_path), "--all",
+        "--skip-batch", in_flight["batch_id"],
+    ])
+    output = StringIO()
+    with (
+        patch.object(authoring, "validate_authoring_batch",
+                     wraps=authoring.validate_authoring_batch) as validator,
+        redirect_stdout(output),
+    ):
+        started = perf_counter()
+        exit_code = handle_submit_authoring_batch(args, context)
+        elapsed = perf_counter() - started
+    receipt = json.loads(output.getvalue())
+    accepted_path = Path(ready["result_path"])
+    invalid_packet = Path(invalid["packet_path"])
+    rejection_dir = invalid_packet.with_name(f"{invalid_packet.stem}-rejections")
+    return ({
+        "bulk_accepts_valid_draft_and_keeps_invalid_diagnostics": (
+            exit_code == 1 and receipt["accepted"] == [str(accepted_path)]
+            and receipt["invalid"] == [invalid["batch_id"]]
+            and read_json(accepted_path)["briefs"] == expected
+            and "importance" in " ".join(receipt["batches"][1]["errors"])
+            and not rejection_dir.exists() and not Path(invalid["result_path"]).exists()
+        ),
+        "bulk_skips_in_flight_partial_draft": (
+            receipt["batches"][2].get("in_flight") and not receipt["batches"][2]["errors"]
+            and in_flight_draft.read_bytes() == partial
+            and not Path(in_flight["result_path"]).exists()
+        ),
+        "bulk_validates_each_available_draft_once": validator.call_count == 2,
+    }, {
+        "bulk_submit_seconds": elapsed,
+        "bulk_draft_validations": validator.call_count,
+    })
+
+
+def _evaluate_context_freeze(
+    data_dir: Path, index: dict, plan: dict, draft: dict,
+) -> tuple[dict, dict]:
+    """用冻结采集与提取结果评估选材、补证和写作会话之间的产物转换。"""
+    index = deepcopy(index)
+    article = index["items"][0]
+    radio_url = "https://www.cbc.ca/radio/example/segment-9.1234567"
+    article.update(url=radio_url, canonical_url=radio_url)
+    tracked_url = f"{radio_url}?cmp=rss"
+    index["items"].append({
+        **article, "item_id": "cbc-radio-feed-alias",
+        "url": tracked_url, "canonical_url": tracked_url,
+    })
+    config = AppConfig(
+        index["timezone"], BrowserConfig(), [
+            SourceConfig(
+                row["source_id"], row["source_name"], row["source_url"],
+                module=row["module"], category=row["category"],
+            )
+            for row in index["sources"]
+        ],
+        monitor=MonitorConfig(enabled=False),
+    )
+    initial_index = write_json(data_dir / "indexes" / "initial.json", index)
+    with (
+        patch("signaltrail.workflow.today_str", return_value=index["date"]),
+        patch("signaltrail.workflow.collect_sources", return_value=initial_index),
+    ):
+        started = perf_counter()
+        run_path = prepare_edition(config, data_dir, "daily")
+        prepare_seconds = perf_counter() - started
+    initial_context = Path(read_json(run_path)["artifacts"]["context_path"])
+    verified_index = write_json(data_dir / "indexes" / "verified.json", index)
+    started = perf_counter()
+    adopted = adopt_index_for_run(config, data_dir, verified_index)
+    adopt_seconds = perf_counter() - started
+    adopted_run = read_json(run_path)
+    selection_context = Path(adopted_run["artifacts"]["context_path"])
+    selection_bytes = selection_context.read_bytes()
+    initial = read_json(initial_context)
+    selection = read_json(selection_context)
+    provisional_packets = list(initial_context.parent.glob("*-brief-batch-*.json"))
+
+    item = index["items"][0]
+    expected_text = "补证后的完整正文。公开记录列明范围、时间条件和接收方。"
+    content_path = data_dir / "content" / "article.md"
+    content_path.parent.mkdir()
+    content_path.write_text(expected_text, encoding="utf-8")
+    enriched_index = deepcopy(index)
+    enriched_index["items"][0].update(content_status="full_text", content_path=str(content_path))
+    frozen_index = write_json(data_dir / "indexes" / "enriched.json", enriched_index)
+    with patch("signaltrail.workflow.extract_content", return_value=frozen_index) as extract:
+        started = perf_counter()
+        enrich_edition(run_path, config, data_dir, [item["item_id"]], max_items=1)
+        enrich_seconds = perf_counter() - started
+    cli = CommandContext(config, data_dir, build_parser(), compact=True)
+    args = cli.parser.parse_args(["enrich-edition", "--run", str(run_path),
+                                  "--all-slide-candidates", "--max-items", "12"])
+    output = StringIO()
+    with (redirect_stdout(output),
+          patch("signaltrail.workflow.extract_content", return_value=frozen_index) as batches):
+        handle_enrich_edition(args, cli)
+    selected_batches = [call.kwargs["selected_ids"] for call in batches.call_args_list]
+    processed_ids = [item_id for batch in selected_batches for item_id in batch]
+    last_batch = json.loads(output.getvalue())["artifacts"]["enrichment"]["slides_candidates"]
+    started = perf_counter()
+    begin_authoring(run_path, data_dir)
+    dispatch_seconds = perf_counter() - started
+    artifacts = read_json(run_path)["artifacts"]
+    context = read_json(Path(artifacts["context_path"]))
+    session = read_json(Path(artifacts["authoring"]["session_path"]))
+    evidence = {}
+    packet_paths = [Path(batch["packet_path"]) for batch in session["batches"]]
+    for path in packet_paths:
+        projected = brief_authoring_input(path, data_dir, include_evidence=True)
+        evidence.update(projected["evidence_by_item_id"])
+    planned_ids = {row["source_id"]: row["default_item_ids"] for row in selection["brief_plan"]}
+    submit_checks, submit_metrics = _evaluate_bulk_submission(
+        CommandContext(config, data_dir, build_parser()), run_path, session, draft,
+    )
+    return ({
+        **submit_checks,
+        "single_command_finishes_all_candidate_batches": (
+            len(selected_batches) > 1 and all(len(batch) <= 12 for batch in selected_batches)
+            and len(processed_ids) == len(set(processed_ids)) and last_batch["remaining_count"] == 0
+        ),
+        "selection_keeps_plans_without_provisional_packets": (
+            adopted == run_path and adopted_run["status"] == "awaiting_selection"
+            and not provisional_packets
+            and initial.get("selection_only") and selection.get("selection_only")
+            and all(initial[key] == selection[key] for key in (
+                "candidate_items", "brief_plan", "enrichment_plan", "collection_coverage",
+            ))
+            and planned_ids == plan
+        ),
+        "authoring_freezes_revised_full_evidence": (
+            extract.call_args.kwargs["selected_ids"] == [item["item_id"]]
+            and artifacts["index_path"] == str(frozen_index)
+            and selection_context.read_bytes() == selection_bytes
+            and selection["brief_plan"] == context["brief_plan"]
+            and set(evidence) == {item_id for item_ids in plan.values() for item_id in item_ids}
+            and evidence[item["item_id"]] == {
+                "kind": "article", "text": expected_text, "partial": False,
+            }
+            and all(evidence[row["item_id"]] == {
+                "kind": "description", "text": row["description"], "partial": True,
+            } for row in index["items"][1:] if row["item_id"] in evidence)
+        ),
+    }, {
+        **submit_metrics,
+        "selection_prepare_seconds": prepare_seconds,
+        "selection_adopt_seconds": adopt_seconds,
+        "selection_packet_count": len(provisional_packets),
+        "selection_packet_bytes": sum(path.stat().st_size for path in provisional_packets),
+        "frozen_enrichment_seconds": enrich_seconds,
+        "frozen_dispatch_seconds": dispatch_seconds,
+        "frozen_packet_count": len(session["batches"]),
+        "frozen_packet_bytes": sum(path.stat().st_size for path in packet_paths),
+    })
+
+
 def evaluate(work_dir: Path) -> dict:
     """处理：运行报告保存入口并检查完整发布和修订。
     输入：本次评估独占的工作目录，用于写入冻结输入与交付文件。
@@ -204,6 +400,15 @@ def evaluate(work_dir: Path) -> dict:
     """
     draft, index, plan = _frozen_report_inputs()
     author_checks, author_metrics, author_input = _evaluate_author_input(work_dir, index)
+    freeze_checks, freeze_metrics = _evaluate_context_freeze(
+        work_dir.resolve() / "context-freeze", index, plan, draft,
+    )
+    # 榜单收录时间与出版方原发时间并存时，成稿应显示后者并保留原有精度。
+    platform_item = index["items"][0]
+    platform_item["published_at"] = "2026-07-05T08:59:00+08:00"
+    platform_item["metadata"] = {
+        "publication_time_kind": "platform", "content_source": {"published_at": _DATE},
+    }
     draft_path = write_json(work_dir / "draft.json", draft)
     index_path = write_json(work_dir / "index.json", index)
     options = {
@@ -263,7 +468,16 @@ def evaluate(work_dir: Path) -> dict:
     }
     markdown = outputs["markdown"].read_text(encoding="utf-8")
     html = outputs["html"].read_text(encoding="utf-8") if "html" in outputs else ""
-    pdf_pages = len(PdfReader(outputs["pdf"]).pages) if "pdf" in outputs else 0
+    document = BeautifulSoup(html, "html.parser")
+    cards = document.select("article.brief")
+    target_headlines = [brief.get("title_zh") or brief["title"] for brief in briefs]
+    reader = PdfReader(outputs["pdf"]) if "pdf" in outputs else None
+    pdf_pages = len(reader.pages) if reader else 0
+    analysis_anchors = {"analysis-synthesis", *(f"analysis-{row['domain']}"
+                                                for row in saved["analyses"])}
+    home_links = {link["href"][1:] for link in document.select(".analysis-contents a")}
+    pdf_targets = [annot.get_object()["/Dest"] for annot in reader.pages[0].get("/Annots", [])
+                   if "/Dest" in annot.get_object()] if pdf_pages else []
     original_bytes = {kind: path.read_bytes() for kind, path in outputs.items()}
 
     revised_draft = deepcopy(saved)
@@ -289,10 +503,29 @@ def evaluate(work_dir: Path) -> dict:
         },
         "checks": {
             **author_checks,
+            **freeze_checks,
+            "publisher_date_shown_in_brief_and_featured_event": all(
+                ref.get("published_at") == _DATE
+                for ref in [*(brief["source_ref"] for brief in briefs),
+                            *(ref for event in featured for ref in event["source_refs"])]
+                if ref["item_id"] == platform_item["item_id"]
+            ) and f"发布日期：{_DATE}<" in html,
+            "summary_links_to_analysis_in_html_and_pdf": (
+                home_links == analysis_anchors and all(document.find(id=key) for key in home_links)
+                and len(pdf_targets) == len(analysis_anchors)
+                and all(reader.get_page_number(dest[0].get_object()) > 0 for dest in pdf_targets)
+            ),
             "report_contract": not errors and not warnings,
             "complete_frozen_coverage_and_order": briefs_by_source == plan,
             "titles_summaries_and_source_links_preserved": (
                 actual_text_and_links == expected_text_and_links
+            ),
+            "target_language_headings_reference_originals": (
+                [card.select_one("h4 .story-link").get_text(strip=True) for card in cards]
+                == target_headlines
+                and all(not brief.get("title_zh") or
+                        card.select_one(".original-title").get_text(strip=True) == brief["title"]
+                        for card, brief in zip(cards, briefs, strict=True))
             ),
             "featured_references_and_analysis_evidence": (
                 len(featured) == len(expected_featured_items)
@@ -325,6 +558,7 @@ def evaluate(work_dir: Path) -> dict:
         },
         "metrics": {
             **author_metrics,
+            **freeze_metrics,
             "save_seconds": round(save_seconds, 6),
             "briefs_per_second": round(len(briefs) / save_seconds, 3),
             "revision_seconds": round(revision_seconds, 6),
@@ -339,6 +573,7 @@ def evaluate(work_dir: Path) -> dict:
         },
         "limitations": [
             "Frozen author drafts measure report compilation and local delivery. "
+            "The context-freeze workload uses frozen collection and extraction responses. "
             "Model generation, coordination, media fetching and remote publication "
             "are outside this workload.",
         ],
